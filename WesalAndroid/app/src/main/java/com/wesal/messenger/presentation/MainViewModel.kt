@@ -51,9 +51,12 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             val uid = authRepository.currentUserId
             if (uid != null) {
-                authRepository.syncFcmToken()
-                val user = userRepository.getUserOnce(uid)
-                _startDestination.value = if (user == null || user.displayName.isBlank()) {
+                runCatching { authRepository.syncFcmToken() }
+                val res = runCatching { userRepository.getUserOnce(uid) }
+                val user = res.getOrNull()
+                _startDestination.value = if (res.isFailure) {
+                    StartDestination.Home
+                } else if (user == null || user.displayName.isBlank()) {
                     StartDestination.ProfileSetup
                 } else {
                     StartDestination.Home

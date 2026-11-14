@@ -251,9 +251,10 @@ fun SettingsScreen(
             SettingsRow(Icons.Default.Block, "قائمة الحظر", "${user?.blockedUsers?.size ?: 0} مستخدم محظور") {
                 showBlockedDialog = true
             }
-            SettingsRow(Icons.Default.HelpOutline, "المساعدة ومعلومات التطبيق", "وصال WESAL • الإصدار 1.0.0") {
-                showHelpDialog = true
-            }
+            val devUri = androidx.compose.ui.platform.LocalUriHandler.current
+        SettingsRow(Icons.Default.HelpOutline, "تواصل مع المطور", "واتساب") {
+            devUri.openUri("https://wa.me/message/EPAFTW53B7WLA1")
+        }
             SettingsRow(
                 icon = Icons.AutoMirrored.Filled.ExitToApp,
                 title = "تسجيل الخروج",

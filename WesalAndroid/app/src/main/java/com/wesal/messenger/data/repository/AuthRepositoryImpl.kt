@@ -270,10 +270,10 @@ class AuthRepositoryImpl @Inject constructor(
                         .await()
                 }
             }
-            prefs.clearPendingOtp()
-            database.wesalDao().clearAllChats()
-            database.wesalDao().clearAllMessages()
             auth.signOut()
+            prefs.clearPendingOtp()
+            runCatching { database.wesalDao().clearAllChats() }
+            runCatching { database.wesalDao().clearAllMessages() }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
