@@ -15,6 +15,10 @@ jobs:
       - run: |
           cd WesalAndroid
           gradle assembleDebug --no-daemon
+      - run: |
+          mkdir -p ~/.android
+          [ -f ~/.android/debug.keystore ] || keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep -E "SHA1|SHA256"
       - uses: actions/upload-artifact@v4
         with:
           name: WESAL-apk
