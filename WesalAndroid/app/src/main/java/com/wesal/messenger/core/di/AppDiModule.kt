@@ -25,7 +25,7 @@ object AppDiModule {
 
     @Provides
     @Singleton
-    fun provideFirebaseFirestore(): FirebaseFirestore = FirebaseFirestore.getInstance()
+    fun provideFirebaseFirestore(): FirebaseFirestore = FirebaseFirestore.getInstance(com.google.firebase.FirebaseApp.getInstance(), "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424")
 
     @Provides
     @Singleton

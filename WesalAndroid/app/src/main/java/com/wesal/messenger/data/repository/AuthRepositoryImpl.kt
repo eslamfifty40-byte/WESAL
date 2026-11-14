@@ -183,8 +183,12 @@ class AuthRepositoryImpl @Inject constructor(
             var photoUrl = ""
             if (photoUri != null) {
                 val ref = storage.reference.child("${Constants.STORAGE_AVATARS}/$uid/avatar_${UUID.randomUUID()}.jpg")
+                try {
                 ref.putFile(photoUri).await()
                 photoUrl = ref.downloadUrl.await().toString()
+            } catch (e: Exception) {
+                photoUrl = ""
+            }
             }
 
             val updates = hashMapOf<String, Any>(
