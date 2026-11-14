@@ -270,7 +270,7 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun mapAuthError(e: FirebaseException): PhoneAuthEvent.Error {
+    private fun mapAuthError(e: Exception): PhoneAuthEvent.Error {
         return when (e) {
             is FirebaseNetworkException -> PhoneAuthEvent.Error(
                 "لا يوجد اتصال بالإنترنت، يرجى التحقق والمحاولة مجدداً",
