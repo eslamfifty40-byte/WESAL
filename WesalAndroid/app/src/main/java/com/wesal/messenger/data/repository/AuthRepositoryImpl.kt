@@ -184,8 +184,14 @@ class AuthRepositoryImpl @Inject constructor(
             if (photoUri != null) {
                 val ref = storage.reference.child("${Constants.STORAGE_AVATARS}/$uid/avatar_${UUID.randomUUID()}.jpg")
                 try {
-                ref.putFile(photoUri).await()
-                photoUrl = ref.downloadUrl.await().toString()
+                val bmp = android.graphics.BitmapFactory.decodeFile(photoUri.path)
+                if (bmp != null) {
+                    val sc = 256f / maxOf(bmp.width, bmp.height)
+                    val small = if (sc < 1f) android.graphics.Bitmap.createScaledBitmap(bmp, (bmp.width * sc).toInt(), (bmp.height * sc).toInt(), true) else bmp
+                    val bos = java.io.ByteArrayOutputStream()
+                    small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, bos)
+                    photoUrl = "data:image/jpeg;base64," + android.util.Base64.encodeToString(bos.toByteArray(), android.util.Base64.NO_WRAP)
+                }
             } catch (e: Exception) {
                 photoUrl = ""
             }

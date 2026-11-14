@@ -103,6 +103,7 @@ ksp {
 }
 
 dependencies {
+    implementation("com.github.yalantis:ucrop:2.2.8")
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play)
     implementation(libs.google.googleid)

@@ -48,6 +48,7 @@ android {
 }
 
 dependencies {
+    implementation("com.github.yalantis:ucrop:2.2.8")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
