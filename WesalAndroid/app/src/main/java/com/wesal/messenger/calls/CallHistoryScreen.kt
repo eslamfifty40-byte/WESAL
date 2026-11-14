@@ -47,8 +47,11 @@ class CallHistoryViewModel @Inject constructor(
 
 @Composable
 fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
-    val calls by viewModel.history.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val allCalls by viewModel.history.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(Unit) { CallsClearState.load(context) }
+    // CLEARCALLS
+    val calls = allCalls.filter { it.startedAt > CallsClearState.clearedAt }
 
     Column(modifier = Modifier.fillMaxSize().background(WesalDeepBlack)) {
         if (calls.isEmpty()) {
@@ -113,5 +116,17 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
                 }
             }
         }
+    }
+}
+
+
+object CallsClearState {
+    var clearedAt by androidx.compose.runtime.mutableLongStateOf(0L)
+    fun load(ctx: android.content.Context) {
+        clearedAt = ctx.getSharedPreferences("wesal_calls", android.content.Context.MODE_PRIVATE).getLong("cleared", 0L)
+    }
+    fun clear(ctx: android.content.Context) {
+        clearedAt = System.currentTimeMillis()
+        ctx.getSharedPreferences("wesal_calls", android.content.Context.MODE_PRIVATE).edit().putLong("cleared", clearedAt).apply()
     }
 }

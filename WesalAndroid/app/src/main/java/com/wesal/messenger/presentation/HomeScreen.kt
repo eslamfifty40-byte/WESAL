@@ -69,6 +69,7 @@ fun HomeScreen(
                                     ctxHome.startActivity(android.content.Intent(ctxHome, com.wesal.messenger.contacts.ContactsInviteActivity::class.java))
                                 })
                                 DropdownMenuItem(text = { Text("\u062a\u0628\u062f\u064a\u0644 \u0627\u0644\u062d\u0633\u0627\u0628") }, onClick = { menuOpen = false; com.wesal.messenger.settings.AccountSwitcherState.show = true })
+                        if (selectedTab == HomeTab.CALLS) DropdownMenuItem(text = { Text("\u0645\u0633\u062d \u0627\u0644\u0645\u0643\u0627\u0644\u0645\u0627\u062a") }, onClick = { menuOpen = false; com.wesal.messenger.calls.CallsClearState.clear(ctxHome) }) // CLEARMENU
                         DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS })
                             }
                         }
