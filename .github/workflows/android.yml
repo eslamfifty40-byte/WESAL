@@ -24,8 +24,8 @@ jobs:
           JSON
       - run: npx cap add android
       - run: sh patch-android.sh
-      - run: mkdir -p assets && cp iconWESAL.png assets/icon-only.png && cp iconWESAL.png assets/icon-foreground.png && cp iconWESAL.png assets/splash.png
-      - run: npx capacitor-assets generate --android
+      - run: mkdir -p assets && cp iconWESAL.png assets/icon-only.png && cp iconWESAL.png assets/icon-foreground.png && cp iconWESAL.png assets/splash.png && cp iconWESAL.png assets/splash-dark.png
+      - run: npx capacitor-assets generate --android --iconBackgroundColor '#ffffff' --iconBackgroundColorDark '#ffffff' --splashBackgroundColor '#000000' --splashBackgroundColorDark '#000000'
       - run: |
           F=android/app/src/main/res/values/styles.xml
           sed -i 's|</style>|<item name="android:windowSplashScreenAnimationDuration">0</item></style>|' $F
