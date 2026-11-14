@@ -1,0 +1,192 @@
+{
+  "entities": {
+    "ConnectionCheck": {
+      "title": "Connection Check",
+      "description": "Read-only sentinel document used to verify Firestore connectivity at startup.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "description": "Connectivity indicator."
+        }
+      }
+    },
+    "UserRootDoc": {
+      "title": "User Root Profile",
+      "description": "Isolated owner root document for a SABQ AI authenticated user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID owning this workspace."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Display name shown in Arabic UI and PDF reports."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when account record was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when account record was last updated."
+        }
+      },
+      "required": ["userId", "displayName", "createdAt", "updatedAt"]
+    },
+    "UserWorkspaceState": {
+      "title": "User Workspace State",
+      "description": "Compacted per-user synced health workspace snapshot (without heavy inline base64 blobs).",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "profile": {
+          "type": "object",
+          "description": "User health profile and voluntary intake metadata."
+        },
+        "settings": {
+          "type": "object",
+          "description": "User audio, font scale, quiet hours, and privacy settings."
+        },
+        "scans": {
+          "type": "array",
+          "description": "Bounded recent health scan records (max 80)."
+        },
+        "labs": {
+          "type": "array",
+          "description": "Bounded lab readings (max 150)."
+        },
+        "memories": {
+          "type": "array",
+          "description": "Bounded smart memory records (max 150)."
+        },
+        "reports": {
+          "type": "array",
+          "description": "Bounded independent and comprehensive report records (max 80)."
+        },
+        "chats": {
+          "type": "array",
+          "description": "Bounded recent assistant chat messages (max 80)."
+        },
+        "riskAssessments": {
+          "type": "array",
+          "description": "Latest deterministic risk assessment records (max 20)."
+        },
+        "images": {
+          "type": "array",
+          "description": "Uploaded image metadata references (max 60)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["userId", "profile", "settings", "createdAt", "updatedAt"]
+    },
+    "UploadedImageMeta": {
+      "title": "Uploaded Image Metadata",
+      "description": "Server-confirmed uploaded health scan image stored in Firebase Storage.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sectionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40,
+          "enum": ["FACE_EYE_SKIN", "HAIR_SCALP", "BODY_POSTURE", "SMART_SCAN"]
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 128
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "storagePath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "mimeType": {
+          "type": "string",
+          "enum": ["image/jpeg", "image/png", "image/webp"]
+        },
+        "sizeBytes": {
+          "type": "number"
+        },
+        "sourceOrigin": {
+          "type": "string",
+          "enum": ["camera", "gallery", "file"]
+        },
+        "uploadedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "sectionId",
+        "filename",
+        "url",
+        "mimeType",
+        "sizeBytes",
+        "sourceOrigin",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/test/connection": {
+      "schema": { "$ref": "#/entities/ConnectionCheck" },
+      "description": "Connectivity verification document."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserRootDoc" },
+      "description": "Root owner document isolating each user's SABQ AI workspace."
+    },
+    "/users/{userId}/workspace/{docId}": {
+      "schema": { "$ref": "#/entities/UserWorkspaceState" },
+      "description": "Synced per-user workspace snapshot document (docId='state')."
+    },
+    "/users/{userId}/uploads/{imageId}": {
+      "schema": { "$ref": "#/entities/UploadedImageMeta" },
+      "description": "Metadata for uploaded scan images stored in Firebase Storage."
+    }
+  }
+}

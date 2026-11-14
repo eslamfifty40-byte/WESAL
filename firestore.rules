@@ -1,0 +1,223 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global hardened primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && request.auth.token.email_verified == true;
+    }
+
+    function isStr(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isBoundedList(val, maxItems) {
+      return val is list && val.size() <= maxItems;
+    }
+
+    function hasValidUserRootParent(userId) {
+      return existsAfter(/databases/$(database)/documents/users/$(userId));
+    }
+
+    function isValidUserRoot(data, userId) {
+      return data.keys().hasAll(['userId', 'displayName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'displayName', 'createdAt', 'updatedAt'])
+        && isValidId(data.userId)
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && isStr(data.displayName, 1, 120)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceState(data, userId) {
+      return data.keys().hasAll(['userId', 'profile', 'settings', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'userId',
+          'profile',
+          'settings',
+          'sessions',
+          'images',
+          'memories',
+          'chats',
+          'scans',
+          'labs',
+          'riskAssessments',
+          'reports',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.userId)
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && data.profile is map
+        && data.profile.keys().hasAll(['userId', 'displayName'])
+        && isValidId(data.profile.userId)
+        && data.profile.userId == userId
+        && isStr(data.profile.displayName, 1, 120)
+        && data.settings is map
+        && (!('sessions' in data) || isBoundedList(data.sessions, 60))
+        && (!('images' in data) || isBoundedList(data.images, 60))
+        && (!('memories' in data) || isBoundedList(data.memories, 150))
+        && (!('chats' in data) || isBoundedList(data.chats, 80))
+        && (!('scans' in data) || isBoundedList(data.scans, 80))
+        && (!('labs' in data) || isBoundedList(data.labs, 150))
+        && (!('riskAssessments' in data) || isBoundedList(data.riskAssessments, 20))
+        && (!('reports' in data) || isBoundedList(data.reports, 80))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUploadedImageMeta(data, userId, imageId) {
+      return data.keys().hasAll([
+          'id',
+          'userId',
+          'sectionId',
+          'filename',
+          'url',
+          'mimeType',
+          'sizeBytes',
+          'sourceOrigin',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'userId',
+          'sessionId',
+          'sectionId',
+          'filename',
+          'url',
+          'storagePath',
+          'mimeType',
+          'sizeBytes',
+          'sourceOrigin',
+          'uploadedAt',
+          'createdAt'
+        ])
+        && isValidId(data.id)
+        && data.id == imageId
+        && isValidId(data.userId)
+        && data.userId == userId
+        && data.userId == request.auth.uid
+        && (!('sessionId' in data) || isStr(data.sessionId, 1, 128))
+        && data.sectionId in ['FACE_EYE_SKIN', 'HAIR_SCALP', 'BODY_POSTURE', 'SMART_SCAN']
+        && isStr(data.filename, 3, 128)
+        && data.filename.matches('^[a-zA-Z0-9._\\-]+$')
+        && isStr(data.url, 1, 1024)
+        && (!('storagePath' in data) || isStr(data.storagePath, 1, 512))
+        && data.mimeType in ['image/jpeg', 'image/png', 'image/webp']
+        && data.sizeBytes is number
+        && data.sizeBytes > 0
+        && data.sizeBytes <= 20 * 1024 * 1024
+        && data.sourceOrigin in ['camera', 'gallery', 'file']
+        && (!('uploadedAt' in data) || isStr(data.uploadedAt, 10, 64))
+        && data.createdAt is timestamp;
+    }
+
+    // Connectivity test sentinel document (read-only single doc get)
+    match /test/connection {
+      allow get: if true;
+      allow list, create, update, delete: if false;
+    }
+
+    // Isolated per-user root profile document
+    match /users/{userId} {
+      allow get: if isVerifiedOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidUserRoot(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedOwner(userId)
+        && isValidId(userId)
+        && isValidUserRoot(incoming(), userId)
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'updatedAt']);
+      allow delete: if isVerifiedOwner(userId) && isValidId(userId);
+
+      // Synced workspace state document (/users/{userId}/workspace/{docId}, e.g. docId='state')
+      match /workspace/{docId} {
+        allow get: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && docId == 'state';
+        allow list: if isVerifiedOwner(userId)
+          && resource.data.userId == request.auth.uid;
+        allow create: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && docId == 'state'
+          && isValidWorkspaceState(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && hasValidUserRootParent(userId);
+        allow update: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && docId == 'state'
+          && isValidWorkspaceState(incoming(), userId)
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'profile',
+            'settings',
+            'sessions',
+            'images',
+            'memories',
+            'chats',
+            'scans',
+            'labs',
+            'riskAssessments',
+            'reports',
+            'updatedAt'
+          ]);
+        allow delete: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && docId == 'state';
+      }
+
+      // Uploaded image metadata subcollection (/users/{userId}/uploads/{imageId})
+      match /uploads/{imageId} {
+        allow get: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(imageId);
+        allow list: if isVerifiedOwner(userId)
+          && resource.data.userId == request.auth.uid;
+        allow create: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(imageId)
+          && isValidUploadedImageMeta(incoming(), userId, imageId)
+          && incoming().createdAt == request.time
+          && hasValidUserRootParent(userId);
+        allow update: if false;
+        allow delete: if isVerifiedOwner(userId)
+          && isValidId(userId)
+          && isValidId(imageId);
+      }
+    }
+  }
+}

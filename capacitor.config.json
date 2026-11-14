@@ -1,0 +1,9 @@
+{
+  "appId": "com.sabq.ai",
+  "appName": "سَبَق",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}
