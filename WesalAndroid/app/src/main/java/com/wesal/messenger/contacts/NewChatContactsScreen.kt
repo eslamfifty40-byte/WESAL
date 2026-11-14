@@ -31,7 +31,7 @@ fun NewChatContactsScreen(
         try {
             val me = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
             val db = com.google.firebase.firestore.FirebaseFirestore.getInstance(com.google.firebase.FirebaseApp.getInstance(), "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424")
-            val snap = kotlinx.coroutines.tasks.await(db.collection("users").limit(200).get())
+            val snap = db.collection("users").limit(200).get().let { t -> kotlinx.coroutines.suspendCancellableCoroutine<com.google.firebase.firestore.QuerySnapshot> { c -> t.addOnSuccessListener { r -> c.resume(r) {} }.addOnFailureListener { e -> c.resumeWith(Result.failure(e)) } } }
             allUsers = snap.documents.mapNotNull { it.toObject(com.wesal.messenger.domain.model.WesalUser::class.java)?.copy(uid = it.id) }.filter { it.uid != me }
         } catch (e: Exception) { }
     }
