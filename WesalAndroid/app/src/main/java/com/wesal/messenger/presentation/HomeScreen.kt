@@ -35,6 +35,8 @@ fun HomeScreen(
     onSignedOut: () -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(HomeTab.CHATS) }
+    var menuOpen by remember { mutableStateOf(false) }
+    val ctxHome = androidx.compose.ui.platform.LocalContext.current
 
     Scaffold(
         containerColor = WesalDeepBlack,
@@ -48,6 +50,25 @@ fun HomeScreen(
                             fontWeight = FontWeight.Bold,
                             color = WesalTextPrimary
                         )
+                    },
+                    actions = {
+                        IconButton(onClick = { selectedTab = HomeTab.STORIES }) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = "كاميرا", tint = WesalTextPrimary)
+                        }
+                        Box {
+                            IconButton(onClick = { menuOpen = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "المزيد", tint = WesalTextPrimary)
+                            }
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(text = { Text("مجموعة جديدة") }, onClick = { menuOpen = false; selectedTab = HomeTab.GROUPS })
+                                DropdownMenuItem(text = { Text("رسالة جديدة") }, onClick = { menuOpen = false; onOpenNewChat() })
+                                DropdownMenuItem(text = { Text("دعوة الأصدقاء") }, onClick = {
+                                    menuOpen = false
+                                    ctxHome.startActivity(android.content.Intent(ctxHome, com.wesal.messenger.contacts.ContactsInviteActivity::class.java))
+                                })
+                                DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS })
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = WesalSurfaceDark)
                 )
