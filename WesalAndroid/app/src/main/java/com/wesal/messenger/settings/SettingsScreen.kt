@@ -260,12 +260,20 @@ fun SettingsScreen(
         SettingsRow(Icons.Default.HelpOutline, "تواصل مع المطور", "واتساب") {
             devUri.openUri("https://wa.me/message/EPAFTW53B7WLA1")
         }
+            /* SWITCHITEM */
+            SettingsRow(
+                icon = androidx.compose.material.icons.Icons.Default.SwitchAccount,
+                title = "تبديل الحساب",
+                subtitle = "التنقل بين حساباتك",
+                tint = WesalError,
+                onClick = { AccountSwitcherState.show = true }
+            )
             SettingsRow(
                 icon = Icons.AutoMirrored.Filled.ExitToApp,
                 title = "تسجيل الخروج",
                 subtitle = "إنهاء الجلسة على هذا الجهاز",
                 tint = WesalError,
-                onClick = { AccountSwitcherState.show = true }
+                onClick = { viewModel.signOut(onSignedOut) }
             )
         }
     }
