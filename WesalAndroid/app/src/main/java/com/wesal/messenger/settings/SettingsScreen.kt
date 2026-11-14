@@ -131,6 +131,7 @@ fun SettingsScreen(
     onSignedOut: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
+    AccountSwitcherDialog(onSignOut = { viewModel.signOut(onSignedOut) })
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
@@ -264,7 +265,7 @@ fun SettingsScreen(
                 title = "تسجيل الخروج",
                 subtitle = "إنهاء الجلسة على هذا الجهاز",
                 tint = WesalError,
-                onClick = { viewModel.signOut(onSignedOut) }
+                onClick = { AccountSwitcherState.show = true }
             )
         }
     }
