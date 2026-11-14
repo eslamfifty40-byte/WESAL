@@ -25,6 +25,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.credentials.CredentialManager
+import androidx.credentials.GetCredentialRequest
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.GoogleAuthProvider
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import com.wesal.messenger.core.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -39,6 +47,9 @@ fun PhoneLoginScreen(
     val context = LocalContext.current
     val activity = context as? Activity
     var showCountrySheet by remember { mutableStateOf(false) }
+    var googleLoading by remember { mutableStateOf(false) }
+    var googleError by remember { mutableStateOf<String?>(null) }
+    val googleScope = rememberCoroutineScope()
 
     LaunchedEffect(state.navigateToOtp) {
         if (state.navigateToOtp) onNavigateToOtp()
@@ -226,6 +237,42 @@ fun PhoneLoginScreen(
                             fontWeight = FontWeight.Bold
                         )
                     }
+                }
+                                OutlinedButton(
+                    onClick = {
+                        if (activity == null || googleLoading) return@OutlinedButton
+                        googleLoading = true
+                        googleError = null
+                        googleScope.launch {
+                            try {
+                                val option = GetGoogleIdOption.Builder()
+                                    .setFilterByAuthorizedAccounts(false)
+                                    .setServerClientId(activity.getString(activity.resources.getIdentifier("default_web_client_id", "string", activity.packageName)))
+                                    .build()
+                                val request = GetCredentialRequest.Builder().addCredentialOption(option).build()
+                                val result = CredentialManager.create(activity).getCredential(activity, request)
+                                val token = GoogleIdTokenCredential.createFrom(result.credential.data).idToken
+                                val cred = GoogleAuthProvider.getCredential(token, null)
+                                FirebaseAuth.getInstance().signInWithCredential(cred).await()
+                                onNavigateToProfileSetup()
+                            } catch (e: Exception) {
+                                googleError = "تعذر تسجيل الدخول بجوجل: " + (e.message ?: "")
+                            } finally {
+                                googleLoading = false
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Text(
+                        text = if (googleLoading) "جارٍ الدخول..." else "المتابعة بحساب جوجل",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = WesalTextPrimary
+                    )
+                }
+                if (googleError != null) {
+                    Text(text = googleError!!, color = WesalError, style = MaterialTheme.typography.bodyMedium)
                 }
                 Text(
                     text = "بمتابعتك فإنك توافق على التحقق من رقم هاتفك عبر Firebase Authentication لضمان أمان حسابك.",
