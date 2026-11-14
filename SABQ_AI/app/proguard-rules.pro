@@ -1,3 +1,0 @@
--keep class com.sabq.ai.data.local.** { *; }
--keep class com.sabq.ai.ai.** { *; }
--dontwarn okhttp3.**
