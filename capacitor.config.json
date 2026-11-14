@@ -1,9 +1,15 @@
 {
   "appId": "com.sabq.ai",
-  "appName": "سَبَق",
+  "appName": "\u0633\u064e\u0628\u064e\u0642",
   "webDir": "dist",
   "bundledWebRuntime": false,
   "server": {
     "androidScheme": "https"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0,
+      "launchAutoHide": true
+    }
   }
 }
