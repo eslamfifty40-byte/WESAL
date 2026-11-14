@@ -132,6 +132,11 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     private suspend fun ensureUserSkeletonExists(uid: String, phone: String): Boolean {
+        // SKIPNEW
+        run {
+            val ex = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
+            if (ex.exists() && !ex.getString("displayName").isNullOrBlank()) return false
+        }
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
         val snapshot = userRef.get().await()
         val pubKey = cryptoManager.getOrCreateIdentityPublicKeyBase64()
