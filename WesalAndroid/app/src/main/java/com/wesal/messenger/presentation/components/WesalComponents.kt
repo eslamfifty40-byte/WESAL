@@ -37,7 +37,7 @@ fun WesalAvatar(
     Box(modifier = Modifier.size(size)) {
         if (imageUrl.isNotBlank()) {
             AsyncImage(
-                model = imageUrl,
+                model = com.wesal.messenger.presentation.components.wesalImageModel(imageUrl),
                 contentDescription = name,
                 modifier = Modifier
                     .fillMaxSize()

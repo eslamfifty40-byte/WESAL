@@ -124,7 +124,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                 }
                 StoryType.IMAGE -> {
                     AsyncImage(
-                        model = story.mediaUrl,
+                        model = com.wesal.messenger.presentation.components.wesalImageModel(story.mediaUrl),
                         contentDescription = "حالة",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Fit

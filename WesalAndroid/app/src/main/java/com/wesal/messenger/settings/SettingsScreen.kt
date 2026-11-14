@@ -251,7 +251,11 @@ fun SettingsScreen(
             SettingsRow(Icons.Default.Block, "قائمة الحظر", "${user?.blockedUsers?.size ?: 0} مستخدم محظور") {
                 showBlockedDialog = true
             }
-            val devUri = androidx.compose.ui.platform.LocalUriHandler.current
+            val ctxInv = androidx.compose.ui.platform.LocalContext.current
+        SettingsRow(Icons.Default.Person, "دعوة الأصدقاء", "جهات الاتصال في موبايلك") {
+            ctxInv.startActivity(android.content.Intent(ctxInv, com.wesal.messenger.contacts.ContactsInviteActivity::class.java))
+        }
+        val devUri = androidx.compose.ui.platform.LocalUriHandler.current
         SettingsRow(Icons.Default.HelpOutline, "تواصل مع المطور", "واتساب") {
             devUri.openUri("https://wa.me/message/EPAFTW53B7WLA1")
         }
