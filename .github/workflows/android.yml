@@ -18,10 +18,18 @@ jobs:
       - run: npm run build
       - run: rm -rf android capacitor.config.*
       - run: npx cap init 'سبق' com.eslam.sabq --web-dir=dist
+      - run: |
+          cat > capacitor.config.json <<'JSON'
+          {"appId":"com.eslam.sabq","appName":"SABQ","webDir":"dist","plugins":{"SplashScreen":{"launchShowDuration":0,"launchAutoHide":true,"backgroundColor":"#000000"}},"android":{"allowMixedContent":true}}
+          JSON
       - run: npx cap add android
       - run: sh patch-android.sh
-      - run: mkdir -p assets && cp icon1.png assets/icon-only.png
+      - run: mkdir -p assets && cp iconWESAL.png assets/icon-only.png && cp iconWESAL.png assets/icon-foreground.png && cp iconWESAL.png assets/splash.png
       - run: npx capacitor-assets generate --android
+      - run: |
+          F=android/app/src/main/res/values/styles.xml
+          sed -i 's|</style>|<item name="android:windowSplashScreenAnimationDuration">0</item></style>|' $F
+          sed -i 's|<item name="android:background">[^<]*</item>||' $F
       - run: npx cap sync android
       - run: pip install pillow
       - run: python3 fix_icon.py
