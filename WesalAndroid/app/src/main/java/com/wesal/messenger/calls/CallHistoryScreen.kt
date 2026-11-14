@@ -121,7 +121,10 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
 
 
 object CallsClearState {
-    var clearedAt by androidx.compose.runtime.mutableStateOf(0L)
+    val clearedState = androidx.compose.runtime.mutableStateOf(0L)
+    var clearedAt: Long
+        get() = clearedState.value
+        set(v) { clearedState.value = v }
     fun load(ctx: android.content.Context) {
         clearedAt = ctx.getSharedPreferences("wesal_calls", android.content.Context.MODE_PRIVATE).getLong("cleared", 0L)
     }
