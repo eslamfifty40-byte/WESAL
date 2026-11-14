@@ -207,7 +207,7 @@ fun ChatDetailScreen(
                                 chat?.peerOnline == true -> "متصل الآن"
                                 (chat?.peerLastSeen ?: 0L) > 0L ->
                                     "آخر ظهور ${DateTimeUtils.formatChatListTime(chat!!.peerLastSeen)}"
-                                else -> ""
+                                else -> "مشفرة من طرف إلى طرف"
                             }
                             Text(
                                 text = subtitle,
