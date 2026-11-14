@@ -60,6 +60,12 @@ private fun ContactsInviteScreen(onClose: () -> Unit) {
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(Unit) { if (!granted) launcher.launch(Manifest.permission.READ_CONTACTS) }
     var contacts by remember { mutableStateOf(emptyList<DeviceContact>()) }
+    var registered by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(Unit) {
+        try {
+            com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("users").get().addOnSuccessListener { snap -> registered = snap.documents.mapNotNull { it.getString("phoneDigits") }.toSet() }
+        } catch (e: Exception) { }
+    }
     LaunchedEffect(granted) { if (granted) contacts = withContext(Dispatchers.IO) { loadContacts(ctx) } }
     var q by remember { mutableStateOf("") }
     val shown = contacts.filter { q.isBlank() || it.name.contains(q, true) || it.number.contains(q) }
@@ -80,7 +86,7 @@ private fun ContactsInviteScreen(onClose: () -> Unit) {
                         Text(c.name, color = Color.White)
                         Text(c.number, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                     }
-                    Button(onClick = {
+                    if (isRegisteredNumber(c.number, registered)) Text("\u0645\u0633\u062c\u0644", color = Color.Green) else Button(onClick = {
                         val i = Intent(Intent.ACTION_SEND).apply {
                             type = "text/plain"
                             putExtra(Intent.EXTRA_TEXT, "أنا بستخدم تطبيق وصال للمراسلة. حمّله وسجّل معايا!")
@@ -91,4 +97,11 @@ private fun ContactsInviteScreen(onClose: () -> Unit) {
             }
         }
     }
+}
+
+
+private fun isRegisteredNumber(num: String, registered: Set<String>): Boolean {
+    var d = num.filter { it.isDigit() }
+    if (d.startsWith("00")) d = d.substring(2) else if (d.startsWith("0")) d = "20" + d.substring(1)
+    return d in registered
 }

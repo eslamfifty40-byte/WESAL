@@ -25,7 +25,7 @@ interface AuthRepository {
         resendingToken: PhoneAuthProvider.ForceResendingToken? = null
     ): Flow<PhoneAuthEvent>
     suspend fun verifyOtpCode(verificationId: String, smsCode: String): Result<Boolean>
-    suspend fun completeUserProfile(displayName: String, bio: String, photoUri: Uri?): Result<WesalUser>
+    suspend fun completeUserProfile(displayName: String, bio: String, photoUri: Uri?, phone: String = ""): Result<WesalUser>
     suspend fun syncFcmToken()
     suspend fun signOut(): Result<Unit>
 }

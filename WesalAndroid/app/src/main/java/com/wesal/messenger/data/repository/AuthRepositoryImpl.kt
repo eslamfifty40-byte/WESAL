@@ -176,7 +176,8 @@ class AuthRepositoryImpl @Inject constructor(
     override suspend fun completeUserProfile(
         displayName: String,
         bio: String,
-        photoUri: Uri?
+        photoUri: Uri?,
+        phone: String
     ): Result<WesalUser> {
         return try {
             val uid = currentUserId ?: error("المستخدم غير مسجل الدخول")
@@ -204,6 +205,9 @@ class AuthRepositoryImpl @Inject constructor(
                 "lastSeen" to FieldValue.serverTimestamp()
             )
             if (photoUrl.isNotBlank()) updates["photoUrl"] = photoUrl
+        var pd = phone.filter { it.isDigit() }
+        if (pd.startsWith("00")) pd = pd.substring(2) else if (pd.startsWith("0")) pd = "20" + pd.substring(1)
+        if (pd.isNotBlank()) { updates["phoneNumber"] = "+" + pd; updates["phoneDigits"] = pd }
 
             val docRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
             docRef.set(updates, SetOptions.merge()).await()

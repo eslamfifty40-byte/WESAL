@@ -34,6 +34,7 @@ fun ProfileSetupScreen(
     var displayName by remember { mutableStateOf("") }
     var bio by remember { mutableStateOf("أستخدم تطبيق وصال") }
     var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var phone by remember { mutableStateOf("") }
 
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -112,6 +113,15 @@ fun ProfileSetupScreen(
                 }
 
                 OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it.filter { c -> c.isDigit() || c == '+' } },
+                    label = { Text("\u0631\u0642\u0645 \u0627\u0644\u0647\u0627\u062a\u0641 (010...)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                )
+
+                OutlinedTextField(
                     value = displayName,
                     onValueChange = { displayName = it },
                     label = { Text("الاسم الظاهر") },
@@ -136,7 +146,7 @@ fun ProfileSetupScreen(
             }
 
             Button(
-                onClick = { viewModel.completeProfile(displayName, bio, selectedPhotoUri) },
+                onClick = { viewModel.completeProfile(displayName, bio, selectedPhotoUri, phone) },
                 enabled = !state.isLoading && displayName.isNotBlank(),
                 modifier = Modifier
                     .fillMaxWidth()

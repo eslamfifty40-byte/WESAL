@@ -178,14 +178,14 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    fun completeProfile(displayName: String, bio: String, photoUri: Uri?) {
+    fun completeProfile(displayName: String, bio: String, photoUri: Uri?, phone: String = "") {
         if (displayName.isBlank()) {
             _uiState.update { it.copy(errorMessage = "الاسم مطلوب لإتمام الحساب") }
             return
         }
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            authRepository.completeUserProfile(displayName, bio, photoUri)
+            authRepository.completeUserProfile(displayName, bio, photoUri, phone)
                 .onSuccess {
                     _uiState.update { it.copy(isLoading = false, navigateToHome = true) }
                 }
