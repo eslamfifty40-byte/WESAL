@@ -37,6 +37,8 @@ fun HomeScreen(
     var selectedTab by remember { mutableStateOf(HomeTab.CHATS) }
     var menuOpen by remember { mutableStateOf(false) }
     val ctxHome = androidx.compose.ui.platform.LocalContext.current
+    // SWITCHMENU
+    com.wesal.messenger.settings.AccountSwitcherDialog(onSignOut = { com.google.firebase.auth.FirebaseAuth.getInstance().signOut(); onSignedOut() })
 
     Scaffold(
         containerColor = WesalDeepBlack,
@@ -66,7 +68,8 @@ fun HomeScreen(
                                     menuOpen = false
                                     ctxHome.startActivity(android.content.Intent(ctxHome, com.wesal.messenger.contacts.ContactsInviteActivity::class.java))
                                 })
-                                DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS })
+                                DropdownMenuItem(text = { Text("\u062a\u0628\u062f\u064a\u0644 \u0627\u0644\u062d\u0633\u0627\u0628") }, onClick = { menuOpen = false; com.wesal.messenger.settings.AccountSwitcherState.show = true })
+                        DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS })
                             }
                         }
                     },

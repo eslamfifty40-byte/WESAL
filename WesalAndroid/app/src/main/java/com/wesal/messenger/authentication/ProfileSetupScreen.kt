@@ -35,6 +35,15 @@ fun ProfileSetupScreen(
     var bio by remember { mutableStateOf("أستخدم تطبيق وصال") }
     var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var phone by remember { mutableStateOf("") }
+    // SKIPSETUP
+    LaunchedEffect(Unit) {
+        val u = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        if (u != null) {
+            com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("users").document(u).get().addOnSuccessListener { d ->
+                if (!d.getString("displayName").isNullOrBlank()) onNavigateToHome()
+            }
+        }
+    }
 
     val photoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
