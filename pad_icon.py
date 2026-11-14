@@ -1,5 +1,5 @@
 from PIL import Image
-src = Image.open("icon1.png").convert("RGBA")
+src = Image.open("iconWESAL.png").convert("RGBA")
 bg = src.getpixel((src.width // 2, 6))
 bg = bg[:3] if bg[3] > 200 else (20, 0, 30)
 res = "android/app/src/main/res"

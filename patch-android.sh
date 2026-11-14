@@ -4,6 +4,6 @@ for P in CAMERA RECORD_AUDIO MODIFY_AUDIO_SETTINGS POST_NOTIFICATIONS; do
 done
 grep -q "hardware.camera\"" $M || sed -i 's#</manifest>#    <uses-feature android:name="android.hardware.camera" android:required="false" />\n</manifest>#' $M
 S=android/app/src/main/res/values
-sed -i 's#<string name="app_name">[^<]*#<string name="app_name">سبق#; s#<string name="title_activity_main">[^<]*#<string name="title_activity_main">سبق#' $S/strings.xml
+sed -i 's#<string name="app_name">[^<]*#<string name="app_name">وصال#; s#<string name="title_activity_main">[^<]*#<string name="title_activity_main">وصال#' $S/strings.xml
 sed -i 's#<item name="windowActionBar">false</item>#&<item name="android:windowLightStatusBar">false</item>#' $S/styles.xml
 python3 patch_cfg.py
