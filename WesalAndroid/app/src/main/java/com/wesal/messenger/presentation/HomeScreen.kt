@@ -54,7 +54,7 @@ fun HomeScreen(
                         )
                     },
                     actions = {
-                        IconButton(onClick = { selectedTab = HomeTab.STORIES }) {
+                        IconButton(onClick = { try { ctxHome.startActivity(android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { selectedTab = HomeTab.STORIES } }) {
                             Icon(Icons.Default.CameraAlt, contentDescription = "كاميرا", tint = WesalTextPrimary)
                         }
                         Box {
