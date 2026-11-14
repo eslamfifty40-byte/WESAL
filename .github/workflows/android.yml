@@ -35,6 +35,10 @@ jobs:
       - run: python3 fix_icon.py
       - run: python3 fix_perm.py
       - run: python3 pad_icon.py
+      - run: |
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            [ -f android/app/src/main/res/mipmap-$d/ic_launcher_background.png ] || cp android/app/src/main/res/mipmap-$d/ic_launcher.png android/app/src/main/res/mipmap-$d/ic_launcher_background.png
+          done
       - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
         with:
