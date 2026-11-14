@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Wesal" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@color/wesal_black</item>
+        <item name="android:navigationBarColor">@color/wesal_black</item>
+        <item name="android:windowBackground">@color/wesal_black</item>
+    </style>
+
+    <style name="Theme.Wesal.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/wesal_black</item>
+        <item name="windowSplashScreenAnimationDuration">0</item>
+        <item name="postSplashScreenTheme">@style/Theme.Wesal</item>
+    </style>
+</resources>

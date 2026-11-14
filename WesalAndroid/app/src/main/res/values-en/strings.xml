@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">وصال</string>
+    <string name="tab_chats">Chats</string>
+    <string name="tab_stories">Status</string>
+    <string name="tab_calls">Calls</string>
+    <string name="tab_groups">Groups</string>
+    <string name="tab_settings">Settings</string>
+    <string name="channel_messages_name">Instant Messages</string>
+    <string name="channel_calls_name">Incoming Calls</string>
+    <string name="channel_stories_name">Status Updates</string>
+    <string name="channel_system_name">System Alerts</string>
+    <string name="phone_login_title">Phone Number Sign In</string>
+    <string name="phone_login_subtitle">Enter your phone number to receive a verification SMS code</string>
+    <string name="send_otp">Send Verification Code</string>
+    <string name="verify_otp">Verify Code</string>
+    <string name="resend_otp">Resend Code</string>
+    <string name="incoming_voice_call">Incoming Voice Call</string>
+    <string name="incoming_video_call">Incoming Video Call</string>
+    <string name="accept_call">Accept</string>
+    <string name="decline_call">Decline</string>
+    <string name="end_call">End</string>
+    <string name="typing_now">typing...</string>
+    <string name="online_now">Online</string>
+    <string name="e2ee_verified_banner">Messages and calls are end-to-end encrypted (ECDH P-256 + AES-GCM)</string>
+</resources>

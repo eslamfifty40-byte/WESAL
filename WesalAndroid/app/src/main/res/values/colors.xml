@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#000000</color>
+    <color name="wesal_black">#06090B</color>
+    <color name="wesal_surface">#11181C</color>
+    <color name="wesal_emerald">#00C853</color>
+    <color name="wesal_turquoise">#00E5FF</color>
+    <color name="wesal_white">#F8FAFC</color>
+</resources>
