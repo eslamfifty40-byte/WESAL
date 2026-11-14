@@ -311,26 +311,7 @@ fun ChatDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(vertical = 12.dp)
             ) {
-                item {
-                    Surface(
-                        color = WesalSurfaceElevated,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(Icons.Default.Lock, contentDescription = null, tint = WesalTurquoise, modifier = Modifier.size(16.dp))
-                            Text(
-                                text = "الرسائل والملفات مشفرة من طرف إلى طرف (ECDH P-256 + AES-256-GCM)",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = WesalTurquoiseSoft
-                            )
-                        }
-                    }
-                }
+                
 
                 items(messages, key = { it.messageId }) { msg ->
                     val isMine = msg.senderId == viewModel.myUid
