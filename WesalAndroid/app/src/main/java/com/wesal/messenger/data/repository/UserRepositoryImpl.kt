@@ -157,9 +157,8 @@ class UserRepositoryImpl @Inject constructor(
             )
 
             if (photoUri != null) {
-                val ref = storage.reference.child("${Constants.STORAGE_AVATARS}/$uid/${UUID.randomUUID()}.jpg")
-                ref.putFile(photoUri).await()
-                updates["photoUrl"] = ref.downloadUrl.await().toString()
+                val enc = runCatching { uriToBase64Jpeg(photoUri, 256, 80) }.getOrDefault("")
+                if (enc.isNotBlank()) updates["photoUrl"] = enc
             }
 
             firestore.collection(Constants.COLLECTION_USERS)

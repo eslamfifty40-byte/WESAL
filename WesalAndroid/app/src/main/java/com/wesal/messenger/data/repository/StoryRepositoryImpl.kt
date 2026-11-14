@@ -92,9 +92,7 @@ class StoryRepositoryImpl @Inject constructor(
         val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
         val ext = if (isVideo) "mp4" else "jpg"
         val storyId = UUID.randomUUID().toString()
-        val ref = storage.reference.child("${Constants.STORAGE_STORIES}/$uid/$storyId.$ext")
-        ref.putFile(uri).await()
-        val mediaUrl = ref.downloadUrl.await().toString()
+        val mediaUrl = runCatching { uriToBase64Jpeg(uri, 720, 70) }.getOrDefault("")
 
         val now = System.currentTimeMillis()
         val data = mapOf(
