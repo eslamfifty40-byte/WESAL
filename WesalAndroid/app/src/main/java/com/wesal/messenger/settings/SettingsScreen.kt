@@ -186,7 +186,7 @@ fun SettingsScreen(
                             color = WesalTextPrimary
                         )
                         Text(
-                            text = "@${user?.publicId.orEmpty()} • ${user?.phoneNumber.orEmpty()}",
+                            text = "@${user?.publicId.orEmpty()}",
                             style = MaterialTheme.typography.labelMedium,
                             color = WesalTurquoise
                         )
@@ -271,8 +271,12 @@ fun SettingsScreen(
         var publicId by remember { mutableStateOf(user!!.publicId) }
         var pickedUri by remember { mutableStateOf<Uri?>(null) }
 
+        val ctxCrop = androidx.compose.ui.platform.LocalContext.current
+        val cropper = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+            r.data?.data?.let { pickedUri = it }
+        }
         val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            if (uri != null) pickedUri = uri
+            if (uri != null) cropper.launch(android.content.Intent(ctxCrop, com.wesal.messenger.crop.CropActivity::class.java).apply { data = uri })
         }
 
         AlertDialog(
