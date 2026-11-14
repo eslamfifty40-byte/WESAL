@@ -1,0 +1,113 @@
+{
+  "project_info": {
+    "project_number": "255196025471",
+    "project_id": "idyllic-axon-mw1rw",
+    "storage_bucket": "idyllic-axon-mw1rw.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:255196025471:android:19be215b44edc4460ae54a",
+        "android_client_info": {
+          "package_name": "com.livo.admin"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "255196025471-v612s2f17nmc4hrju5kb7hdtg4go0lb2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.livo.admin",
+            "certificate_hash": "6d79dbe83963ed4b6b508c4a69353c602f9edc95"
+          }
+        },
+        {
+          "client_id": "255196025471-mrii5rje9jnf5tglme9avhr6hh6rgjm3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCXAeUbztupb_29CTEXzwfqpq_2T0MlCrY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "255196025471-mrii5rje9jnf5tglme9avhr6hh6rgjm3.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:255196025471:android:86529119012253910ae54a",
+        "android_client_info": {
+          "package_name": "com.livo.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "255196025471-6vb2oj6snrm3n1rq3hvv2hmbei1l888d.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.livo.app",
+            "certificate_hash": "6d79dbe83963ed4b6b508c4a69353c602f9edc95"
+          }
+        },
+        {
+          "client_id": "255196025471-mrii5rje9jnf5tglme9avhr6hh6rgjm3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCXAeUbztupb_29CTEXzwfqpq_2T0MlCrY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "255196025471-mrii5rje9jnf5tglme9avhr6hh6rgjm3.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:255196025471:android:ad07400b8c1ad96e0ae54a",
+        "android_client_info": {
+          "package_name": "com.wesal.messenger"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "255196025471-mrii5rje9jnf5tglme9avhr6hh6rgjm3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCXAeUbztupb_29CTEXzwfqpq_2T0MlCrY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "255196025471-mrii5rje9jnf5tglme9avhr6hh6rgjm3.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
