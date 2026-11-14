@@ -26,6 +26,15 @@ fun NewChatContactsScreen(
     viewModel: ContactsViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    var allUsers by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<List<com.wesal.messenger.domain.model.WesalUser>>(emptyList()) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        try {
+            val me = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance(com.google.firebase.FirebaseApp.getInstance(), "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424")
+            val snap = kotlinx.coroutines.tasks.await(db.collection("users").limit(200).get())
+            allUsers = snap.documents.mapNotNull { it.toObject(com.wesal.messenger.domain.model.WesalUser::class.java)?.copy(uid = it.id) }.filter { it.uid != me }
+        } catch (e: Exception) { }
+    }
 
     Scaffold(
         containerColor = WesalDeepBlack,
@@ -77,7 +86,7 @@ fun NewChatContactsScreen(
             }
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(state.results, key = { it.uid }) { user ->
+                items(if (state.query.isBlank()) allUsers else state.results, key = { it.uid }) { user ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
