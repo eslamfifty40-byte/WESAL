@@ -44,6 +44,20 @@ fun WesalNavHost(
         else -> Routes.PHONE_LOGIN
     }
 
+    // AuthWatcher: عند الخروج ارجع لشاشة الدخول فوراً
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val l = com.google.firebase.auth.FirebaseAuth.AuthStateListener { a ->
+            if (a.currentUser == null) {
+                val cur = navController.currentDestination?.route
+                if (cur != null && cur != Routes.PHONE_LOGIN && cur != Routes.OTP && cur != Routes.PROFILE_SETUP) {
+                    navController.navigate(Routes.PHONE_LOGIN) { popUpTo(0) { inclusive = true } }
+                }
+            }
+        }
+        com.google.firebase.auth.FirebaseAuth.getInstance().addAuthStateListener(l)
+        onDispose { com.google.firebase.auth.FirebaseAuth.getInstance().removeAuthStateListener(l) }
+    }
+
     LaunchedEffect(initialChatId, startDestination) {
         if (!initialChatId.isNullOrBlank() && startDestination is StartDestination.Home) {
             navController.navigate("chat/$initialChatId")
