@@ -72,7 +72,7 @@ fun ProfileSetupScreen(
                 val cropCtx = androidx.compose.ui.platform.LocalContext.current
             val cropLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
                 val d = r.data
-                if (d != null) selectedPhotoUri = com.yalantis.ucrop.UCrop.getOutput(d)
+                if (d != null) selectedPhotoUri = d.data
             }
             androidx.compose.runtime.LaunchedEffect(selectedPhotoUri) {
                 val u = selectedPhotoUri
@@ -80,7 +80,7 @@ fun ProfileSetupScreen(
                     val dest = android.net.Uri.fromFile(java.io.File(cropCtx.cacheDir, "crop_" + System.currentTimeMillis() + ".jpg"))
                     val opts = com.yalantis.ucrop.UCrop.Options()
                     opts.setCircleDimmedLayer(true)
-                    cropLauncher.launch(com.yalantis.ucrop.UCrop.of(u, dest).withAspectRatio(1f, 1f).withMaxResultSize(512, 512).withOptions(opts).getIntent(cropCtx))
+                    cropLauncher.launch(android.content.Intent(cropCtx, com.wesal.messenger.crop.CropActivity::class.java).apply { data = u })
                 }
             }
             Box(
