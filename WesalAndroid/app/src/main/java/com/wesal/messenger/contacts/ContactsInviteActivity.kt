@@ -23,7 +23,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private data class DeviceContact(val name: String, val number: String)
+private data class InviteContact(val name: String, val number: String)
 
 class ContactsInviteActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,8 +36,8 @@ class ContactsInviteActivity : ComponentActivity() {
     }
 }
 
-private fun loadContacts(ctx: android.content.Context): List<DeviceContact> {
-    val out = LinkedHashMap<String, DeviceContact>()
+private fun loadContacts(ctx: android.content.Context): List<InviteContact> {
+    val out = LinkedHashMap<String, InviteContact>()
     val c = ctx.contentResolver.query(
         ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
         arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
@@ -47,7 +47,7 @@ private fun loadContacts(ctx: android.content.Context): List<DeviceContact> {
         while (it.moveToNext()) {
             val name = it.getString(0) ?: continue
             val num = (it.getString(1) ?: continue).replace(" ", "")
-            if (!out.containsKey(num)) out[num] = DeviceContact(name, num)
+            if (!out.containsKey(num)) out[num] = InviteContact(name, num)
         }
     }
     return out.values.toList()
@@ -59,7 +59,7 @@ private fun ContactsInviteScreen(onClose: () -> Unit) {
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(Unit) { if (!granted) launcher.launch(Manifest.permission.READ_CONTACTS) }
-    var contacts by remember { mutableStateOf(emptyList<DeviceContact>()) }
+    var contacts by remember { mutableStateOf(emptyList<InviteContact>()) }
     var registered by remember { mutableStateOf(setOf<String>()) }
     LaunchedEffect(Unit) {
         try {
