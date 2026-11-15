@@ -10,8 +10,8 @@
     <string name="channel_calls_name">المكالمات الواردة</string>
     <string name="channel_stories_name">الحالات والتحديثات</string>
     <string name="channel_system_name">تنبيهات النظام</string>
-    <string name="phone_login_title">تسجيل الدخول برقم الهاتف</string>
-    <string name="phone_login_subtitle">أدخل رقم هاتفك لإرسال رمز التحقق عبر رسالة نصية SMS</string>
+    <string name="phone_login_title">تسجيل الدخول إلى وصال</string>
+    <string name="phone_login_subtitle">ادخل مجاناً عبر حساب Google أو البريد الإلكتروني — بدون رسائل SMS</string>
     <string name="send_otp">إرسال رمز التحقق</string>
     <string name="verify_otp">تأكيد الرمز</string>
     <string name="resend_otp">إعادة إرسال الرمز</string>

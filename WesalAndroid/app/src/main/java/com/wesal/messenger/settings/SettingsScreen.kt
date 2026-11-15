@@ -1,16 +1,15 @@
 package com.wesal.messenger.settings
 
+import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
@@ -19,14 +18,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.credentials.ClearCredentialStateRequest
+import androidx.credentials.CredentialManager
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.NoCredentialException
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.wesal.messenger.core.theme.*
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocaleManager
@@ -35,6 +41,7 @@ import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.DeviceSession
 import com.wesal.messenger.domain.model.PrivacySettings
 import com.wesal.messenger.domain.model.PrivacyVisibility
+import com.wesal.messenger.domain.model.SavedWesalAccount
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.UserRepository
@@ -45,6 +52,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
+
+private const val DEVELOPER_WHATSAPP_URL = "https://wa.me/message/EPAFTW53B7WLA1"
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -63,13 +72,31 @@ class SettingsViewModel @Inject constructor(
     val sessions: StateFlow<List<DeviceSession>> = userRepository.observeSessions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val savedAccounts: StateFlow<List<SavedWesalAccount>> = authRepository.observeSavedAccounts()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val isSwitchingAccount = MutableStateFlow(false)
     val statusMessage = MutableStateFlow<String?>(null)
 
-    fun updateProfile(name: String, bio: String, publicId: String, photoUri: Uri?) {
+    fun removeSavedAccount(uid: String) {
         viewModelScope.launch {
-            userRepository.updateProfile(name, bio, publicId, photoUri)
-                .onSuccess { statusMessage.value = "تم تحديث الملف الشخصي" }
-                .onFailure { statusMessage.value = it.localizedMessage }
+            authRepository.removeSavedAccount(uid)
+        }
+    }
+
+    fun switchToGoogleIdToken(idToken: String, onComplete: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            isSwitchingAccount.value = true
+            authRepository.signInWithGoogleIdToken(idToken)
+                .onSuccess { isNewProfile ->
+                    isSwitchingAccount.value = false
+                    statusMessage.value = "تم تبديل الحساب بنجاح"
+                    onComplete(isNewProfile)
+                }
+                .onFailure { err ->
+                    isSwitchingAccount.value = false
+                    statusMessage.value = err.localizedMessage ?: "تعذر تبديل حساب Google"
+                }
         }
     }
 
@@ -114,9 +141,14 @@ class SettingsViewModel @Inject constructor(
         statusMessage.value = "تم مسح ذاكرة التخزين المؤقتة"
     }
 
+    fun showMessage(msg: String) {
+        statusMessage.value = msg
+    }
+
     fun signOut(onSignedOut: () -> Unit) {
         viewModelScope.launch {
-            authRepository.signOut().onSuccess { onSignedOut() }
+            authRepository.signOut()
+            onSignedOut()
         }
     }
 
@@ -128,22 +160,67 @@ class SettingsViewModel @Inject constructor(
 
 @Composable
 fun SettingsScreen(
+    onOpenProfile: () -> Unit,
     onSignedOut: () -> Unit,
+    onOpenAddAccount: (prefillEmail: String?) -> Unit = {},
+    onAccountSwitched: (isNewProfile: Boolean) -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    AccountSwitcherDialog(onSignOut = { viewModel.signOut(onSignedOut) })
+    val context = LocalContext.current
+    val activity = context as? Activity
+    val scope = rememberCoroutineScope()
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
+    val isSwitchingAccount by viewModel.isSwitchingAccount.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
-    var showProfileDialog by remember { mutableStateOf(false) }
     var showPrivacyDialog by remember { mutableStateOf(false) }
     var showNotifDialog by remember { mutableStateOf(false) }
     var showSessionsDialog by remember { mutableStateOf(false) }
     var showBlockedDialog by remember { mutableStateOf(false) }
-    var showHelpDialog by remember { mutableStateOf(false) }
+    var showAccountsDialog by remember { mutableStateOf(false) }
     var cacheText by remember { mutableStateOf(viewModel.getCacheSizeMb()) }
+
+    fun launchGoogleAccountChooser() {
+        if (activity == null || isSwitchingAccount) return
+        scope.launch {
+            try {
+                val webClientResId = activity.resources.getIdentifier(
+                    "default_web_client_id",
+                    "string",
+                    activity.packageName
+                )
+                val serverClientId = if (webClientResId != 0) activity.getString(webClientResId) else ""
+                if (serverClientId.isBlank()) {
+                    viewModel.showMessage("معرّف Google OAuth غير متوفر في google-services.json")
+                    return@launch
+                }
+                val credentialManager = CredentialManager.create(activity)
+                runCatching { credentialManager.clearCredentialState(ClearCredentialStateRequest()) }
+                val googleIdOption = GetGoogleIdOption.Builder()
+                    .setFilterByAuthorizedAccounts(false)
+                    .setAutoSelectEnabled(false)
+                    .setServerClientId(serverClientId)
+                    .build()
+                val request = GetCredentialRequest.Builder()
+                    .addCredentialOption(googleIdOption)
+                    .build()
+                val result = credentialManager.getCredential(activity, request)
+                val googleCred = GoogleIdTokenCredential.createFrom(result.credential.data)
+                showAccountsDialog = false
+                viewModel.switchToGoogleIdToken(googleCred.idToken, onAccountSwitched)
+            } catch (_: GetCredentialCancellationException) {
+                viewModel.showMessage("تم إلغاء اختيار حساب Google")
+            } catch (_: NoCredentialException) {
+                showAccountsDialog = false
+                onOpenAddAccount(null)
+            } catch (e: Exception) {
+                viewModel.showMessage("تعذر فتح قائمة حسابات Google: ${e.localizedMessage ?: "حاول مرة أخرى"}")
+            }
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -161,14 +238,14 @@ fun SettingsScreen(
             }
         }
 
-        // User Profile Card
+        // User Profile Card -> opens full ProfileScreen with Crop & Delete Photo
         item {
             Surface(
                 color = WesalSurfaceDark,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { showProfileDialog = true }
+                    .clickable(onClick = onOpenProfile)
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
@@ -186,8 +263,14 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.titleLarge,
                             color = WesalTextPrimary
                         )
+                        val contactLine = user?.phoneNumber?.takeIf { it.isNotBlank() }
+                            ?: user?.email?.takeIf { it.isNotBlank() }
+                        val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
                         Text(
-                            text = "@${user?.publicId.orEmpty()}",
+                            text = listOfNotNull(
+                                idLabel.takeIf { it.isNotBlank() },
+                                contactLine
+                            ).joinToString(" • "),
                             style = MaterialTheme.typography.labelMedium,
                             color = WesalTurquoise
                         )
@@ -205,8 +288,20 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsRow(Icons.Default.AccountCircle, "الحساب والملف الشخصي", "تعديل الاسم، المعرف الفريد، والصورة") {
-                showProfileDialog = true
+            SettingsRow(
+                icon = Icons.Default.ManageAccounts,
+                title = "تبديل الحساب وإدارة الحسابات",
+                subtitle = if (savedAccounts.size > 1) {
+                    "${savedAccounts.size} حسابات مسجلة على هذا الجهاز"
+                } else {
+                    "أضف حساب Google أو بريد إلكتروني آخر للتبديل الفوري"
+                },
+                tint = WesalEmerald
+            ) {
+                showAccountsDialog = true
+            }
+            SettingsRow(Icons.Default.AccountCircle, "الحساب والملف الشخصي", "تعديل الاسم، المعرف الفريد، وصورة الحساب") {
+                onOpenProfile()
             }
             SettingsRow(Icons.Default.Lock, "الخصوصية والأمان", "آخر ظهور، الحالة، صورة الحساب، وإيصالات القراءة") {
                 showPrivacyDialog = true
@@ -252,22 +347,21 @@ fun SettingsScreen(
             SettingsRow(Icons.Default.Block, "قائمة الحظر", "${user?.blockedUsers?.size ?: 0} مستخدم محظور") {
                 showBlockedDialog = true
             }
-            val ctxInv = androidx.compose.ui.platform.LocalContext.current
-        SettingsRow(Icons.Default.Person, "دعوة الأصدقاء", "جهات الاتصال في موبايلك") {
-            ctxInv.startActivity(android.content.Intent(ctxInv, com.wesal.messenger.contacts.ContactsInviteActivity::class.java))
-        }
-        val devUri = androidx.compose.ui.platform.LocalUriHandler.current
-        SettingsRow(Icons.Default.HelpOutline, "تواصل مع المطور", "واتساب") {
-            devUri.openUri("https://wa.me/message/EPAFTW53B7WLA1")
-        }
-            /* SWITCHITEM */
             SettingsRow(
-                icon = androidx.compose.material.icons.Icons.Default.SwitchAccount,
-                title = "تبديل الحساب",
-                subtitle = "التنقل بين حساباتك",
-                tint = WesalError,
-                onClick = { AccountSwitcherState.show = true }
-            )
+                icon = Icons.Default.SupportAgent,
+                title = "التواصل مع مطور التطبيق",
+                subtitle = "تواصل مباشر عبر واتساب",
+                tint = WesalEmerald
+            ) {
+                runCatching {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(DEVELOPER_WHATSAPP_URL)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                }.onFailure {
+                    viewModel.showMessage("تعذر فتح واتساب أو المتصفح على هذا الجهاز")
+                }
+            }
             SettingsRow(
                 icon = Icons.AutoMirrored.Filled.ExitToApp,
                 title = "تسجيل الخروج",
@@ -278,44 +372,150 @@ fun SettingsScreen(
         }
     }
 
-    if (showProfileDialog && user != null) {
-        var name by remember { mutableStateOf(user!!.displayName) }
-        var bio by remember { mutableStateOf(user!!.bio) }
-        var publicId by remember { mutableStateOf(user!!.publicId) }
-        var pickedUri by remember { mutableStateOf<Uri?>(null) }
-
-        val ctxCrop = androidx.compose.ui.platform.LocalContext.current
-        val cropper = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
-            r.data?.data?.let { pickedUri = it }
-        }
-        val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            if (uri != null) cropper.launch(android.content.Intent(ctxCrop, com.wesal.messenger.crop.CropActivity::class.java).apply { data = uri })
-        }
-
+    if (showAccountsDialog) {
         AlertDialog(
-            onDismissRequest = { showProfileDialog = false },
+            onDismissRequest = { if (!isSwitchingAccount) showAccountsDialog = false },
             containerColor = WesalSurfaceDark,
-            title = { Text("تعديل الملف الشخصي", color = WesalTextPrimary) },
+            title = {
+                Text(
+                    text = "إدارة وتبديل الحسابات",
+                    color = WesalTextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    TextButton(onClick = {
-                        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    }) {
-                        Text("تغيير الصورة الشخصية", color = WesalTurquoise)
+                    if (isSwitchingAccount) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = WesalEmerald)
                     }
-                    OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("الاسم") }, singleLine = true)
-                    OutlinedTextField(value = publicId, onValueChange = { publicId = it }, label = { Text("المعرف العام (@id)") }, singleLine = true)
-                    OutlinedTextField(value = bio, onValueChange = { bio = it }, label = { Text("الوصف") }, maxLines = 2)
+                    if (savedAccounts.isEmpty()) {
+                        Text(
+                            text = "أضف حساب Google أو بريد إلكتروني آخر للتنقل السريع بين الحسابات.",
+                            color = WesalTextSecondary,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 260.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(savedAccounts, key = { it.uid }) { acc ->
+                                val isActive = acc.uid == user?.uid
+                                Surface(
+                                    color = if (isActive) WesalEmerald.copy(alpha = 0.12f) else WesalDeepBlack,
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isActive) WesalEmerald.copy(alpha = 0.5f) else WesalSurfaceBorder
+                                    ),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !isActive && !isSwitchingAccount) {
+                                            if (acc.provider == "google") {
+                                                launchGoogleAccountChooser()
+                                            } else {
+                                                showAccountsDialog = false
+                                                onOpenAddAccount(acc.email.takeIf { it.isNotBlank() })
+                                            }
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        WesalAvatar(
+                                            imageUrl = acc.photoUrl,
+                                            name = acc.displayName.ifBlank { acc.email.ifBlank { "وصال" } },
+                                            size = 40.dp
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = acc.displayName.ifBlank { acc.email.ifBlank { "حساب وصال" } },
+                                                    color = WesalTextPrimary,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f, fill = false)
+                                                )
+                                                if (isActive) {
+                                                    Surface(
+                                                        color = WesalEmerald.copy(alpha = 0.2f),
+                                                        shape = RoundedCornerShape(6.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "نشط ✓",
+                                                            color = WesalEmerald,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            val meta = listOfNotNull(
+                                                acc.publicId.takeIf { it.isNotBlank() }?.let { "@$it" },
+                                                acc.email.takeIf { it.isNotBlank() } ?: acc.phoneNumber.takeIf { it.isNotBlank() }
+                                            ).joinToString(" • ")
+                                            if (meta.isNotBlank()) {
+                                                Text(
+                                                    text = meta,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = WesalTextSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                        if (!isActive) {
+                                            IconButton(
+                                                onClick = { viewModel.removeSavedAccount(acc.uid) },
+                                                modifier = Modifier.size(32.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Close,
+                                                    contentDescription = "إزالة الحساب",
+                                                    tint = WesalTextMuted,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = {
+                            showAccountsDialog = false
+                            onOpenAddAccount(null)
+                        },
+                        enabled = !isSwitchingAccount,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = WesalEmerald,
+                            contentColor = WesalDeepBlack
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("إضافة حساب جديد", fontWeight = FontWeight.Bold)
+                    }
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    viewModel.updateProfile(name, bio, publicId, pickedUri)
-                    showProfileDialog = false
-                }) { Text("حفظ") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showProfileDialog = false }) { Text("إلغاء") }
+                TextButton(
+                    enabled = !isSwitchingAccount,
+                    onClick = { showAccountsDialog = false }
+                ) {
+                    Text("إغلاق", color = WesalTurquoise)
+                }
             }
         )
     }
@@ -446,26 +646,6 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showBlockedDialog = false }) { Text("إغلاق") }
-            }
-        )
-    }
-
-    if (showHelpDialog) {
-        AlertDialog(
-            onDismissRequest = { showHelpDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("حول تطبيق وصال (WESAL)", color = WesalTextPrimary) },
-            text = {
-                Text(
-                    "تطبيق وصال للمراسلة الفورية والمكالمات الصوتية والمرئية.\n" +
-                        "• توثيق الحسابات برقم الهاتف عبر Firebase Auth.\n" +
-                        "• تشفير طرفي حقيقي عبر ECDH P-256 + HKDF-SHA256 + AES-256-GCM.\n" +
-                        "• مكالمات WebRTC فورية.",
-                    color = WesalTextSecondary
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { showHelpDialog = false }) { Text("حسناً") }
             }
         )
     }

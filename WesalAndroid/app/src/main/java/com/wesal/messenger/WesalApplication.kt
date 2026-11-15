@@ -8,6 +8,11 @@ import android.media.RingtoneManager
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.decode.VideoFrameDecoder
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import com.google.firebase.FirebaseApp
 import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
@@ -22,7 +27,7 @@ import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
 @HiltAndroidApp
-class WesalApplication : Application(), DefaultLifecycleObserver {
+class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFactory {
 
     @Inject lateinit var firebaseAuth: FirebaseAuth
     @Inject lateinit var firestore: FirebaseFirestore
@@ -34,6 +39,27 @@ class WesalApplication : Application(), DefaultLifecycleObserver {
         configureAppCheck()
         createNotificationChannels()
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
+    }
+
+    override fun newImageLoader(): ImageLoader {
+        return ImageLoader.Builder(this)
+            .components {
+                add(VideoFrameDecoder.Factory())
+            }
+            .memoryCache {
+                MemoryCache.Builder(this)
+                    .maxSizePercent(0.25)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(cacheDir.resolve("image_cache"))
+                    .maxSizeBytes(100L * 1024L * 1024L)
+                    .build()
+            }
+            .crossfade(true)
+            .respectCacheHeaders(false)
+            .build()
     }
 
     private fun configureFirestoreOfflinePersistence() {

@@ -18,16 +18,30 @@ sealed interface PhoneAuthEvent {
 interface AuthRepository {
     val currentUserId: String?
     val isLoggedIn: Boolean
+    val currentUserDisplayName: String?
+    val currentUserEmail: String?
     fun observeAuthState(): Flow<String?>
+    suspend fun signInWithGoogleIdToken(idToken: String): Result<Boolean>
+    suspend fun signInWithEmail(email: String, password: String): Result<Boolean>
+    suspend fun signUpWithEmail(email: String, password: String): Result<Boolean>
+    suspend fun sendPasswordReset(email: String): Result<Unit>
     fun sendOtp(
         phoneNumber: String,
         activity: Activity,
         resendingToken: PhoneAuthProvider.ForceResendingToken? = null
     ): Flow<PhoneAuthEvent>
     suspend fun verifyOtpCode(verificationId: String, smsCode: String): Result<Boolean>
-    suspend fun completeUserProfile(displayName: String, bio: String, photoUri: Uri?, phone: String = ""): Result<WesalUser>
+    suspend fun completeUserProfile(
+        displayName: String,
+        bio: String,
+        photoUri: Uri?,
+        wesalId: String? = null
+    ): Result<WesalUser>
     suspend fun syncFcmToken()
     suspend fun signOut(): Result<Unit>
+    fun observeSavedAccounts(): Flow<List<SavedWesalAccount>>
+    suspend fun removeSavedAccount(uid: String)
+    suspend fun clearActiveSessionForSwitch()
 }
 
 interface UserRepository {
@@ -35,7 +49,12 @@ interface UserRepository {
     fun observeUser(uid: String): Flow<WesalUser?>
     suspend fun getUserOnce(uid: String): WesalUser?
     suspend fun searchUsers(query: String): List<WesalUser>
+    suspend fun listDiscoverableUsers(limit: Int = 30): List<WesalUser>
+    suspend fun findUsersByPhoneHashes(phoneHashes: List<String>): Map<String, WesalUser>
     suspend fun updateProfile(displayName: String, bio: String, publicId: String, photoUri: Uri?): Result<Unit>
+    suspend fun updateOptionalPhone(rawPhone: String): Result<Unit>
+    suspend fun removeOptionalPhone(): Result<Unit>
+    suspend fun removeProfilePhoto(): Result<Unit>
     suspend fun updatePrivacySettings(settings: PrivacySettings): Result<Unit>
     suspend fun blockUser(targetUid: String): Result<Unit>
     suspend fun unblockUser(targetUid: String): Result<Unit>
@@ -99,10 +118,18 @@ interface GroupRepository {
     suspend fun leaveGroup(groupId: String): Result<Unit>
 }
 
+sealed interface StoryPublishEvent {
+    data class Progress(val fraction: Float) : StoryPublishEvent
+    data object Success : StoryPublishEvent
+    data class Failure(val errorMessage: String) : StoryPublishEvent
+}
+
 interface StoryRepository {
     fun observeActiveStories(): Flow<List<StoryItem>>
+    fun observeStoryViewers(storyId: String): Flow<List<StoryViewer>>
     suspend fun publishTextStory(text: String, backgroundColorHex: Long, visibility: PrivacyVisibility): Result<Unit>
-    suspend fun publishMediaStory(uri: Uri, isVideo: Boolean, caption: String, visibility: PrivacyVisibility): Result<Unit>
+    fun publishMediaStory(uri: Uri, isVideo: Boolean, caption: String, visibility: PrivacyVisibility): Flow<StoryPublishEvent>
+    fun publishAudioStory(audioUri: Uri, durationMs: Long, caption: String, visibility: PrivacyVisibility): Flow<StoryPublishEvent>
     suspend fun markStoryViewed(storyId: String)
     suspend fun deleteStory(storyId: String): Result<Unit>
 }

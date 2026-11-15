@@ -9,9 +9,12 @@ import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.GroupInfo
 import com.wesal.messenger.domain.model.MessageStatus
 import com.wesal.messenger.domain.repository.GroupRepository
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 import javax.inject.Inject
@@ -24,33 +27,40 @@ class GroupRepositoryImpl @Inject constructor(
     private val storage: FirebaseStorage
 ) : GroupRepository {
 
+    private fun observeAuthUid(): Flow<String?> = callbackFlow {
+        val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
+        auth.addAuthStateListener(listener)
+        awaitClose { auth.removeAuthStateListener(listener) }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Suppress("UNCHECKED_CAST")
-    override fun observeUserGroups(): Flow<List<GroupInfo>> = callbackFlow {
-        val uid = auth.currentUser?.uid
+    override fun observeUserGroups(): Flow<List<GroupInfo>> = observeAuthUid().flatMapLatest { uid ->
         if (uid == null) {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
-        }
-        val reg = firestore.collection(Constants.COLLECTION_GROUPS)
-            .whereArrayContains("memberIds", uid)
-            .addSnapshotListener { snap, _ ->
-                val list = snap?.documents?.map { doc ->
-                    GroupInfo(
-                        groupId = doc.id,
-                        chatId = doc.getString("chatId").orEmpty(),
-                        name = doc.getString("name").orEmpty(),
-                        description = doc.getString("description").orEmpty(),
-                        avatarUrl = doc.getString("avatarUrl").orEmpty(),
-                        creatorId = doc.getString("creatorId").orEmpty(),
-                        adminIds = (doc.get("adminIds") as? List<String>) ?: emptyList(),
-                        memberIds = (doc.get("memberIds") as? List<String>) ?: emptyList(),
-                        createdAt = doc.getLong("createdAt") ?: 0L
-                    )
-                }.orEmpty().sortedByDescending { it.createdAt }
-                trySend(list)
+            flowOf(emptyList())
+        } else {
+            callbackFlow {
+                val reg = firestore.collection(Constants.COLLECTION_GROUPS)
+                    .whereArrayContains("memberIds", uid)
+                    .addSnapshotListener { snap, _ ->
+                        val list = snap?.documents?.map { doc ->
+                            GroupInfo(
+                                groupId = doc.id,
+                                chatId = doc.getString("chatId").orEmpty(),
+                                name = doc.getString("name").orEmpty(),
+                                description = doc.getString("description").orEmpty(),
+                                avatarUrl = doc.getString("avatarUrl").orEmpty(),
+                                creatorId = doc.getString("creatorId").orEmpty(),
+                                adminIds = (doc.get("adminIds") as? List<String>) ?: emptyList(),
+                                memberIds = (doc.get("memberIds") as? List<String>) ?: emptyList(),
+                                createdAt = doc.getLong("createdAt") ?: 0L
+                            )
+                        }.orEmpty().sortedByDescending { it.createdAt }
+                        trySend(list)
+                    }
+                awaitClose { reg.remove() }
             }
-        awaitClose { reg.remove() }
+        }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -92,9 +102,13 @@ class GroupRepositoryImpl @Inject constructor(
 
         var avatarUrl = ""
         if (avatarUri != null) {
-            val ref = storage.reference.child("${Constants.STORAGE_GROUP_AVATARS}/$groupId/${UUID.randomUUID()}.jpg")
-            ref.putFile(avatarUri).await()
-            avatarUrl = ref.downloadUrl.await().toString()
+            avatarUrl = runCatching {
+                val ref = storage.reference.child("${Constants.STORAGE_GROUP_AVATARS}/$groupId/${UUID.randomUUID()}.jpg")
+                ref.putFile(avatarUri).await()
+                ref.downloadUrl.await().toString()
+            }.getOrElse {
+                uriToBase64Jpeg(avatarUri, maxSide = 512, quality = 78)
+            }
         }
 
         val now = System.currentTimeMillis()
@@ -160,11 +174,17 @@ class GroupRepositoryImpl @Inject constructor(
         val chatUpdates = hashMapOf<String, Any>("groupName" to name.trim())
 
         if (avatarUri != null) {
-            val ref = storage.reference.child("${Constants.STORAGE_GROUP_AVATARS}/$groupId/${UUID.randomUUID()}.jpg")
-            ref.putFile(avatarUri).await()
-            val url = ref.downloadUrl.await().toString()
-            updates["avatarUrl"] = url
-            chatUpdates["groupAvatarUrl"] = url
+            val url = runCatching {
+                val ref = storage.reference.child("${Constants.STORAGE_GROUP_AVATARS}/$groupId/${UUID.randomUUID()}.jpg")
+                ref.putFile(avatarUri).await()
+                ref.downloadUrl.await().toString()
+            }.getOrElse {
+                uriToBase64Jpeg(avatarUri, maxSide = 512, quality = 78)
+            }
+            if (url.isNotBlank()) {
+                updates["avatarUrl"] = url
+                chatUpdates["groupAvatarUrl"] = url
+            }
         }
 
         groupRef.update(updates).await()

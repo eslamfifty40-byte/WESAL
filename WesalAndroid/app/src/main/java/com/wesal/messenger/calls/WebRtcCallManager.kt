@@ -25,6 +25,8 @@ class WebRtcCallManager @Inject constructor(
     private var localAudioSource: AudioSource? = null
     private var localVideoTrack: VideoTrack? = null
     private var localAudioTrack: AudioTrack? = null
+    private var remoteDescriptionSet = false
+    private val pendingRemoteCandidates = mutableListOf<IceCandidate>()
 
     private val _connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     val connectionState: StateFlow<PeerConnection.PeerConnectionState> = _connectionState.asStateFlow()
@@ -152,6 +154,7 @@ class WebRtcCallManager @Inject constructor(
         val remoteDesc = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
         peerConnection?.setRemoteDescription(object : SdpObserver {
             override fun onSetSuccess() {
+                flushPendingRemoteCandidates()
                 peerConnection?.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) {
                         if (desc == null) return
@@ -171,11 +174,29 @@ class WebRtcCallManager @Inject constructor(
 
     fun setRemoteAnswer(answerSdp: String) {
         val remoteDesc = SessionDescription(SessionDescription.Type.ANSWER, answerSdp)
-        peerConnection?.setRemoteDescription(SimpleSdpObserver(), remoteDesc)
+        peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
+            override fun onSetSuccess() {
+                flushPendingRemoteCandidates()
+            }
+        }, remoteDesc)
     }
 
+    @Synchronized
+    private fun flushPendingRemoteCandidates() {
+        remoteDescriptionSet = true
+        val copy = pendingRemoteCandidates.toList()
+        pendingRemoteCandidates.clear()
+        copy.forEach { peerConnection?.addIceCandidate(it) }
+    }
+
+    @Synchronized
     fun addRemoteIceCandidate(sdpMid: String, sdpMLineIndex: Int, candidate: String) {
-        peerConnection?.addIceCandidate(IceCandidate(sdpMid, sdpMLineIndex, candidate))
+        val ice = IceCandidate(sdpMid, sdpMLineIndex, candidate)
+        if (peerConnection != null && remoteDescriptionSet) {
+            peerConnection?.addIceCandidate(ice)
+        } else {
+            pendingRemoteCandidates.add(ice)
+        }
     }
 
     fun setMicEnabled(enabled: Boolean) {
@@ -214,6 +235,8 @@ class WebRtcCallManager @Inject constructor(
         peerConnection?.close()
         peerConnection?.dispose()
         peerConnection = null
+        remoteDescriptionSet = false
+        pendingRemoteCandidates.clear()
         _remoteVideoTrack.value = null
         _localVideoTrackFlow.value = null
         _connectionState.value = PeerConnection.PeerConnectionState.CLOSED

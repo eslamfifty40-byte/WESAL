@@ -63,6 +63,7 @@ import java.io.File
 fun ChatDetailScreen(
     onBack: () -> Unit,
     onOpenGroupInfo: (String) -> Unit,
+    onOpenUserProfile: (String) -> Unit = {},
     viewModel: ChatDetailViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
@@ -180,8 +181,11 @@ fun ChatDetailScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.clickable {
-                            if (chat?.isGroup == true && !chat?.groupId.isNullOrBlank()) {
-                                onOpenGroupInfo(chat!!.groupId!!)
+                            val curChat = chat
+                            if (curChat?.isGroup == true && !curChat.groupId.isNullOrBlank()) {
+                                onOpenGroupInfo(curChat.groupId)
+                            } else if (curChat != null && curChat.peerUid.isNotBlank()) {
+                                onOpenUserProfile(curChat.peerUid)
                             } else {
                                 showFingerprintDialog = true
                             }
@@ -249,6 +253,15 @@ fun ChatDetailScreen(
                             Icon(Icons.Default.MoreVert, contentDescription = "المزيد", tint = WesalTextPrimary)
                         }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            if (chat?.isGroup == false && !chat?.peerUid.isNullOrBlank()) {
+                                DropdownMenuItem(
+                                    text = { Text("عرض الملف الشخصي") },
+                                    onClick = {
+                                        onOpenUserProfile(chat!!.peerUid)
+                                        showMenu = false
+                                    }
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("بحث في المحادثة") },
                                 onClick = { showSearchBar = !showSearchBar; showMenu = false }
@@ -428,28 +441,46 @@ fun ChatDetailScreen(
             if (recordingState.isRecording) {
                 Surface(color = WesalSurfaceDark, modifier = Modifier.fillMaxWidth()) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Default.Mic, contentDescription = null, tint = WesalError)
-                            Text(
-                                text = "جاري التسجيل ${DateTimeUtils.formatDurationMillis(recordingState.elapsedMs)}",
-                                color = WesalTextPrimary,
-                                fontWeight = FontWeight.Bold
-                            )
+                        Icon(Icons.Default.Mic, contentDescription = null, tint = WesalError)
+                        Text(
+                            text = DateTimeUtils.formatDurationMillis(recordingState.elapsedMs),
+                            color = WesalTextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        // Live amplitude waveform preview
+                        val liveBars = if (recordingState.amplitudes.isEmpty()) {
+                            List(18) { 20 }
+                        } else {
+                            recordingState.amplitudes.takeLast(18)
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = viewModel::cancelVoiceRecording) {
-                                Text("إلغاء", color = WesalError)
+                        Row(
+                            modifier = Modifier.weight(1f).height(26.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            liveBars.forEach { amp ->
+                                val barHeight = (6 + (amp / 100f) * 20f).dp
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .height(barHeight)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(WesalTurquoise)
+                                )
                             }
-                            Button(
-                                onClick = viewModel::stopAndSendVoiceRecording,
-                                colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
-                            ) {
-                                Text("إرسال")
-                            }
+                        }
+                        TextButton(onClick = viewModel::cancelVoiceRecording) {
+                            Text("إلغاء", color = WesalError)
+                        }
+                        Button(
+                            onClick = viewModel::stopAndSendVoiceRecording,
+                            colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                        ) {
+                            Text("إرسال", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -511,27 +542,27 @@ fun ChatDetailScreen(
                                 .size(48.dp)
                                 .clip(CircleShape)
                                 .background(WesalEmerald)
-                                .pointerInput(Unit) {
+                                .pointerInput(micPermission.status.isGranted) {
                                     detectTapGestures(
-                                        onLongPress = {
-                                            if (micPermission.status.isGranted) {
-                                                viewModel.startVoiceRecording()
-                                            } else {
+                                        onPress = {
+                                            if (!micPermission.status.isGranted) {
                                                 micPermission.launchPermissionRequest()
+                                                return@detectTapGestures
                                             }
-                                        },
-                                        onTap = {
-                                            if (micPermission.status.isGranted) {
-                                                viewModel.startVoiceRecording()
-                                            } else {
-                                                micPermission.launchPermissionRequest()
+                                            val pressedAt = System.currentTimeMillis()
+                                            viewModel.startVoiceRecording()
+                                            val released = tryAwaitRelease()
+                                            val heldMs = System.currentTimeMillis() - pressedAt
+                                            // Hold & release (>= 700ms) sends immediately; short tap leaves bar open for manual Send/Cancel
+                                            if (released && heldMs >= 700L) {
+                                                viewModel.stopAndSendVoiceRecording()
                                             }
                                         }
                                     )
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.Mic, contentDescription = "تسجيل صوتي", tint = WesalDeepBlack)
+                            Icon(Icons.Default.Mic, contentDescription = "اضغط مطولاً أو انقر للتسجيل الصوتي", tint = WesalDeepBlack)
                         }
                     }
                 }
@@ -676,6 +707,7 @@ fun ChatDetailScreen(
 
     if (showFingerprintDialog) {
         val fp = viewModel.getSafetyFingerprint()
+        val verified = remember(fp) { fp != null && viewModel.isEncryptionVerified() }
         AlertDialog(
             onDismissRequest = { showFingerprintDialog = false },
             containerColor = WesalSurfaceDark,
@@ -691,6 +723,13 @@ fun ChatDetailScreen(
                         color = WesalTurquoise,
                         fontWeight = FontWeight.Bold
                     )
+                    if (fp != null) {
+                        Text(
+                            text = if (verified) "تم التحقق من التشفير الثنائي ECDH + AES-GCM بنجاح ✓" else "تعذر التحقق من التشفير — أعد مزامنة مفاتيح الجلسة",
+                            color = if (verified) WesalEmerald else WesalError,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -805,26 +844,46 @@ private fun MessageBubble(
                     }
 
                     MessageType.VOICE -> {
+                        val bars = if (message.waveformAmplitudes.isNotEmpty()) {
+                            message.waveformAmplitudes.take(28)
+                        } else {
+                            listOf(18, 36, 54, 42, 70, 88, 60, 44, 72, 92, 50, 32, 66, 80, 48, 30, 58, 74, 40, 26)
+                        }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.width(220.dp)
+                            modifier = Modifier.width(235.dp)
                         ) {
-                            IconButton(onClick = onToggleVoice, modifier = Modifier.size(36.dp)) {
+                            IconButton(onClick = onToggleVoice, modifier = Modifier.size(38.dp)) {
                                 Icon(
                                     imageVector = if (isVoicePlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
-                                    contentDescription = "تشغيل الصوت",
+                                    contentDescription = if (isVoicePlaying) "إيقاف مؤقت" else "تشغيل الصوت",
                                     tint = WesalTurquoise,
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(34.dp)
                                 )
                             }
-                            Column(modifier = Modifier.weight(1f)) {
-                                LinearProgressIndicator(
-                                    progress = { voiceProgress },
-                                    color = WesalTurquoise,
-                                    trackColor = WesalSurfaceBorder,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().height(26.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    bars.forEachIndexed { idx, amp ->
+                                        val frac = (idx + 1).toFloat() / bars.size.toFloat()
+                                        val isPlayed = voiceProgress > 0f && frac <= voiceProgress
+                                        val barHeight = (5 + (amp.coerceIn(10, 100) / 100f) * 20f).dp
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(barHeight)
+                                                .clip(RoundedCornerShape(2.dp))
+                                                .background(if (isPlayed) WesalTurquoise else WesalSurfaceBorder)
+                                        )
+                                    }
+                                }
                                 Text(
                                     text = DateTimeUtils.formatDurationMillis(message.mediaDurationMs),
                                     style = MaterialTheme.typography.labelSmall,

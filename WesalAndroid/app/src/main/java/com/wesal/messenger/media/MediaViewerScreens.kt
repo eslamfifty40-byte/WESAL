@@ -28,13 +28,17 @@ fun FullscreenImageViewer(
     imageModel: Any,
     onClose: () -> Unit
 ) {
+    val resolvedModel = (imageModel as? String)?.let {
+        com.wesal.messenger.presentation.components.wesalImageModel(it)
+    } ?: imageModel
+
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(WesalDeepBlack)
     ) {
         AsyncImage(
-            model = imageModel,
+            model = resolvedModel,
             contentDescription = "عرض الصورة",
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Fit

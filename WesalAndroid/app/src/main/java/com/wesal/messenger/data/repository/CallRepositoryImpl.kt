@@ -8,9 +8,12 @@ import com.wesal.messenger.domain.model.CallRecord
 import com.wesal.messenger.domain.model.CallStatus
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.CallRepository
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
 import javax.inject.Inject
@@ -22,66 +25,74 @@ class CallRepositoryImpl @Inject constructor(
     private val firestore: FirebaseFirestore
 ) : CallRepository {
 
-    override fun observeCallHistory(): Flow<List<CallRecord>> = callbackFlow {
-        val uid = auth.currentUser?.uid
-        if (uid == null) {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
-        }
-        val reg = firestore.collection(Constants.COLLECTION_CALLS)
-            .whereArrayContains("participants", uid)
-            .addSnapshotListener { snap, _ ->
-                val list = snap?.documents?.map { doc ->
-                    CallRecord(
-                        callId = doc.id,
-                        callerId = doc.getString("callerId").orEmpty(),
-                        callerName = doc.getString("callerName").orEmpty(),
-                        callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
-                        calleeId = doc.getString("calleeId").orEmpty(),
-                        calleeName = doc.getString("calleeName").orEmpty(),
-                        calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
-                        isVideo = doc.getBoolean("isVideo") ?: false,
-                        status = CallStatus.fromRaw(doc.getString("status")),
-                        startedAt = doc.getLong("startedAt") ?: 0L,
-                        endedAt = doc.getLong("endedAt") ?: 0L,
-                        durationSeconds = doc.getLong("durationSeconds") ?: 0L
-                    )
-                }.orEmpty().sortedByDescending { it.startedAt }
-                trySend(list)
-            }
-        awaitClose { reg.remove() }
+    private fun observeAuthUid(): Flow<String?> = callbackFlow {
+        val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
+        auth.addAuthStateListener(listener)
+        awaitClose { auth.removeAuthStateListener(listener) }
     }
 
-    override fun observeIncomingCalls(): Flow<CallRecord?> = callbackFlow {
-        val uid = auth.currentUser?.uid
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeCallHistory(): Flow<List<CallRecord>> = observeAuthUid().flatMapLatest { uid ->
         if (uid == null) {
-            trySend(null)
-            close()
-            return@callbackFlow
-        }
-        val reg = firestore.collection(Constants.COLLECTION_CALLS)
-            .whereEqualTo("calleeId", uid)
-            .whereEqualTo("status", CallStatus.RINGING.raw)
-            .addSnapshotListener { snap, _ ->
-                val activeRing = snap?.documents?.firstOrNull()?.let { doc ->
-                    CallRecord(
-                        callId = doc.id,
-                        callerId = doc.getString("callerId").orEmpty(),
-                        callerName = doc.getString("callerName").orEmpty(),
-                        callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
-                        calleeId = doc.getString("calleeId").orEmpty(),
-                        calleeName = doc.getString("calleeName").orEmpty(),
-                        calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
-                        isVideo = doc.getBoolean("isVideo") ?: false,
-                        status = CallStatus.RINGING,
-                        offerSdp = doc.getString("offerSdp").orEmpty(),
-                        startedAt = doc.getLong("startedAt") ?: 0L
-                    )
-                }
-                trySend(activeRing)
+            flowOf(emptyList())
+        } else {
+            callbackFlow {
+                val reg = firestore.collection(Constants.COLLECTION_CALLS)
+                    .whereArrayContains("participants", uid)
+                    .addSnapshotListener { snap, _ ->
+                        val list = snap?.documents?.map { doc ->
+                            CallRecord(
+                                callId = doc.id,
+                                callerId = doc.getString("callerId").orEmpty(),
+                                callerName = doc.getString("callerName").orEmpty(),
+                                callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
+                                calleeId = doc.getString("calleeId").orEmpty(),
+                                calleeName = doc.getString("calleeName").orEmpty(),
+                                calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
+                                isVideo = doc.getBoolean("isVideo") ?: false,
+                                status = CallStatus.fromRaw(doc.getString("status")),
+                                startedAt = doc.getLong("startedAt") ?: 0L,
+                                endedAt = doc.getLong("endedAt") ?: 0L,
+                                durationSeconds = doc.getLong("durationSeconds") ?: 0L
+                            )
+                        }.orEmpty().sortedByDescending { it.startedAt }
+                        trySend(list)
+                    }
+                awaitClose { reg.remove() }
             }
-        awaitClose { reg.remove() }
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeIncomingCalls(): Flow<CallRecord?> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) {
+            flowOf(null)
+        } else {
+            callbackFlow {
+                val reg = firestore.collection(Constants.COLLECTION_CALLS)
+                    .whereEqualTo("calleeId", uid)
+                    .whereEqualTo("status", CallStatus.RINGING.raw)
+                    .addSnapshotListener { snap, _ ->
+                        val activeRing = snap?.documents?.firstOrNull()?.let { doc ->
+                            CallRecord(
+                                callId = doc.id,
+                                callerId = doc.getString("callerId").orEmpty(),
+                                callerName = doc.getString("callerName").orEmpty(),
+                                callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
+                                calleeId = doc.getString("calleeId").orEmpty(),
+                                calleeName = doc.getString("calleeName").orEmpty(),
+                                calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
+                                isVideo = doc.getBoolean("isVideo") ?: false,
+                                status = CallStatus.RINGING,
+                                offerSdp = doc.getString("offerSdp").orEmpty(),
+                                startedAt = doc.getLong("startedAt") ?: 0L
+                            )
+                        }
+                        trySend(activeRing)
+                    }
+                awaitClose { reg.remove() }
+            }
+        }
     }
 
     override fun observeCall(callId: String): Flow<CallRecord?> = callbackFlow {

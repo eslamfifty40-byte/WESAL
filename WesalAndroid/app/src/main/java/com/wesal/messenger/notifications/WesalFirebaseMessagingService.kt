@@ -42,8 +42,11 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
         super.onMessageReceived(message)
         val data = message.data
         val type = data["type"] ?: "MESSAGE"
+        if (type != "SYSTEM" && auth.currentUser == null) return
+
         val title = data["title"] ?: message.notification?.title ?: getString(R.string.app_name)
         val body = data["body"] ?: message.notification?.body.orEmpty()
+        val dedupId = (data["messageId"] ?: "${type}_${data["chatId"].orEmpty()}_${body.hashCode()}").hashCode()
 
         serviceScope.launch {
             val userSettings = prefs.settingsFlow.first()
@@ -59,24 +62,30 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                 }
                 "GROUP_MESSAGE" -> {
                     if (!userSettings.notificationsGroups) return@launch
-                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"])
+                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], dedupId)
                 }
                 "STORY" -> {
                     if (!userSettings.notificationsStories) return@launch
-                    showStandardNotification(Constants.CHANNEL_STORIES, title, body, null)
+                    showStandardNotification(Constants.CHANNEL_STORIES, title, body, null, dedupId)
                 }
                 "SYSTEM" -> {
-                    showStandardNotification(Constants.CHANNEL_SYSTEM, title, body, null)
+                    showStandardNotification(Constants.CHANNEL_SYSTEM, title, body, null, dedupId)
                 }
                 else -> {
                     if (!userSettings.notificationsMessages) return@launch
-                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"])
+                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], dedupId)
                 }
             }
         }
     }
 
-    private fun showStandardNotification(channelId: String, title: String, body: String, chatId: String?) {
+    private fun showStandardNotification(
+        channelId: String,
+        title: String,
+        body: String,
+        chatId: String?,
+        notificationId: Int
+    ) {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             if (!chatId.isNullOrBlank()) putExtra("chatId", chatId)
@@ -98,7 +107,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             .build()
 
         val manager = getSystemService(NotificationManager::class.java) ?: return
-        manager.notify(System.currentTimeMillis().toInt(), notification)
+        manager.notify(notificationId, notification)
     }
 
     private fun showIncomingCallNotification(

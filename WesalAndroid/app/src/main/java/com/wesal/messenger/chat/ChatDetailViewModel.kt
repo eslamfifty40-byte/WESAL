@@ -20,6 +20,7 @@ import com.wesal.messenger.voice.VoiceRecorderManager
 import com.wesal.messenger.voice.VoiceRecordingState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -74,8 +75,28 @@ class ChatDetailViewModel @Inject constructor(
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     val chatPreview: StateFlow<ChatPreview?> = chatRepository.observeChats()
         .map { list -> list.firstOrNull { it.chatId == chatId } }
+        .flatMapLatest { preview ->
+            if (preview != null && !preview.isGroup && preview.peerUid.isNotBlank()) {
+                userRepository.observeUser(preview.peerUid).map { peer ->
+                    if (peer != null) {
+                        preview.copy(
+                            title = peer.displayName.ifBlank { peer.phoneNumber }.ifBlank { preview.title },
+                            avatarUrl = peer.photoUrl,
+                            peerPublicKey = peer.publicKey.ifBlank { preview.peerPublicKey },
+                            peerOnline = peer.isOnline,
+                            peerLastSeen = peer.lastSeen
+                        )
+                    } else {
+                        preview
+                    }
+                }
+            } else {
+                flowOf(preview)
+            }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val messages: StateFlow<List<WesalMessage>> = combine(
@@ -155,12 +176,62 @@ class ChatDetailViewModel @Inject constructor(
 
     fun forwardMessage(targetChatId: String, message: WesalMessage) {
         viewModelScope.launch {
-            chatRepository.sendTextMessage(
-                chatId = targetChatId,
-                text = message.text,
-                forwardedFromName = message.senderName
-            ).onSuccess {
-                _toastMessage.value = "تمت إعادة توجيه الرسالة"
+            when (message.type) {
+                MessageType.LOCATION -> {
+                    val lat = message.latitude
+                    val lng = message.longitude
+                    if (lat != null && lng != null) {
+                        chatRepository.sendLocationMessage(targetChatId, lat, lng, message.locationAddress)
+                            .onSuccess { _toastMessage.value = "تمت إعادة توجيه الموقع" }
+                            .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر إعادة توجيه الموقع" }
+                    }
+                }
+                MessageType.IMAGE, MessageType.VIDEO, MessageType.VOICE, MessageType.DOCUMENT -> {
+                    if (message.mediaUrl.isNotBlank()) {
+                        chatRepository.decryptMediaToCache(message)
+                            .onSuccess { file ->
+                                chatRepository.sendMediaMessage(
+                                    chatId = targetChatId,
+                                    uri = Uri.fromFile(file),
+                                    type = message.type,
+                                    fileName = message.mediaFileName.ifBlank { file.name },
+                                    mimeType = message.mediaMimeType.ifBlank { "application/octet-stream" },
+                                    sizeBytes = file.length(),
+                                    durationMs = message.mediaDurationMs,
+                                    waveform = message.waveformAmplitudes,
+                                    caption = message.text
+                                ).collect { res ->
+                                    res.onSuccess { p ->
+                                        if (p >= 1f) _toastMessage.value = "تمت إعادة توجيه الوسائط"
+                                    }.onFailure { err ->
+                                        _toastMessage.value = err.localizedMessage ?: "تعذر إعادة توجيه الوسائط"
+                                    }
+                                }
+                            }
+                            .onFailure {
+                                if (message.text.isNotBlank()) {
+                                    chatRepository.sendTextMessage(targetChatId, message.text, forwardedFromName = message.senderName)
+                                        .onSuccess { _toastMessage.value = "تمت إعادة توجيه النص" }
+                                } else {
+                                    _toastMessage.value = "تعذر إعادة توجيه الوسائط"
+                                }
+                            }
+                    } else if (message.text.isNotBlank()) {
+                        chatRepository.sendTextMessage(targetChatId, message.text, forwardedFromName = message.senderName)
+                            .onSuccess { _toastMessage.value = "تمت إعادة توجيه الرسالة" }
+                    }
+                }
+                else -> {
+                    if (message.text.isNotBlank()) {
+                        chatRepository.sendTextMessage(
+                            chatId = targetChatId,
+                            text = message.text,
+                            forwardedFromName = message.senderName
+                        ).onSuccess {
+                            _toastMessage.value = "تمت إعادة توجيه الرسالة"
+                        }
+                    }
+                }
             }
         }
     }
@@ -309,6 +380,12 @@ class ChatDetailViewModel @Inject constructor(
         val peerKey = chatPreview.value?.peerPublicKey.orEmpty()
         if (peerKey.isBlank()) return null
         return cryptoManager.computeSafetyFingerprint(peerKey)
+    }
+
+    fun isEncryptionVerified(): Boolean {
+        val peerKey = chatPreview.value?.peerPublicKey.orEmpty()
+        if (peerKey.isBlank()) return false
+        return cryptoManager.verifyChannelEncryption(peerKey, chatId)
     }
 
     suspend fun getPeerUser(): WesalUser? {

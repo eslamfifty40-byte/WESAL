@@ -56,9 +56,22 @@ class E2EECryptoManager @Inject constructor(
         AeadConfig.register()
     }
 
-    fun getOrCreateIdentityPublicKeyBase64(): String {
-        val existingPub = encryptedPrefs.getString(KEY_PUBLIC, null)
-        val existingPriv = encryptedPrefs.getString(KEY_PRIVATE, null)
+    private fun resolveActiveUid(explicitUid: String? = null): String? =
+        explicitUid?.takeIf { it.isNotBlank() }
+            ?: runCatching { com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+
+    private fun keyNames(uid: String?): Pair<String, String> =
+        if (!uid.isNullOrBlank()) {
+            "${KEY_PUBLIC}_$uid" to "${KEY_PRIVATE}_$uid"
+        } else {
+            KEY_PUBLIC to KEY_PRIVATE
+        }
+
+    fun getOrCreateIdentityPublicKeyBase64(uid: String? = null): String {
+        val resolvedUid = resolveActiveUid(uid)
+        val (pubKeyName, privKeyName) = keyNames(resolvedUid)
+        val existingPub = encryptedPrefs.getString(pubKeyName, null)
+        val existingPriv = encryptedPrefs.getString(privKeyName, null)
         if (!existingPub.isNullOrBlank() && !existingPriv.isNullOrBlank()) {
             return existingPub
         }
@@ -71,8 +84,8 @@ class E2EECryptoManager @Inject constructor(
         val privBase64 = Base64.encodeToString(keyPair.private.encoded, Base64.NO_WRAP)
 
         encryptedPrefs.edit()
-            .putString(KEY_PUBLIC, pubBase64)
-            .putString(KEY_PRIVATE, privBase64)
+            .putString(pubKeyName, pubBase64)
+            .putString(privKeyName, privBase64)
             .apply()
 
         return pubBase64
@@ -88,6 +101,15 @@ class E2EECryptoManager @Inject constructor(
         }
         val digest = MessageDigest.getInstance("SHA-256").digest(ordered)
         return digest.take(12).joinToString(" ") { "%02X".format(it) }
+    }
+
+    fun verifyChannelEncryption(peerPublicKeyBase64: String, chatId: String): Boolean {
+        return runCatching {
+            val probe = "wesal-verify-${System.currentTimeMillis()}"
+            val encrypted = encryptDirectMessage(probe, peerPublicKeyBase64, chatId)
+            val decrypted = decryptDirectMessage(encrypted, peerPublicKeyBase64, chatId)
+            decrypted == probe
+        }.getOrDefault(false)
     }
 
     fun encryptDirectMessage(
@@ -162,8 +184,13 @@ class E2EECryptoManager @Inject constructor(
     }
 
     private fun deriveSharedAesKey(peerPublicKeyBase64: String, infoContext: String): SecretKey {
-        getOrCreateIdentityPublicKeyBase64()
-        val privBytes = Base64.decode(encryptedPrefs.getString(KEY_PRIVATE, null)!!, Base64.NO_WRAP)
+        val resolvedUid = resolveActiveUid(null)
+        getOrCreateIdentityPublicKeyBase64(resolvedUid)
+        val (_, privKeyName) = keyNames(resolvedUid)
+        val privB64 = encryptedPrefs.getString(privKeyName, null)
+            ?: encryptedPrefs.getString(KEY_PRIVATE, null)
+            ?: error("Missing identity private key")
+        val privBytes = Base64.decode(privB64, Base64.NO_WRAP)
         val pubBytes = Base64.decode(peerPublicKeyBase64, Base64.NO_WRAP)
 
         val keyFactory = KeyFactory.getInstance("EC")

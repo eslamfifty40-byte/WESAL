@@ -278,6 +278,7 @@ fun GroupsScreen(
 fun GroupInfoScreen(
     groupId: String,
     onBack: () -> Unit,
+    onOpenUserProfile: (String) -> Unit = {},
     onLeftGroup: () -> Unit,
     viewModel: GroupsViewModel = hiltViewModel()
 ) {
@@ -368,7 +369,12 @@ fun GroupInfoScreen(
                 items(members, key = { it.uid }) { member ->
                     val memberIsAdmin = g.adminIds.contains(member.uid)
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = member.uid != viewModel.myUid) {
+                                onOpenUserProfile(member.uid)
+                            }
+                            .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {

@@ -10,8 +10,8 @@
     <string name="channel_calls_name">Incoming Calls</string>
     <string name="channel_stories_name">Status Updates</string>
     <string name="channel_system_name">System Alerts</string>
-    <string name="phone_login_title">Phone Number Sign In</string>
-    <string name="phone_login_subtitle">Enter your phone number to receive a verification SMS code</string>
+    <string name="phone_login_title">Sign in to WESAL</string>
+    <string name="phone_login_subtitle">Sign in free with Google or Email &amp; Password — no SMS required</string>
     <string name="send_otp">Send Verification Code</string>
     <string name="verify_otp">Verify Code</string>
     <string name="resend_otp">Resend Code</string>

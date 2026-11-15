@@ -115,7 +115,7 @@ fun ChatsListScreen(
                             color = WesalTextPrimary
                         )
                         Text(
-                            text = "اضغط على زر + لبدء محادثة جديدة برقم الهاتف أو المعرف",
+                            text = "اضغط على زر + لبدء محادثة جديدة عبر معرف وصال (@Wesal ID) أو جهات الاتصال",
                             style = MaterialTheme.typography.bodyMedium,
                             color = WesalTextSecondary
                         )

@@ -7,7 +7,6 @@
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -24,11 +23,21 @@
     <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+
+    <queries>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="text/plain" />
+        </intent>
+    </queries>
 
     <application
         android:name=".WesalApplication"
@@ -73,6 +82,22 @@
             android:theme="@style/Theme.Wesal"
             android:turnScreenOn="true" />
 
+        <activity
+            android:name="com.yalantis.ucrop.UCropActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Wesal" />
+
+        <activity
+            android:name="com.wesal.messenger.crop.CropActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Wesal" />
+
+        <activity
+            android:name=".contacts.ContactsInviteActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Wesal" />
+
         <service
             android:name=".notifications.WesalFirebaseMessagingService"
             android:exported="false">
@@ -105,8 +130,5 @@
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="wesal_messages" />
-    <activity android:name="com.yalantis.ucrop.UCropActivity" android:theme="@style/Theme.AppCompat.Light.NoActionBar"/>
-    <activity android:name="com.wesal.messenger.crop.CropActivity" android:exported="false"/>
-    <activity android:name="com.wesal.messenger.contacts.ContactsInviteActivity" android:exported="false"/>
     </application>
 </manifest>

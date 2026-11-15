@@ -32,13 +32,15 @@ fun HomeScreen(
     isOnline: Boolean,
     onOpenChat: (String) -> Unit,
     onOpenNewChat: () -> Unit,
+    onOpenProfile: () -> Unit,
+    onOpenCameraHub: () -> Unit = {},
+    onOpenAddAccount: (String?) -> Unit = {},
+    onAccountSwitched: (Boolean) -> Unit = {},
     onSignedOut: () -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(HomeTab.CHATS) }
     var menuOpen by remember { mutableStateOf(false) }
     val ctxHome = androidx.compose.ui.platform.LocalContext.current
-    // SWITCHMENU
-    com.wesal.messenger.settings.AccountSwitcherDialog(onSignOut = { com.google.firebase.auth.FirebaseAuth.getInstance().signOut(); onSignedOut() })
 
     Scaffold(
         containerColor = WesalDeepBlack,
@@ -54,7 +56,7 @@ fun HomeScreen(
                         )
                     },
                     actions = {
-                        IconButton(onClick = { try { ctxHome.startActivity(android.content.Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (e: Exception) { selectedTab = HomeTab.STORIES } }) {
+                        IconButton(onClick = onOpenCameraHub) {
                             Icon(Icons.Default.CameraAlt, contentDescription = "كاميرا", tint = WesalTextPrimary)
                         }
                         Box {
@@ -68,9 +70,7 @@ fun HomeScreen(
                                     menuOpen = false
                                     ctxHome.startActivity(android.content.Intent(ctxHome, com.wesal.messenger.contacts.ContactsInviteActivity::class.java))
                                 })
-                                DropdownMenuItem(text = { Text("\u062a\u0628\u062f\u064a\u0644 \u0627\u0644\u062d\u0633\u0627\u0628") }, onClick = { menuOpen = false; com.wesal.messenger.settings.AccountSwitcherState.show = true })
-                        if (selectedTab == HomeTab.CALLS) DropdownMenuItem(text = { Text("\u0645\u0633\u062d \u0627\u0644\u0645\u0643\u0627\u0644\u0645\u0627\u062a") }, onClick = { menuOpen = false; com.wesal.messenger.calls.CallsClearState.clear(ctxHome) }) // CLEARMENU
-                        DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS })
+                                DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS })
                             }
                         }
                     },
@@ -108,7 +108,12 @@ fun HomeScreen(
                 HomeTab.STORIES -> StoriesScreen()
                 HomeTab.CALLS -> CallHistoryScreen()
                 HomeTab.GROUPS -> GroupsScreen(onOpenChat = onOpenChat)
-                HomeTab.SETTINGS -> SettingsScreen(onSignedOut = onSignedOut)
+                HomeTab.SETTINGS -> SettingsScreen(
+                    onOpenProfile = onOpenProfile,
+                    onSignedOut = onSignedOut,
+                    onOpenAddAccount = onOpenAddAccount,
+                    onAccountSwitched = onAccountSwitched
+                )
             }
         }
     }

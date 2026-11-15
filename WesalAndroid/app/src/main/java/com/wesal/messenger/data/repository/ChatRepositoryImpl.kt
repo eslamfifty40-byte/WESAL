@@ -9,6 +9,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import com.google.firebase.storage.FirebaseStorage
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.dao.WesalDao
@@ -23,9 +24,12 @@ import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.security.E2EECryptoManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -44,47 +48,56 @@ class ChatRepositoryImpl @Inject constructor(
     private val cryptoManager: E2EECryptoManager
 ) : ChatRepository {
 
-    private val userCache = mutableMapOf<String, WesalUser>()
+    private data class CachedUserEntry(val user: WesalUser, val fetchedAtMs: Long)
+    private val userCache = mutableMapOf<String, CachedUserEntry>()
+    private val userCacheTtlMs = 15_000L
 
-    override fun observeChats(): Flow<List<ChatPreview>> = callbackFlow {
-        val uid = auth.currentUser?.uid
+    private fun observeAuthUid(): Flow<String?> = callbackFlow {
+        val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
+        auth.addAuthStateListener(listener)
+        awaitClose { auth.removeAuthStateListener(listener) }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeChats(): Flow<List<ChatPreview>> = observeAuthUid().flatMapLatest { uid ->
+        userCache.clear()
         if (uid == null) {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
-        }
+            flowOf(emptyList())
+        } else {
+            callbackFlow {
+                val registration = firestore.collection(Constants.COLLECTION_CHATS)
+                    .whereArrayContains("participantIds", uid)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null || snapshot == null) return@addSnapshotListener
+                        launch {
+                            val previews = snapshot.documents.mapNotNull { doc ->
+                                mapChatPreview(doc, uid)
+                            }.sortedWith(
+                                compareByDescending<ChatPreview> { it.isPinned }
+                                    .thenByDescending { it.lastMessageTime }
+                            )
+                            wesalDao.upsertChats(previews.map {
+                                CachedChatEntity(
+                                    chatId = it.chatId,
+                                    isGroup = it.isGroup,
+                                    title = it.title,
+                                    avatarUrl = it.avatarUrl,
+                                    peerUid = it.peerUid,
+                                    lastMessagePreview = it.lastMessagePreview,
+                                    lastMessageTime = it.lastMessageTime,
+                                    unreadCount = it.unreadCount,
+                                    isPinned = it.isPinned,
+                                    isArchived = it.isArchived,
+                                    isMuted = it.isMuted
+                                )
+                            })
+                            trySend(previews)
+                        }
+                    }
 
-        val registration = firestore.collection(Constants.COLLECTION_CHATS)
-            .whereArrayContains("participantIds", uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) return@addSnapshotListener
-                launch {
-                    val previews = snapshot.documents.mapNotNull { doc ->
-                        mapChatPreview(doc, uid)
-                    }.sortedWith(
-                        compareByDescending<ChatPreview> { it.isPinned }
-                            .thenByDescending { it.lastMessageTime }
-                    )
-                    wesalDao.upsertChats(previews.map {
-                        CachedChatEntity(
-                            chatId = it.chatId,
-                            isGroup = it.isGroup,
-                            title = it.title,
-                            avatarUrl = it.avatarUrl,
-                            peerUid = it.peerUid,
-                            lastMessagePreview = it.lastMessagePreview,
-                            lastMessageTime = it.lastMessageTime,
-                            unreadCount = it.unreadCount,
-                            isPinned = it.isPinned,
-                            isArchived = it.isArchived,
-                            isMuted = it.isMuted
-                        )
-                    })
-                    trySend(previews)
-                }
+                awaitClose { registration.remove() }
             }
-
-        awaitClose { registration.remove() }
+        }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -108,18 +121,27 @@ class ChatRepositoryImpl @Inject constructor(
         var peerOnline = false
         var peerLastSeen = 0L
 
+        val unreadCount = unreadMap[myUid]?.toInt() ?: 0
+        val lastSenderId = doc.getString("lastMessageSenderId").orEmpty()
+        val lastStatus = MessageStatus.fromRaw(doc.getString("lastMessageStatus"))
+
         if (!isGroup) {
             peerUid = participantIds.firstOrNull { it != myUid }.orEmpty()
             if (peerUid.isNotBlank()) {
                 val peer = fetchUserCached(peerUid)
                 if (peer != null) {
                     title = peer.displayName.ifBlank { peer.phoneNumber }
-                    avatar = peer.photoUrl
+                    avatar = if (peer.privacySettings.profilePhotoVisibility == com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY) "" else peer.photoUrl
                     peerPubKey = peer.publicKey
-                    peerOnline = peer.isOnline
-                    peerLastSeen = peer.lastSeen
+                    peerOnline = peer.isOnline && peer.privacySettings.onlineVisibility != com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY
+                    peerLastSeen = if (peer.privacySettings.lastSeenVisibility == com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY) 0L else peer.lastSeen
                 }
             }
+        }
+
+        // Recipient device received the new message snapshot -> confirm real DELIVERED receipt
+        if (lastSenderId.isNotBlank() && lastSenderId != myUid && lastStatus == MessageStatus.SENT) {
+            markIncomingMessagesDelivered(doc.id, myUid)
         }
 
         return ChatPreview(
@@ -135,9 +157,9 @@ class ChatRepositoryImpl @Inject constructor(
             peerLastSeen = peerLastSeen,
             lastMessagePreview = doc.getString("lastMessagePreview").orEmpty(),
             lastMessageTime = doc.getLong("lastMessageTime") ?: 0L,
-            lastMessageSenderId = doc.getString("lastMessageSenderId").orEmpty(),
-            lastMessageStatus = MessageStatus.fromRaw(doc.getString("lastMessageStatus")),
-            unreadCount = unreadMap[myUid]?.toInt() ?: 0,
+            lastMessageSenderId = lastSenderId,
+            lastMessageStatus = lastStatus,
+            unreadCount = unreadCount,
             isPinned = pinnedMap[myUid] ?: false,
             isArchived = archivedMap[myUid] ?: false,
             isMuted = mutedMap[myUid] ?: false,
@@ -145,66 +167,96 @@ class ChatRepositoryImpl @Inject constructor(
         )
     }
 
-    private suspend fun fetchUserCached(uid: String): WesalUser? {
-        userCache[uid]?.let { return it }
-        val snap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
+    private suspend fun markIncomingMessagesDelivered(chatId: String, myUid: String) {
+        runCatching {
+            val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+            val sentSnap = chatRef.collection(Constants.COLLECTION_MESSAGES)
+                .whereEqualTo("status", MessageStatus.SENT.raw)
+                .get()
+                .await()
+            val batch = firestore.batch()
+            var anyUpdated = false
+            sentSnap.documents.forEach { msgDoc ->
+                if (msgDoc.getString("senderId") != myUid) {
+                    batch.update(msgDoc.reference, "status", MessageStatus.DELIVERED.raw)
+                    anyUpdated = true
+                }
+            }
+            if (anyUpdated) {
+                batch.update(chatRef, "lastMessageStatus", MessageStatus.DELIVERED.raw)
+                batch.commit().await()
+            }
+        }
+    }
+
+    private suspend fun fetchUserCached(uid: String, forceServer: Boolean = false): WesalUser? {
+        val now = System.currentTimeMillis()
+        val existing = if (forceServer) null else userCache[uid]
+        if (existing != null && now - existing.fetchedAtMs < userCacheTtlMs) {
+            return existing.user
+        }
+        val ref = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        val snap = runCatching {
+            if (forceServer) ref.get(Source.SERVER).await() else ref.get().await()
+        }.getOrNull() ?: runCatching { ref.get().await() }.getOrNull() ?: return userCache[uid]?.user
         if (!snap.exists()) return null
         val user = snap.toWesalUser()
-        userCache[uid] = user
+        userCache[uid] = CachedUserEntry(user, now)
         return user
     }
 
-    override fun observeMessages(chatId: String): Flow<List<WesalMessage>> = callbackFlow {
-        val myUid = auth.currentUser?.uid ?: run {
-            trySend(emptyList())
-            close()
-            return@callbackFlow
-        }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeMessages(chatId: String): Flow<List<WesalMessage>> = observeAuthUid().flatMapLatest { myUid ->
+        if (myUid == null) {
+            flowOf(emptyList())
+        } else {
+            callbackFlow {
+                val chatDoc = runCatching {
+                    firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
+                }.getOrNull()
+                val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
+                val isGroup = chatDoc?.getBoolean("isGroup") ?: false
 
-        val chatDoc = runCatching {
-            firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
-        }.getOrNull()
-        val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
-        val isGroup = chatDoc?.getBoolean("isGroup") ?: false
-
-        val peerPubKeyCache = mutableMapOf<String, String>()
-        participantIds.filter { it != myUid }.forEach { uid ->
-            fetchUserCached(uid)?.publicKey?.let { if (it.isNotBlank()) peerPubKeyCache[uid] = it }
-        }
-
-        val registration = firestore.collection(Constants.COLLECTION_CHATS)
-            .document(chatId)
-            .collection(Constants.COLLECTION_MESSAGES)
-            .orderBy("timestamp", Query.Direction.ASCENDING)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null || snapshot == null) return@addSnapshotListener
-                launch {
-                    val messages = snapshot.documents.mapNotNull { doc ->
-                        mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
-                    }
-                    wesalDao.upsertMessages(messages.map {
-                        CachedMessageEntity(
-                            messageId = it.messageId,
-                            chatId = it.chatId,
-                            senderId = it.senderId,
-                            senderName = it.senderName,
-                            type = it.type.raw,
-                            text = it.text,
-                            mediaUrl = it.mediaUrl,
-                            mediaLocalPath = it.mediaLocalPath,
-                            mediaMimeType = it.mediaMimeType,
-                            mediaFileName = it.mediaFileName,
-                            mediaSizeBytes = it.mediaSizeBytes,
-                            mediaDurationMs = it.mediaDurationMs,
-                            status = it.status.raw,
-                            timestamp = it.timestamp
-                        )
-                    })
-                    trySend(messages)
+                val peerPubKeyCache = mutableMapOf<String, String>()
+                participantIds.filter { it != myUid }.forEach { uid ->
+                    fetchUserCached(uid)?.publicKey?.let { if (it.isNotBlank()) peerPubKeyCache[uid] = it }
                 }
-            }
 
-        awaitClose { registration.remove() }
+                val registration = firestore.collection(Constants.COLLECTION_CHATS)
+                    .document(chatId)
+                    .collection(Constants.COLLECTION_MESSAGES)
+                    .orderBy("timestamp", Query.Direction.ASCENDING)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null || snapshot == null) return@addSnapshotListener
+                        launch {
+                            val messages = snapshot.documents.mapNotNull { doc ->
+                                mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
+                            }
+                            wesalDao.upsertMessages(messages.map {
+                                CachedMessageEntity(
+                                    messageId = it.messageId,
+                                    chatId = it.chatId,
+                                    senderId = it.senderId,
+                                    senderName = it.senderName,
+                                    type = it.type.raw,
+                                    text = it.text,
+                                    mediaUrl = it.mediaUrl,
+                                    mediaLocalPath = it.mediaLocalPath,
+                                    mediaMimeType = it.mediaMimeType,
+                                    mediaFileName = it.mediaFileName,
+                                    mediaSizeBytes = it.mediaSizeBytes,
+                                    mediaDurationMs = it.mediaDurationMs,
+                                    status = it.status.raw,
+                                    timestamp = it.timestamp
+                                )
+                            })
+                            trySend(messages)
+                        }
+                    }
+
+                awaitClose { registration.remove() }
+            }
+        }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -228,24 +280,19 @@ class ChatRepositoryImpl @Inject constructor(
         val resolvedText = when {
             isDeletedForEveryone -> "تم حذف هذه الرسالة"
             isEncrypted && ciphertext.isNotBlank() -> {
-                runCatching {
-                    val keyOwnerUid = if (senderId == myUid) {
-                        peerPubKeyCache.keys.firstOrNull()
-                    } else {
-                        senderId
-                    }
-                    val peerPub = keyOwnerUid?.let {
-                        peerPubKeyCache[it] ?: fetchUserCached(it)?.publicKey?.also { pk ->
-                            if (pk.isNotBlank()) peerPubKeyCache[it] = pk
-                        }
-                    }
-                    if (!isGroup && !peerPub.isNullOrBlank()) {
+                val keyOwnerUid = if (senderId == myUid) {
+                    peerPubKeyCache.keys.firstOrNull()
+                } else {
+                    senderId
+                }
+                val attemptDecrypt: (String) -> String = { peerPub ->
+                    if (!isGroup) {
                         cryptoManager.decryptDirectMessage(
                             E2EECryptoManager.EncryptedPayload.fromWireString(ciphertext),
                             peerPub,
                             chatId
                         )
-                    } else if (wrappedKeys.containsKey(myUid) && !peerPub.isNullOrBlank()) {
+                    } else if (wrappedKeys.containsKey(myUid)) {
                         val symKey = cryptoManager.unwrapKeyFromPeer(wrappedKeys[myUid]!!, peerPub, chatId)
                         val bytes = cryptoManager.decryptBytesWithKey(
                             E2EECryptoManager.EncryptedPayload.fromWireString(ciphertext),
@@ -256,15 +303,40 @@ class ChatRepositoryImpl @Inject constructor(
                     } else {
                         plainFallback.ifBlank { "رسالة مشفرة" }
                     }
-                }.getOrElse { plainFallback.ifBlank { "تعذر فك تشفير الرسالة" } }
+                }
+                val firstPub = keyOwnerUid?.let {
+                    peerPubKeyCache[it] ?: fetchUserCached(it)?.publicKey?.also { pk ->
+                        if (pk.isNotBlank()) peerPubKeyCache[it] = pk
+                    }
+                }
+                val firstTry = if (!firstPub.isNullOrBlank()) runCatching { attemptDecrypt(firstPub) } else Result.failure(IllegalStateException("Missing key"))
+                firstTry.getOrElse {
+                    // Key might have rotated on peer reinstall/new login: force fresh server key fetch once
+                    val freshPub = keyOwnerUid?.let { uid ->
+                        userCache.remove(uid)
+                        peerPubKeyCache.remove(uid)
+                        fetchUserCached(uid, forceServer = true)?.publicKey?.also { pk ->
+                            if (pk.isNotBlank()) peerPubKeyCache[uid] = pk
+                        }
+                    }
+                    if (!freshPub.isNullOrBlank() && freshPub != firstPub) {
+                        runCatching { attemptDecrypt(freshPub) }.getOrElse { plainFallback.ifBlank { "تعذر فك تشفير الرسالة" } }
+                    } else {
+                        plainFallback.ifBlank { "تعذر فك تشفير الرسالة" }
+                    }
+                }
             }
             else -> plainFallback
         }
 
-        // Auto-mark delivered if from peer
+        // Auto-mark delivered if received by peer
         val rawStatus = MessageStatus.fromRaw(doc.getString("status"))
         if (senderId != myUid && rawStatus == MessageStatus.SENT) {
-            doc.reference.update("status", MessageStatus.DELIVERED.raw)
+            runCatching { doc.reference.update("status", MessageStatus.DELIVERED.raw) }
+            runCatching {
+                firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+                    .update("lastMessageStatus", MessageStatus.DELIVERED.raw)
+            }
         }
 
         return WesalMessage(
@@ -392,7 +464,8 @@ class ChatRepositoryImpl @Inject constructor(
             "lastMessagePreview" to preview,
             "lastMessageTime" to now,
             "lastMessageSenderId" to myUid,
-            "lastMessageStatus" to MessageStatus.SENT.raw
+            "lastMessageStatus" to MessageStatus.SENT.raw,
+            "deletedForUsers" to emptyList<String>()
         )
         participants.filter { it != myUid }.forEach { otherUid ->
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
@@ -446,14 +519,35 @@ class ChatRepositoryImpl @Inject constructor(
                     }
                 }
 
-                val storageRef = storage.reference.child("$folder/$chatId/${UUID.randomUUID()}.enc")
-                val uploadTask = storageRef.putBytes(encryptedBytes)
-                uploadTask.addOnProgressListener { snap ->
-                    val total = snap.totalByteCount.coerceAtLeast(1L)
-                    trySend(Result.success(snap.bytesTransferred.toFloat() / total.toFloat()))
+                val downloadUrl = try {
+                    val storageRef = storage.reference.child("$folder/$chatId/${UUID.randomUUID()}.enc")
+                    val uploadTask = storageRef.putBytes(encryptedBytes)
+                    uploadTask.addOnProgressListener { snap ->
+                        val total = snap.totalByteCount.coerceAtLeast(1L)
+                        trySend(Result.success(snap.bytesTransferred.toFloat() / total.toFloat()))
+                    }
+                    uploadTask.await()
+                    storageRef.downloadUrl.await().toString()
+                } catch (storageErr: Exception) {
+                    if (type == MessageType.IMAGE) {
+                        val b64Jpeg = uriToBase64Jpeg(context, uri, maxSide = 720, quality = 72)
+                        val rawJpegBytes = runCatching {
+                            Base64.decode(b64Jpeg.substringAfter("base64,"), Base64.NO_WRAP)
+                        }.getOrNull()
+                        if (rawJpegBytes != null && rawJpegBytes.isNotEmpty() && rawJpegBytes.size <= 380_000) {
+                            val encSmall = cryptoManager.encryptStreamToBytes(rawJpegBytes.inputStream(), symKey).first
+                            trySend(Result.success(0.85f))
+                            "wesal-inline://" + Base64.encodeToString(encSmall, Base64.NO_WRAP)
+                        } else {
+                            throw storageErr
+                        }
+                    } else if (type == MessageType.VOICE && encryptedBytes.size <= 450_000) {
+                        trySend(Result.success(0.85f))
+                        "wesal-inline://" + Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
+                    } else {
+                        throw IllegalStateException("تعذر رفع المرفق إلى Firebase Storage — تأكد من تفعيل Storage للملفات الكبيرة")
+                    }
                 }
-                uploadTask.await()
-                val downloadUrl = storageRef.downloadUrl.await().toString()
 
                 val now = System.currentTimeMillis()
                 val messageId = UUID.randomUUID().toString()
@@ -491,7 +585,8 @@ class ChatRepositoryImpl @Inject constructor(
                     "lastMessagePreview" to previewLabel,
                     "lastMessageTime" to now,
                     "lastMessageSenderId" to myUid,
-                    "lastMessageStatus" to MessageStatus.SENT.raw
+                    "lastMessageStatus" to MessageStatus.SENT.raw,
+                    "deletedForUsers" to emptyList<String>()
                 )
                 participants.filter { it != myUid }.forEach { otherUid ->
                     chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
@@ -524,8 +619,12 @@ class ChatRepositoryImpl @Inject constructor(
                 return@runCatching targetFile
             }
 
-            val ref = storage.getReferenceFromUrl(message.mediaUrl)
-            val encryptedBytes = ref.getBytes(Constants.MAX_UPLOAD_SIZE_BYTES).await()
+            val encryptedBytes = if (message.mediaUrl.startsWith("wesal-inline://")) {
+                Base64.decode(message.mediaUrl.removePrefix("wesal-inline://"), Base64.NO_WRAP)
+            } else {
+                val ref = storage.getReferenceFromUrl(message.mediaUrl)
+                ref.getBytes(Constants.MAX_UPLOAD_SIZE_BYTES).await()
+            }
 
             val wrappedKey = message.wrappedKeys[myUid]
             val plainBytes = if (!wrappedKey.isNullOrBlank()) {
@@ -582,7 +681,8 @@ class ChatRepositoryImpl @Inject constructor(
             "lastMessagePreview" to "موقع جغرافي",
             "lastMessageTime" to now,
             "lastMessageSenderId" to myUid,
-            "lastMessageStatus" to MessageStatus.SENT.raw
+            "lastMessageStatus" to MessageStatus.SENT.raw,
+            "deletedForUsers" to emptyList<String>()
         )
         participants.filter { it != myUid }.forEach { otherUid ->
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
@@ -604,19 +704,33 @@ class ChatRepositoryImpl @Inject constructor(
         val myUid = auth.currentUser?.uid ?: return
         runCatching {
             val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+            val chatSnap = chatRef.get().await()
             chatRef.update("unreadCounts.$myUid", 0).await()
+
+            val me = fetchUserCached(myUid)
+            if (me?.privacySettings?.readReceiptsEnabled == false) {
+                return@runCatching
+            }
+
             val unreadSnap = chatRef.collection(Constants.COLLECTION_MESSAGES)
-                .whereNotEqualTo("senderId", myUid)
+                .whereIn("status", listOf(MessageStatus.SENT.raw, MessageStatus.DELIVERED.raw))
                 .get()
                 .await()
             val batch = firestore.batch()
+            var anyUpdated = false
             unreadSnap.documents.forEach { doc ->
-                val status = doc.getString("status")
-                if (status != MessageStatus.READ.raw) {
+                if (doc.getString("senderId") != myUid) {
                     batch.update(doc.reference, "status", MessageStatus.READ.raw)
+                    anyUpdated = true
                 }
             }
-            batch.commit().await()
+            if (chatSnap.getString("lastMessageSenderId") != myUid) {
+                batch.update(chatRef, "lastMessageStatus", MessageStatus.READ.raw)
+                anyUpdated = true
+            }
+            if (anyUpdated) {
+                batch.commit().await()
+            }
         }
     }
 

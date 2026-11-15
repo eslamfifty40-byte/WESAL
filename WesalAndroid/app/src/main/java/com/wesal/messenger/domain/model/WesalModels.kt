@@ -1,5 +1,19 @@
 package com.wesal.messenger.domain.model
 
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class SavedWesalAccount(
+    val uid: String = "",
+    val displayName: String = "",
+    val email: String = "",
+    val phoneNumber: String = "",
+    val publicId: String = "",
+    val photoUrl: String = "",
+    val provider: String = "email",
+    val lastUsedAt: Long = System.currentTimeMillis()
+)
+
 enum class PrivacyVisibility(val key: String) {
     EVERYONE("everyone"),
     CONTACTS("contacts"),
@@ -21,7 +35,9 @@ data class PrivacySettings(
 
 data class WesalUser(
     val uid: String = "",
+    val email: String = "",
     val phoneNumber: String = "",
+    val isPhoneVerified: Boolean = false,
     val displayName: String = "",
     val publicId: String = "",
     val bio: String = "أستخدم تطبيق وصال",
@@ -131,7 +147,8 @@ data class GroupInfo(
 enum class StoryType(val raw: String) {
     TEXT("TEXT"),
     IMAGE("IMAGE"),
-    VIDEO("VIDEO");
+    VIDEO("VIDEO"),
+    AUDIO("AUDIO");
 
     companion object {
         fun fromRaw(raw: String?): StoryType =
@@ -153,6 +170,13 @@ data class StoryItem(
     val expiresAt: Long = System.currentTimeMillis() + 24 * 60 * 60 * 1000L,
     val visibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
     val viewerIds: List<String> = emptyList()
+)
+
+data class StoryViewer(
+    val uid: String = "",
+    val displayName: String = "",
+    val photoUrl: String = "",
+    val viewedAt: Long = 0L
 )
 
 enum class CallStatus(val raw: String) {

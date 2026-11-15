@@ -7,9 +7,12 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.wesal.messenger.domain.model.SavedWesalAccount
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +35,8 @@ data class AppUserSettings(
 class UserPreferencesDataStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
+    private val json = Json { ignoreUnknownKeys = true }
+
     private object Keys {
         val DARK_THEME = booleanPreferencesKey("dark_theme")
         val FONT_SCALE = floatPreferencesKey("font_scale")
@@ -44,6 +49,7 @@ class UserPreferencesDataStore @Inject constructor(
         val PENDING_PHONE = stringPreferencesKey("pending_phone")
         val PENDING_OTP_TS = longPreferencesKey("pending_otp_ts")
         val DEVICE_SESSION_ID = stringPreferencesKey("device_session_id")
+        val SAVED_ACCOUNTS_JSON = stringPreferencesKey("saved_accounts_json")
     }
 
     val settingsFlow: Flow<AppUserSettings> = context.wesalDataStore.data.map { prefs ->
@@ -59,6 +65,48 @@ class UserPreferencesDataStore @Inject constructor(
             pendingPhoneNumber = prefs[Keys.PENDING_PHONE] ?: "",
             pendingOtpTimestamp = prefs[Keys.PENDING_OTP_TS] ?: 0L
         )
+    }
+
+    val savedAccountsFlow: Flow<List<SavedWesalAccount>> = context.wesalDataStore.data.map { prefs ->
+        decodeSavedAccounts(prefs[Keys.SAVED_ACCOUNTS_JSON])
+    }
+
+    suspend fun upsertSavedAccount(account: SavedWesalAccount) {
+        if (account.uid.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val current = decodeSavedAccounts(prefs[Keys.SAVED_ACCOUNTS_JSON]).toMutableList()
+            val idx = current.indexOfFirst { it.uid == account.uid }
+            if (idx >= 0) {
+                val existing = current[idx]
+                current[idx] = account.copy(
+                    displayName = account.displayName.ifBlank { existing.displayName },
+                    email = account.email.ifBlank { existing.email },
+                    phoneNumber = account.phoneNumber.ifBlank { existing.phoneNumber },
+                    publicId = account.publicId.ifBlank { existing.publicId },
+                    photoUrl = account.photoUrl.ifBlank { existing.photoUrl },
+                    provider = account.provider.ifBlank { existing.provider }
+                )
+            } else {
+                current.add(account)
+            }
+            val sorted = current.sortedByDescending { it.lastUsedAt }
+            prefs[Keys.SAVED_ACCOUNTS_JSON] = json.encodeToString(sorted)
+        }
+    }
+
+    suspend fun removeSavedAccount(uid: String) {
+        context.wesalDataStore.edit { prefs ->
+            val updated = decodeSavedAccounts(prefs[Keys.SAVED_ACCOUNTS_JSON])
+                .filterNot { it.uid == uid }
+            prefs[Keys.SAVED_ACCOUNTS_JSON] = json.encodeToString(updated)
+        }
+    }
+
+    private fun decodeSavedAccounts(raw: String?): List<SavedWesalAccount> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.decodeFromString<List<SavedWesalAccount>>(raw)
+        }.getOrDefault(emptyList())
     }
 
     suspend fun setDarkTheme(enabled: Boolean) {
@@ -100,6 +148,15 @@ class UserPreferencesDataStore @Inject constructor(
             prefs.remove(Keys.PENDING_VERIFICATION_ID)
             prefs.remove(Keys.PENDING_PHONE)
             prefs.remove(Keys.PENDING_OTP_TS)
+        }
+    }
+
+    suspend fun clearUserSessionState() {
+        context.wesalDataStore.edit { prefs ->
+            prefs.remove(Keys.PENDING_VERIFICATION_ID)
+            prefs.remove(Keys.PENDING_PHONE)
+            prefs.remove(Keys.PENDING_OTP_TS)
+            prefs.remove(Keys.DEVICE_SESSION_ID)
         }
     }
 

@@ -37,6 +37,9 @@ class MainViewModel @Inject constructor(
     val isOnline: StateFlow<Boolean> = networkMonitor.isOnline
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
+    val authUid: StateFlow<String?> = authRepository.observeAuthState()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, authRepository.currentUserId)
+
     val incomingCall: StateFlow<CallRecord?> = callRepository.observeIncomingCalls()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
@@ -49,25 +52,19 @@ class MainViewModel @Inject constructor(
 
     private fun resolveInitialRoute() {
         viewModelScope.launch {
-            val uid = authRepository.currentUserId
+            // Await initial emission from FirebaseAuth AuthStateListener so persisted sessions are restored reliably
+            val uid = authRepository.observeAuthState().first()
             if (uid != null) {
-                runCatching { authRepository.syncFcmToken() }
-                val res = runCatching { userRepository.getUserOnce(uid) }
-                val user = res.getOrNull()
-                _startDestination.value = if (res.isFailure) {
-                    StartDestination.Home
-                } else if (user == null || user.displayName.isBlank()) {
-                    StartDestination.ProfileSetup
-                } else {
-                    StartDestination.Home
+                launch { authRepository.syncFcmToken() }
+                val userResult = runCatching { userRepository.getUserOnce(uid) }
+                val user = userResult.getOrNull()
+                _startDestination.value = when {
+                    user != null && user.displayName.isBlank() -> StartDestination.ProfileSetup
+                    userResult.isSuccess && user == null -> StartDestination.ProfileSetup
+                    else -> StartDestination.Home
                 }
             } else {
-                val saved = prefs.settingsFlow.first()
-                _startDestination.value = if (saved.pendingVerificationId.isNotBlank()) {
-                    StartDestination.OtpPending
-                } else {
-                    StartDestination.PhoneLogin
-                }
+                _startDestination.value = StartDestination.PhoneLogin
             }
         }
     }

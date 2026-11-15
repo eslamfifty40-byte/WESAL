@@ -2,12 +2,12 @@ import { Download, FolderArchive, ShieldCheck, Smartphone, AlertTriangle, CheckC
 
 const PROJECT_HIGHLIGHTS = [
   'الاسم: وصال (WESAL) — الحزمة: com.wesal.messenger — Android 8.0+ (API 26)',
-  'ملفات Gradle كاملة (settings.gradle.kts, build.gradle.kts, app/build.gradle.kts, libs.versions.toml)',
+  'ملفات Gradle نظيفة وخالية من التكرار (settings.gradle.kts, build.gradle.kts, app/build.gradle.kts, libs.versions.toml)',
   'الأيقونة الرسمية المرفقة بجميع مقاسات mipmap + Adaptive Icon في mipmap-anydpi-v26',
-  'تسجيل الدخول برقم الهاتف عبر Firebase Phone Auth (مصر +20 افتراضياً) + OTP + حفظ الجلسة',
-  'محادثات فورية + تشفير طرفي ECDH P-256 + HKDF-SHA256 + AES-256-GCM',
-  'كاميرا CameraX + Photo Picker + فيديو Media3 + رسائل صوتية AAC + ملفات + موقع جغرافي',
-  'مكالمات صوت وفيديو عبر WebRTC + حالات 24 ساعة + مجموعات + إشعارات FCM + قواعد Firestore & Storage'
+  'تسجيل مجاني على Firebase Spark + تبديل وإدارة حسابات متعددة على نفس الجهاز عبر Credential Manager & Email',
+  'معرف وصال فريد (Wesal ID) واكتشاف مستخدمي التطبيق مع أزرار دردشة ومكالمة صوتية وفيديو مباشرة + مطابقة SHA-256',
+  'كاميرا CameraX موحدة (نشر في الحالة أو إرسال مباشر للمحادثات) + حالات 24 ساعة (صور مقصوصة، فيديو، صوتية، نصية) مع قائمة المشاهدين',
+  'تشفير E2EE معزول لكل حساب (ECDH P-256 + AES-256-GCM) مع بديل inline للصور والملفات الصوتية عند عدم تفعيل Storage + مكالمات WebRTC'
 ];
 
 export default function App() {
@@ -32,7 +32,7 @@ export default function App() {
               <FolderArchive className="w-4 h-4 text-[#00E5FF]" />
               اسم الملف: <strong className="text-white">WesalAndroid.zip</strong>
             </span>
-            <span className="text-[#00C853] font-semibold">94 ملفاً مصدرياً</span>
+            <span className="text-[#00C853] font-semibold">107 ملفاً مصدرياً</span>
           </div>
 
           <a
@@ -66,11 +66,11 @@ export default function App() {
             ملاحظة تقنية مهمة قبل التشغيل
           </div>
           <p>
-            هذا الملف يحتوي على الشيفرة المصدرية لـ Android Studio ولم يتم تشغيل Gradle Build أو اختبار APK أو خدمات Firebase هنا لعدم توفر Android SDK في بيئة التوليد.
+            هذا الملف يحتوي على الشيفرة المصدرية لـ Android Studio ولم يتم تشغيل Gradle Build أو اختبار APK أو تسجيل الدخول الفعلي هنا لعدم توفر Android SDK في بيئة التوليد.
           </p>
           <p className="flex items-center gap-1.5 text-[#CBD5E1]">
             <ShieldCheck className="w-3.5 h-3.5 text-[#00E5FF] shrink-0" />
-            بعد فك الضغط، أضف ملف <code className="text-white">google-services.json</code> داخل <code className="text-white">WesalAndroid/app/</code> ثم نفّذ Gradle Sync في Android Studio.
+            بعد فك الضغط، أضف بصمة <code className="text-white">SHA-1</code> وفعّل موفّري <code className="text-white">Google</code> و<code className="text-white">Email/Password</code> في Firebase Spark Console ثم نفّذ Gradle Sync.
           </p>
         </div>
       </div>

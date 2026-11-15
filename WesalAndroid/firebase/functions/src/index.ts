@@ -27,7 +27,10 @@ export const onNewMessagePush = onDocumentCreated(
     const tokens: string[] = [];
     for (const uid of recipients) {
       const userSnap = await db.collection("users").doc(uid).get();
-      const token = userSnap.data()?.fcmToken;
+      const userData = userSnap.data();
+      const blocked: string[] = userData?.blockedUsers || [];
+      if (blocked.includes(senderId)) continue;
+      const token = userData?.fcmToken;
       if (token) tokens.push(token);
     }
 
@@ -37,6 +40,7 @@ export const onNewMessagePush = onDocumentCreated(
       tokens,
       data: {
         type: isGroup ? "GROUP_MESSAGE" : "MESSAGE",
+        messageId: event.params.messageId,
         chatId,
         title,
         body
@@ -55,7 +59,11 @@ export const onIncomingCallPush = onDocumentCreated(
     if (!call || call.status !== "RINGING") return;
 
     const calleeSnap = await db.collection("users").doc(call.calleeId).get();
-    const token = calleeSnap.data()?.fcmToken;
+    const calleeData = calleeSnap.data();
+    const blocked: string[] = calleeData?.blockedUsers || [];
+    if (blocked.includes(call.callerId || "")) return;
+
+    const token = calleeData?.fcmToken;
     if (!token) return;
 
     await admin.messaging().send({
@@ -69,6 +77,54 @@ export const onIncomingCallPush = onDocumentCreated(
       },
       android: {
         priority: "high"
+      }
+    });
+  }
+);
+
+export const onNewStoryPush = onDocumentCreated(
+  "stories/{storyId}",
+  async (event) => {
+    const story = event.data?.data();
+    if (!story) return;
+    if (story.visibility === "nobody") return;
+
+    const ownerUid: string = story.ownerUid || "";
+    const ownerName: string = story.ownerName || "مستخدم وصال";
+    const chatsSnap = await db.collection("chats")
+      .whereArrayContains("participantIds", ownerUid)
+      .limit(50)
+      .get();
+
+    const recipientSet = new Set<string>();
+    for (const chatDoc of chatsSnap.docs) {
+      const participants: string[] = chatDoc.data().participantIds || [];
+      for (const p of participants) {
+        if (p !== ownerUid) recipientSet.add(p);
+      }
+    }
+
+    const tokens: string[] = [];
+    for (const uid of recipientSet) {
+      const userSnap = await db.collection("users").doc(uid).get();
+      const userData = userSnap.data();
+      const blocked: string[] = userData?.blockedUsers || [];
+      if (blocked.includes(ownerUid)) continue;
+      if (userData?.fcmToken) tokens.push(userData.fcmToken);
+    }
+
+    if (tokens.length === 0) return;
+
+    await admin.messaging().sendEachForMulticast({
+      tokens,
+      data: {
+        type: "STORY",
+        messageId: `story_${event.params.storyId}`,
+        title: "حالة جديدة على وصال",
+        body: `نشر ${ownerName} حالة جديدة`
+      },
+      android: {
+        priority: "normal"
       }
     });
   }

@@ -65,15 +65,24 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Stories (24h TTL)
+    // Stories (24h TTL enforced in query & client; Firestore queries cannot statically prove clientTime >= request.time)
     match /stories/{storyId} {
-      allow read: if isSignedIn() && resource.data.expiresAt > request.time.toMillis();
+      allow read: if isSignedIn();
       allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
       allow update: if isSignedIn() && (
         resource.data.ownerUid == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewerIds'])
       );
       allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+
+      match /viewers/{viewerId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() &&
+          request.auth.uid == viewerId &&
+          get(/databases/$(database)/documents/stories/$(storyId)).data.ownerUid != request.auth.uid &&
+          request.resource.data.uid == request.auth.uid;
+        allow update, delete: if false;
+      }
     }
 
     // WebRTC Calls Signaling

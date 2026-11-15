@@ -7,38 +7,49 @@ service firebase.storage {
     }
 
     function underMaxSize() {
-      return request.resource.size <= 50 * 1024 * 1024;
+      return request.resource != null && request.resource.size <= 50 * 1024 * 1024;
     }
 
     match /avatars/{userId}/{fileName} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && request.auth.uid == userId &&
+      allow create, update: if isSignedIn() && request.auth.uid == userId &&
+        request.resource != null &&
         request.resource.size <= 10 * 1024 * 1024 &&
         request.resource.contentType.matches('image/.*');
+      allow delete: if isSignedIn() && request.auth.uid == userId;
     }
 
     match /group_avatars/{groupId}/{fileName} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() &&
+      allow create, update: if isSignedIn() &&
+        request.resource != null &&
         request.resource.size <= 10 * 1024 * 1024 &&
         request.resource.contentType.matches('image/.*');
+      allow delete: if isSignedIn();
     }
 
     match /stories_media/{userId}/{fileName} {
       allow read: if isSignedIn();
-      allow write: if isSignedIn() && request.auth.uid == userId && underMaxSize();
+      allow create, update: if isSignedIn() && request.auth.uid == userId && underMaxSize();
+      allow delete: if isSignedIn() && request.auth.uid == userId;
     }
 
     match /chat_media/{chatId}/{fileName} {
-      allow read, write: if isSignedIn() && underMaxSize();
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
     }
 
     match /voice_notes/{chatId}/{fileName} {
-      allow read, write: if isSignedIn() && underMaxSize();
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
     }
 
     match /shared_files/{chatId}/{fileName} {
-      allow read, write: if isSignedIn() && underMaxSize();
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
     }
   }
 }

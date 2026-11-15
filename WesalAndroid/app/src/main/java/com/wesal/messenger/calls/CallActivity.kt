@@ -3,7 +3,9 @@ package com.wesal.messenger.calls
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
@@ -33,8 +35,10 @@ import com.wesal.messenger.domain.repository.CallRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
+import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
 import org.webrtc.SurfaceViewRenderer
 import javax.inject.Inject
@@ -47,6 +51,7 @@ class CallActivity : AppCompatActivity() {
 
     private var activeCallId: String = ""
     private var startedSeconds: Long = 0L
+    private val pendingLocalCandidates = mutableListOf<IceCandidate>()
 
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,19 +98,25 @@ class CallActivity : AppCompatActivity() {
                         this@CallActivity,
                         Intent(this@CallActivity, CallForegroundService::class.java).apply {
                             putExtra("peerName", peerName)
+                            putExtra("isVideo", isVideo)
                         }
                     )
 
                     webRtcManager.startSession(isVideo) { candidate ->
-                        if (activeCallId.isNotBlank()) {
+                        val cid = activeCallId
+                        if (cid.isNotBlank()) {
                             lifecycleScope.launch {
                                 callRepository.addIceCandidate(
-                                    callId = activeCallId,
+                                    callId = cid,
                                     sdpMid = candidate.sdpMid,
                                     sdpMLineIndex = candidate.sdpMLineIndex,
                                     candidate = candidate.sdp,
                                     fromCaller = !isIncoming
                                 )
+                            }
+                        } else {
+                            synchronized(pendingLocalCandidates) {
+                                pendingLocalCandidates.add(candidate)
                             }
                         }
                     }
@@ -117,15 +128,34 @@ class CallActivity : AppCompatActivity() {
                                 callRepository.initiateCall(targetUser, isVideo, offerSdp)
                                     .onSuccess { newCallId ->
                                         activeCallId = newCallId
+                                        val queued = synchronized(pendingLocalCandidates) {
+                                            pendingLocalCandidates.toList().also { pendingLocalCandidates.clear() }
+                                        }
+                                        queued.forEach { c ->
+                                            lifecycleScope.launch {
+                                                callRepository.addIceCandidate(
+                                                    callId = newCallId,
+                                                    sdpMid = c.sdpMid,
+                                                    sdpMLineIndex = c.sdpMLineIndex,
+                                                    candidate = c.sdp,
+                                                    fromCaller = true
+                                                )
+                                            }
+                                        }
                                         listenToCallAndCandidates(newCallId, isCaller = true) { status ->
                                             callStatusLabel = status
                                         }
                                     }
+                                    .onFailure {
+                                        callStatusLabel = "تعذر بدء المكالمة"
+                                    }
                             }
                         }
                     } else {
-                        val callDoc = callRepository.observeCall(initialCallId).firstOrNull()
-                        if (callDoc != null && callDoc.offerSdp.isNotBlank()) {
+                        val callDoc = callRepository.observeCall(initialCallId)
+                            .filter { it != null && it.offerSdp.isNotBlank() }
+                            .firstOrNull()
+                        if (callDoc != null) {
                             webRtcManager.setRemoteOfferAndCreateAnswer(callDoc.offerSdp) { answerSdp ->
                                 lifecycleScope.launch {
                                     callRepository.submitAnswer(initialCallId, answerSdp)
@@ -134,6 +164,8 @@ class CallActivity : AppCompatActivity() {
                                     }
                                 }
                             }
+                        } else {
+                            callStatusLabel = "تعذر الاتصال بالمكالمة"
                         }
                     }
                 }
@@ -151,8 +183,53 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
+                // End unanswered outgoing call cleanly after 45 seconds
+                LaunchedEffect(isIncoming, connState) {
+                    if (!isIncoming && connState != PeerConnection.PeerConnectionState.CONNECTED) {
+                        delay(45_000L)
+                        if (webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED) {
+                            if (activeCallId.isNotBlank()) {
+                                callRepository.updateCallStatus(activeCallId, CallStatus.MISSED, 0L)
+                            }
+                            finishCallLocally()
+                        }
+                    }
+                }
+
                 Box(modifier = Modifier.fillMaxSize().background(WesalDeepBlack)) {
-                    if (isVideo && remoteVideo != null) {
+                    if (!permissions.allPermissionsGranted) {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Icon(Icons.Default.MicOff, contentDescription = null, tint = WesalError, modifier = Modifier.size(48.dp))
+                            Text(
+                                text = if (isVideo) "تحتاج مكالمة الفيديو لصلاحية الميكروفون والكاميرا" else "تحتاج المكالمة لصلاحية الميكروفون",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = WesalTextPrimary
+                            )
+                            Button(
+                                onClick = { permissions.launchMultiplePermissionRequest() },
+                                colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                            ) {
+                                Text("منح الصلاحيات")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    val settingsIntent = Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.fromParts("package", packageName, null)
+                                    )
+                                    runCatching { startActivity(settingsIntent) }
+                                }
+                            ) {
+                                Text("فتح إعدادات التطبيق", color = WesalTurquoise)
+                            }
+                        }
+                    } else if (isVideo && remoteVideo != null) {
                         val remoteRenderer = remember {
                             SurfaceViewRenderer(this@CallActivity).apply {
                                 init(webRtcManager.eglBase.eglBaseContext, null)
@@ -169,6 +246,18 @@ class CallActivity : AppCompatActivity() {
                             factory = { remoteRenderer },
                             modifier = Modifier.fillMaxSize()
                         )
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.55f),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(top = 48.dp, start = 16.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                                Text(peerName, style = MaterialTheme.typography.titleMedium, color = WesalTextPrimary)
+                                Text(callStatusLabel, style = MaterialTheme.typography.labelMedium, color = WesalTurquoise)
+                            }
+                        }
                     } else {
                         Column(
                             modifier = Modifier.align(Alignment.Center),

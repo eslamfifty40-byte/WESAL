@@ -103,10 +103,6 @@ ksp {
 }
 
 dependencies {
-    implementation("com.github.yalantis:ucrop:2.2.8")
-    implementation(libs.androidx.credentials)
-    implementation(libs.androidx.credentials.play)
-    implementation(libs.google.googleid)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.splashscreen)
@@ -164,6 +160,10 @@ dependencies {
     implementation(libs.play.services.location)
     implementation(libs.google.play.integrity)
     implementation(libs.accompanist.permissions)
+    implementation(libs.ucrop)
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
+    implementation(libs.googleid)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

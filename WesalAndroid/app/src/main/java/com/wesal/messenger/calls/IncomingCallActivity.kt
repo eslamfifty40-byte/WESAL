@@ -1,9 +1,12 @@
 package com.wesal.messenger.calls
 
+import android.app.NotificationManager
 import android.content.Intent
 import android.media.Ringtone
 import android.media.RingtoneManager
+import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
@@ -34,6 +37,11 @@ class IncomingCallActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val callId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "مستخدم وصال"
@@ -48,7 +56,8 @@ class IncomingCallActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             callRepository.observeCall(callId).collect { call ->
-                if (call != null && (call.status == CallStatus.ENDED || call.status == CallStatus.MISSED)) {
+                if (call != null && (call.status == CallStatus.ENDED || call.status == CallStatus.MISSED || call.status == CallStatus.REJECTED)) {
+                    cancelIncomingNotification(callId)
                     finish()
                 }
             }
@@ -86,6 +95,7 @@ class IncomingCallActivity : AppCompatActivity() {
                         FloatingActionButton(
                             onClick = {
                                 ringtone?.stop()
+                                cancelIncomingNotification(callId)
                                 lifecycleScope.launch {
                                     callRepository.updateCallStatus(callId, CallStatus.REJECTED)
                                     finish()
@@ -102,6 +112,7 @@ class IncomingCallActivity : AppCompatActivity() {
                         FloatingActionButton(
                             onClick = {
                                 ringtone?.stop()
+                                cancelIncomingNotification(callId)
                                 startActivity(
                                     CallActivity.createIncomingAnswerIntent(
                                         this@IncomingCallActivity,
@@ -123,6 +134,12 @@ class IncomingCallActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
+    }
+
+    private fun cancelIncomingNotification(callId: String) {
+        if (callId.isNotBlank()) {
+            getSystemService(NotificationManager::class.java)?.cancel(callId.hashCode())
         }
     }
 
