@@ -378,7 +378,16 @@ fun ProfileScreen(
             }
 
             OutlinedTextField(
-                value = name,
+colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedTextColor = palette.textPrimary,
+                unfocusedTextColor = palette.textPrimary,
+                focusedLabelColor = palette.turquoise,
+                unfocusedLabelColor = palette.textSecondary,
+                focusedPlaceholderColor = palette.textMuted,
+                unfocusedPlaceholderColor = palette.textMuted,
+                cursorColor = palette.turquoise
+            ),
+                            value = name,
                 onValueChange = { name = it },
                 label = { Text(if (strings.isEnglish) "Display Name" else "الاسم الظاهر") },
                 modifier = Modifier.fillMaxWidth(),
@@ -388,7 +397,16 @@ fun ProfileScreen(
 
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 OutlinedTextField(
-                    value = publicId,
+colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedTextColor = palette.textPrimary,
+                unfocusedTextColor = palette.textPrimary,
+                focusedLabelColor = palette.turquoise,
+                unfocusedLabelColor = palette.textSecondary,
+                focusedPlaceholderColor = palette.textMuted,
+                unfocusedPlaceholderColor = palette.textMuted,
+                cursorColor = palette.turquoise
+            ),
+                                value = publicId,
                     onValueChange = { raw ->
                         publicId = raw.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }
                     },
@@ -433,7 +451,16 @@ fun ProfileScreen(
             }
 
             OutlinedTextField(
-                value = bio,
+colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedTextColor = palette.textPrimary,
+                unfocusedTextColor = palette.textPrimary,
+                focusedLabelColor = palette.turquoise,
+                unfocusedLabelColor = palette.textSecondary,
+                focusedPlaceholderColor = palette.textMuted,
+                unfocusedPlaceholderColor = palette.textMuted,
+                cursorColor = palette.turquoise
+            ),
+                            value = bio,
                 onValueChange = { bio = it },
                 label = { Text(if (strings.isEnglish) "Bio" else "الوصف الشخصي") },
                 modifier = Modifier.fillMaxWidth(),
@@ -529,7 +556,16 @@ fun ProfileScreen(
 
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                         OutlinedTextField(
-                            value = optionalPhone,
+colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedTextColor = palette.textPrimary,
+                unfocusedTextColor = palette.textPrimary,
+                focusedLabelColor = palette.turquoise,
+                unfocusedLabelColor = palette.textSecondary,
+                focusedPlaceholderColor = palette.textMuted,
+                unfocusedPlaceholderColor = palette.textMuted,
+                cursorColor = palette.turquoise
+            ),
+                                        value = optionalPhone,
                             onValueChange = { optionalPhone = it },
                             label = { Text(strings.phoneNumberLabel) },
                             placeholder = { Text("+201012345678") },
@@ -630,7 +666,16 @@ fun ProfileScreen(
                     )
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                         OutlinedTextField(
-                            value = smsCode,
+colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedTextColor = palette.textPrimary,
+                unfocusedTextColor = palette.textPrimary,
+                focusedLabelColor = palette.turquoise,
+                unfocusedLabelColor = palette.textSecondary,
+                focusedPlaceholderColor = palette.textMuted,
+                unfocusedPlaceholderColor = palette.textMuted,
+                cursorColor = palette.turquoise
+            ),
+                                        value = smsCode,
                             onValueChange = { if (it.length <= 6) smsCode = it.filter(Char::isDigit) },
                             label = { Text("OTP") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
