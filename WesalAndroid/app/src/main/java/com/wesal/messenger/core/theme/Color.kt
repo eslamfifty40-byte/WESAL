@@ -49,7 +49,6 @@ data class WesalPalette(
     val warning: Color,
     val readTick: Color,
     val verifiedBlue: Color,
-    val onPrimary: Color = Color(0xFF06090B)
 )
 
 val WesalDarkPalette = WesalPalette(
