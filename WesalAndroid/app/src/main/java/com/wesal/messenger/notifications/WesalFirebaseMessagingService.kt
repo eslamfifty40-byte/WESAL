@@ -62,7 +62,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                 }
                 "GROUP_MESSAGE" -> {
                     if (!userSettings.notificationsGroups) return@launch
-                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], dedupId)
+                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], null, dedupId)
                 }
                 "STORY" -> {
                     if (!userSettings.notificationsStories) return@launch
