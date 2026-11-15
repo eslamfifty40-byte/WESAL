@@ -6,6 +6,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -66,7 +67,7 @@ fun HomeScreen(
     val strings = LocalWesalStrings.current
     val isSuperAdmin by homeViewModel.isSuperAdmin.collectAsStateWithLifecycle()
 
-    var selectedTab by remember { mutableStateOf(HomeTab.CHATS) }
+    var selectedTab by rememberSaveable { mutableStateOf(HomeTab.CHATS) }
     var menuOpen by remember { mutableStateOf(false) }
     val ctxHome = LocalContext.current
 

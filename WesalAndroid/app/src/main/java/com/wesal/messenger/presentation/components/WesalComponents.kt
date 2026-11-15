@@ -56,11 +56,13 @@ fun WesalAvatar(
     val palette = WesalColors.current
     var loadFailed by remember(imageUrl) { mutableStateOf(false) }
 
+    val imageModel = remember(imageUrl) { wesalImageModel(imageUrl) }
+
     Box(modifier = Modifier.size(size)) {
         if (imageUrl.isNotBlank() && !loadFailed) {
             AsyncImage(
                 model = ImageRequest.Builder(context)
-                    .data(wesalImageModel(imageUrl))
+                    .data(imageModel)
                     .crossfade(true)
                     .build(),
                 contentDescription = name,
@@ -112,42 +114,11 @@ fun WesalVerifiedBadge(
     size: Dp = 17.dp,
     badgeColor: Color = WesalColors.current.verifiedBlue
 ) {
-    Canvas(modifier = modifier.size(size)) {
-        val w = this.size.width
-        val h = this.size.height
-        val cx = w / 2f
-        val cy = h / 2f
-        val outerR = minOf(w, h) * 0.48f
-        val innerR = outerR * 0.78f
-        val lobes = 10
-        val points = lobes * 2
-
-        val sealPath = Path()
-        for (i in 0 until points) {
-            val angle = (i * PI / lobes) - (PI / 2.0)
-            val r = if (i % 2 == 0) outerR else innerR
-            val px = cx + (r * cos(angle)).toFloat()
-            val py = cy + (r * sin(angle)).toFloat()
-            if (i == 0) sealPath.moveTo(px, py) else sealPath.lineTo(px, py)
-        }
-        sealPath.close()
-        drawPath(path = sealPath, color = badgeColor)
-
-        val checkPath = Path().apply {
-            moveTo(cx - outerR * 0.36f, cy + outerR * 0.02f)
-            lineTo(cx - outerR * 0.08f, cy + outerR * 0.30f)
-            lineTo(cx + outerR * 0.40f, cy - outerR * 0.24f)
-        }
-        drawPath(
-            path = checkPath,
-            color = Color.White,
-            style = Stroke(
-                width = (minOf(w, h) * 0.14f).coerceAtLeast(1.8f),
-                cap = StrokeCap.Round,
-                join = StrokeJoin.Round
-            )
-        )
-    }
+    WesalVerifiedMark(
+        badgeSize = size,
+        modifier = modifier,
+        badgeColor = badgeColor
+    )
 }
 
 @Composable

@@ -9,6 +9,7 @@ import com.google.firebase.FirebaseException
 import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.FirebaseTooManyRequestsException
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
@@ -19,6 +20,7 @@ import com.google.firebase.auth.PhoneAuthOptions
 import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
@@ -82,7 +84,7 @@ class AuthRepositoryImpl @Inject constructor(
             val authResult = auth.signInWithCredential(credential).await()
             val firebaseUser = authResult.user ?: error("Unable to sign in with Google")
             if (previousUid != null && previousUid != firebaseUser.uid) {
-                clearActiveSessionForSwitch()
+                clearActiveSessionForSwitch(previousUid)
             }
             prefs.clearPendingOtp()
             val isNewProfile = ensureUserSkeletonExists(
@@ -108,7 +110,7 @@ class AuthRepositoryImpl @Inject constructor(
             val authResult = auth.signInWithEmailAndPassword(email.trim(), password).await()
             val firebaseUser = authResult.user ?: error("Unable to sign in with email")
             if (previousUid != null && previousUid != firebaseUser.uid) {
-                clearActiveSessionForSwitch()
+                clearActiveSessionForSwitch(previousUid)
             }
             prefs.clearPendingOtp()
             val isNewProfile = ensureUserSkeletonExists(
@@ -134,7 +136,7 @@ class AuthRepositoryImpl @Inject constructor(
             val authResult = auth.createUserWithEmailAndPassword(email.trim(), password).await()
             val firebaseUser = authResult.user ?: error("Email registration failed")
             if (previousUid != null && previousUid != firebaseUser.uid) {
-                clearActiveSessionForSwitch()
+                clearActiveSessionForSwitch(previousUid)
             }
             runCatching { firebaseUser.sendEmailVerification().await() }
             prefs.clearPendingOtp()
@@ -173,8 +175,12 @@ class AuthRepositoryImpl @Inject constructor(
             override fun onVerificationCompleted(credential: PhoneAuthCredential) {
                 launch {
                     try {
+                        val previousUid = auth.currentUser?.uid
                         val result = auth.signInWithCredential(credential).await()
                         val uid = result.user?.uid ?: return@launch
+                        if (previousUid != null && previousUid != uid) {
+                            clearActiveSessionForSwitch(previousUid)
+                        }
                         prefs.clearPendingOtp()
                         val isNew = ensureUserSkeletonExists(
                             uid = uid,
@@ -227,9 +233,13 @@ class AuthRepositoryImpl @Inject constructor(
 
     override suspend fun verifyOtpCode(verificationId: String, smsCode: String): Result<Boolean> {
         return try {
+            val previousUid = auth.currentUser?.uid
             val credential = PhoneAuthProvider.getCredential(verificationId, smsCode.trim())
             val authResult = auth.signInWithCredential(credential).await()
             val uid = authResult.user?.uid ?: error("User UID missing after verification")
+            if (previousUid != null && previousUid != uid) {
+                clearActiveSessionForSwitch(previousUid)
+            }
             val phone = authResult.user?.phoneNumber.orEmpty()
             prefs.clearPendingOtp()
             val isNewProfile = ensureUserSkeletonExists(
@@ -247,6 +257,7 @@ class AuthRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             val message = when (e) {
                 is FirebaseAuthInvalidCredentialsException -> "رمز التحقق غير صحيح أو منتهي الصلاحية"
+                is FirebaseAuthException -> mapSparkAuthMessage(e, "فشل التحقق من الرمز")
                 is FirebaseNetworkException -> "تعذر الاتصال بالشبكة، تحقق من الإنترنت"
                 else -> e.localizedMessage ?: "فشل التحقق من الرمز"
             }
@@ -383,6 +394,74 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 
+    private suspend fun allocateUniqueNumericId(uid: String): String {
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        val existingSnap = runCatching { userRef.get().await() }.getOrNull()
+        val existing = existingSnap?.getString("numericId").orEmpty()
+        if (WesalIdUtils.isValidNumericId(existing)) {
+            return existing
+        }
+
+        var indexRulesMissing = false
+        repeat(16) {
+            val candidate = WesalIdUtils.generateRandomNumericCandidate()
+            val indexRef = firestore.collection(Constants.COLLECTION_WESAL_ID_INDEX).document(candidate)
+            val txResult = runCatching {
+                firestore.runTransaction { tx ->
+                    val uSnap = tx.get(userRef)
+                    val currentId = uSnap.getString("numericId").orEmpty()
+                    if (WesalIdUtils.isValidNumericId(currentId)) {
+                        return@runTransaction currentId
+                    }
+                    val idxSnap = tx.get(indexRef)
+                    if (idxSnap.exists() && idxSnap.getString("uid") != uid) {
+                        throw IllegalStateException("NUMERIC_ID_COLLISION")
+                    }
+                    tx.set(
+                        indexRef,
+                        mapOf(
+                            "uid" to uid,
+                            "numericId" to candidate,
+                            "createdAt" to System.currentTimeMillis()
+                        )
+                    )
+                    tx.set(userRef, mapOf("numericId" to candidate), SetOptions.merge())
+                    candidate
+                }.await()
+            }
+            val value = txResult.getOrNull()
+            if (!value.isNullOrBlank() && WesalIdUtils.isValidNumericId(value)) {
+                return value
+            }
+            val ex = txResult.exceptionOrNull()
+            if (ex is FirebaseFirestoreException && ex.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                indexRulesMissing = true
+                return@repeat
+            }
+        }
+
+        if (indexRulesMissing) {
+            repeat(12) {
+                val candidate = WesalIdUtils.generateRandomNumericCandidate()
+                val conflict = runCatching {
+                    firestore.collection(Constants.COLLECTION_USERS)
+                        .whereEqualTo("numericId", candidate)
+                        .limit(1)
+                        .get()
+                        .await()
+                }.getOrNull()
+                if (conflict != null && conflict.documents.none { it.id != uid }) {
+                    userRef.set(mapOf("numericId" to candidate), SetOptions.merge()).await()
+                    return candidate
+                }
+            }
+        }
+
+        val fallback = WesalIdUtils.generateRandomNumericCandidate()
+        userRef.set(mapOf("numericId" to fallback), SetOptions.merge()).await()
+        return fallback
+    }
+
     private suspend fun ensureUserSkeletonExists(
         uid: String,
         phone: String,
@@ -430,6 +509,7 @@ class AuthRepositoryImpl @Inject constructor(
                 )
             )
             userRef.set(newUserMap, SetOptions.merge()).await()
+            val assignedNumericId = allocateUniqueNumericId(uid)
             prefs.upsertSavedAccount(
                 SavedWesalAccount(
                     uid = uid,
@@ -437,6 +517,7 @@ class AuthRepositoryImpl @Inject constructor(
                     email = email.trim(),
                     phoneNumber = normalizedPhone,
                     publicId = uniquePublicId,
+                    numericId = assignedNumericId,
                     photoUrl = suggestedPhoto,
                     provider = provider,
                     lastUsedAt = System.currentTimeMillis()
@@ -447,6 +528,7 @@ class AuthRepositoryImpl @Inject constructor(
             val existingName = snapshot.getString("displayName").orEmpty()
             val existingPhoto = snapshot.getString("photoUrl").orEmpty()
             val existingPublicId = snapshot.getString("publicId").orEmpty()
+            val existingNumericId = snapshot.getString("numericId").orEmpty()
             val existingPhone = snapshot.getString("phoneNumber").orEmpty()
             val existingEmail = snapshot.getString("email").orEmpty()
             val existingVerified = snapshot.getBoolean("isPhoneVerified")
@@ -486,6 +568,11 @@ class AuthRepositoryImpl @Inject constructor(
             }
 
             userRef.set(updateMap, SetOptions.merge()).await()
+            val finalNumericId = if (WesalIdUtils.isValidNumericId(existingNumericId)) {
+                existingNumericId
+            } else {
+                allocateUniqueNumericId(uid)
+            }
             prefs.upsertSavedAccount(
                 SavedWesalAccount(
                     uid = uid,
@@ -493,6 +580,7 @@ class AuthRepositoryImpl @Inject constructor(
                     email = existingEmail.ifBlank { email.trim() },
                     phoneNumber = existingPhone.ifBlank { normalizedPhone },
                     publicId = finalPublicId,
+                    numericId = finalNumericId,
                     photoUrl = existingPhoto.ifBlank { suggestedPhoto },
                     provider = provider,
                     lastUsedAt = System.currentTimeMillis()
@@ -547,6 +635,9 @@ class AuthRepositoryImpl @Inject constructor(
             }
 
             docRef.set(updates, SetOptions.merge()).await()
+            if (!WesalIdUtils.isValidNumericId(existingSnap.getString("numericId"))) {
+                allocateUniqueNumericId(uid)
+            }
             syncFcmToken()
             registerDeviceSession(uid)
 
@@ -565,6 +656,7 @@ class AuthRepositoryImpl @Inject constructor(
                     email = savedUser.email,
                     phoneNumber = savedUser.phoneNumber,
                     publicId = savedUser.publicId,
+                    numericId = savedUser.numericId,
                     photoUrl = savedUser.photoUrl,
                     provider = provider,
                     lastUsedAt = System.currentTimeMillis()
@@ -671,8 +763,8 @@ class AuthRepositoryImpl @Inject constructor(
         prefs.removeSavedAccount(uid)
     }
 
-    override suspend fun clearActiveSessionForSwitch() {
-        val uid = currentUserId
+    override suspend fun clearActiveSessionForSwitch(previousUid: String?) {
+        val uid = previousUid ?: currentUserId
         if (uid != null) {
             runCatching {
                 firestore.collection(Constants.COLLECTION_USERS)
@@ -695,18 +787,42 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     private fun mapSparkAuthMessage(e: Exception, fallback: String): String {
+        if (e is FirebaseNetworkException) {
+            return "لا يوجد اتصال بالإنترنت، تحقق من الشبكة"
+        }
+        if (e is FirebaseTooManyRequestsException) {
+            return "تم إرسال محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة"
+        }
+        if (e is FirebaseAuthException) {
+            when (e.errorCode) {
+                "ERROR_OPERATION_NOT_ALLOWED" ->
+                    return "طريقة التسجيل هذه غير مفعّلة في Firebase Console (Authentication -> Sign-in method). قم بتفعيلها ثم أعد المحاولة."
+                "ERROR_ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL" ->
+                    return "هذا البريد مسجل بالفعل بطريقة دخول مختلفة، سجّل الدخول بنفس الطريقة السابقة"
+                "ERROR_USER_DISABLED" ->
+                    return "تم تعطيل هذا الحساب، تواصل مع الدعم الفني"
+                "ERROR_CREDENTIAL_ALREADY_IN_USE" ->
+                    return "بيانات الاعتماد هذه مرتبطة بالفعل بحساب وصال آخر"
+                "ERROR_INVALID_EMAIL" ->
+                    return "صيغة البريد الإلكتروني غير صحيحة"
+            }
+        }
         return when (e) {
-            is FirebaseNetworkException -> "لا يوجد اتصال بالإنترنت، تحقق من الشبكة"
             is FirebaseAuthInvalidUserException -> "لا يوجد حساب مسجل بهذا البريد الإلكتروني"
             is FirebaseAuthInvalidCredentialsException -> "البريد الإلكتروني أو كلمة المرور غير صحيحة"
             is FirebaseAuthUserCollisionException -> "هذا البريد الإلكتروني مسجل بالفعل في WESAL"
             is FirebaseAuthWeakPasswordException -> "كلمة المرور ضعيفة جداً — استخدم 6 أحرف على الأقل"
-            is FirebaseTooManyRequestsException -> "تم إرسال محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة"
             else -> e.localizedMessage?.takeIf { it.isNotBlank() } ?: fallback
         }
     }
 
     private fun mapAuthError(e: Exception): PhoneAuthEvent.Error {
+        if (e is FirebaseAuthException && e.errorCode == "ERROR_OPERATION_NOT_ALLOWED") {
+            return PhoneAuthEvent.Error(
+                "التحقق برقم الهاتف (Phone Auth) غير مفعّل في Firebase Console — فعّله من Sign-in method وأضف بصمة SHA-1/SHA-256",
+                "Phone authentication is not enabled in Firebase Console"
+            )
+        }
         return when (e) {
             is FirebaseNetworkException -> PhoneAuthEvent.Error(
                 "لا يوجد اتصال بالإنترنت، يرجى التحقق والمحاولة مجدداً",

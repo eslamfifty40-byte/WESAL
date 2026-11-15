@@ -243,4 +243,47 @@ class CoreDomainUnitTest {
         assertEquals(ChannelRole.NONE, channel.roleFor("stranger"))
         assertEquals(ChannelRole.NONE, channel.roleFor(""))
     }
+
+    @Test
+    fun numericIdUtils_validatesExtractsAndGeneratesFiveDigitIds() {
+        assertTrue(WesalIdUtils.isValidNumericId("10000"))
+        assertTrue(WesalIdUtils.isValidNumericId("99999"))
+        assertFalse(WesalIdUtils.isValidNumericId("09999"))
+        assertFalse(WesalIdUtils.isValidNumericId("1234"))
+        assertFalse(WesalIdUtils.isValidNumericId("123456"))
+        assertFalse(WesalIdUtils.isValidNumericId("12a45"))
+
+        assertEquals("48291", WesalIdUtils.extractNumericIdQuery("48291"))
+        assertEquals("48291", WesalIdUtils.extractNumericIdQuery("ID: 48291"))
+        assertEquals("48291", WesalIdUtils.extractNumericIdQuery(" #48291 "))
+        assertNull(WesalIdUtils.extractNumericIdQuery("@ahmed_1"))
+        assertNull(WesalIdUtils.extractNumericIdQuery("1234"))
+
+        repeat(20) {
+            val candidate = WesalIdUtils.generateRandomNumericCandidate()
+            assertTrue("Generated candidate $candidate must be valid 5-digit numericId", WesalIdUtils.isValidNumericId(candidate))
+        }
+    }
+
+    @Test
+    fun officialVerificationBadge_isIndependentFromPhoneVerification() {
+        val phoneOnlyUser = WesalUser(
+            uid = "u_phone",
+            phoneNumber = "+201012345678",
+            isPhoneVerified = true,
+            isVerified = false,
+            numericId = "24680"
+        )
+        val ownerVerifiedUser = WesalUser(
+            uid = "u_verified",
+            phoneNumber = "",
+            isPhoneVerified = false,
+            isVerified = true,
+            numericId = "13579"
+        )
+        assertFalse(phoneOnlyUser.isVerified)
+        assertTrue(phoneOnlyUser.isPhoneVerified)
+        assertTrue(ownerVerifiedUser.isVerified)
+        assertFalse(ownerVerifiedUser.isPhoneVerified)
+    }
 }

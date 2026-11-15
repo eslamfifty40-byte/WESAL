@@ -394,8 +394,19 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     OutlinedTextField(
                         value = draftCaption,
                         onValueChange = { draftCaption = it },
-                        placeholder = { Text("أضف نصاً أو وصفاً للحالة...") },
+                        placeholder = { Text("أضف نصاً أو وصفاً للحالة...", color = WesalTextMuted) },
                         singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = WesalTextPrimary,
+                            unfocusedTextColor = WesalTextPrimary,
+                            cursorColor = WesalTurquoise,
+                            focusedBorderColor = WesalTurquoise,
+                            unfocusedBorderColor = WesalSurfaceBorder,
+                            focusedPlaceholderColor = WesalTextMuted,
+                            unfocusedPlaceholderColor = WesalTextMuted,
+                            focusedContainerColor = WesalSurfaceElevated,
+                            unfocusedContainerColor = WesalSurfaceElevated
+                        ),
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(24.dp)
                     )
@@ -1002,6 +1013,17 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                         onValueChange = { audioCaption = it },
                         label = { Text(if (strings.isEnglish) "Voice note caption (optional)" else "وصف الحالة الصوتية (اختياري)") },
                         singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = palette.textPrimary,
+                            unfocusedTextColor = palette.textPrimary,
+                            cursorColor = palette.turquoise,
+                            focusedBorderColor = palette.turquoise,
+                            unfocusedBorderColor = palette.border,
+                            focusedLabelColor = palette.turquoise,
+                            unfocusedLabelColor = palette.textSecondary,
+                            focusedContainerColor = palette.surfaceElevated,
+                            unfocusedContainerColor = palette.surfaceElevated
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -1057,6 +1079,17 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                         onValueChange = { storyText = it },
                         label = { Text(if (strings.isEnglish) "Write your story..." else "اكتب حالتك...") },
                         maxLines = 4,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = palette.textPrimary,
+                            unfocusedTextColor = palette.textPrimary,
+                            cursorColor = palette.emerald,
+                            focusedBorderColor = palette.emerald,
+                            unfocusedBorderColor = palette.border,
+                            focusedLabelColor = palette.emerald,
+                            unfocusedLabelColor = palette.textSecondary,
+                            focusedContainerColor = palette.surfaceElevated,
+                            unfocusedContainerColor = palette.surfaceElevated
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

@@ -318,13 +318,29 @@ fun ChatDetailScreen(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = viewModel::setSearchQuery,
-                    placeholder = { Text(if (strings.isEnglish) "Search messages..." else "ابحث داخل الرسائل...") },
+                    placeholder = {
+                        Text(
+                            text = if (strings.isEnglish) "Search messages..." else "ابحث داخل الرسائل...",
+                            color = palette.textMuted
+                        )
+                    },
                     trailingIcon = {
                         IconButton(onClick = { viewModel.setSearchQuery(""); showSearchBar = false }) {
-                            Icon(Icons.Default.Close, contentDescription = strings.close)
+                            Icon(Icons.Default.Close, contentDescription = strings.close, tint = palette.textSecondary)
                         }
                     },
                     singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = palette.textPrimary,
+                        unfocusedTextColor = palette.textPrimary,
+                        cursorColor = palette.turquoise,
+                        focusedBorderColor = palette.turquoise,
+                        unfocusedBorderColor = palette.border,
+                        focusedPlaceholderColor = palette.textMuted,
+                        unfocusedPlaceholderColor = palette.textMuted,
+                        focusedContainerColor = palette.surfaceElevated,
+                        unfocusedContainerColor = palette.surfaceElevated
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -536,8 +552,13 @@ fun ChatDetailScreen(
                             }
                         },
                         colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = palette.textPrimary,
+                            unfocusedTextColor = palette.textPrimary,
+                            cursorColor = palette.turquoise,
                             focusedBorderColor = palette.turquoise,
                             unfocusedBorderColor = palette.border,
+                            focusedPlaceholderColor = palette.textMuted,
+                            unfocusedPlaceholderColor = palette.textMuted,
                             focusedContainerColor = palette.surfaceElevated,
                             unfocusedContainerColor = palette.surfaceElevated
                         )
@@ -617,16 +638,18 @@ fun ChatDetailScreen(
                     color = palette.textPrimary
                 )
                 ListItem(
-                    headlineContent = { Text(if (strings.isEnglish) "Photos or Videos" else "صور أو فيديو من المعرض") },
+                    headlineContent = { Text(if (strings.isEnglish) "Photos or Videos" else "صور أو فيديو من المعرض", color = palette.textPrimary) },
                     leadingContent = { Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = palette.turquoise) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     modifier = Modifier.clickable {
                         showAttachSheet = false
                         photoVideoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                     }
                 )
                 ListItem(
-                    headlineContent = { Text(if (strings.isEnglish) "Document (PDF / Office / Text)" else "ملف (PDF / Word / Excel / نصوص)") },
+                    headlineContent = { Text(if (strings.isEnglish) "Document (PDF / Office / Text)" else "ملف (PDF / Word / Excel / نصوص)", color = palette.textPrimary) },
                     leadingContent = { Icon(Icons.Default.Description, contentDescription = null, tint = palette.emerald) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     modifier = Modifier.clickable {
                         showAttachSheet = false
                         documentPicker.launch(
@@ -643,8 +666,9 @@ fun ChatDetailScreen(
                     }
                 )
                 ListItem(
-                    headlineContent = { Text(if (strings.isEnglish) "Share Current Location" else "مشاركة الموقع الجغرافي الحالي") },
+                    headlineContent = { Text(if (strings.isEnglish) "Share Current Location" else "مشاركة الموقع الجغرافي الحالي", color = palette.textPrimary) },
                     leadingContent = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = palette.warning) },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     modifier = Modifier.clickable {
                         showAttachSheet = false
                         if (locationPermissions.allPermissionsGranted) {
@@ -675,20 +699,28 @@ fun ChatDetailScreen(
             title = { Text(if (strings.isEnglish) "Message Actions" else "خيارات الرسالة", color = palette.textPrimary) },
             text = {
                 Column {
+                    val actionItemColors = ListItemDefaults.colors(
+                        containerColor = Color.Transparent,
+                        headlineColor = palette.textPrimary,
+                        leadingIconColor = palette.textSecondary
+                    )
                     ListItem(
                         headlineContent = { Text(if (strings.isEnglish) "Reply" else "رد") },
                         leadingContent = { Icon(Icons.Default.Reply, contentDescription = null) },
+                        colors = actionItemColors,
                         modifier = Modifier.clickable { viewModel.setReplyingTo(msg); selectedMessageForActions = null }
                     )
                     ListItem(
                         headlineContent = { Text(if (strings.isEnglish) "Forward" else "إعادة توجيه") },
                         leadingContent = { Icon(Icons.Default.Forward, contentDescription = null) },
+                        colors = actionItemColors,
                         modifier = Modifier.clickable { forwardingMessage = msg; selectedMessageForActions = null }
                     )
                     if (msg.text.isNotBlank()) {
                         ListItem(
                             headlineContent = { Text(strings.copy) },
                             leadingContent = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                            colors = actionItemColors,
                             modifier = Modifier.clickable {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 cm.setPrimaryClip(ClipData.newPlainText("wesal_msg", msg.text))
@@ -700,18 +732,21 @@ fun ChatDetailScreen(
                         ListItem(
                             headlineContent = { Text(strings.edit) },
                             leadingContent = { Icon(Icons.Default.Edit, contentDescription = null) },
+                            colors = actionItemColors,
                             modifier = Modifier.clickable { viewModel.setEditingMessage(msg); selectedMessageForActions = null }
                         )
                     }
                     ListItem(
                         headlineContent = { Text(if (strings.isEnglish) "Delete for me" else "حذف لدي") },
                         leadingContent = { Icon(Icons.Default.DeleteOutline, contentDescription = null) },
+                        colors = actionItemColors,
                         modifier = Modifier.clickable { viewModel.deleteForMe(msg.messageId); selectedMessageForActions = null }
                     )
                     if (msg.senderId == viewModel.myUid && !msg.isDeletedForEveryone) {
                         ListItem(
                             headlineContent = { Text(if (strings.isEnglish) "Delete for everyone" else "حذف لدى الجميع", color = palette.error) },
                             leadingContent = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = palette.error) },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable { viewModel.deleteForEveryone(msg.messageId); selectedMessageForActions = null }
                         )
                     }
@@ -733,6 +768,7 @@ fun ChatDetailScreen(
                     items(allChats, key = { it.chatId }) { target ->
                         ListItem(
                             headlineContent = { Text(target.title, color = palette.textPrimary) },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
                                 viewModel.forwardMessage(target.chatId, msg)
                                 forwardingMessage = null

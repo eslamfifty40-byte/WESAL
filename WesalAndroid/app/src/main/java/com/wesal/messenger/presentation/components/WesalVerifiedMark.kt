@@ -13,8 +13,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 
 @Composable
-fun WesalVerifiedMark(badgeSize: Dp) {
-    Canvas(Modifier.size(badgeSize)) {
+fun WesalVerifiedMark(
+    badgeSize: Dp,
+    modifier: Modifier = Modifier,
+    badgeColor: Color = Color(0xFF1D9BF0)
+) {
+    Canvas(modifier.size(badgeSize)) {
         val s = this.size.minDimension
         val c = Offset(s / 2f, s / 2f)
         val star = Path()
@@ -27,9 +31,8 @@ fun WesalVerifiedMark(badgeSize: Dp) {
             if (i == 0) star.moveTo(x, y) else star.lineTo(x, y)
         }
         star.close()
-        val blue = Color(0xFF1D9BF0)
-        drawPath(star, blue)
-        drawPath(star, blue, style = Stroke(width = s * 0.06f, join = StrokeJoin.Round))
+        drawPath(star, badgeColor)
+        drawPath(star, badgeColor, style = Stroke(width = s * 0.06f, join = StrokeJoin.Round))
         val check = Path()
         check.moveTo(s * 0.28f, s * 0.52f)
         check.lineTo(s * 0.44f, s * 0.67f)

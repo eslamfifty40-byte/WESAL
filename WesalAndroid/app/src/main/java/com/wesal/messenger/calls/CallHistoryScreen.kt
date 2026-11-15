@@ -41,6 +41,8 @@ import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -48,10 +50,11 @@ import javax.inject.Inject
 @HiltViewModel
 class CallHistoryViewModel @Inject constructor(
     private val callRepository: CallRepository,
-    authRepository: AuthRepository,
+    private val authRepository: AuthRepository,
     private val userRepository: UserRepository
 ) : ViewModel() {
-    val myUid = authRepository.currentUserId.orEmpty()
+    val myUid: String
+        get() = authRepository.currentUserId.orEmpty()
     val history: StateFlow<List<CallRecord>> = callRepository.observeCallHistory()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -70,8 +73,23 @@ class CallHistoryViewModel @Inject constructor(
     private val _selectedCallIds = MutableStateFlow<Set<String>>(emptySet())
     val selectedCallIds: StateFlow<Set<String>> = _selectedCallIds.asStateFlow()
 
+    private var searchJob: Job? = null
+
     init {
-        loadDiscoverableUsers()
+        viewModelScope.launch {
+            authRepository.observeAuthState()
+                .distinctUntilChanged()
+                .collect { uid ->
+                    searchJob?.cancel()
+                    _selectedCallIds.value = emptySet()
+                    _searchQuery.value = ""
+                    _searchResults.value = emptyList()
+                    _discoverableUsers.value = emptyList()
+                    if (uid != null) {
+                        loadDiscoverableUsers()
+                    }
+                }
+        }
     }
 
     fun loadDiscoverableUsers() {
@@ -83,13 +101,15 @@ class CallHistoryViewModel @Inject constructor(
 
     fun searchUsers(query: String) {
         _searchQuery.value = query
+        searchJob?.cancel()
         if (query.isBlank()) {
             _searchResults.value = emptyList()
             _isSearching.value = false
             return
         }
-        viewModelScope.launch {
+        searchJob = viewModelScope.launch {
             _isSearching.value = true
+            delay(250L)
             runCatching { userRepository.searchUsers(query) }
                 .onSuccess { _searchResults.value = it }
             _isSearching.value = false
@@ -382,6 +402,15 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
                     onValueChange = viewModel::searchUsers,
                     placeholder = { Text(strings.searchContactsPlaceholder) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.turquoise) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = palette.textPrimary,
+                        unfocusedTextColor = palette.textPrimary,
+                        focusedPlaceholderColor = palette.textMuted,
+                        unfocusedPlaceholderColor = palette.textMuted,
+                        focusedBorderColor = palette.turquoise,
+                        unfocusedBorderColor = palette.border,
+                        cursorColor = palette.turquoise
+                    ),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp)
@@ -415,9 +444,13 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
                                         isVerified = user.isVerified,
                                         fontWeight = FontWeight.Medium
                                     )
-                                    if (user.publicId.isNotBlank()) {
+                                    val callSub = listOfNotNull(
+                                        user.numericId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
+                                        user.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }
+                                    ).joinToString(" • ")
+                                    if (callSub.isNotBlank()) {
                                         Text(
-                                            text = "@${user.publicId}",
+                                            text = callSub,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = palette.textSecondary,
                                             maxLines = 1,

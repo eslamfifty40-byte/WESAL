@@ -24,7 +24,10 @@ import com.wesal.messenger.security.E2EECryptoManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -34,6 +37,7 @@ import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -47,8 +51,9 @@ class ChatRepositoryImpl @Inject constructor(
 ) : ChatRepository {
 
     private data class CachedUserEntry(val user: WesalUser, val fetchedAtMs: Long)
-    private val userCache = mutableMapOf<String, CachedUserEntry>()
-    private val userCacheTtlMs = 15_000L
+    private val userCache = ConcurrentHashMap<String, CachedUserEntry>()
+    private val userCacheTtlMs = 20_000L
+    private val deliveredThrottleMs = ConcurrentHashMap<String, Long>()
 
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
@@ -59,6 +64,7 @@ class ChatRepositoryImpl @Inject constructor(
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeChats(): Flow<List<ChatPreview>> = observeAuthUid().flatMapLatest { uid ->
         userCache.clear()
+        deliveredThrottleMs.clear()
         if (uid == null) {
             flowOf(emptyList())
         } else {
@@ -67,7 +73,30 @@ class ChatRepositoryImpl @Inject constructor(
                     .whereArrayContains("participantIds", uid)
                     .addSnapshotListener { snapshot, error ->
                         if (error != null || snapshot == null) return@addSnapshotListener
-                        launch {
+                        launch(Dispatchers.IO) {
+                            val now = System.currentTimeMillis()
+                            val missingPeerUids = snapshot.documents
+                                .asSequence()
+                                .filter { it.getBoolean("isGroup") != true }
+                                .mapNotNull { doc ->
+                                    @Suppress("UNCHECKED_CAST")
+                                    (doc.get("participantIds") as? List<String>)?.firstOrNull { it != uid }
+                                }
+                                .filter { peerId ->
+                                    val cached = userCache[peerId]
+                                    cached == null || (now - cached.fetchedAtMs >= userCacheTtlMs)
+                                }
+                                .distinct()
+                                .toList()
+
+                            if (missingPeerUids.isNotEmpty()) {
+                                coroutineScope {
+                                    missingPeerUids.map { peerId ->
+                                        async(Dispatchers.IO) { runCatching { fetchUserCached(peerId) } }
+                                    }.awaitAll()
+                                }
+                            }
+
                             val previews = snapshot.documents.mapNotNull { doc ->
                                 mapChatPreview(doc, uid)
                             }.sortedWith(
@@ -170,6 +199,10 @@ class ChatRepositoryImpl @Inject constructor(
     }
 
     private suspend fun markIncomingMessagesDelivered(chatId: String, myUid: String) {
+        val now = System.currentTimeMillis()
+        val lastRun = deliveredThrottleMs[chatId] ?: 0L
+        if (now - lastRun < 5_000L) return
+        deliveredThrottleMs[chatId] = now
         runCatching {
             val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
             val sentSnap = chatRef.collection(Constants.COLLECTION_MESSAGES)
@@ -230,28 +263,30 @@ class ChatRepositoryImpl @Inject constructor(
                     .orderBy("timestamp", Query.Direction.ASCENDING)
                     .addSnapshotListener { snapshot, error ->
                         if (error != null || snapshot == null) return@addSnapshotListener
-                        launch {
+                        launch(Dispatchers.Default) {
                             val messages = snapshot.documents.mapNotNull { doc ->
                                 mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
                             }
-                            wesalDao.upsertMessages(messages.map {
-                                CachedMessageEntity(
-                                    messageId = it.messageId,
-                                    chatId = it.chatId,
-                                    senderId = it.senderId,
-                                    senderName = it.senderName,
-                                    type = it.type.raw,
-                                    text = it.text,
-                                    mediaUrl = it.mediaUrl,
-                                    mediaLocalPath = it.mediaLocalPath,
-                                    mediaMimeType = it.mediaMimeType,
-                                    mediaFileName = it.mediaFileName,
-                                    mediaSizeBytes = it.mediaSizeBytes,
-                                    mediaDurationMs = it.mediaDurationMs,
-                                    status = it.status.raw,
-                                    timestamp = it.timestamp
-                                )
-                            })
+                            withContext(Dispatchers.IO) {
+                                wesalDao.upsertMessages(messages.map {
+                                    CachedMessageEntity(
+                                        messageId = it.messageId,
+                                        chatId = it.chatId,
+                                        senderId = it.senderId,
+                                        senderName = it.senderName,
+                                        type = it.type.raw,
+                                        text = it.text,
+                                        mediaUrl = it.mediaUrl,
+                                        mediaLocalPath = it.mediaLocalPath,
+                                        mediaMimeType = it.mediaMimeType,
+                                        mediaFileName = it.mediaFileName,
+                                        mediaSizeBytes = it.mediaSizeBytes,
+                                        mediaDurationMs = it.mediaDurationMs,
+                                        status = it.status.raw,
+                                        timestamp = it.timestamp
+                                    )
+                                })
+                            }
                             trySend(messages)
                         }
                     }

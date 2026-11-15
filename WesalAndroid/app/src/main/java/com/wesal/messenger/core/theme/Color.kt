@@ -48,7 +48,7 @@ data class WesalPalette(
     val error: Color,
     val warning: Color,
     val readTick: Color,
-    val verifiedBlue: Color,
+    val verifiedBlue: Color
 )
 
 val WesalDarkPalette = WesalPalette(

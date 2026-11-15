@@ -10,6 +10,8 @@ import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -51,8 +53,20 @@ class ContactsViewModel @Inject constructor(
     val contactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private var searchJob: Job? = null
+
     init {
-        refreshDiscoverableUsers()
+        viewModelScope.launch {
+            authRepository.observeAuthState()
+                .distinctUntilChanged()
+                .collect { uid ->
+                    searchJob?.cancel()
+                    _uiState.value = ContactsUiState()
+                    if (uid != null) {
+                        refreshDiscoverableUsers()
+                    }
+                }
+        }
     }
 
     fun refreshDiscoverableUsers() {
@@ -112,11 +126,13 @@ class ContactsViewModel @Inject constructor(
 
     fun search(query: String) {
         _uiState.update { it.copy(query = query, isSearching = query.isNotBlank(), error = null) }
+        searchJob?.cancel()
         if (query.isBlank()) {
             _uiState.update { it.copy(searchResults = emptyList(), isSearching = false) }
             return
         }
-        viewModelScope.launch {
+        searchJob = viewModelScope.launch {
+            delay(250L)
             runCatching { userRepository.searchUsers(query) }
                 .onSuccess { list ->
                     _uiState.update { it.copy(searchResults = list, isSearching = false) }

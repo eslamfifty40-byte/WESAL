@@ -9,6 +9,7 @@ data class SavedWesalAccount(
     val email: String = "",
     val phoneNumber: String = "",
     val publicId: String = "",
+    val numericId: String = "",
     val photoUrl: String = "",
     val provider: String = "email",
     val lastUsedAt: Long = System.currentTimeMillis()
@@ -45,6 +46,7 @@ data class WesalUser(
     val verificationNote: String = "",
     val displayName: String = "",
     val publicId: String = "",
+    val numericId: String = "",
     val bio: String = "أستخدم تطبيق WESAL",
     val photoUrl: String = "",
     val createdAt: Long = 0L,

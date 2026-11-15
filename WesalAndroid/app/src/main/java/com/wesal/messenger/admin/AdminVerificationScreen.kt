@@ -30,6 +30,8 @@ import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -60,17 +62,35 @@ class AdminVerificationViewModel @Inject constructor(
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
+    private var searchJob: Job? = null
+
     init {
-        refreshUsers()
+        viewModelScope.launch {
+            isSuperAdmin.collect { allowed ->
+                if (!allowed) {
+                    _users.value = emptyList()
+                } else {
+                    refreshUsers()
+                }
+            }
+        }
     }
 
     fun updateSearch(q: String) {
         _searchQuery.value = q
-        refreshUsers()
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            delay(250L)
+            refreshUsers()
+        }
     }
 
     fun refreshUsers() {
         viewModelScope.launch {
+            if (!userRepository.isSuperAdmin()) {
+                _users.value = emptyList()
+                return@launch
+            }
             val q = _searchQuery.value.trim()
             val list = runCatching {
                 if (q.isBlank()) userRepository.listDiscoverableUsers(limit = 40)
@@ -222,14 +242,23 @@ fun AdminVerificationScreen(
                     value = query,
                     onValueChange = viewModel::updateSearch,
                     placeholder = { Text(strings.searchContactsPlaceholder) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.turquoise) },
                     trailingIcon = {
                         if (query.isNotEmpty()) {
                             IconButton(onClick = { viewModel.updateSearch("") }) {
-                                Icon(Icons.Default.Close, contentDescription = strings.clear)
+                                Icon(Icons.Default.Close, contentDescription = strings.clear, tint = palette.textSecondary)
                             }
                         }
                     },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = palette.textPrimary,
+                        unfocusedTextColor = palette.textPrimary,
+                        focusedPlaceholderColor = palette.textMuted,
+                        unfocusedPlaceholderColor = palette.textMuted,
+                        focusedBorderColor = palette.turquoise,
+                        unfocusedBorderColor = palette.border,
+                        cursorColor = palette.turquoise
+                    ),
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
@@ -262,19 +291,29 @@ fun AdminVerificationScreen(
                                     size = 46.dp,
                                     isOnline = user.isOnline
                                 )
-                                Column(modifier = Modifier.weight(1f)) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                     WesalNameWithBadge(
                                         name = user.displayName.ifBlank { "WESAL User" },
                                         isVerified = user.isVerified,
                                         fontWeight = FontWeight.SemiBold
                                     )
-                                    if (user.publicId.isNotBlank()) {
+                                    val subIds = listOfNotNull(
+                                        user.numericId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
+                                        user.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }
+                                    ).joinToString(" • ")
+                                    if (subIds.isNotBlank()) {
                                         Text(
-                                            text = "@${user.publicId}",
+                                            text = subIds,
                                             color = palette.textSecondary,
                                             style = MaterialTheme.typography.bodySmall
                                         )
                                     }
+                                    Text(
+                                        text = if (user.isVerified) strings.verifiedAccountLabel else strings.unverifiedAccountLabel,
+                                        color = if (user.isVerified) palette.verifiedBlue else palette.textMuted,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                     if (user.verificationNote.isNotBlank()) {
                                         Text(
                                             text = user.verificationNote,
@@ -380,6 +419,15 @@ fun AdminVerificationScreen(
                         value = noteInput,
                         onValueChange = { noteInput = it },
                         label = { Text(strings.verificationNoteLabel) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = palette.textPrimary,
+                            unfocusedTextColor = palette.textPrimary,
+                            focusedLabelColor = palette.turquoise,
+                            unfocusedLabelColor = palette.textSecondary,
+                            focusedBorderColor = palette.turquoise,
+                            unfocusedBorderColor = palette.border,
+                            cursorColor = palette.turquoise
+                        ),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )

@@ -57,7 +57,7 @@ class ChatDetailViewModel @Inject constructor(
 ) : ViewModel() {
 
     val chatId: String = checkNotNull(savedStateHandle["chatId"])
-    val myUid: String = authRepository.currentUserId.orEmpty()
+    val myUid: String get() = authRepository.currentUserId.orEmpty()
 
     val recentEmojis: StateFlow<List<String>> = prefs.recentEmojisFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

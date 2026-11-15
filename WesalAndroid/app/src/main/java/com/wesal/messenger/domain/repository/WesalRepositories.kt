@@ -47,7 +47,7 @@ interface AuthRepository {
     suspend fun signOut(): Result<Unit>
     fun observeSavedAccounts(): Flow<List<SavedWesalAccount>>
     suspend fun removeSavedAccount(uid: String)
-    suspend fun clearActiveSessionForSwitch()
+    suspend fun clearActiveSessionForSwitch(previousUid: String? = null)
 }
 
 interface UserRepository {
@@ -59,6 +59,7 @@ interface UserRepository {
     suspend fun listDiscoverableUsers(limit: Int = 30): List<WesalUser>
     suspend fun findUsersByPhoneHashes(phoneHashes: List<String>): Map<String, WesalUser>
     suspend fun updateProfile(displayName: String, bio: String, publicId: String, photoUri: Uri?): Result<Unit>
+    suspend fun ensureNumericIdAssigned(): String
     suspend fun updateOptionalPhone(rawPhone: String): Result<Unit>
     suspend fun removeOptionalPhone(): Result<Unit>
     suspend fun removeProfilePhoto(): Result<Unit>

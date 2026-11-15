@@ -211,6 +211,7 @@ fun WesalNavHost(
                     navController.navigate("add_account?email=$encoded")
                 },
                 onAccountSwitched = { isNewProfile ->
+                    authViewModel.resetForNewLogin()
                     val target = if (isNewProfile) Routes.PROFILE_SETUP else Routes.HOME
                     navController.navigate(target) {
                         popUpTo(navController.graph.id) { inclusive = true }
@@ -325,7 +326,15 @@ fun WesalNavHost(
         }
 
         composable(Routes.PROFILE) {
-            ProfileScreen(onBack = { navController.popBackStack() })
+            ProfileScreen(
+                onBack = {
+                    if (!navController.popBackStack()) {
+                        navController.navigate(Routes.HOME) {
+                            launchSingleTop = true
+                        }
+                    }
+                }
+            )
         }
 
         composable(

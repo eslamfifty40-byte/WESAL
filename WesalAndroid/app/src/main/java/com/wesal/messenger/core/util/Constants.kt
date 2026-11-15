@@ -13,6 +13,7 @@ object Constants {
     const val COLLECTION_VERIFICATION_LOGS = "verification_audit_logs"
     const val COLLECTION_CONTACT_REQUESTS = "contact_requests"
     const val COLLECTION_CHANNELS = "channels"
+    const val COLLECTION_WESAL_ID_INDEX = "wesal_id_index"
 
     const val SUBCOLLECTION_CANDIDATES = "candidates"
     const val SUBCOLLECTION_VIEWERS = "viewers"

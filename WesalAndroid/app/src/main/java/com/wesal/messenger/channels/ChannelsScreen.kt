@@ -78,10 +78,21 @@ fun ChannelsScreen(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = viewModel::updateSearch,
-                        placeholder = { Text(if (strings.isEnglish) "Search channels..." else "ابحث في القنوات...") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        placeholder = { Text(if (strings.isEnglish) "Search channels..." else "ابحث في القنوات...", color = palette.textMuted) },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.textSecondary) },
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = palette.textPrimary,
+                            unfocusedTextColor = palette.textPrimary,
+                            cursorColor = palette.emerald,
+                            focusedBorderColor = palette.emerald,
+                            unfocusedBorderColor = palette.border,
+                            focusedPlaceholderColor = palette.textMuted,
+                            unfocusedPlaceholderColor = palette.textMuted,
+                            focusedContainerColor = palette.surface,
+                            unfocusedContainerColor = palette.surface
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                     FilledTonalIconButton(onClick = { showInviteCodeDialog = true }) {
@@ -214,6 +225,17 @@ fun ChannelsScreen(
                     onValueChange = { code = it },
                     label = { Text(if (strings.isEnglish) "Invite Code" else "رمز الدعوة") },
                     singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = palette.textPrimary,
+                        unfocusedTextColor = palette.textPrimary,
+                        cursorColor = palette.emerald,
+                        focusedBorderColor = palette.emerald,
+                        unfocusedBorderColor = palette.border,
+                        focusedLabelColor = palette.emerald,
+                        unfocusedLabelColor = palette.textSecondary,
+                        focusedContainerColor = palette.surfaceElevated,
+                        unfocusedContainerColor = palette.surfaceElevated
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
             },
@@ -336,11 +358,23 @@ private fun CreateChannelDialog(
         title = { Text(strings.createChannel, color = palette.textPrimary, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val dialogFieldColors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    cursorColor = palette.emerald,
+                    focusedBorderColor = palette.emerald,
+                    unfocusedBorderColor = palette.border,
+                    focusedLabelColor = palette.emerald,
+                    unfocusedLabelColor = palette.textSecondary,
+                    focusedContainerColor = palette.surfaceElevated,
+                    unfocusedContainerColor = palette.surfaceElevated
+                )
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
                     label = { Text(if (strings.isEnglish) "Channel Title" else "اسم القناة") },
                     singleLine = true,
+                    colors = dialogFieldColors,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -348,6 +382,7 @@ private fun CreateChannelDialog(
                     onValueChange = { description = it },
                     label = { Text(if (strings.isEnglish) "Description" else "وصف القناة") },
                     maxLines = 3,
+                    colors = dialogFieldColors,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(

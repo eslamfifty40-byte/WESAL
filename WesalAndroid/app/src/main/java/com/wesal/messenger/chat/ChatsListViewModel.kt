@@ -13,10 +13,11 @@ import javax.inject.Inject
 @HiltViewModel
 class ChatsListViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
-    authRepository: AuthRepository
+    private val authRepository: AuthRepository
 ) : ViewModel() {
 
-    val currentUid: String = authRepository.currentUserId.orEmpty()
+    val currentUid: String
+        get() = authRepository.currentUserId.orEmpty()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()

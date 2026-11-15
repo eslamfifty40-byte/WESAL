@@ -219,6 +219,15 @@ fun InviteLandingScreen(
                                 fontWeight = FontWeight.Bold
                             )
 
+                            if (inviter.numericId.isNotBlank()) {
+                                Text(
+                                    text = "ID: ${inviter.numericId}",
+                                    color = palette.turquoise,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
                             if (inviter.publicId.isNotBlank()) {
                                 Text(
                                     text = "@${inviter.publicId}",

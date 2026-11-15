@@ -84,7 +84,8 @@ fun NewChatContactsScreen(
         else state.wesalContacts.filter {
             it.deviceName.contains(trimmedQuery, ignoreCase = true) ||
                 it.user.displayName.contains(trimmedQuery, ignoreCase = true) ||
-                it.user.publicId.contains(cleanQueryHandle, ignoreCase = true)
+                it.user.publicId.contains(cleanQueryHandle, ignoreCase = true) ||
+                it.user.numericId.contains(trimmedQuery)
         }
     }
     val filteredNonWesalContacts = remember(state.nonWesalContacts, trimmedQuery) {
@@ -143,10 +144,19 @@ fun NewChatContactsScreen(
                 trailingIcon = {
                     if (state.query.isNotEmpty()) {
                         IconButton(onClick = { viewModel.search("") }) {
-                            Icon(Icons.Default.Close, contentDescription = strings.clear)
+                            Icon(Icons.Default.Close, contentDescription = strings.clear, tint = palette.textSecondary)
                         }
                     }
                 },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    focusedPlaceholderColor = palette.textMuted,
+                    unfocusedPlaceholderColor = palette.textMuted,
+                    focusedBorderColor = palette.turquoise,
+                    unfocusedBorderColor = palette.border,
+                    cursorColor = palette.turquoise
+                ),
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp)
@@ -164,7 +174,7 @@ fun NewChatContactsScreen(
             }
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                currentUser?.takeIf { it.publicId.isNotBlank() }?.let { me ->
+                currentUser?.takeIf { it.numericId.isNotBlank() || it.publicId.isNotBlank() }?.let { me ->
                     item(key = "my_wesal_id_card") {
                         Surface(
                             color = palette.surface,
@@ -183,21 +193,31 @@ fun NewChatContactsScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = if (strings.isEnglish) "Your Wesal ID" else "معرف وصال الخاص بك (Wesal ID)",
+                                            text = strings.wesalNumericIdLabel,
                                             style = MaterialTheme.typography.labelMedium,
                                             color = palette.textSecondary
                                         )
-                                        Text(
-                                            text = "@${me.publicId}",
-                                            style = MaterialTheme.typography.titleMedium,
-                                            color = palette.turquoise,
-                                            fontWeight = FontWeight.Bold
-                                        )
+                                        if (me.numericId.isNotBlank()) {
+                                            Text(
+                                                text = "ID: ${me.numericId}",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = palette.turquoise,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                        if (me.publicId.isNotBlank()) {
+                                            Text(
+                                                text = "@${me.publicId}",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = palette.textSecondary
+                                            )
+                                        }
                                     }
                                     IconButton(
                                         onClick = {
-                                            clipboard.setText(AnnotatedString("@${me.publicId}"))
-                                            Toast.makeText(context, "@${me.publicId}", Toast.LENGTH_SHORT).show()
+                                            val idToCopy = me.numericId.ifBlank { "@${me.publicId}" }
+                                            clipboard.setText(AnnotatedString(idToCopy))
+                                            Toast.makeText(context, idToCopy, Toast.LENGTH_SHORT).show()
                                         }
                                     ) {
                                         Icon(Icons.Default.ContentCopy, contentDescription = strings.copy, tint = palette.turquoise)
@@ -612,6 +632,7 @@ private fun WesalContactDirectoryRow(
                 fontWeight = FontWeight.SemiBold
             )
             val subtitle = buildList {
+                if (user.numericId.isNotBlank()) add("ID: ${user.numericId}")
                 if (user.publicId.isNotBlank()) add("@${user.publicId}")
                 if (user.isPhoneVerified && !user.privacySettings.hidePhoneNumber) add(strings.phoneVerifiedBadge)
                 if (user.bio.isNotBlank()) add(user.bio)

@@ -258,9 +258,20 @@ fun ChannelDetailScreen(
                             OutlinedTextField(
                                 value = postText,
                                 onValueChange = { postText = it },
-                                placeholder = { Text(strings.publishPost) },
+                                placeholder = { Text(strings.publishPost, color = palette.textMuted) },
                                 maxLines = 4,
                                 shape = RoundedCornerShape(22.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = palette.textPrimary,
+                                    unfocusedTextColor = palette.textPrimary,
+                                    cursorColor = palette.emerald,
+                                    focusedBorderColor = palette.emerald,
+                                    unfocusedBorderColor = palette.border,
+                                    focusedPlaceholderColor = palette.textMuted,
+                                    unfocusedPlaceholderColor = palette.textMuted,
+                                    focusedContainerColor = palette.surfaceElevated,
+                                    unfocusedContainerColor = palette.surfaceElevated
+                                ),
                                 modifier = Modifier.weight(1f)
                             )
                             IconButton(
@@ -524,8 +535,24 @@ fun ChannelDetailScreen(
                     OutlinedTextField(
                         value = commentInput,
                         onValueChange = { commentInput = it },
-                        placeholder = { Text(if (strings.isEnglish) "Add a comment..." else "أضف تعليقاً...") },
+                        placeholder = {
+                            Text(
+                                text = if (strings.isEnglish) "Add a comment..." else "أضف تعليقاً...",
+                                color = palette.textMuted
+                            )
+                        },
                         singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = palette.textPrimary,
+                            unfocusedTextColor = palette.textPrimary,
+                            cursorColor = palette.emerald,
+                            focusedBorderColor = palette.emerald,
+                            unfocusedBorderColor = palette.border,
+                            focusedPlaceholderColor = palette.textMuted,
+                            unfocusedPlaceholderColor = palette.textMuted,
+                            focusedContainerColor = palette.surfaceElevated,
+                            unfocusedContainerColor = palette.surfaceElevated
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                     IconButton(

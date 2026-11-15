@@ -50,7 +50,7 @@ class ContactsInviteActivity : ComponentActivity() {
             ) {
                 ContactsInviteScreen(
                     userRepository = userRepository,
-                    myPublicId = me?.publicId,
+                    myPublicId = me?.publicId?.takeIf { it.isNotBlank() } ?: me?.numericId,
                     onClose = { finish() }
                 )
             }
@@ -117,6 +117,17 @@ private fun ContactsInviteScreen(
             onValueChange = { q = it },
             label = { Text(strings.search) },
             singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = palette.textPrimary,
+                unfocusedTextColor = palette.textPrimary,
+                cursorColor = palette.emerald,
+                focusedBorderColor = palette.emerald,
+                unfocusedBorderColor = palette.border,
+                focusedLabelColor = palette.emerald,
+                unfocusedLabelColor = palette.textSecondary,
+                focusedContainerColor = palette.surface,
+                unfocusedContainerColor = palette.surface
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 8.dp)

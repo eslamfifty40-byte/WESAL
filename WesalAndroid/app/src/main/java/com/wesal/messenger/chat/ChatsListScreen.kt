@@ -69,10 +69,15 @@ fun ChatsListScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    focusedPlaceholderColor = palette.textMuted,
+                    unfocusedPlaceholderColor = palette.textMuted,
                     focusedBorderColor = palette.turquoise,
                     unfocusedBorderColor = palette.border,
                     focusedContainerColor = palette.surface,
-                    unfocusedContainerColor = palette.surface
+                    unfocusedContainerColor = palette.surface,
+                    cursorColor = palette.turquoise
                 )
             )
 
@@ -176,6 +181,11 @@ fun ChatsListScreen(
             title = { WesalNameWithBadge(name = chat.title, isVerified = chat.peerVerified) },
             text = {
                 Column {
+                    val menuItemColors = ListItemDefaults.colors(
+                        containerColor = palette.surface,
+                        headlineColor = palette.textPrimary,
+                        supportingColor = palette.textSecondary
+                    )
                     ListItem(
                         headlineContent = {
                             Text(
@@ -187,6 +197,7 @@ fun ChatsListScreen(
                             )
                         },
                         leadingContent = { Icon(Icons.Default.PushPin, contentDescription = null, tint = palette.turquoise) },
+                        colors = menuItemColors,
                         modifier = Modifier.clickable {
                             viewModel.togglePin(chat)
                             selectedChatForMenu = null
@@ -203,6 +214,7 @@ fun ChatsListScreen(
                             )
                         },
                         leadingContent = { Icon(Icons.Default.Archive, contentDescription = null, tint = palette.emerald) },
+                        colors = menuItemColors,
                         modifier = Modifier.clickable {
                             viewModel.toggleArchive(chat)
                             selectedChatForMenu = null
@@ -219,6 +231,7 @@ fun ChatsListScreen(
                             )
                         },
                         leadingContent = { Icon(Icons.Default.NotificationsOff, contentDescription = null, tint = palette.textSecondary) },
+                        colors = menuItemColors,
                         modifier = Modifier.clickable {
                             viewModel.toggleMute(chat)
                             selectedChatForMenu = null
@@ -229,6 +242,7 @@ fun ChatsListScreen(
                             Text(if (strings.isEnglish) "Delete Chat" else "حذف المحادثة", color = palette.error)
                         },
                         leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = palette.error) },
+                        colors = menuItemColors,
                         modifier = Modifier.clickable {
                             viewModel.deleteChat(chat)
                             selectedChatForMenu = null

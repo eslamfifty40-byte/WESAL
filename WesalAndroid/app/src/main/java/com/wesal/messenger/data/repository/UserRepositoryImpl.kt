@@ -6,6 +6,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.QuerySnapshot
 import com.google.firebase.firestore.SetOptions
@@ -61,6 +62,7 @@ internal fun DocumentSnapshot.toWesalUser(): WesalUser {
         verificationNote = getString("verificationNote").orEmpty(),
         displayName = getString("displayName").orEmpty(),
         publicId = getString("publicId").orEmpty(),
+        numericId = getString("numericId").orEmpty(),
         bio = getString("bio") ?: "أستخدم تطبيق WESAL",
         photoUrl = getString("photoUrl").orEmpty(),
         createdAt = getLong("createdAt") ?: 0L,
@@ -102,6 +104,7 @@ class UserRepositoryImpl @Inject constructor(
         var latestPublic: WesalUser? = null
         var privatePhone = ""
         var privateVerified = false
+        var numericBackfillStarted = false
 
         fun emitMerged() {
             val pub = latestPublic ?: return
@@ -118,7 +121,15 @@ class UserRepositoryImpl @Inject constructor(
                     return@addSnapshotListener
                 }
                 latestPublic = snapshot?.takeIf { it.exists() }?.toWesalUser()
-                if (latestPublic == null) trySend(null) else emitMerged()
+                if (latestPublic == null) {
+                    trySend(null)
+                } else {
+                    if (!numericBackfillStarted && !WesalIdUtils.isValidNumericId(latestPublic?.numericId)) {
+                        numericBackfillStarted = true
+                        launch { runCatching { ensureNumericIdAssigned() } }
+                    }
+                    emitMerged()
+                }
             }
 
         val privReg = firestore.collection(Constants.COLLECTION_USERS)
@@ -152,28 +163,107 @@ class UserRepositoryImpl @Inject constructor(
         awaitClose { registration.remove() }
     }
 
-    private suspend fun getDocFresh(uid: String): DocumentSnapshot? {
+    private suspend fun getDocCachedOrServer(uid: String): DocumentSnapshot? {
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        return runCatching { ref.get(Source.SERVER).await() }.getOrNull()
-            ?: runCatching { ref.get().await() }.getOrNull()
+        return runCatching { ref.get().await() }.getOrNull()
     }
 
-    private suspend fun getQueryFresh(query: Query): QuerySnapshot? {
-        return runCatching { query.get(Source.SERVER).await() }.getOrNull()
-            ?: runCatching { query.get().await() }.getOrNull()
+    private suspend fun getQueryCachedOrServer(query: Query): QuerySnapshot? {
+        return runCatching { query.get().await() }.getOrNull()
     }
 
     override suspend fun getUserOnce(uid: String): WesalUser? {
-        val snap = getDocFresh(uid)
+        val snap = getDocCachedOrServer(uid)
         return if (snap != null && snap.exists()) snap.toWesalUser() else null
+    }
+
+    override suspend fun ensureNumericIdAssigned(): String {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        val snap = runCatching { userRef.get().await() }.getOrNull()
+        val existing = snap?.getString("numericId").orEmpty()
+        if (WesalIdUtils.isValidNumericId(existing)) {
+            return existing
+        }
+
+        var indexRulesMissing = false
+        repeat(16) {
+            val candidate = WesalIdUtils.generateRandomNumericCandidate()
+            val indexRef = firestore.collection(Constants.COLLECTION_WESAL_ID_INDEX).document(candidate)
+            val txResult = runCatching {
+                firestore.runTransaction { tx ->
+                    val uSnap = tx.get(userRef)
+                    val currentId = uSnap.getString("numericId").orEmpty()
+                    if (WesalIdUtils.isValidNumericId(currentId)) {
+                        return@runTransaction currentId
+                    }
+                    val idxSnap = tx.get(indexRef)
+                    if (idxSnap.exists() && idxSnap.getString("uid") != uid) {
+                        throw IllegalStateException("NUMERIC_ID_COLLISION")
+                    }
+                    tx.set(
+                        indexRef,
+                        mapOf(
+                            "uid" to uid,
+                            "numericId" to candidate,
+                            "createdAt" to System.currentTimeMillis()
+                        )
+                    )
+                    tx.set(userRef, mapOf("numericId" to candidate), SetOptions.merge())
+                    candidate
+                }.await()
+            }
+            val assigned = txResult.getOrNull()
+            if (!assigned.isNullOrBlank() && WesalIdUtils.isValidNumericId(assigned)) {
+                return assigned
+            }
+            val ex = txResult.exceptionOrNull()
+            if (ex is FirebaseFirestoreException && ex.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                indexRulesMissing = true
+                return@repeat
+            }
+        }
+
+        if (indexRulesMissing) {
+            repeat(12) {
+                val candidate = WesalIdUtils.generateRandomNumericCandidate()
+                val conflict = runCatching {
+                    firestore.collection(Constants.COLLECTION_USERS)
+                        .whereEqualTo("numericId", candidate)
+                        .limit(1)
+                        .get()
+                        .await()
+                }.getOrNull()
+                if (conflict != null && conflict.documents.none { it.id != uid }) {
+                    userRef.set(mapOf("numericId" to candidate), SetOptions.merge()).await()
+                    return candidate
+                }
+            }
+        }
+
+        val fallback = WesalIdUtils.generateRandomNumericCandidate()
+        userRef.set(mapOf("numericId" to fallback), SetOptions.merge()).await()
+        return fallback
     }
 
     override suspend fun findUserByPublicIdOrUid(idOrUid: String): WesalUser? {
         val raw = idOrUid.trim()
         if (raw.isBlank()) return null
+
+        val numericQuery = WesalIdUtils.extractNumericIdQuery(raw)
+        if (WesalIdUtils.isValidNumericId(numericQuery)) {
+            val byNumeric = getQueryCachedOrServer(
+                firestore.collection(Constants.COLLECTION_USERS)
+                    .whereEqualTo("numericId", numericQuery)
+                    .limit(1)
+            )
+            val matchedNumeric = byNumeric?.documents?.firstOrNull()
+            if (matchedNumeric != null) return matchedNumeric.toWesalUser()
+        }
+
         val cleanHandle = WesalIdUtils.normalize(raw)
         if (cleanHandle.isNotBlank()) {
-            val byHandle = getQueryFresh(
+            val byHandle = getQueryCachedOrServer(
                 firestore.collection(Constants.COLLECTION_USERS)
                     .whereEqualTo("publicId", cleanHandle)
                     .limit(1)
@@ -185,7 +275,7 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Searches strictly by WESAL ID (@publicId) and Display Name.
+     * Searches strictly by immutable 5-digit WESAL ID (numericId), username (@publicId), and Display Name.
      * Deliberately excludes phone number & email matching to prevent phone leakage.
      */
     override suspend fun searchUsers(query: String): List<WesalUser> {
@@ -195,9 +285,23 @@ class UserRepositoryImpl @Inject constructor(
         val usersCollection = firestore.collection(Constants.COLLECTION_USERS)
         val results = linkedMapOf<String, WesalUser>()
 
+        val numericQuery = WesalIdUtils.extractNumericIdQuery(trimmed)
+        if (numericQuery.isNotBlank()) {
+            val numSnap = getQueryCachedOrServer(
+                usersCollection
+                    .whereGreaterThanOrEqualTo("numericId", numericQuery)
+                    .whereLessThanOrEqualTo("numericId", "$numericQuery\uf8ff")
+                    .limit(25)
+            )
+            numSnap?.documents?.forEach { doc ->
+                val user = doc.toWesalUser()
+                if (user.uid != currentUid) results[user.uid] = user
+            }
+        }
+
         val cleanHandle = WesalIdUtils.normalize(trimmed)
         if (cleanHandle.isNotBlank()) {
-            val idSnap = getQueryFresh(
+            val idSnap = getQueryCachedOrServer(
                 usersCollection
                     .whereGreaterThanOrEqualTo("publicId", cleanHandle)
                     .whereLessThanOrEqualTo("publicId", "$cleanHandle\uf8ff")
@@ -209,7 +313,7 @@ class UserRepositoryImpl @Inject constructor(
             }
         }
 
-        val nameSnap = getQueryFresh(
+        val nameSnap = getQueryCachedOrServer(
             usersCollection
                 .whereGreaterThanOrEqualTo("displayName", trimmed)
                 .whereLessThanOrEqualTo("displayName", "$trimmed\uf8ff")
@@ -221,13 +325,14 @@ class UserRepositoryImpl @Inject constructor(
         }
 
         if (results.size < 12) {
-            val poolSnap = getQueryFresh(usersCollection.limit(80))
+            val poolSnap = getQueryCachedOrServer(usersCollection.limit(80))
             poolSnap?.documents?.forEach { doc ->
                 val user = doc.toWesalUser()
                 if (user.uid != currentUid) {
                     val matchesName = user.displayName.contains(trimmed, ignoreCase = true)
-                    val matchesId = cleanHandle.isNotBlank() && user.publicId.contains(cleanHandle, ignoreCase = true)
-                    if (matchesName || matchesId) {
+                    val matchesHandle = cleanHandle.isNotBlank() && user.publicId.contains(cleanHandle, ignoreCase = true)
+                    val matchesNumeric = numericQuery.isNotBlank() && user.numericId.contains(numericQuery)
+                    if (matchesName || matchesHandle || matchesNumeric) {
                         results[user.uid] = user
                     }
                 }
@@ -239,12 +344,12 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun listDiscoverableUsers(limit: Int): List<WesalUser> {
         val currentUid = auth.currentUser?.uid
-        val snap = getQueryFresh(
+        val snap = getQueryCachedOrServer(
             firestore.collection(Constants.COLLECTION_USERS)
                 .limit(limit.toLong().coerceIn(10L, 60L))
         )
         return snap?.documents?.map { it.toWesalUser() }
-            ?.filter { it.uid != currentUid && (it.displayName.isNotBlank() || it.publicId.isNotBlank()) }
+            ?.filter { it.uid != currentUid && (it.displayName.isNotBlank() || it.publicId.isNotBlank() || it.numericId.isNotBlank()) }
             ?.sortedWith(
                 compareByDescending<WesalUser> { it.isVerified }
                     .thenByDescending { it.isOnline }
@@ -260,7 +365,7 @@ class UserRepositoryImpl @Inject constructor(
         val matched = mutableMapOf<String, WesalUser>()
 
         distinct.chunked(30).forEach { chunk ->
-            val snap = getQueryFresh(
+            val snap = getQueryCachedOrServer(
                 firestore.collection(Constants.COLLECTION_USERS)
                     .whereIn("phoneHash", chunk)
             )
@@ -317,8 +422,19 @@ class UserRepositoryImpl @Inject constructor(
                 .set(updates, SetOptions.merge())
                 .await()
 
-            val updatedSnap = getDocFresh(uid)
+            val updatedSnap = getDocCachedOrServer(uid)
             updatedSnap?.takeIf { it.exists() }?.toWesalUser()?.let { updatedUser ->
+                val assignedNumericId = if (WesalIdUtils.isValidNumericId(updatedUser.numericId)) {
+                    updatedUser.numericId
+                } else {
+                    runCatching { ensureNumericIdAssigned() }.getOrDefault(updatedUser.numericId)
+                }
+                val providerIds = auth.currentUser?.providerData?.map { it.providerId }.orEmpty()
+                val provider = when {
+                    providerIds.contains("google.com") -> "google"
+                    providerIds.contains("phone") -> "phone"
+                    else -> "email"
+                }
                 prefs.upsertSavedAccount(
                     SavedWesalAccount(
                         uid = updatedUser.uid,
@@ -326,7 +442,9 @@ class UserRepositoryImpl @Inject constructor(
                         email = updatedUser.email,
                         phoneNumber = updatedUser.phoneNumber,
                         publicId = updatedUser.publicId,
+                        numericId = assignedNumericId,
                         photoUrl = updatedUser.photoUrl,
+                        provider = provider,
                         lastUsedAt = System.currentTimeMillis()
                     )
                 )
@@ -524,8 +642,14 @@ class UserRepositoryImpl @Inject constructor(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeIsSuperAdmin(): Flow<Boolean> = observeAuthUid().flatMapLatest { uid ->
-        val email = auth.currentUser?.email.orEmpty()
-        if (uid == null || !email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true)) {
+        val user = auth.currentUser
+        val email = user?.email.orEmpty()
+        if (
+            uid == null ||
+            user == null ||
+            !email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) ||
+            !user.isEmailVerified
+        ) {
             flowOf(false)
         } else if (Constants.CONFIRMED_SUPER_ADMIN_UID.isNotBlank() && uid != Constants.CONFIRMED_SUPER_ADMIN_UID) {
             flowOf(false)
@@ -551,6 +675,7 @@ class UserRepositoryImpl @Inject constructor(
         val user = auth.currentUser ?: return false
         val email = user.email.orEmpty()
         if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true)) return false
+        if (!user.isEmailVerified) return false
         if (Constants.CONFIRMED_SUPER_ADMIN_UID.isNotBlank() && user.uid != Constants.CONFIRMED_SUPER_ADMIN_UID) {
             return false
         }
@@ -672,10 +797,34 @@ class UserRepositoryImpl @Inject constructor(
                             trySend(emptyList())
                             return@addSnapshotListener
                         }
-                        val list = snap?.documents?.map { it.toContactRequest() }
+                        val rawList = snap?.documents?.map { it.toContactRequest() }
                             .orEmpty()
                             .sortedByDescending { it.updatedAt }
-                        trySend(list)
+                        trySend(rawList)
+                        if (rawList.isNotEmpty()) {
+                            launch {
+                                val enriched = rawList.map { req ->
+                                    val peerUid = if (req.senderUid == uid) req.receiverUid else req.senderUid
+                                    val peerUser = runCatching { getUserOnce(peerUid) }.getOrNull()
+                                    if (peerUser != null) {
+                                        if (req.senderUid == uid) {
+                                            req.copy(
+                                                receiverName = peerUser.displayName.ifBlank { req.receiverName },
+                                                receiverAvatarUrl = peerUser.photoUrl.ifBlank { req.receiverAvatarUrl },
+                                                receiverVerified = peerUser.isVerified
+                                            )
+                                        } else {
+                                            req.copy(
+                                                senderName = peerUser.displayName.ifBlank { req.senderName },
+                                                senderAvatarUrl = peerUser.photoUrl.ifBlank { req.senderAvatarUrl },
+                                                senderVerified = peerUser.isVerified
+                                            )
+                                        }
+                                    } else req
+                                }
+                                trySend(enriched)
+                            }
+                        }
                     }
                 awaitClose { reg.remove() }
             }

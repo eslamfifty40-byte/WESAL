@@ -203,17 +203,23 @@ fun SettingsScreen(
                 }
                 val credentialManager = CredentialManager.create(activity)
                 runCatching { credentialManager.clearCredentialState(ClearCredentialStateRequest()) }
-                // Use setFilterByAuthorizedAccounts(true) so clicking a previously authorized Google account switches cleanly instead of opening generic OS signup chooser
-                val googleIdOption = GetGoogleIdOption.Builder()
-                    .setFilterByAuthorizedAccounts(true)
-                    .setAutoSelectEnabled(false)
-                    .setServerClientId(serverClientId)
-                    .build()
-                val request = GetCredentialRequest.Builder()
-                    .addCredentialOption(googleIdOption)
-                    .build()
-                val result = credentialManager.getCredential(activity, request)
-                val googleCred = GoogleIdTokenCredential.createFrom(result.credential.data)
+                suspend fun fetchGoogleCredential(onlyAuthorized: Boolean): GoogleIdTokenCredential {
+                    val option = GetGoogleIdOption.Builder()
+                        .setFilterByAuthorizedAccounts(onlyAuthorized)
+                        .setAutoSelectEnabled(false)
+                        .setServerClientId(serverClientId)
+                        .build()
+                    val request = GetCredentialRequest.Builder()
+                        .addCredentialOption(option)
+                        .build()
+                    val res = credentialManager.getCredential(activity, request)
+                    return GoogleIdTokenCredential.createFrom(res.credential.data)
+                }
+                val googleCred = try {
+                    fetchGoogleCredential(onlyAuthorized = true)
+                } catch (_: NoCredentialException) {
+                    fetchGoogleCredential(onlyAuthorized = false)
+                }
                 showAccountsDialog = false
                 viewModel.switchToGoogleIdToken(googleCred.idToken, strings.isEnglish, onAccountSwitched)
             } catch (_: GetCredentialCancellationException) {
@@ -277,10 +283,12 @@ fun SettingsScreen(
                             user?.phoneNumber?.takeIf { it.isNotBlank() }
                                 ?: user?.email?.takeIf { it.isNotBlank() }
                         }
-                        val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+                        val numericLabel = user?.numericId?.takeIf { it.isNotBlank() }?.let { "ID: $it" }
+                        val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }
                         Text(
                             text = listOfNotNull(
-                                idLabel.takeIf { it.isNotBlank() },
+                                numericLabel,
+                                idLabel,
                                 contactLine
                             ).joinToString(" • "),
                             style = MaterialTheme.typography.labelMedium,
@@ -510,6 +518,7 @@ fun SettingsScreen(
                                                 }
                                             }
                                             val meta = listOfNotNull(
+                                                acc.numericId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
                                                 acc.publicId.takeIf { it.isNotBlank() }?.let { "@$it" },
                                                 acc.email.takeIf { it.isNotBlank() }
                                             ).joinToString(" • ")

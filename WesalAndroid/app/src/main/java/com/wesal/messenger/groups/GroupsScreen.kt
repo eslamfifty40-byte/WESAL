@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +39,8 @@ import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -46,19 +49,27 @@ import javax.inject.Inject
 class GroupsViewModel @Inject constructor(
     private val groupRepository: GroupRepository,
     private val userRepository: UserRepository,
-    authRepository: AuthRepository
+    private val authRepository: AuthRepository
 ) : ViewModel() {
-    val myUid = authRepository.currentUserId.orEmpty()
+    val myUid: String
+        get() = authRepository.currentUserId.orEmpty()
     val groups: StateFlow<List<GroupInfo>> = groupRepository.observeUserGroups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val searchedUsers = MutableStateFlow<List<WesalUser>>(emptyList())
     val selectedMembers = MutableStateFlow<List<WesalUser>>(emptyList())
     val isCreating = MutableStateFlow(false)
+    private var searchJob: Job? = null
 
     fun searchUsers(query: String) {
-        viewModelScope.launch {
-            searchedUsers.value = if (query.isBlank()) emptyList() else userRepository.searchUsers(query)
+        searchJob?.cancel()
+        if (query.isBlank()) {
+            searchedUsers.value = emptyList()
+            return
+        }
+        searchJob = viewModelScope.launch {
+            delay(250L)
+            searchedUsers.value = userRepository.searchUsers(query)
         }
     }
 
@@ -126,7 +137,7 @@ fun GroupsScreen(
     val selectedMembers by viewModel.selectedMembers.collectAsStateWithLifecycle()
     val isCreating by viewModel.isCreating.collectAsStateWithLifecycle()
 
-    var selectedSegment by remember { mutableIntStateOf(0) } // 0 = Groups, 1 = Channels
+    var selectedSegment by rememberSaveable { mutableIntStateOf(0) } // 0 = Groups, 1 = Channels
     var showCreateDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -226,6 +237,15 @@ fun GroupsScreen(
             title = { Text(strings.newGroup, color = palette.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    val dialogFieldColors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = palette.textPrimary,
+                        unfocusedTextColor = palette.textPrimary,
+                        focusedLabelColor = palette.turquoise,
+                        unfocusedLabelColor = palette.textSecondary,
+                        focusedBorderColor = palette.turquoise,
+                        unfocusedBorderColor = palette.border,
+                        cursorColor = palette.turquoise
+                    )
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Box(
                             modifier = Modifier
@@ -247,6 +267,7 @@ fun GroupsScreen(
                             value = groupName,
                             onValueChange = { groupName = it },
                             label = { Text(if (strings.isEnglish) "Group Name" else "اسم المجموعة") },
+                            colors = dialogFieldColors,
                             singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
@@ -256,6 +277,7 @@ fun GroupsScreen(
                         value = groupDesc,
                         onValueChange = { groupDesc = it },
                         label = { Text(if (strings.isEnglish) "Description (Optional)" else "وصف المجموعة (اختياري)") },
+                        colors = dialogFieldColors,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -266,7 +288,8 @@ fun GroupsScreen(
                             memberQuery = it
                             viewModel.searchUsers(it)
                         },
-                        label = { Text(if (strings.isEnglish) "Add members (@Wesal ID or name)" else "إضافة أعضاء (بالاسم أو @Wesal ID)") },
+                        label = { Text(strings.searchContactsPlaceholder) },
+                        colors = dialogFieldColors,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -396,6 +419,15 @@ fun GroupInfoScreen(
                                 viewModel.searchUsers(it)
                             },
                             label = { Text(if (strings.isEnglish) "Add new member" else "إضافة عضو جديد للمجموعة") },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = palette.textPrimary,
+                                unfocusedTextColor = palette.textPrimary,
+                                focusedLabelColor = palette.turquoise,
+                                unfocusedLabelColor = palette.textSecondary,
+                                focusedBorderColor = palette.turquoise,
+                                unfocusedBorderColor = palette.border,
+                                cursorColor = palette.turquoise
+                            ),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )

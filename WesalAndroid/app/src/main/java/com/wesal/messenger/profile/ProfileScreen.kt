@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -260,6 +261,8 @@ fun ProfileScreen(
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val uiStatus by viewModel.uiStatus.collectAsStateWithLifecycle()
 
+    BackHandler(onBack = onBack)
+
     var name by remember(user?.uid) { mutableStateOf(user?.displayName.orEmpty()) }
     var bio by remember(user?.uid) { mutableStateOf(user?.bio.orEmpty()) }
     var publicId by remember(user?.uid) { mutableStateOf(user?.publicId.orEmpty()) }
@@ -359,6 +362,41 @@ fun ProfileScreen(
                     style = MaterialTheme.typography.titleLarge,
                     color = palette.textPrimary
                 )
+                val immutableNumericId = user?.numericId.orEmpty()
+                if (immutableNumericId.isNotBlank()) {
+                    Surface(
+                        color = palette.surfaceElevated,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.45f)),
+                        modifier = Modifier.clickable {
+                            clipboard.setText(AnnotatedString(immutableNumericId))
+                            Toast.makeText(
+                                context,
+                                "${strings.wesalNumericIdCopied} $immutableNumericId",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "${strings.wesalNumericIdLabel}: $immutableNumericId",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = palette.turquoise,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = strings.copy,
+                                tint = palette.turquoise,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -547,7 +585,12 @@ colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 if (isPhoneVerified) {
-                                    com.wesal.messenger.presentation.components.WesalVerifiedMark(androidx.compose.ui.unit.Dp(14f))
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = palette.emerald,
+                                        modifier = Modifier.size(14.dp)
+                                    )
                                 }
                                 Text(badgeText, color = badgeColor, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             }
@@ -600,7 +643,20 @@ colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                         }
                     }
 
-                    if (optionalPhone.isNotBlank() && activity != null) {
+                    val savedPhoneNorm = PhoneUtils.normalizeToE164(user?.phoneNumber.orEmpty()) ?: user?.phoneNumber.orEmpty()
+                    val inputPhoneNorm = PhoneUtils.normalizeToE164(optionalPhone) ?: optionalPhone.trim()
+                    val isSameVerifiedPhone = user?.isPhoneVerified == true &&
+                        savedPhoneNorm.isNotBlank() &&
+                        inputPhoneNorm == savedPhoneNorm
+
+                    if (isSameVerifiedPhone) {
+                        Text(
+                            text = strings.phoneAlreadyVerifiedNote,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.emerald,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    } else if (optionalPhone.isNotBlank() && activity != null) {
                         Button(
                             enabled = !uiStatus.isSaving,
                             onClick = { viewModel.sendPhoneVerificationOtp(optionalPhone, activity, strings.isEnglish) },
