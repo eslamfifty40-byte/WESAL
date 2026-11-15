@@ -547,7 +547,7 @@ colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 if (isPhoneVerified) {
-                                    Icon(Icons.Default.Verified, contentDescription = null, tint = badgeColor, modifier = Modifier.size(14.dp))
+                                    com.wesal.messenger.presentation.components.WesalVerifiedMark(androidx.compose.ui.unit.Dp(14f))
                                 }
                                 Text(badgeText, color = badgeColor, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             }

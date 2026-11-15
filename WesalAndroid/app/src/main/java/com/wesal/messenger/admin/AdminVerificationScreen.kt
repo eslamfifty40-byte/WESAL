@@ -299,7 +299,7 @@ fun AdminVerificationScreen(
                                             contentColor = if (user.isVerified) palette.error else palette.verifiedBlue
                                         )
                                     ) {
-                                        Icon(Icons.Default.Verified, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        com.wesal.messenger.presentation.components.WesalVerifiedMark(androidx.compose.ui.unit.Dp(16f))
                                         Spacer(Modifier.width(4.dp))
                                         Text(
                                             text = if (user.isVerified) strings.revokeVerifiedBadge else strings.grantVerifiedBadge,
