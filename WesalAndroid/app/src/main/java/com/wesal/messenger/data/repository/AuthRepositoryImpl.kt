@@ -21,8 +21,6 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessaging
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.PhoneUtils
@@ -42,7 +40,6 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -52,7 +49,6 @@ class AuthRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val storage: FirebaseStorage,
     private val messaging: FirebaseMessaging,
     private val prefs: UserPreferencesDataStore,
     private val database: WesalDatabase,
@@ -542,16 +538,11 @@ class AuthRepositoryImpl @Inject constructor(
             }
 
             if (photoUri != null) {
-                val uploadedUrl = runCatching {
-                    val ref = storage.reference.child("${Constants.STORAGE_AVATARS}/$uid/avatar_${UUID.randomUUID()}.jpg")
-                    val metadata = StorageMetadata.Builder().setContentType("image/jpeg").build()
-                    ref.putFile(photoUri, metadata).await()
-                    ref.downloadUrl.await().toString()
-                }.getOrElse {
+                val encodedAvatar = withContext(Dispatchers.IO) {
                     uriToBase64Jpeg(context, photoUri, maxSide = 512, quality = 78)
                 }
-                if (uploadedUrl.isNotBlank()) {
-                    updates["photoUrl"] = uploadedUrl
+                if (encodedAvatar.isNotBlank()) {
+                    updates["photoUrl"] = encodedAvatar
                 }
             }
 

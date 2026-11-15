@@ -8,7 +8,6 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
-import com.google.firebase.storage.FirebaseStorage
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.ChannelComment
 import com.wesal.messenger.domain.model.ChannelJoinRequest
@@ -38,7 +37,6 @@ class ChannelRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val storage: FirebaseStorage,
     private val userRepository: UserRepository
 ) : ChannelRepository {
 
@@ -448,36 +446,25 @@ class ChannelRepositoryImpl @Inject constructor(
                 val me = userRepository.getUserOnce(uid)
                 var mediaUrl = ""
                 if (mediaUri != null) {
-                    trySend(Result.success(0.15f))
-                    val rawBytes = withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(mediaUri)?.use { it.readBytes() }
-                            ?: error("تعذر قراءة الملف المحدد")
-                    }
-                    mediaUrl = try {
-                        val ext = fileName.substringAfterLast('.', "").ifBlank {
-                            when (type) {
-                                ChannelPostType.IMAGE -> "jpg"
-                                ChannelPostType.VIDEO -> "mp4"
-                                ChannelPostType.AUDIO -> "m4a"
-                                else -> "bin"
+                    trySend(Result.success(0.25f))
+                    mediaUrl = when (type) {
+                        ChannelPostType.IMAGE -> {
+                            val b64 = withContext(Dispatchers.IO) {
+                                uriToBase64Jpeg(context, mediaUri, maxSide = 720, quality = 72)
                             }
+                            require(b64.isNotBlank()) { "تعذر ضغط الصورة المحددة" }
+                            trySend(Result.success(0.85f))
+                            b64
                         }
-                        val storageRef = storage.reference
-                            .child("${Constants.STORAGE_CHANNEL_MEDIA}/$channelId/${UUID.randomUUID()}.$ext")
-                        val uploadTask = storageRef.putBytes(rawBytes)
-                        uploadTask.addOnProgressListener { snap ->
-                            val total = snap.totalByteCount.coerceAtLeast(1L)
-                            trySend(Result.success((snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.15f, 0.92f)))
+                        ChannelPostType.AUDIO -> {
+                            val audioB64 = withContext(Dispatchers.IO) {
+                                uriToBase64Audio(context, mediaUri, maxBytes = 420_000)
+                            } ?: throw IllegalStateException("المقطع الصوتي أكبر من الحد المسموح به (420 كيلوبايت) بدون Firebase Storage")
+                            trySend(Result.success(0.85f))
+                            audioB64
                         }
-                        uploadTask.await()
-                        storageRef.downloadUrl.await().toString()
-                    } catch (storageErr: Exception) {
-                        if (type == ChannelPostType.IMAGE) {
-                            uriToBase64Jpeg(context, mediaUri, maxSide = 720, quality = 72)
-                        } else if (type == ChannelPostType.AUDIO && rawBytes.size <= 420_000) {
-                            "data:audio/mp4;base64," + Base64.encodeToString(rawBytes, Base64.NO_WRAP)
-                        } else {
-                            throw storageErr
+                        else -> {
+                            throw IllegalStateException("نشر الفيديو والملفات الكبيرة غير متاح لأن Firebase Storage غير مفعّل — يمكنك نشر نصوص أو صور مضغوطة أو مقاطع صوتية قصيرة")
                         }
                     }
                 } else {
@@ -632,22 +619,8 @@ class ChannelRepositoryImpl @Inject constructor(
         postRef.update("commentsCount", FieldValue.increment(-1)).await()
     }
 
-    private suspend fun uploadChannelAvatar(channelId: String, uri: Uri): String {
-        return try {
-            val ref = storage.reference.child("${Constants.STORAGE_CHANNEL_MEDIA}/$channelId/avatar_${UUID.randomUUID()}.jpg")
-            val bytes = withContext(Dispatchers.IO) {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
-            }
-            if (bytes.isNotEmpty()) {
-                ref.putBytes(bytes).await()
-                ref.downloadUrl.await().toString()
-            } else {
-                ""
-            }
-        } catch (_: Exception) {
-            withContext(Dispatchers.IO) {
-                runCatching { uriToBase64Jpeg(context, uri, maxSide = 360, quality = 78) }.getOrDefault("")
-            }
+    private suspend fun uploadChannelAvatar(channelId: String, uri: Uri): String =
+        withContext(Dispatchers.IO) {
+            runCatching { uriToBase64Jpeg(context, uri, maxSide = 360, quality = 78) }.getOrDefault("")
         }
-    }
 }

@@ -6,8 +6,6 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
@@ -18,11 +16,13 @@ import com.wesal.messenger.domain.model.StoryViewer
 import com.wesal.messenger.domain.repository.StoryPublishEvent
 import com.wesal.messenger.domain.repository.StoryRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -32,7 +32,6 @@ class StoryRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val storage: FirebaseStorage,
     private val networkMonitor: NetworkMonitor
 ) : StoryRepository {
 
@@ -149,36 +148,21 @@ class StoryRepositoryImpl @Inject constructor(
 
         launch {
             try {
-                trySend(StoryPublishEvent.Progress(0.05f))
-                val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
-                val ext = if (isVideo) "mp4" else "jpg"
-                val mime = if (isVideo) "video/mp4" else "image/jpeg"
-                val storyId = UUID.randomUUID().toString()
-                val storageRef = storage.reference.child("${Constants.STORAGE_STORIES}/$uid/$storyId.$ext")
-                val metadata = StorageMetadata.Builder().setContentType(mime).build()
-
-                val mediaUrl = try {
-                    val uploadTask = storageRef.putFile(uri, metadata)
-                    uploadTask.addOnProgressListener { snap ->
-                        val total = snap.totalByteCount.coerceAtLeast(1L)
-                        val pct = (snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.05f, 0.95f)
-                        trySend(StoryPublishEvent.Progress(pct))
-                    }
-                    uploadTask.await()
-                    storageRef.downloadUrl.await().toString()
-                } catch (storageErr: Exception) {
-                    if (!isVideo) {
-                        val b64 = uriToBase64Jpeg(context, uri, maxSide = 900, quality = 75)
-                        if (b64.isNotBlank()) {
-                            trySend(StoryPublishEvent.Progress(0.85f))
-                            b64
-                        } else {
-                            throw storageErr
-                        }
-                    } else {
-                        throw IllegalStateException("تعذر رفع الفيديو إلى Firebase Storage — تأكد من تفعيل Storage في مشروع Firebase أو أرسل صورة/حالة نصية")
-                    }
+                if (isVideo) {
+                    trySend(StoryPublishEvent.Failure("نشر حالات الفيديو غير متاح حالياً لأن Firebase Storage غير مفعّل — يمكنك نشر صورة أو حالة صوتية أو نصية"))
+                    close()
+                    return@launch
                 }
+                trySend(StoryPublishEvent.Progress(0.2f))
+                val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
+                val storyId = UUID.randomUUID().toString()
+                val mediaUrl = withContext(Dispatchers.IO) {
+                    uriToBase64Jpeg(context, uri, maxSide = 900, quality = 75)
+                }
+                if (mediaUrl.isBlank()) {
+                    throw IllegalStateException("تعذر ضغط الصورة المحددة للحالة")
+                }
+                trySend(StoryPublishEvent.Progress(0.85f))
 
                 val now = System.currentTimeMillis()
                 val data = mapOf(
@@ -228,25 +212,13 @@ class StoryRepositoryImpl @Inject constructor(
 
         launch {
             try {
-                trySend(StoryPublishEvent.Progress(0.1f))
+                trySend(StoryPublishEvent.Progress(0.25f))
                 val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
                 val storyId = UUID.randomUUID().toString()
-                val storageRef = storage.reference.child("${Constants.STORAGE_STORIES}/$uid/$storyId.m4a")
-                val metadata = StorageMetadata.Builder().setContentType("audio/mp4").build()
-
-                val mediaUrl = try {
-                    val uploadTask = storageRef.putFile(audioUri, metadata)
-                    uploadTask.addOnProgressListener { snap ->
-                        val total = snap.totalByteCount.coerceAtLeast(1L)
-                        val pct = (snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.1f, 0.95f)
-                        trySend(StoryPublishEvent.Progress(pct))
-                    }
-                    uploadTask.await()
-                    storageRef.downloadUrl.await().toString()
-                } catch (storageErr: Exception) {
+                val mediaUrl = withContext(Dispatchers.IO) {
                     uriToBase64Audio(context, audioUri)
-                        ?: throw IllegalStateException("تعذر رفع المقطع الصوتي — المقطع طويل جداً لخطة Spark بدون Firebase Storage")
-                }
+                } ?: throw IllegalStateException("المقطع الصوتي طويل جداً للحفظ المباشر بدون Firebase Storage")
+                trySend(StoryPublishEvent.Progress(0.85f))
 
                 val now = System.currentTimeMillis()
                 val durationLabel = DateTimeUtils.formatDurationMillis(durationMs)
@@ -311,11 +283,9 @@ class StoryRepositoryImpl @Inject constructor(
     }
 
     override suspend fun deleteStory(storyId: String): Result<Unit> = runCatching {
-        val docRef = firestore.collection(Constants.COLLECTION_STORIES).document(storyId)
-        val mediaUrl = docRef.get().await().getString("mediaUrl").orEmpty()
-        docRef.delete().await()
-        if (mediaUrl.startsWith("http")) {
-            runCatching { storage.getReferenceFromUrl(mediaUrl).delete().await() }
-        }
+        firestore.collection(Constants.COLLECTION_STORIES)
+            .document(storyId)
+            .delete()
+            .await()
     }
 }

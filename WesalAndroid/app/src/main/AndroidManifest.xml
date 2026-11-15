@@ -63,21 +63,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Verified App Links for WESAL Invites & Channels -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data
-                    android:scheme="https"
-                    android:host="wesal.app"
-                    android:pathPrefix="/join" />
-                <data
-                    android:scheme="https"
-                    android:host="wesal.app"
-                    android:pathPrefix="/channel" />
-            </intent-filter>
-
             <!-- Custom URL Scheme fallback -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

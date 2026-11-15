@@ -178,27 +178,26 @@ class CoreDomainUnitTest {
     }
 
     @Test
-    fun whatsappInviteMessage_containsStrictlyOneWesalJoinUrlAndNoGithubUrl() {
+    fun whatsappInviteMessage_containsPlainWesalHandleAndNoBannedUrls() {
         val msgAr = WesalShareUtils.buildInviteMessage(
             myWesalId = "@eslam_wesal",
             targetContactName = "أحمد",
             isEnglish = false
         )
-        val urlRegex = Regex("""https?://\S+""")
-        val urlsAr = urlRegex.findAll(msgAr).map { it.value }.toList()
-        assertEquals(1, urlsAr.size)
-        assertEquals("https://wesal.app/join?id=eslam_wesal", urlsAr.first())
+        assertTrue(msgAr.contains("معرّفي @eslam_wesal"))
+        assertFalse(msgAr.contains("wesal.app", ignoreCase = true))
+        assertFalse(msgAr.contains("/join", ignoreCase = true))
         assertFalse(msgAr.contains("github", ignoreCase = true))
-        assertFalse(msgAr.contains(".apk", ignoreCase = true))
 
         val msgEn = WesalShareUtils.buildInviteMessage(
             myWesalId = "sara_99",
             targetContactName = null,
             isEnglish = true
         )
-        val urlsEn = urlRegex.findAll(msgEn).map { it.value }.toList()
-        assertEquals(1, urlsEn.size)
-        assertEquals("https://wesal.app/join?id=sara_99", urlsEn.first())
+        assertTrue(msgEn.contains("My ID: @sara_99"))
+        assertFalse(msgEn.contains("wesal.app", ignoreCase = true))
+        assertFalse(msgEn.contains("/join", ignoreCase = true))
+        assertFalse(msgEn.contains("github", ignoreCase = true))
     }
 
     @Test

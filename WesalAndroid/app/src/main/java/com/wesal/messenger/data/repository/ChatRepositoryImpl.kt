@@ -10,7 +10,6 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
-import com.google.firebase.storage.FirebaseStorage
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.dao.WesalDao
 import com.wesal.messenger.data.local.entity.CachedChatEntity
@@ -43,7 +42,6 @@ class ChatRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val storage: FirebaseStorage,
     private val wesalDao: WesalDao,
     private val cryptoManager: E2EECryptoManager
 ) : ChatRepository {
@@ -514,19 +512,7 @@ class ChatRepositoryImpl @Inject constructor(
                 val chatSnap = chatRef.get().await()
                 val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
 
-                val folder = when (type) {
-                    MessageType.VOICE -> Constants.STORAGE_VOICE_NOTES
-                    MessageType.DOCUMENT -> Constants.STORAGE_FILES
-                    else -> Constants.STORAGE_CHAT_MEDIA
-                }
-
                 val symKey = cryptoManager.generateSymmetricKeyBytes()
-                val encryptedBytes = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                        cryptoManager.encryptStreamToBytes(stream, symKey).first
-                    } ?: error("تعذر قراءة الملف المحدد")
-                }
-
                 val wrappedKeys = mutableMapOf<String, String>()
                 participants.forEach { memberUid ->
                     val pub = fetchUserCached(memberUid)?.publicKey
@@ -535,33 +521,39 @@ class ChatRepositoryImpl @Inject constructor(
                     }
                 }
 
-                val downloadUrl = try {
-                    val storageRef = storage.reference.child("$folder/$chatId/${UUID.randomUUID()}.enc")
-                    val uploadTask = storageRef.putBytes(encryptedBytes)
-                    uploadTask.addOnProgressListener { snap ->
-                        val total = snap.totalByteCount.coerceAtLeast(1L)
-                        trySend(Result.success(snap.bytesTransferred.toFloat() / total.toFloat()))
-                    }
-                    uploadTask.await()
-                    storageRef.downloadUrl.await().toString()
-                } catch (storageErr: Exception) {
-                    if (type == MessageType.IMAGE) {
-                        val b64Jpeg = uriToBase64Jpeg(context, uri, maxSide = 720, quality = 72)
+                val downloadUrl = when (type) {
+                    MessageType.IMAGE -> {
+                        trySend(Result.success(0.25f))
+                        val b64Jpeg = withContext(Dispatchers.IO) {
+                            uriToBase64Jpeg(context, uri, maxSide = 720, quality = 72)
+                        }
                         val rawJpegBytes = runCatching {
                             Base64.decode(b64Jpeg.substringAfter("base64,"), Base64.NO_WRAP)
-                        }.getOrNull()
-                        if (rawJpegBytes != null && rawJpegBytes.isNotEmpty() && rawJpegBytes.size <= 380_000) {
-                            val encSmall = cryptoManager.encryptStreamToBytes(rawJpegBytes.inputStream(), symKey).first
-                            trySend(Result.success(0.85f))
-                            "wesal-inline://" + Base64.encodeToString(encSmall, Base64.NO_WRAP)
-                        } else {
-                            throw storageErr
+                        }.getOrNull() ?: ByteArray(0)
+                        require(rawJpegBytes.isNotEmpty() && rawJpegBytes.size <= 380_000) {
+                            "تعذر ضغط الصورة لحفظها في Firestore"
                         }
-                    } else if (type == MessageType.VOICE && encryptedBytes.size <= 450_000) {
+                        val encSmall = withContext(Dispatchers.IO) {
+                            cryptoManager.encryptStreamToBytes(rawJpegBytes.inputStream(), symKey).first
+                        }
+                        trySend(Result.success(0.85f))
+                        "wesal-inline://" + Base64.encodeToString(encSmall, Base64.NO_WRAP)
+                    }
+                    MessageType.VOICE -> {
+                        trySend(Result.success(0.25f))
+                        val encryptedBytes = withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { stream ->
+                                cryptoManager.encryptStreamToBytes(stream, symKey).first
+                            } ?: error("تعذر قراءة الملف الصوتي المحدد")
+                        }
+                        require(encryptedBytes.size <= 450_000) {
+                            "الرسالة الصوتية أطول من الحد المسموح به بدون Firebase Storage"
+                        }
                         trySend(Result.success(0.85f))
                         "wesal-inline://" + Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
-                    } else {
-                        throw IllegalStateException("تعذر رفع المرفق إلى Firebase Storage — تأكد من تفعيل Storage للملفات الكبيرة")
+                    }
+                    else -> {
+                        throw IllegalStateException("إرسال الفيديو والملفات الكبيرة غير متاح لأن Firebase Storage غير مفعّل — يمكنك إرسال صور مضغوطة ورسائل صوتية")
                     }
                 }
 
@@ -637,11 +629,18 @@ class ChatRepositoryImpl @Inject constructor(
                 return@runCatching targetFile
             }
 
-            val encryptedBytes = if (message.mediaUrl.startsWith("wesal-inline://")) {
-                Base64.decode(message.mediaUrl.removePrefix("wesal-inline://"), Base64.NO_WRAP)
-            } else {
-                val ref = storage.getReferenceFromUrl(message.mediaUrl)
-                ref.getBytes(Constants.MAX_UPLOAD_SIZE_BYTES).await()
+            val encryptedBytes = when {
+                message.mediaUrl.startsWith("wesal-inline://") -> {
+                    Base64.decode(message.mediaUrl.removePrefix("wesal-inline://"), Base64.NO_WRAP)
+                }
+                message.mediaUrl.startsWith("data:image") -> {
+                    val raw = Base64.decode(message.mediaUrl.substringAfter("base64,"), Base64.NO_WRAP)
+                    targetFile.writeBytes(raw)
+                    return@runCatching targetFile
+                }
+                else -> {
+                    error("تعذر فتح المرفق لأن Firebase Storage غير مفعّل")
+                }
             }
 
             val wrappedKey = message.wrappedKeys[myUid]

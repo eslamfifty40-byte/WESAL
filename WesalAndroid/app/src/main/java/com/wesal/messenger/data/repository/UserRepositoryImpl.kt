@@ -10,8 +10,6 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.QuerySnapshot
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalIdUtils
@@ -25,6 +23,7 @@ import com.wesal.messenger.domain.model.SavedWesalAccount
 import com.wesal.messenger.domain.model.VerificationAuditLog
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.UserRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -33,6 +32,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -84,7 +84,6 @@ internal fun DocumentSnapshot.toWesalUser(): WesalUser {
 class UserRepositoryImpl @Inject constructor(
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val storage: FirebaseStorage,
     private val prefs: UserPreferencesDataStore
 ) : UserRepository {
 
@@ -305,16 +304,11 @@ class UserRepositoryImpl @Inject constructor(
             )
 
             if (photoUri != null) {
-                val uploadedUrl = runCatching {
-                    val ref = storage.reference.child("${Constants.STORAGE_AVATARS}/$uid/${UUID.randomUUID()}.jpg")
-                    val metadata = StorageMetadata.Builder().setContentType("image/jpeg").build()
-                    ref.putFile(photoUri, metadata).await()
-                    ref.downloadUrl.await().toString()
-                }.getOrElse {
+                val encodedAvatar = withContext(Dispatchers.IO) {
                     uriToBase64Jpeg(photoUri, maxSide = 512, quality = 78)
                 }
-                if (uploadedUrl.isNotBlank()) {
-                    updates["photoUrl"] = uploadedUrl
+                if (encodedAvatar.isNotBlank()) {
+                    updates["photoUrl"] = encodedAvatar
                 }
             }
 
@@ -406,12 +400,10 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun removeProfilePhoto(): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
-        val docRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        val currentUrl = docRef.get().await().getString("photoUrl").orEmpty()
-        docRef.update("photoUrl", "").await()
-        if (currentUrl.startsWith("http")) {
-            runCatching { storage.getReferenceFromUrl(currentUrl).delete().await() }
-        }
+        firestore.collection(Constants.COLLECTION_USERS)
+            .document(uid)
+            .update("photoUrl", "")
+            .await()
     }
 
     override suspend fun updatePrivacySettings(settings: PrivacySettings): Result<Unit> {

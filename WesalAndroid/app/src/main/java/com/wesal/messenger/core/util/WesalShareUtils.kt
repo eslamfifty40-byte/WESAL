@@ -4,53 +4,48 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import java.net.URLEncoder
 
 object WesalShareUtils {
 
-    private const val INVITE_WEB_BASE_URL = "https://wesal.app/join"
-    private const val CHANNEL_WEB_BASE_URL = "https://wesal.app/channel"
-
-    private fun urlEncode(value: String): String =
-        URLEncoder.encode(value, Charsets.UTF_8.name()).replace("+", "%20")
-
-    fun buildSingleInviteLink(myWesalId: String?): String {
-        val cleanId = myWesalId?.trim()?.removePrefix("@").orEmpty()
-        return if (cleanId.isNotBlank()) {
-            "$INVITE_WEB_BASE_URL?id=${urlEncode(cleanId)}"
-        } else {
-            INVITE_WEB_BASE_URL
-        }
+    fun buildSingleInviteLink(myWesalId: String? = null): String {
+        return Constants.APK_DOWNLOAD_URL.trim()
     }
 
     /**
-     * Mandatory Single-Link Invite Policy:
-     * Produces ONE single URL (`https://wesal.app/join?id=...`).
-     * Never emits a second link, intermediate web page link, or GitHub URL in the share text.
-     * On devices with WESAL installed, Android App Links open WESAL directly on the inviter's card.
-     * On devices without WESAL installed, `/join` responds with an HTTP 302 direct download of WESAL.apk.
+     * Single Direct-Download Invite Policy:
+     * Emits ONLY the direct APK URL from Constants.APK_DOWNLOAD_URL (when configured)
+     * paired with plain text user ID (`معرّفي @<wesalId>`), with NO wesal.app, /join, or GitHub URLs.
      */
     fun buildInviteMessage(
         myWesalId: String?,
         targetContactName: String? = null,
         isEnglish: Boolean = false
     ): String {
-        val singleInviteLink = buildSingleInviteLink(myWesalId)
-        val greeting = if (!targetContactName.isNullOrBlank()) {
-            if (isEnglish) "Hi ${targetContactName.trim()},\n" else "مرحباً ${targetContactName.trim()} 👋\n"
-        } else {
-            ""
-        }
-        return if (isEnglish) {
-            "${greeting}Join me on WESAL Messenger via my invite link:\n$singleInviteLink"
-        } else {
-            "${greeting}انضم إليّ في تطبيق WESAL للمراسلة الفورية عبر رابط الدعوة المباشر:\n$singleInviteLink"
+        val cleanId = myWesalId?.trim()?.removePrefix("@").orEmpty()
+        val directApkUrl = Constants.APK_DOWNLOAD_URL.trim()
+
+        return buildString {
+            if (!targetContactName.isNullOrBlank()) {
+                append(
+                    if (isEnglish) "Hi ${targetContactName.trim()},\n"
+                    else "مرحباً ${targetContactName.trim()} 👋\n"
+                )
+            }
+            append(
+                if (isEnglish) "Join me on WESAL Messenger"
+                else "انضم إليّ في تطبيق WESAL للمراسلة الفورية"
+            )
+            if (cleanId.isNotBlank()) {
+                append(if (isEnglish) "\nMy ID: @$cleanId" else "\nمعرّفي @$cleanId")
+            }
+            if (directApkUrl.isNotBlank()) {
+                append("\n$directApkUrl")
+            }
         }
     }
 
     fun buildChannelInviteLink(inviteCode: String): String {
-        val cleanCode = inviteCode.trim()
-        return "$CHANNEL_WEB_BASE_URL?code=${Uri.encode(cleanCode)}"
+        return Constants.APK_DOWNLOAD_URL.trim()
     }
 
     fun buildChannelInviteMessage(
@@ -58,11 +53,16 @@ object WesalShareUtils {
         inviteCode: String,
         isEnglish: Boolean = false
     ): String {
-        val link = buildChannelInviteLink(inviteCode)
-        return if (isEnglish) {
-            "Join the WESAL channel \"$channelTitle\":\n$link"
-        } else {
-            "انضم إلى قناة «$channelTitle» على WESAL:\n$link"
+        val cleanCode = inviteCode.trim()
+        val directApkUrl = Constants.APK_DOWNLOAD_URL.trim()
+        return buildString {
+            append(
+                if (isEnglish) "Join the WESAL channel \"$channelTitle\"\nChannel code: $cleanCode"
+                else "انضم إلى قناة «$channelTitle» على WESAL\nرمز القناة: $cleanCode"
+            )
+            if (directApkUrl.isNotBlank()) {
+                append("\n$directApkUrl")
+            }
         }
     }
 

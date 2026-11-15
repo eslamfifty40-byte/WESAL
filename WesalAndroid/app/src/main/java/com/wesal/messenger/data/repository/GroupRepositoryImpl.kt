@@ -4,11 +4,11 @@ import android.net.Uri
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.storage.FirebaseStorage
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.GroupInfo
 import com.wesal.messenger.domain.model.MessageStatus
 import com.wesal.messenger.domain.repository.GroupRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,8 +24,7 @@ import javax.inject.Singleton
 @Singleton
 class GroupRepositoryImpl @Inject constructor(
     private val auth: FirebaseAuth,
-    private val firestore: FirebaseFirestore,
-    private val storage: FirebaseStorage
+    private val firestore: FirebaseFirestore
 ) : GroupRepository {
 
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
@@ -102,12 +102,8 @@ class GroupRepositoryImpl @Inject constructor(
 
         var avatarUrl = ""
         if (avatarUri != null) {
-            avatarUrl = runCatching {
-                val ref = storage.reference.child("${Constants.STORAGE_GROUP_AVATARS}/$groupId/${UUID.randomUUID()}.jpg")
-                ref.putFile(avatarUri).await()
-                ref.downloadUrl.await().toString()
-            }.getOrElse {
-                uriToBase64Jpeg(avatarUri, maxSide = 512, quality = 78)
+            avatarUrl = withContext(Dispatchers.IO) {
+                runCatching { uriToBase64Jpeg(avatarUri, maxSide = 512, quality = 78) }.getOrDefault("")
             }
         }
 
@@ -174,12 +170,8 @@ class GroupRepositoryImpl @Inject constructor(
         val chatUpdates = hashMapOf<String, Any>("groupName" to name.trim())
 
         if (avatarUri != null) {
-            val url = runCatching {
-                val ref = storage.reference.child("${Constants.STORAGE_GROUP_AVATARS}/$groupId/${UUID.randomUUID()}.jpg")
-                ref.putFile(avatarUri).await()
-                ref.downloadUrl.await().toString()
-            }.getOrElse {
-                uriToBase64Jpeg(avatarUri, maxSide = 512, quality = 78)
+            val url = withContext(Dispatchers.IO) {
+                runCatching { uriToBase64Jpeg(avatarUri, maxSide = 512, quality = 78) }.getOrDefault("")
             }
             if (url.isNotBlank()) {
                 updates["avatarUrl"] = url

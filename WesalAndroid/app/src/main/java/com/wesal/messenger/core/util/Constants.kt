@@ -21,23 +21,18 @@ object Constants {
     const val SUBCOLLECTION_COMMENTS = "comments"
     const val SUBCOLLECTION_JOIN_REQUESTS = "join_requests"
 
-    const val STORAGE_AVATARS = "avatars"
-    const val STORAGE_CHAT_MEDIA = "chat_media"
-    const val STORAGE_VOICE_NOTES = "voice_notes"
-    const val STORAGE_FILES = "shared_files"
-    const val STORAGE_STORIES = "stories_media"
-    const val STORAGE_GROUP_AVATARS = "group_avatars"
-    const val STORAGE_CHANNEL_MEDIA = "channel_media"
-
     const val CHANNEL_MESSAGES = "wesal_messages"
     const val CHANNEL_CALLS = "wesal_calls"
     const val CHANNEL_STORIES = "wesal_stories"
     const val CHANNEL_CHANNELS = "wesal_channels"
     const val CHANNEL_SYSTEM = "wesal_system"
 
-    // Super Admin primary identity; CONFIRMED_SUPER_ADMIN_UID remains empty until verified from live Firebase Auth / inspectFirstAdminCandidate.
+    // Super Admin primary identity; paste the real UID from Firebase Authentication in CONFIRMED_SUPER_ADMIN_UID before release.
     const val SUPER_ADMIN_EMAIL = "eslamfifty40@gmail.com"
-    const val CONFIRMED_SUPER_ADMIN_UID = ""
+    const val CONFIRMED_SUPER_ADMIN_UID = "" // <الصق UID هنا>
+
+    // رابط التحميل المباشر الوحيد لتطبيق WESAL.apk — الصق الرابط المباشر هنا قبل بناء النسخة النهائية
+    const val APK_DOWNLOAD_URL = "" // <الصق الرابط المباشر هنا>
 
     const val OTP_TIMEOUT_SECONDS = 60L
     const val MESSAGE_EDIT_WINDOW_MS = 15 * 60 * 1000L // 15 minutes edit policy
