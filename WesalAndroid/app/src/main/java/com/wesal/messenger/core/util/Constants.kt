@@ -33,7 +33,7 @@ object Constants {
     const val CONFIRMED_SUPER_ADMIN_UID = "fxKvKnbnksPqZyO7rQjTzxIKzzP2" // <الصق UID هنا>
 
     // رابط التحميل المباشر الوحيد لتطبيق WESAL.apk — الصق الرابط المباشر هنا قبل بناء النسخة النهائية
-    const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-app" // <الصق الرابط المباشر هنا>
+    const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-Messenger" // <الصق الرابط المباشر هنا>
 
     const val OTP_TIMEOUT_SECONDS = 60L
     const val MESSAGE_EDIT_WINDOW_MS = 15 * 60 * 1000L // 15 minutes edit policy
