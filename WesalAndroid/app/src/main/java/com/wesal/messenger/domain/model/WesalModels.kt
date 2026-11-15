@@ -30,7 +30,8 @@ data class PrivacySettings(
     val onlineVisibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
     val profilePhotoVisibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
     val storiesVisibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
-    val readReceiptsEnabled: Boolean = true
+    val readReceiptsEnabled: Boolean = true,
+    val hidePhoneNumber: Boolean = false
 )
 
 data class WesalUser(
@@ -38,9 +39,13 @@ data class WesalUser(
     val email: String = "",
     val phoneNumber: String = "",
     val isPhoneVerified: Boolean = false,
+    val isVerified: Boolean = false,
+    val verifiedByUid: String = "",
+    val verifiedAt: Long = 0L,
+    val verificationNote: String = "",
     val displayName: String = "",
     val publicId: String = "",
-    val bio: String = "أستخدم تطبيق وصال",
+    val bio: String = "أستخدم تطبيق WESAL",
     val photoUrl: String = "",
     val createdAt: Long = 0L,
     val lastSeen: Long = 0L,
@@ -49,6 +54,46 @@ data class WesalUser(
     val publicKey: String = "",
     val privacySettings: PrivacySettings = PrivacySettings(),
     val blockedUsers: List<String> = emptyList()
+)
+
+enum class ContactRequestStatus(val raw: String) {
+    PENDING("PENDING"),
+    ACCEPTED("ACCEPTED"),
+    REJECTED("REJECTED");
+
+    companion object {
+        fun fromRaw(raw: String?): ContactRequestStatus =
+            entries.firstOrNull { it.raw == raw } ?: PENDING
+    }
+}
+
+data class ContactRequest(
+    val requestId: String = "",
+    val senderUid: String = "",
+    val senderName: String = "",
+    val senderPublicId: String = "",
+    val senderAvatarUrl: String = "",
+    val senderVerified: Boolean = false,
+    val receiverUid: String = "",
+    val receiverName: String = "",
+    val receiverPublicId: String = "",
+    val receiverAvatarUrl: String = "",
+    val receiverVerified: Boolean = false,
+    val status: ContactRequestStatus = ContactRequestStatus.PENDING,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class VerificationAuditLog(
+    val logId: String = "",
+    val targetUid: String = "",
+    val targetPublicId: String = "",
+    val targetName: String = "",
+    val action: String = "GRANTED",
+    val adminUid: String = "",
+    val adminEmail: String = "",
+    val note: String = "",
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 enum class MessageType(val raw: String) {
@@ -121,6 +166,7 @@ data class ChatPreview(
     val peerPublicKey: String = "",
     val peerOnline: Boolean = false,
     val peerLastSeen: Long = 0L,
+    val peerVerified: Boolean = false,
     val lastMessagePreview: String = "",
     val lastMessageTime: Long = 0L,
     val lastMessageSenderId: String = "",
@@ -141,6 +187,93 @@ data class GroupInfo(
     val creatorId: String = "",
     val adminIds: List<String> = emptyList(),
     val memberIds: List<String> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+enum class ChannelRole {
+    OWNER,
+    MODERATOR,
+    SUBSCRIBER,
+    NONE
+}
+
+data class WesalChannel(
+    val channelId: String = "",
+    val title: String = "",
+    val description: String = "",
+    val avatarUrl: String = "",
+    val isPublic: Boolean = true,
+    val inviteCode: String = "",
+    val ownerUid: String = "",
+    val moderatorIds: List<String> = emptyList(),
+    val subscriberIds: List<String> = emptyList(),
+    val subscribersCount: Int = 0,
+    val isVerified: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    fun roleFor(uid: String): ChannelRole = when {
+        uid.isBlank() -> ChannelRole.NONE
+        ownerUid == uid -> ChannelRole.OWNER
+        moderatorIds.contains(uid) -> ChannelRole.MODERATOR
+        subscriberIds.contains(uid) -> ChannelRole.SUBSCRIBER
+        else -> ChannelRole.NONE
+    }
+}
+
+enum class ChannelPostType(val raw: String) {
+    TEXT("TEXT"),
+    IMAGE("IMAGE"),
+    VIDEO("VIDEO"),
+    AUDIO("AUDIO"),
+    DOCUMENT("DOCUMENT");
+
+    companion object {
+        fun fromRaw(raw: String?): ChannelPostType =
+            entries.firstOrNull { it.raw == raw } ?: TEXT
+    }
+}
+
+data class ChannelPost(
+    val postId: String = "",
+    val channelId: String = "",
+    val authorUid: String = "",
+    val authorName: String = "",
+    val authorAvatarUrl: String = "",
+    val authorVerified: Boolean = false,
+    val type: ChannelPostType = ChannelPostType.TEXT,
+    val text: String = "",
+    val mediaUrl: String = "",
+    val mediaMimeType: String = "",
+    val mediaFileName: String = "",
+    val mediaSizeBytes: Long = 0L,
+    val mediaDurationMs: Long = 0L,
+    val reactionCounts: Map<String, Int> = emptyMap(),
+    val userReactions: Map<String, String> = emptyMap(),
+    val isPinned: Boolean = false,
+    val commentsCount: Int = 0,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class ChannelComment(
+    val commentId: String = "",
+    val postId: String = "",
+    val channelId: String = "",
+    val authorUid: String = "",
+    val authorName: String = "",
+    val authorAvatarUrl: String = "",
+    val authorVerified: Boolean = false,
+    val text: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class ChannelJoinRequest(
+    val requestId: String = "",
+    val channelId: String = "",
+    val requesterUid: String = "",
+    val requesterName: String = "",
+    val requesterPublicId: String = "",
+    val requesterAvatarUrl: String = "",
+    val status: String = "PENDING",
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -197,13 +330,16 @@ data class CallRecord(
     val callerId: String = "",
     val callerName: String = "",
     val callerAvatarUrl: String = "",
+    val callerVerified: Boolean = false,
     val calleeId: String = "",
     val calleeName: String = "",
     val calleeAvatarUrl: String = "",
+    val calleeVerified: Boolean = false,
     val isVideo: Boolean = false,
     val status: CallStatus = CallStatus.RINGING,
     val offerSdp: String = "",
     val answerSdp: String = "",
+    val deletedForUsers: List<String> = emptyList(),
     val startedAt: Long = System.currentTimeMillis(),
     val endedAt: Long = 0L,
     val durationSeconds: Long = 0L

@@ -2,12 +2,14 @@ package com.wesal.messenger.core.di
 
 import com.wesal.messenger.data.repository.AuthRepositoryImpl
 import com.wesal.messenger.data.repository.CallRepositoryImpl
+import com.wesal.messenger.data.repository.ChannelRepositoryImpl
 import com.wesal.messenger.data.repository.ChatRepositoryImpl
 import com.wesal.messenger.data.repository.GroupRepositoryImpl
 import com.wesal.messenger.data.repository.StoryRepositoryImpl
 import com.wesal.messenger.data.repository.UserRepositoryImpl
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.CallRepository
+import com.wesal.messenger.domain.repository.ChannelRepository
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.GroupRepository
 import com.wesal.messenger.domain.repository.StoryRepository
@@ -37,6 +39,10 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindGroupRepository(impl: GroupRepositoryImpl): GroupRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindChannelRepository(impl: ChannelRepositoryImpl): ChannelRepository
 
     @Binds
     @Singleton

@@ -1,7 +1,6 @@
 package com.wesal.messenger.calls
 
 import android.app.NotificationManager
-import android.content.Intent
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
@@ -16,12 +15,18 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material3.*
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalTheme
+import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.data.local.AppUserSettings
+import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.CallStatus
 import com.wesal.messenger.domain.repository.CallRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
@@ -33,6 +38,7 @@ import javax.inject.Inject
 class IncomingCallActivity : AppCompatActivity() {
 
     @Inject lateinit var callRepository: CallRepository
+    @Inject lateinit var prefs: UserPreferencesDataStore
     private var ringtone: Ringtone? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,7 +50,7 @@ class IncomingCallActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val callId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
-        val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "مستخدم وصال"
+        val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "WESAL User"
         val callerAvatar = intent.getStringExtra(EXTRA_CALLER_AVATAR).orEmpty()
         val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
 
@@ -64,27 +70,35 @@ class IncomingCallActivity : AppCompatActivity() {
         }
 
         setContent {
-            WesalTheme(darkTheme = true) {
+            val settings by prefs.settingsFlow.collectAsStateWithLifecycle(initialValue = AppUserSettings())
+            WesalTheme(
+                darkTheme = settings.darkTheme,
+                languageTag = settings.languageTag,
+                fontScale = settings.fontScale
+            ) {
+                val palette = WesalColors.current
+                val strings = LocalWesalStrings.current
+
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(WesalDeepBlack)
+                        .background(palette.background)
                         .padding(horizontal = 32.dp, vertical = 64.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Text(
-                            text = if (isVideo) "مكالمة فيديو واردة • وصال" else "مكالمة صوتية واردة • وصال",
+                            text = if (isVideo) strings.incomingVideoCall else strings.incomingVoiceCall,
                             style = MaterialTheme.typography.titleMedium,
-                            color = WesalTurquoise
+                            color = palette.turquoise
                         )
                         Spacer(Modifier.height(16.dp))
                         WesalAvatar(imageUrl = callerAvatar, name = callerName, size = 128.dp)
                         Text(
                             text = callerName,
                             style = MaterialTheme.typography.headlineLarge,
-                            color = WesalTextPrimary
+                            color = palette.textPrimary
                         )
                     }
 
@@ -101,12 +115,12 @@ class IncomingCallActivity : AppCompatActivity() {
                                     finish()
                                 }
                             },
-                            containerColor = WesalError,
+                            containerColor = palette.error,
                             contentColor = Color.White,
                             shape = CircleShape,
                             modifier = Modifier.size(72.dp)
                         ) {
-                            Icon(Icons.Default.CallEnd, contentDescription = "رفض", modifier = Modifier.size(32.dp))
+                            Icon(Icons.Default.CallEnd, contentDescription = null, modifier = Modifier.size(32.dp))
                         }
 
                         FloatingActionButton(
@@ -124,12 +138,12 @@ class IncomingCallActivity : AppCompatActivity() {
                                 )
                                 finish()
                             },
-                            containerColor = WesalEmerald,
-                            contentColor = WesalDeepBlack,
+                            containerColor = palette.emerald,
+                            contentColor = palette.onPrimary,
                             shape = CircleShape,
                             modifier = Modifier.size(72.dp)
                         ) {
-                            Icon(Icons.Default.Call, contentDescription = "رد", modifier = Modifier.size(32.dp))
+                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(32.dp))
                         }
                     }
                 }

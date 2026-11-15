@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">وصال</string>
+    <string name="app_name">WESAL Messenger</string>
     <string name="tab_chats">المحادثات</string>
     <string name="tab_stories">الحالات</string>
     <string name="tab_calls">المكالمات</string>
@@ -9,9 +9,10 @@
     <string name="channel_messages_name">الرسائل الفورية</string>
     <string name="channel_calls_name">المكالمات الواردة</string>
     <string name="channel_stories_name">الحالات والتحديثات</string>
+    <string name="channel_channels_name">منشورات القنوات</string>
     <string name="channel_system_name">تنبيهات النظام</string>
-    <string name="phone_login_title">تسجيل الدخول إلى وصال</string>
-    <string name="phone_login_subtitle">ادخل مجاناً عبر حساب Google أو البريد الإلكتروني — بدون رسائل SMS</string>
+    <string name="phone_login_title">تسجيل الدخول إلى WESAL</string>
+    <string name="phone_login_subtitle">ادخل مجاناً عبر حساب Google أو البريد الإلكتروني</string>
     <string name="send_otp">إرسال رمز التحقق</string>
     <string name="verify_otp">تأكيد الرمز</string>
     <string name="resend_otp">إعادة إرسال الرمز</string>

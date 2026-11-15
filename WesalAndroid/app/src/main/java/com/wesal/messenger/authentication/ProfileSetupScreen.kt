@@ -34,7 +34,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.media.AvatarCropHelper
 import com.wesal.messenger.media.AvatarPreviewConfirmDialog
 import com.wesal.messenger.media.AvatarSourceBottomSheet
@@ -45,11 +46,15 @@ fun ProfileSetupScreen(
     viewModel: AuthViewModel,
     onNavigateToHome: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var displayName by remember { mutableStateOf(viewModel.defaultDisplayName()) }
     var wesalId by remember { mutableStateOf("") }
-    var bio by remember { mutableStateOf("أستخدم تطبيق وصال") }
+    var bio by remember {
+        mutableStateOf(if (strings.isEnglish) "Using WESAL Messenger" else "أستخدم تطبيق WESAL")
+    }
     var selectedPhotoUri by remember { mutableStateOf<Uri?>(null) }
     var pendingRawUri by remember { mutableStateOf<Uri?>(null) }
     var pendingPreviewUri by remember { mutableStateOf<Uri?>(null) }
@@ -91,7 +96,11 @@ fun ProfileSetupScreen(
             cameraTempUri = uri
             cameraLauncher.launch(uri)
         } else {
-            Toast.makeText(context, "يرجى منح صلاحية الكاميرا لالتقاط صورة", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                if (strings.isEnglish) "Grant camera permission to take a photo" else "يرجى منح صلاحية الكاميرا لالتقاط صورة",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -111,7 +120,18 @@ fun ProfileSetupScreen(
         if (state.navigateToHome) onNavigateToHome()
     }
 
-    Scaffold(containerColor = WesalDeepBlack) { padding ->
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = palette.turquoise,
+        unfocusedBorderColor = palette.border,
+        focusedTextColor = palette.textPrimary,
+        unfocusedTextColor = palette.textPrimary,
+        focusedLabelColor = palette.turquoise,
+        unfocusedLabelColor = palette.textSecondary,
+        focusedContainerColor = palette.surface,
+        unfocusedContainerColor = palette.surface
+    )
+
+    Scaffold(containerColor = palette.background) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -127,14 +147,19 @@ fun ProfileSetupScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    text = "إعداد ملفك الشخصي",
+                    text = if (strings.isEnglish) "Set Up Your Profile" else "إعداد ملفك الشخصي",
                     style = MaterialTheme.typography.headlineSmall,
-                    color = WesalTextPrimary
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "أضف اسمك ومعرف وصال الفريد (Wesal ID) ليتمكن أصدقاؤك من إضافتك بدون رقم هاتف",
+                    text = if (strings.isEnglish) {
+                        "Add your name and unique @Wesal ID so friends can find you privately without a phone number."
+                    } else {
+                        "أضف اسمك ومعرف وصال الفريد (@Wesal ID) ليتمكن أصدقاؤك من إضافتك بدون رقم هاتف"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = WesalTextSecondary
+                    color = palette.textSecondary
                 )
 
                 Column(
@@ -145,31 +170,31 @@ fun ProfileSetupScreen(
                         modifier = Modifier
                             .size(116.dp)
                             .clip(CircleShape)
-                            .background(WesalSurfaceElevated)
-                            .border(2.dp, WesalTurquoise, CircleShape)
+                            .background(palette.surfaceElevated)
+                            .border(2.dp, palette.turquoise, CircleShape)
                             .clickable { showSourceSheet = true },
                         contentAlignment = Alignment.Center
                     ) {
                         if (selectedPhotoUri != null) {
                             AsyncImage(
                                 model = selectedPhotoUri,
-                                contentDescription = "صورة الحساب",
+                                contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
                             )
                         } else {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Default.Person, contentDescription = null, tint = WesalTextSecondary, modifier = Modifier.size(44.dp))
-                                Icon(Icons.Default.AddAPhoto, contentDescription = null, tint = WesalTurquoise, modifier = Modifier.size(20.dp))
+                                Icon(Icons.Default.Person, contentDescription = null, tint = palette.textSecondary, modifier = Modifier.size(44.dp))
+                                Icon(Icons.Default.AddAPhoto, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(20.dp))
                             }
                         }
                     }
 
                     if (selectedPhotoUri != null) {
                         TextButton(onClick = { selectedPhotoUri = null }) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = WesalError, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = palette.error, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("إزالة الصورة", color = WesalError)
+                            Text(if (strings.isEnglish) "Remove Photo" else "إزالة الصورة", color = palette.error)
                         }
                     }
                 }
@@ -177,11 +202,12 @@ fun ProfileSetupScreen(
                 OutlinedTextField(
                     value = displayName,
                     onValueChange = { displayName = it },
-                    label = { Text("الاسم الظاهر") },
-                    placeholder = { Text("مثال: أحمد محمد") },
+                    label = { Text(if (strings.isEnglish) "Display Name" else "الاسم الظاهر") },
+                    placeholder = { Text(if (strings.isEnglish) "e.g., Ahmed Mohamed" else "مثال: أحمد محمد") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    colors = fieldColors
                 )
 
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -190,38 +216,44 @@ fun ProfileSetupScreen(
                         onValueChange = { raw ->
                             wesalId = raw.lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }
                         },
-                        label = { Text("معرف وصال الفريد (Wesal ID) — اختياري") },
+                        label = { Text(if (strings.isEnglish) "Unique @Wesal ID (optional)" else "معرف وصال الفريد (@Wesal ID) — اختياري") },
                         placeholder = { Text("ahmed_mohamed") },
                         prefix = {
                             Text(
                                 text = "@",
-                                color = WesalTurquoise,
+                                color = palette.turquoise,
                                 fontWeight = FontWeight.Bold
                             )
                         },
                         supportingText = {
                             Text(
-                                text = "4–30 حرفاً إنجليزياً أو أرقاماً أو (_). إن تركته فارغاً سننشئ لك معرفاً تلقائياً.",
-                                color = WesalTextSecondary
+                                text = if (strings.isEnglish) {
+                                    "4–30 English letters, digits, or (_). Leave empty to auto-generate one."
+                                } else {
+                                    "4–30 حرفاً إنجليزياً أو أرقاماً أو (_). إن تركته فارغاً سننشئ لك معرفاً تلقائياً."
+                                },
+                                color = palette.textSecondary
                             )
                         },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp)
+                        shape = RoundedCornerShape(14.dp),
+                        colors = fieldColors
                     )
                 }
 
                 OutlinedTextField(
                     value = bio,
                     onValueChange = { bio = it },
-                    label = { Text("الوصف الشخصي") },
+                    label = { Text(if (strings.isEnglish) "Bio" else "الوصف الشخصي") },
                     maxLines = 2,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    colors = fieldColors
                 )
 
                 if (state.errorMessage != null) {
-                    Text(state.errorMessage!!, color = WesalError, style = MaterialTheme.typography.bodyMedium)
+                    Text(state.errorMessage!!, color = palette.error, style = MaterialTheme.typography.bodyMedium)
                 }
             }
 
@@ -242,14 +274,18 @@ fun ProfileSetupScreen(
                     .height(54.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = WesalEmerald,
-                    contentColor = WesalDeepBlack
+                    containerColor = palette.emerald,
+                    contentColor = palette.onAccent
                 )
             ) {
                 if (state.isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(22.dp), color = WesalDeepBlack)
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), color = palette.onAccent)
                 } else {
-                    Text("بدء استخدام وصال", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (strings.isEnglish) "Start Using WESAL" else "بدء استخدام WESAL",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }

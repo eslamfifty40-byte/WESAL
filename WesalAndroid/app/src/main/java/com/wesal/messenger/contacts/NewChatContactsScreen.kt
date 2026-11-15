@@ -32,9 +32,14 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
 import com.wesal.messenger.calls.CallActivity
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.WesalShareUtils
+import com.wesal.messenger.domain.model.ContactRequest
+import com.wesal.messenger.domain.model.ContactRequestStatus
+import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -44,16 +49,32 @@ fun NewChatContactsScreen(
     onOpenUserProfile: (String) -> Unit = {},
     viewModel: ContactsViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val requests by viewModel.contactRequests.collectAsStateWithLifecycle()
     val contactsPermission = rememberPermissionState(Manifest.permission.READ_CONTACTS)
 
     LaunchedEffect(contactsPermission.status.isGranted) {
         if (contactsPermission.status.isGranted) {
             viewModel.syncDeviceContacts()
         }
+    }
+
+    val myUid = viewModel.myUid
+    val requestByPeer = remember(requests, myUid) {
+        requests.associateBy { req ->
+            if (req.senderUid == myUid) req.receiverUid else req.senderUid
+        }
+    }
+    val incomingPending = remember(requests, myUid) {
+        requests.filter { it.receiverUid == myUid && it.status == ContactRequestStatus.PENDING }
+    }
+    val outgoingPending = remember(requests, myUid) {
+        requests.filter { it.senderUid == myUid && it.status == ContactRequestStatus.PENDING }
     }
 
     val trimmedQuery = state.query.trim()
@@ -63,7 +84,6 @@ fun NewChatContactsScreen(
         else state.wesalContacts.filter {
             it.deviceName.contains(trimmedQuery, ignoreCase = true) ||
                 it.user.displayName.contains(trimmedQuery, ignoreCase = true) ||
-                it.user.phoneNumber.contains(trimmedQuery) ||
                 it.user.publicId.contains(cleanQueryHandle, ignoreCase = true)
         }
     }
@@ -85,13 +105,13 @@ fun NewChatContactsScreen(
     }
 
     Scaffold(
-        containerColor = WesalDeepBlack,
+        containerColor = palette.background,
         topBar = {
             TopAppBar(
-                title = { Text("الأصدقاء وجهات الاتصال", color = WesalTextPrimary) },
+                title = { Text(strings.contactsScreenTitle, color = palette.textPrimary) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "رجوع", tint = WesalTextPrimary)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back, tint = palette.textPrimary)
                     }
                 },
                 actions = {
@@ -101,10 +121,10 @@ fun NewChatContactsScreen(
                             viewModel.syncDeviceContacts()
                         }
                     }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "تحديث جهات الاتصال", tint = WesalTurquoise)
+                        Icon(Icons.Default.Refresh, contentDescription = strings.refresh, tint = palette.turquoise)
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = WesalSurfaceDark)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
             )
         }
     ) { padding ->
@@ -118,12 +138,12 @@ fun NewChatContactsScreen(
             OutlinedTextField(
                 value = state.query,
                 onValueChange = viewModel::search,
-                placeholder = { Text("ابحث بمعرف وصال (@Wesal ID) أو الاسم...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = WesalTurquoise) },
+                placeholder = { Text(strings.searchContactsPlaceholder) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.turquoise) },
                 trailingIcon = {
                     if (state.query.isNotEmpty()) {
                         IconButton(onClick = { viewModel.search("") }) {
-                            Icon(Icons.Default.Close, contentDescription = "مسح")
+                            Icon(Icons.Default.Close, contentDescription = strings.clear)
                         }
                     }
                 },
@@ -133,21 +153,23 @@ fun NewChatContactsScreen(
             )
 
             if (state.isLoadingContacts || state.isSearching || state.isLoadingDiscoverable) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = WesalEmerald)
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = palette.emerald)
             }
 
             state.error?.let { err ->
-                Text(err, color = WesalError, style = MaterialTheme.typography.bodyMedium)
+                Text(err, color = palette.error, style = MaterialTheme.typography.bodyMedium)
+            }
+            state.feedback?.let { msg ->
+                Text(msg, color = palette.emerald, style = MaterialTheme.typography.bodySmall)
             }
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // My Wesal ID & Quick WhatsApp Invite Card
                 currentUser?.takeIf { it.publicId.isNotBlank() }?.let { me ->
                     item(key = "my_wesal_id_card") {
                         Surface(
-                            color = WesalSurfaceDark,
+                            color = palette.surface,
                             shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, WesalTurquoise.copy(alpha = 0.35f)),
+                            border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.35f)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
@@ -161,24 +183,24 @@ fun NewChatContactsScreen(
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "معرف وصال الخاص بك (Wesal ID)",
+                                            text = if (strings.isEnglish) "Your Wesal ID" else "معرف وصال الخاص بك (Wesal ID)",
                                             style = MaterialTheme.typography.labelMedium,
-                                            color = WesalTextSecondary
+                                            color = palette.textSecondary
                                         )
                                         Text(
                                             text = "@${me.publicId}",
                                             style = MaterialTheme.typography.titleMedium,
-                                            color = WesalTurquoise,
+                                            color = palette.turquoise,
                                             fontWeight = FontWeight.Bold
                                         )
                                     }
                                     IconButton(
                                         onClick = {
                                             clipboard.setText(AnnotatedString("@${me.publicId}"))
-                                            Toast.makeText(context, "تم نسخ @${me.publicId}", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "@${me.publicId}", Toast.LENGTH_SHORT).show()
                                         }
                                     ) {
-                                        Icon(Icons.Default.ContentCopy, contentDescription = "نسخ معرف وصال", tint = WesalTurquoise)
+                                        Icon(Icons.Default.ContentCopy, contentDescription = strings.copy, tint = palette.turquoise)
                                     }
                                 }
                                 Row(
@@ -189,33 +211,39 @@ fun NewChatContactsScreen(
                                         onClick = {
                                             WesalShareUtils.shareViaWhatsApp(
                                                 context,
-                                                WesalShareUtils.buildInviteMessage(me.publicId)
+                                                WesalShareUtils.buildInviteMessage(
+                                                    myWesalId = me.publicId,
+                                                    isEnglish = strings.isEnglish
+                                                )
                                             )
                                         },
                                         modifier = Modifier.weight(1f),
                                         shape = RoundedCornerShape(10.dp),
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = WesalEmerald,
-                                            contentColor = WesalDeepBlack
+                                            containerColor = palette.emerald,
+                                            contentColor = palette.onPrimary
                                         )
                                     ) {
                                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text("دعوة عبر واتساب", fontWeight = FontWeight.Bold)
+                                        Text(strings.inviteViaWhatsApp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                     }
                                     OutlinedButton(
                                         onClick = {
                                             WesalShareUtils.shareGeneral(
                                                 context,
-                                                WesalShareUtils.buildInviteMessage(me.publicId)
+                                                WesalShareUtils.buildInviteMessage(
+                                                    myWesalId = me.publicId,
+                                                    isEnglish = strings.isEnglish
+                                                )
                                             )
                                         },
                                         modifier = Modifier.weight(1f),
                                         shape = RoundedCornerShape(10.dp)
                                     ) {
-                                        Icon(Icons.Default.IosShare, contentDescription = null, tint = WesalTurquoise, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.IosShare, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(16.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text("مشاركة الرابط", color = WesalTurquoise)
+                                        Text(strings.share, color = palette.turquoise, maxLines = 1)
                                     }
                                 }
                             }
@@ -223,13 +251,103 @@ fun NewChatContactsScreen(
                     }
                 }
 
-                // Contacts Permission Consent Card (strictly optional & privacy-preserving SHA-256)
+                // Incoming Contact Requests
+                if (incomingPending.isNotEmpty()) {
+                    item(key = "header_incoming_requests") {
+                        Text(
+                            text = "${strings.incomingRequestsTitle} (${incomingPending.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = palette.emerald,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    items(incomingPending, key = { "in_${it.requestId}" }) { req ->
+                        Surface(
+                            color = palette.surface,
+                            shape = RoundedCornerShape(14.dp),
+                            border = BorderStroke(1.dp, palette.emerald.copy(alpha = 0.35f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpenUserProfile(req.senderUid) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                WesalAvatar(imageUrl = req.senderAvatarUrl, name = req.senderName, size = 44.dp)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    WesalNameWithBadge(
+                                        name = req.senderName.ifBlank { "@${req.senderPublicId}" },
+                                        isVerified = req.senderVerified,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    if (req.senderPublicId.isNotBlank()) {
+                                        Text("@${req.senderPublicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+                                Button(
+                                    onClick = { viewModel.acceptContactRequest(req.requestId) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(strings.acceptContactRequest, maxLines = 1)
+                                }
+                                OutlinedButton(
+                                    onClick = { viewModel.rejectContactRequest(req.requestId) },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(strings.rejectContactRequest, color = palette.error, maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Outgoing Sent Requests
+                if (outgoingPending.isNotEmpty()) {
+                    item(key = "header_sent_requests") {
+                        Text(
+                            text = "${strings.sentRequestsTitle} (${outgoingPending.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = palette.textSecondary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                    items(outgoingPending, key = { "out_${it.requestId}" }) { req ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onOpenUserProfile(req.receiverUid) }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            WesalAvatar(imageUrl = req.receiverAvatarUrl, name = req.receiverName, size = 40.dp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                WesalNameWithBadge(
+                                    name = req.receiverName.ifBlank { "@${req.receiverPublicId}" },
+                                    isVerified = req.receiverVerified
+                                )
+                                Text(strings.pendingRequestSent, color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(onClick = { viewModel.cancelContactRequest(req.requestId) }) {
+                                Text(strings.cancelRequest, color = palette.error)
+                            }
+                        }
+                        HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                    }
+                }
+
+                // Optional SHA-256 Device Contacts Consent Card
                 if (!contactsPermission.status.isGranted) {
                     item(key = "contacts_consent_card") {
                         Surface(
-                            color = WesalSurfaceDark,
+                            color = palette.surface,
                             shape = RoundedCornerShape(14.dp),
-                            border = BorderStroke(1.dp, WesalSurfaceBorder),
+                            border = BorderStroke(1.dp, palette.border),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(
@@ -240,29 +358,36 @@ fun NewChatContactsScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Icon(Icons.Default.Contacts, contentDescription = null, tint = WesalTurquoise)
+                                    Icon(Icons.Default.Contacts, contentDescription = null, tint = palette.turquoise)
                                     Text(
-                                        text = "مطابقة جهات الاتصال الآمنة (اختياري)",
+                                        text = if (strings.isEnglish) "Secure Contact Matching (Optional)" else "مطابقة جهات الاتصال الآمنة (اختياري)",
                                         style = MaterialTheme.typography.titleMedium,
-                                        color = WesalTextPrimary,
+                                        color = palette.textPrimary,
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
                                 Text(
-                                    text = "بعد موافقتك، يطابق وصال أرقام هاتفك محلياً عبر SHA-256 دون رفع دفتر الهاتف، ولا يعرض علامة «يستخدم وصال» إلا للحسابات التي تم التأكد من ملكيتها للرقم.",
+                                    text = if (strings.isEnglish) {
+                                        "With your permission, WESAL matches phone hashes locally via SHA-256 without uploading your address book."
+                                    } else {
+                                        "بعد موافقتك، يطابق WESAL أرقام هاتفك محلياً عبر SHA-256 دون رفع دفتر الهاتف."
+                                    },
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = WesalTextSecondary
+                                    color = palette.textSecondary
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
                                         onClick = { contactsPermission.launchPermissionRequest() },
                                         colors = ButtonDefaults.buttonColors(
-                                            containerColor = WesalEmerald,
-                                            contentColor = WesalDeepBlack
+                                            containerColor = palette.emerald,
+                                            contentColor = palette.onPrimary
                                         ),
                                         shape = RoundedCornerShape(12.dp)
                                     ) {
-                                        Text("السماح بمطابقة جهات الاتصال", fontWeight = FontWeight.Bold)
+                                        Text(
+                                            text = if (strings.isEnglish) "Allow Contact Sync" else "السماح بمطابقة جهات الاتصال",
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
                                     if (!contactsPermission.status.shouldShowRationale) {
                                         OutlinedButton(
@@ -275,7 +400,7 @@ fun NewChatContactsScreen(
                                             },
                                             shape = RoundedCornerShape(12.dp)
                                         ) {
-                                            Text("إعدادات الصلاحيات", color = WesalTurquoise)
+                                            Text(strings.settings, color = palette.turquoise)
                                         }
                                     }
                                 }
@@ -284,230 +409,100 @@ fun NewChatContactsScreen(
                     }
                 }
 
-                // Matched Device Contacts (ONLY verified phone owners appear here)
+                // Matched Device Contacts
                 if (filteredWesalContacts.isNotEmpty()) {
                     item(key = "header_verified_contacts") {
                         Text(
-                            text = "جهات اتصالك الموثقة على وصال (${filteredWesalContacts.size})",
+                            text = if (strings.isEnglish) "Verified Phone Contacts on WESAL (${filteredWesalContacts.size})" else "جهات اتصالك الموثقة على WESAL (${filteredWesalContacts.size})",
                             style = MaterialTheme.typography.titleSmall,
-                            color = WesalTurquoise,
+                            color = palette.turquoise,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
                         )
                     }
                     items(filteredWesalContacts, key = { "wesal_${it.user.uid}" }) { matched ->
-                        val user = matched.user
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.startChatWith(user.uid, onOpenChat) }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Box(modifier = Modifier.clickable { onOpenUserProfile(user.uid) }) {
-                                WesalAvatar(imageUrl = user.photoUrl, name = matched.deviceName, isOnline = user.isOnline)
+                        WesalContactDirectoryRow(
+                            user = matched.user,
+                            displayTitle = matched.deviceName,
+                            request = requestByPeer[matched.user.uid],
+                            myUid = myUid,
+                            onOpenProfile = { onOpenUserProfile(matched.user.uid) },
+                            onStartChat = { viewModel.startChatWith(matched.user.uid, onOpenChat) },
+                            onSendRequest = { viewModel.sendContactRequest(matched.user.uid) },
+                            onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                            onCall = { isVideo ->
+                                context.startActivity(CallActivity.createOutgoingIntent(context, matched.user, isVideo))
                             }
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = matched.deviceName,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = WesalTextPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                    // Strict rule: Show "يستخدم وصال" badge ONLY for verified phone ownership
-                                    if (user.isPhoneVerified) {
-                                        Surface(
-                                            color = WesalEmerald.copy(alpha = 0.16f),
-                                            shape = RoundedCornerShape(6.dp),
-                                            border = BorderStroke(1.dp, WesalEmerald.copy(alpha = 0.45f))
-                                        ) {
-                                            Text(
-                                                text = "يستخدم وصال ✓",
-                                                color = WesalEmerald,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                                Text(
-                                    text = "${user.displayName.ifBlank { user.phoneNumber }} • @${user.publicId}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = WesalTextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            IconButton(onClick = { viewModel.startChatWith(user.uid, onOpenChat) }) {
-                                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "بدء محادثة", tint = WesalEmerald)
-                            }
-                            IconButton(onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo = false))
-                            }) {
-                                Icon(Icons.Default.Call, contentDescription = "مكالمة صوتية", tint = WesalTurquoise)
-                            }
-                            IconButton(onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo = true))
-                            }) {
-                                Icon(Icons.Default.Videocam, contentDescription = "مكالمة فيديو", tint = WesalTurquoise)
-                            }
-                        }
-                        HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
+                        )
+                        HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                     }
                 }
 
-                // Search Results by Wesal ID / Display Name
+                // Global Search Results by Wesal ID / Display Name
                 if (extraGlobalResults.isNotEmpty()) {
                     item(key = "header_global_search") {
                         Text(
-                            text = "نتائج البحث بمعرف وصال والاسم",
+                            text = if (strings.isEnglish) "Search Results" else "نتائج البحث بمعرف وصال والاسم",
                             style = MaterialTheme.typography.titleSmall,
-                            color = WesalEmerald,
+                            color = palette.emerald,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
                         )
                     }
                     items(extraGlobalResults, key = { "search_${it.uid}" }) { user ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.startChatWith(user.uid, onOpenChat) }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Box(modifier = Modifier.clickable { onOpenUserProfile(user.uid) }) {
-                                WesalAvatar(imageUrl = user.photoUrl, name = user.displayName, isOnline = user.isOnline)
+                        WesalContactDirectoryRow(
+                            user = user,
+                            displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
+                            request = requestByPeer[user.uid],
+                            myUid = myUid,
+                            onOpenProfile = { onOpenUserProfile(user.uid) },
+                            onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
+                            onSendRequest = { viewModel.sendContactRequest(user.uid) },
+                            onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                            onCall = { isVideo ->
+                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo))
                             }
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = user.displayName.ifBlank { "@${user.publicId}" },
-                                        style = MaterialTheme.typography.titleMedium,
-                                        color = WesalTextPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f, fill = false)
-                                    )
-                                    if (user.isPhoneVerified) {
-                                        Surface(
-                                            color = WesalEmerald.copy(alpha = 0.16f),
-                                            shape = RoundedCornerShape(6.dp)
-                                        ) {
-                                            Text(
-                                                text = "رقم موثق ✓",
-                                                color = WesalEmerald,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                                Text(
-                                    text = "@${user.publicId} • ${user.bio}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = WesalTextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            IconButton(onClick = { viewModel.startChatWith(user.uid, onOpenChat) }) {
-                                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "بدء محادثة", tint = WesalEmerald)
-                            }
-                            IconButton(onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo = false))
-                            }) {
-                                Icon(Icons.Default.Call, contentDescription = "مكالمة صوتية", tint = WesalTurquoise)
-                            }
-                            IconButton(onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo = true))
-                            }) {
-                                Icon(Icons.Default.Videocam, contentDescription = "مكالمة فيديو", tint = WesalTurquoise)
-                            }
-                        }
-                        HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
+                        )
+                        HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                     }
                 }
 
-                // Discoverable Wesal Users (@Wesal ID) visible even before searching
+                // Discoverable Users
                 if (trimmedQuery.isBlank() && discoverableUsersList.isNotEmpty()) {
                     item(key = "header_discoverable_users") {
                         Text(
-                            text = "مستخدمو وصال (@Wesal ID)",
+                            text = if (strings.isEnglish) "WESAL Users (@Wesal ID)" else "مستخدمو WESAL (@Wesal ID)",
                             style = MaterialTheme.typography.titleSmall,
-                            color = WesalTurquoise,
+                            color = palette.turquoise,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
                         )
                     }
                     items(discoverableUsersList, key = { "discover_${it.uid}" }) { user ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.startChatWith(user.uid, onOpenChat) }
-                                .padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Box(modifier = Modifier.clickable { onOpenUserProfile(user.uid) }) {
-                                WesalAvatar(imageUrl = user.photoUrl, name = user.displayName, isOnline = user.isOnline)
+                        WesalContactDirectoryRow(
+                            user = user,
+                            displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
+                            request = requestByPeer[user.uid],
+                            myUid = myUid,
+                            onOpenProfile = { onOpenUserProfile(user.uid) },
+                            onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
+                            onSendRequest = { viewModel.sendContactRequest(user.uid) },
+                            onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                            onCall = { isVideo ->
+                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo))
                             }
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Text(
-                                    text = user.displayName.ifBlank { "@${user.publicId}" },
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = WesalTextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = listOfNotNull(
-                                        user.publicId.takeIf { it.isNotBlank() }?.let { "@$it" },
-                                        user.email.takeIf { it.isNotBlank() },
-                                        user.bio.takeIf { it.isNotBlank() }
-                                    ).joinToString(" • "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = WesalTextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            IconButton(onClick = { viewModel.startChatWith(user.uid, onOpenChat) }) {
-                                Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "بدء محادثة", tint = WesalEmerald)
-                            }
-                            IconButton(onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo = false))
-                            }) {
-                                Icon(Icons.Default.Call, contentDescription = "مكالمة صوتية", tint = WesalTurquoise)
-                            }
-                            IconButton(onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo = true))
-                            }) {
-                                Icon(Icons.Default.Videocam, contentDescription = "مكالمة فيديو", tint = WesalTurquoise)
-                            }
-                        }
-                        HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
+                        )
+                        HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                     }
                 }
 
-                // Non-matched Contacts -> Invite via WhatsApp or Other Apps
+                // Non-matched Contacts -> Single-Link WhatsApp Invite
                 if (filteredNonWesalContacts.isNotEmpty()) {
                     item(key = "header_invite_contacts") {
                         Text(
-                            text = "دعوة إلى وصال (${filteredNonWesalContacts.size})",
+                            text = "${strings.inviteFriends} (${filteredNonWesalContacts.size})",
                             style = MaterialTheme.typography.titleSmall,
-                            color = WesalTextSecondary,
+                            color = palette.textSecondary,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(top = 10.dp, bottom = 2.dp)
                         )
@@ -525,14 +520,14 @@ fun NewChatContactsScreen(
                                 Text(
                                     text = contact.displayName,
                                     style = MaterialTheme.typography.titleMedium,
-                                    color = WesalTextPrimary,
+                                    color = palette.textPrimary,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = contact.e164Phone ?: contact.rawPhone,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = WesalTextSecondary
+                                    color = palette.textSecondary
                                 )
                             }
                             FilledTonalButton(
@@ -541,19 +536,20 @@ fun NewChatContactsScreen(
                                         context = context,
                                         message = WesalShareUtils.buildInviteMessage(
                                             myWesalId = currentUser?.publicId,
-                                            targetContactName = contact.displayName
+                                            targetContactName = contact.displayName,
+                                            isEnglish = strings.isEnglish
                                         ),
                                         targetPhoneE164 = contact.e164Phone
                                     )
                                 },
                                 shape = RoundedCornerShape(10.dp),
                                 colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = WesalEmerald.copy(alpha = 0.16f),
-                                    contentColor = WesalEmerald
+                                    containerColor = palette.emerald.copy(alpha = 0.16f),
+                                    contentColor = palette.emerald
                                 ),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                             ) {
-                                Text("واتساب", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                Text("WhatsApp", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
                             }
                             IconButton(
                                 onClick = {
@@ -561,38 +557,120 @@ fun NewChatContactsScreen(
                                         context = context,
                                         message = WesalShareUtils.buildInviteMessage(
                                             myWesalId = currentUser?.publicId,
-                                            targetContactName = contact.displayName
+                                            targetContactName = contact.displayName,
+                                            isEnglish = strings.isEnglish
                                         )
                                     )
                                 }
                             ) {
-                                Icon(Icons.Default.Share, contentDescription = "مشاركة عبر تطبيق آخر", tint = WesalTurquoise)
+                                Icon(Icons.Default.Share, contentDescription = strings.share, tint = palette.turquoise)
                             }
                         }
-                        HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
+                        HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                     }
                 }
+            }
+        }
+    }
+}
 
-                if (!state.isLoadingContacts &&
-                    !state.isSearching &&
-                    !state.isLoadingDiscoverable &&
-                    filteredWesalContacts.isEmpty() &&
-                    extraGlobalResults.isEmpty() &&
-                    discoverableUsersList.isEmpty() &&
-                    filteredNonWesalContacts.isEmpty()
+@Composable
+private fun WesalContactDirectoryRow(
+    user: WesalUser,
+    displayTitle: String,
+    request: ContactRequest?,
+    myUid: String,
+    onOpenProfile: () -> Unit,
+    onStartChat: () -> Unit,
+    onSendRequest: () -> Unit,
+    onAcceptRequest: (String) -> Unit,
+    onCall: (isVideo: Boolean) -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    val isFriend = request?.status == ContactRequestStatus.ACCEPTED
+    val isIncomingPending = request?.status == ContactRequestStatus.PENDING && request.receiverUid == myUid
+    val isOutgoingPending = request?.status == ContactRequestStatus.PENDING && request.senderUid == myUid
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                if (isFriend) onStartChat() else onOpenProfile()
+            }
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(modifier = Modifier.clickable(onClick = onOpenProfile)) {
+            WesalAvatar(imageUrl = user.photoUrl, name = displayTitle, isOnline = user.isOnline)
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            WesalNameWithBadge(
+                name = displayTitle,
+                isVerified = user.isVerified,
+                fontWeight = FontWeight.SemiBold
+            )
+            val subtitle = buildList {
+                if (user.publicId.isNotBlank()) add("@${user.publicId}")
+                if (user.isPhoneVerified && !user.privacySettings.hidePhoneNumber) add(strings.phoneVerifiedBadge)
+                if (user.bio.isNotBlank()) add(user.bio)
+            }.joinToString(" • ")
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        when {
+            isFriend -> {
+                IconButton(onClick = onStartChat) {
+                    Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = strings.tabChats, tint = palette.emerald)
+                }
+                IconButton(onClick = { onCall(false) }) {
+                    Icon(Icons.Default.Call, contentDescription = null, tint = palette.turquoise)
+                }
+                IconButton(onClick = { onCall(true) }) {
+                    Icon(Icons.Default.Videocam, contentDescription = null, tint = palette.turquoise)
+                }
+            }
+
+            isIncomingPending && request != null -> {
+                Button(
+                    onClick = { onAcceptRequest(request.requestId) },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                 ) {
-                    item(key = "empty_search_hint") {
-                        Text(
-                            text = if (trimmedQuery.isBlank()) {
-                                "ابحث بمعرف وصال الفريد (@Wesal ID) أو اسم الصديق لبدء محادثة أو مكالمة عبر الإنترنت دون الحاجة لرقم الهاتف."
-                            } else {
-                                "لا توجد نتائج مطابقة لبحثك"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = WesalTextMuted,
-                            modifier = Modifier.padding(top = 12.dp)
-                        )
-                    }
+                    Text(strings.acceptContactRequest, maxLines = 1)
+                }
+            }
+
+            isOutgoingPending -> {
+                OutlinedButton(
+                    onClick = onOpenProfile,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(strings.pendingRequestSent, color = palette.textSecondary, maxLines = 1)
+                }
+            }
+
+            else -> {
+                FilledTonalButton(
+                    onClick = onSendRequest,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = palette.emerald.copy(alpha = 0.16f),
+                        contentColor = palette.emerald
+                    ),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(strings.sendContactRequest, maxLines = 1)
                 }
             }
         }

@@ -41,7 +41,8 @@ import androidx.credentials.exceptions.NoCredentialException
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.presentation.components.WesalAvatar
 import kotlinx.coroutines.launch
 
@@ -55,6 +56,8 @@ fun PhoneLoginScreen(
     prefillEmail: String = "",
     onCancelAddAccount: (() -> Unit)? = null
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -98,13 +101,16 @@ fun PhoneLoginScreen(
                 }
                 if (serverClientId.isBlank()) {
                     viewModel.setAuthError(
-                        "معرّف Google OAuth غير متوفر في google-services.json — فعّل Google Sign-In في Firebase Console"
+                        if (strings.isEnglish) {
+                            "Google OAuth client ID is missing in google-services.json — enable Google Sign-In in Firebase Console"
+                        } else {
+                            "معرّف Google OAuth غير متوفر في google-services.json — فعّل Google Sign-In في Firebase Console"
+                        }
                     )
                     return@launch
                 }
 
                 val credentialManager = CredentialManager.create(activity)
-                // Always clear Credential Manager selected state so Google shows full account picker
                 runCatching { credentialManager.clearCredentialState(ClearCredentialStateRequest()) }
 
                 val googleIdOption = GetGoogleIdOption.Builder()
@@ -120,11 +126,25 @@ fun PhoneLoginScreen(
                 val googleCred = GoogleIdTokenCredential.createFrom(result.credential.data)
                 viewModel.signInWithGoogleIdToken(googleCred.idToken)
             } catch (_: GetCredentialCancellationException) {
-                viewModel.setAuthError("تم إلغاء اختيار حساب Google")
+                viewModel.setAuthError(
+                    if (strings.isEnglish) "Google account selection canceled" else "تم إلغاء اختيار حساب Google"
+                )
             } catch (_: NoCredentialException) {
-                viewModel.setAuthError("لا يوجد حساب Google متاح على هذا الجهاز — يمكنك تسجيل الدخول بالبريد الإلكتروني أدناه")
+                viewModel.setAuthError(
+                    if (strings.isEnglish) {
+                        "No Google account available on this device — sign in with email below"
+                    } else {
+                        "لا يوجد حساب Google متاح على هذا الجهاز — يمكنك تسجيل الدخول بالبريد الإلكتروني أدناه"
+                    }
+                )
             } catch (e: Exception) {
-                viewModel.setAuthError("تعذر تسجيل الدخول عبر Google: ${e.localizedMessage ?: "تأكد من تفعيل Google في Firebase وبصمة SHA-1"}")
+                viewModel.setAuthError(
+                    if (strings.isEnglish) {
+                        "Google Sign-In failed: ${e.localizedMessage ?: "verify SHA-1 and Firebase Google Sign-In"}"
+                    } else {
+                        "تعذر تسجيل الدخول عبر Google: ${e.localizedMessage ?: "تأكد من تفعيل Google في Firebase وبصمة SHA-1"}"
+                    }
+                )
             } finally {
                 googleLaunching = false
             }
@@ -132,17 +152,17 @@ fun PhoneLoginScreen(
     }
 
     val inputColors = OutlinedTextFieldDefaults.colors(
-        focusedBorderColor = WesalTurquoise,
-        unfocusedBorderColor = WesalSurfaceBorder,
-        focusedTextColor = WesalTextPrimary,
-        unfocusedTextColor = WesalTextPrimary,
-        focusedLabelColor = WesalTurquoise,
-        unfocusedLabelColor = WesalTextSecondary,
-        focusedContainerColor = WesalSurfaceDark,
-        unfocusedContainerColor = WesalSurfaceDark
+        focusedBorderColor = palette.turquoise,
+        unfocusedBorderColor = palette.border,
+        focusedTextColor = palette.textPrimary,
+        unfocusedTextColor = palette.textPrimary,
+        focusedLabelColor = palette.turquoise,
+        unfocusedLabelColor = palette.textSecondary,
+        focusedContainerColor = palette.surface,
+        unfocusedContainerColor = palette.surface
     )
 
-    Scaffold(containerColor = WesalDeepBlack) { padding ->
+    Scaffold(containerColor = palette.background) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -161,20 +181,19 @@ fun PhoneLoginScreen(
                     IconButton(onClick = onCancelAddAccount) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "العودة",
-                            tint = WesalTextPrimary
+                            contentDescription = strings.back,
+                            tint = palette.textPrimary
                         )
                     }
                     Text(
-                        text = "إضافة أو تبديل حساب وصال",
+                        text = strings.switchAccount,
                         style = MaterialTheme.typography.titleMedium,
-                        color = WesalTurquoise,
+                        color = palette.turquoise,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
 
-            // Header Branding
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -183,42 +202,57 @@ fun PhoneLoginScreen(
                     modifier = Modifier
                         .size(48.dp)
                         .clip(RoundedCornerShape(14.dp))
-                        .background(WesalEmerald.copy(alpha = 0.14f))
-                        .border(1.dp, WesalTurquoise.copy(alpha = 0.45f), RoundedCornerShape(14.dp)),
+                        .background(palette.emerald.copy(alpha = 0.14f))
+                        .border(1.dp, palette.turquoise.copy(alpha = 0.45f), RoundedCornerShape(14.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Shield,
                         contentDescription = null,
-                        tint = WesalTurquoise
+                        tint = palette.turquoise
                     )
                 }
                 Column {
                     Text(
-                        text = if (isAddAccountMode) "إضافة حساب جديد إلى وصال" else "مرحباً بك في وصال",
+                        text = if (isAddAccountMode) {
+                            if (strings.isEnglish) "Add a WESAL Account" else "إضافة حساب جديد إلى WESAL"
+                        } else {
+                            if (strings.isEnglish) "Welcome to WESAL Messenger" else "مرحباً بك في WESAL Messenger"
+                        },
                         style = MaterialTheme.typography.headlineSmall,
-                        color = WesalTextPrimary,
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "دخول مجاني وآمن عبر Google أو البريد الإلكتروني — بدون SMS",
+                        text = if (strings.isEnglish) {
+                            "Free & secure sign-in via Google or Email"
+                        } else {
+                            "دخول مجاني وآمن عبر Google أو البريد الإلكتروني — بدون SMS"
+                        },
                         style = MaterialTheme.typography.labelMedium,
-                        color = WesalTurquoise
+                        color = palette.turquoise
                     )
                 }
             }
 
             Text(
                 text = if (isAddAccountMode) {
-                    "اختر حساب Google جديداً أو سجّل الدخول ببريد إلكتروني آخر للتبديل فوراً دون فقدان حساباتك المحفوظة."
+                    if (strings.isEnglish) {
+                        "Choose another Google account or sign in with email to switch smoothly without losing saved accounts."
+                    } else {
+                        "اختر حساب Google جديداً أو سجّل الدخول ببريد إلكتروني آخر للتبديل فوراً دون فقدان حساباتك المحفوظة."
+                    }
                 } else {
-                    "سجّل الدخول بحساب Google أو بريدك الإلكتروني مباشرة دون الحاجة إلى رقم هاتف أو رسائل تحقق، ويمكنك إضافة رقم هاتف اختيارياً لاحقاً من ملفك الشخصي."
+                    if (strings.isEnglish) {
+                        "Sign in directly with Google or email—no phone SMS required. You can optionally link and verify a phone number in your profile anytime."
+                    } else {
+                        "سجّل الدخول بحساب Google أو بريدك الإلكتروني مباشرة دون الحاجة إلى رقم هاتف أو رسائل تحقق، ويمكنك إضافة رقم هاتف وتوثيقه اختيارياً من ملفك الشخصي."
+                    }
                 },
                 style = MaterialTheme.typography.bodyMedium,
-                color = WesalTextSecondary
+                color = palette.textSecondary
             )
 
-            // Primary Google Sign-In CTA (always opens account chooser)
             OutlinedButton(
                 onClick = { launchGooglePicker() },
                 enabled = !state.isLoading && !googleLaunching,
@@ -226,29 +260,35 @@ fun PhoneLoginScreen(
                     .fillMaxWidth()
                     .height(54.dp),
                 shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, WesalTurquoise.copy(alpha = 0.6f)),
+                border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.6f)),
                 colors = ButtonDefaults.outlinedButtonColors(
-                    containerColor = WesalSurfaceElevated,
-                    contentColor = WesalTextPrimary
+                    containerColor = palette.surfaceElevated,
+                    contentColor = palette.textPrimary
                 )
             ) {
                 if (googleLaunching) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
-                        color = WesalTurquoise,
+                        color = palette.turquoise,
                         strokeWidth = 2.dp
                     )
                     Spacer(Modifier.width(10.dp))
-                    Text("جارٍ فتح قائمة حسابات Google...")
+                    Text(
+                        if (strings.isEnglish) "Opening Google Account Picker..." else "جارٍ فتح قائمة حسابات Google..."
+                    )
                 } else {
                     Icon(
                         imageVector = Icons.Default.AccountCircle,
                         contentDescription = null,
-                        tint = WesalTurquoise
+                        tint = palette.turquoise
                     )
                     Spacer(Modifier.width(10.dp))
                     Text(
-                        text = if (isAddAccountMode) "اختيار حساب Google آخر" else "المتابعة بحساب Google (Gmail)",
+                        text = if (isAddAccountMode) {
+                            if (strings.isEnglish) "Choose Another Google Account" else "اختيار حساب Google آخر"
+                        } else {
+                            if (strings.isEnglish) "Continue with Google (Gmail)" else "المتابعة بحساب Google (Gmail)"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -260,22 +300,21 @@ fun PhoneLoginScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                HorizontalDivider(modifier = Modifier.weight(1f), color = WesalSurfaceBorder)
+                HorizontalDivider(modifier = Modifier.weight(1f), color = palette.border)
                 Text(
-                    text = "أو عبر البريد الإلكتروني",
+                    text = if (strings.isEnglish) "Or via Email" else "أو عبر البريد الإلكتروني",
                     style = MaterialTheme.typography.labelMedium,
-                    color = WesalTextSecondary
+                    color = palette.textSecondary
                 )
-                HorizontalDivider(modifier = Modifier.weight(1f), color = WesalSurfaceBorder)
+                HorizontalDivider(modifier = Modifier.weight(1f), color = palette.border)
             }
 
-            // Sign In / Sign Up Mode Selector
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(WesalSurfaceDark)
-                    .border(1.dp, WesalSurfaceBorder, RoundedCornerShape(12.dp))
+                    .background(palette.surface)
+                    .border(1.dp, palette.border, RoundedCornerShape(12.dp))
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -285,37 +324,42 @@ fun PhoneLoginScreen(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (signInSelected) WesalEmerald else WesalSurfaceDark,
-                        contentColor = if (signInSelected) WesalDeepBlack else WesalTextSecondary
+                        containerColor = if (signInSelected) palette.emerald else palette.surface,
+                        contentColor = if (signInSelected) palette.onAccent else palette.textSecondary
                     ),
                     elevation = ButtonDefaults.buttonElevation(0.dp, 0.dp)
                 ) {
-                    Text("تسجيل الدخول", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (strings.isEnglish) "Sign In" else "تسجيل الدخول",
+                        fontWeight = FontWeight.Bold
+                    )
                 }
                 Button(
                     onClick = { viewModel.toggleSignUpMode(true) },
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (!signInSelected) WesalEmerald else WesalSurfaceDark,
-                        contentColor = if (!signInSelected) WesalDeepBlack else WesalTextSecondary
+                        containerColor = if (!signInSelected) palette.emerald else palette.surface,
+                        contentColor = if (!signInSelected) palette.onAccent else palette.textSecondary
                     ),
                     elevation = ButtonDefaults.buttonElevation(0.dp, 0.dp)
                 ) {
-                    Text("إنشاء حساب جديد", fontWeight = FontWeight.Bold)
+                    Text(
+                        if (strings.isEnglish) "Create Account" else "إنشاء حساب جديد",
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
 
-            // Email & Password Inputs (LTR inside RTL for email/password correctness)
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 OutlinedTextField(
                     value = state.emailInput,
                     onValueChange = viewModel::updateEmailInput,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("البريد الإلكتروني") },
+                    label = { Text(if (strings.isEnglish) "Email" else "البريد الإلكتروني") },
                     placeholder = { Text("name@example.com") },
                     leadingIcon = {
-                        Icon(Icons.Default.Email, contentDescription = null, tint = WesalTurquoise)
+                        Icon(Icons.Default.Email, contentDescription = null, tint = palette.turquoise)
                     },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -327,17 +371,17 @@ fun PhoneLoginScreen(
                     value = state.passwordInput,
                     onValueChange = viewModel::updatePasswordInput,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("كلمة المرور") },
-                    placeholder = { Text("6 أحرف أو أكثر") },
+                    label = { Text(if (strings.isEnglish) "Password" else "كلمة المرور") },
+                    placeholder = { Text(if (strings.isEnglish) "At least 6 characters" else "6 أحرف أو أكثر") },
                     leadingIcon = {
-                        Icon(Icons.Default.Lock, contentDescription = null, tint = WesalTurquoise)
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = palette.turquoise)
                     },
                     trailingIcon = {
                         IconButton(onClick = { passwordVisible = !passwordVisible }) {
                             Icon(
                                 imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = "إظهار أو إخفاء كلمة المرور",
-                                tint = WesalTextSecondary
+                                contentDescription = null,
+                                tint = palette.textSecondary
                             )
                         }
                     },
@@ -356,21 +400,24 @@ fun PhoneLoginScreen(
                         enabled = !state.isLoading,
                         modifier = Modifier.align(Alignment.CenterStart)
                     ) {
-                        Text("نسيت كلمة المرور؟", color = WesalTurquoise)
+                        Text(
+                            if (strings.isEnglish) "Forgot password?" else "نسيت كلمة المرور؟",
+                            color = palette.turquoise
+                        )
                     }
                 }
             }
 
             state.errorMessage?.let { err ->
                 Surface(
-                    color = WesalError.copy(alpha = 0.14f),
+                    color = palette.error.copy(alpha = 0.14f),
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, WesalError.copy(alpha = 0.4f)),
+                    border = BorderStroke(1.dp, palette.error.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = err,
-                        color = WesalError,
+                        color = palette.error,
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(12.dp)
                     )
@@ -379,14 +426,14 @@ fun PhoneLoginScreen(
 
             state.infoMessage?.let { info ->
                 Surface(
-                    color = WesalEmerald.copy(alpha = 0.14f),
+                    color = palette.emerald.copy(alpha = 0.14f),
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, WesalEmerald.copy(alpha = 0.4f)),
+                    border = BorderStroke(1.dp, palette.emerald.copy(alpha = 0.4f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
                         text = info,
-                        color = WesalEmerald,
+                        color = palette.emerald,
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(12.dp)
                     )
@@ -401,21 +448,25 @@ fun PhoneLoginScreen(
                     .height(54.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = WesalEmerald,
-                    contentColor = WesalDeepBlack,
-                    disabledContainerColor = WesalSurfaceElevated,
-                    disabledContentColor = WesalTextMuted
+                    containerColor = palette.emerald,
+                    contentColor = palette.onAccent,
+                    disabledContainerColor = palette.surfaceElevated,
+                    disabledContentColor = palette.textMuted
                 )
             ) {
                 if (state.isLoading) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(22.dp),
-                        color = WesalDeepBlack,
+                        color = palette.onAccent,
                         strokeWidth = 2.5.dp
                     )
                 } else {
                     Text(
-                        text = if (state.isSignUpMode) "إنشاء حساب في وصال" else "تسجيل الدخول بالبريد الإلكتروني",
+                        text = if (state.isSignUpMode) {
+                            if (strings.isEnglish) "Create WESAL Account" else "إنشاء حساب في WESAL"
+                        } else {
+                            if (strings.isEnglish) "Sign In with Email" else "تسجيل الدخول بالبريد الإلكتروني"
+                        },
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -423,18 +474,18 @@ fun PhoneLoginScreen(
             }
 
             if (savedAccounts.isNotEmpty() && !isAddAccountMode) {
-                HorizontalDivider(color = WesalSurfaceBorder)
+                HorizontalDivider(color = palette.border)
                 Text(
-                    text = "الحسابات المسجلة مسبقاً على هذا الجهاز",
+                    text = if (strings.isEnglish) "Saved Accounts on This Device" else "الحسابات المسجلة مسبقاً على هذا الجهاز",
                     style = MaterialTheme.typography.titleSmall,
-                    color = WesalTurquoise,
+                    color = palette.turquoise,
                     fontWeight = FontWeight.Bold
                 )
                 savedAccounts.forEach { acc ->
                     Surface(
-                        color = WesalSurfaceDark,
+                        color = palette.surface,
                         shape = RoundedCornerShape(12.dp),
-                        border = BorderStroke(1.dp, WesalSurfaceBorder),
+                        border = BorderStroke(1.dp, palette.border),
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
@@ -453,33 +504,33 @@ fun PhoneLoginScreen(
                         ) {
                             WesalAvatar(
                                 imageUrl = acc.photoUrl,
-                                name = acc.displayName.ifBlank { acc.email.ifBlank { "وصال" } },
+                                name = acc.displayName.ifBlank { acc.email.ifBlank { strings.appShortName } },
                                 size = 40.dp
                             )
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = acc.displayName.ifBlank { acc.email.ifBlank { "حساب وصال" } },
-                                    color = WesalTextPrimary,
+                                    text = acc.displayName.ifBlank { acc.email.ifBlank { strings.appDisplayName } },
+                                    color = palette.textPrimary,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 val subtitle = listOfNotNull(
                                     acc.publicId.takeIf { it.isNotBlank() }?.let { "@$it" },
-                                    acc.email.takeIf { it.isNotBlank() } ?: acc.phoneNumber.takeIf { it.isNotBlank() }
+                                    acc.email.takeIf { it.isNotBlank() }
                                 ).joinToString(" • ")
                                 if (subtitle.isNotBlank()) {
                                     Text(
                                         text = subtitle,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = WesalTextSecondary,
+                                        color = palette.textSecondary,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
                             IconButton(onClick = { viewModel.removeSavedAccount(acc.uid) }) {
-                                Icon(Icons.Default.Close, contentDescription = "إزالة من القائمة", tint = WesalTextMuted)
+                                Icon(Icons.Default.Close, contentDescription = strings.delete, tint = palette.textMuted)
                             }
                         }
                     }
@@ -487,9 +538,13 @@ fun PhoneLoginScreen(
             }
 
             Text(
-                text = "يعمل التطبيق بالكامل على خطة Firebase Spark المجانية، ويتم حفظ جلستك تلقائياً بعد تسجيل الدخول. بعد الدخول يحصل حسابك على معرف وصال فريد (Wesal ID) للتواصل مع أصدقائك بسهولة.",
+                text = if (strings.isEnglish) {
+                    "Your session is saved automatically. Every account receives a unique @Wesal ID for private discovery without sharing phone numbers."
+                } else {
+                    "يتم حفظ جلستك تلقائياً بعد تسجيل الدخول. بعد الدخول يحصل حسابك على معرف وصال فريد (@Wesal ID) للتواصل مع أصدقائك بخصوصية."
+                },
                 style = MaterialTheme.typography.labelSmall,
-                color = WesalTextMuted
+                color = palette.textMuted
             )
         }
     }

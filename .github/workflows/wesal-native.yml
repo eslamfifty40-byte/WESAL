@@ -1,25 +1,57 @@
-name: Build WESAL Native
-on: [push, workflow_dispatch]
+name: Build & Publish WESAL Android APK
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.9
-      - run: |
+
+      - name: Build Debug APK
+        run: |
           cd WesalAndroid
           gradle assembleDebug --no-daemon
-      - run: |
-          mkdir -p ~/.android
-          [ -f ~/.android/debug.keystore ] || keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-          keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey -storepass android -keypass android | grep -E "SHA1|SHA256"
-      - uses: actions/upload-artifact@v4
+
+      - name: Copy & Verify WESAL.apk + Signing Fingerprints
+        run: |
+          mkdir -p release-assets
+          cp WesalAndroid/app/build/outputs/apk/debug/app-debug.apk release-assets/WESAL.apk
+          keytool -printcert -jarfile release-assets/WESAL.apk | grep -E "SHA1|SHA256" || true
+
+      - name: Upload WESAL.apk workflow artifact
+        uses: actions/upload-artifact@v4
         with:
           name: WESAL-apk
-          path: WesalAndroid/app/build/outputs/apk/debug/*.apk
+          path: release-assets/WESAL.apk
+
+      - name: Publish WESAL.apk to GitHub Releases (latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wesal-latest
+          name: WESAL Messenger Latest APK
+          make_latest: true
+          files: release-assets/WESAL.apk
+          body: |
+            Official WESAL Messenger Android APK build (`com.wesal.messenger`).
+            Direct download URL used by `/join` invite redirect:
+            `https://github.com/${{ github.repository }}/releases/latest/download/WESAL.apk`

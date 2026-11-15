@@ -2,6 +2,7 @@ package com.wesal.messenger.data.repository
 
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentChange
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.CallRecord
@@ -31,6 +32,7 @@ class CallRepositoryImpl @Inject constructor(
         awaitClose { auth.removeAuthStateListener(listener) }
     }
 
+    @Suppress("UNCHECKED_CAST")
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeCallHistory(): Flow<List<CallRecord>> = observeAuthUid().flatMapLatest { uid ->
         if (uid == null) {
@@ -40,17 +42,22 @@ class CallRepositoryImpl @Inject constructor(
                 val reg = firestore.collection(Constants.COLLECTION_CALLS)
                     .whereArrayContains("participants", uid)
                     .addSnapshotListener { snap, _ ->
-                        val list = snap?.documents?.map { doc ->
+                        val list = snap?.documents?.mapNotNull { doc ->
+                            val deletedFor = (doc.get("deletedForUsers") as? List<String>).orEmpty()
+                            if (deletedFor.contains(uid)) return@mapNotNull null
                             CallRecord(
                                 callId = doc.id,
                                 callerId = doc.getString("callerId").orEmpty(),
                                 callerName = doc.getString("callerName").orEmpty(),
                                 callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
+                                callerVerified = doc.getBoolean("callerVerified") ?: false,
                                 calleeId = doc.getString("calleeId").orEmpty(),
                                 calleeName = doc.getString("calleeName").orEmpty(),
                                 calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
+                                calleeVerified = doc.getBoolean("calleeVerified") ?: false,
                                 isVideo = doc.getBoolean("isVideo") ?: false,
                                 status = CallStatus.fromRaw(doc.getString("status")),
+                                deletedForUsers = deletedFor,
                                 startedAt = doc.getLong("startedAt") ?: 0L,
                                 endedAt = doc.getLong("endedAt") ?: 0L,
                                 durationSeconds = doc.getLong("durationSeconds") ?: 0L
@@ -79,9 +86,11 @@ class CallRepositoryImpl @Inject constructor(
                                 callerId = doc.getString("callerId").orEmpty(),
                                 callerName = doc.getString("callerName").orEmpty(),
                                 callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
+                                callerVerified = doc.getBoolean("callerVerified") ?: false,
                                 calleeId = doc.getString("calleeId").orEmpty(),
                                 calleeName = doc.getString("calleeName").orEmpty(),
                                 calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
+                                calleeVerified = doc.getBoolean("calleeVerified") ?: false,
                                 isVideo = doc.getBoolean("isVideo") ?: false,
                                 status = CallStatus.RINGING,
                                 offerSdp = doc.getString("offerSdp").orEmpty(),
@@ -109,9 +118,11 @@ class CallRepositoryImpl @Inject constructor(
                         callerId = doc.getString("callerId").orEmpty(),
                         callerName = doc.getString("callerName").orEmpty(),
                         callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
+                        callerVerified = doc.getBoolean("callerVerified") ?: false,
                         calleeId = doc.getString("calleeId").orEmpty(),
                         calleeName = doc.getString("calleeName").orEmpty(),
                         calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
+                        calleeVerified = doc.getBoolean("calleeVerified") ?: false,
                         isVideo = doc.getBoolean("isVideo") ?: false,
                         status = CallStatus.fromRaw(doc.getString("status")),
                         offerSdp = doc.getString("offerSdp").orEmpty(),
@@ -128,20 +139,25 @@ class CallRepositoryImpl @Inject constructor(
     override suspend fun initiateCall(callee: WesalUser, isVideo: Boolean, offerSdp: String): Result<String> = runCatching {
         val callerUid = auth.currentUser?.uid ?: error("Not authenticated")
         val callerSnap = firestore.collection(Constants.COLLECTION_USERS).document(callerUid).get().await()
+        val callerHandle = callerSnap.getString("publicId")?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+        val calleeHandle = callee.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
         val callId = UUID.randomUUID().toString()
         val data = mapOf(
             "callId" to callId,
             "participants" to listOf(callerUid, callee.uid),
             "callerId" to callerUid,
-            "callerName" to (callerSnap.getString("displayName")?.ifBlank { callerSnap.getString("phoneNumber") } ?: "مستخدم وصال"),
+            "callerName" to (callerSnap.getString("displayName")?.ifBlank { callerHandle } ?: "WESAL User"),
             "callerAvatarUrl" to (callerSnap.getString("photoUrl") ?: ""),
+            "callerVerified" to (callerSnap.getBoolean("isVerified") ?: false),
             "calleeId" to callee.uid,
-            "calleeName" to callee.displayName.ifBlank { callee.phoneNumber },
+            "calleeName" to callee.displayName.ifBlank { calleeHandle.ifBlank { "WESAL User" } },
             "calleeAvatarUrl" to callee.photoUrl,
+            "calleeVerified" to callee.isVerified,
             "isVideo" to isVideo,
             "status" to CallStatus.RINGING.raw,
             "offerSdp" to offerSdp,
             "answerSdp" to "",
+            "deletedForUsers" to emptyList<String>(),
             "startedAt" to System.currentTimeMillis(),
             "endedAt" to 0L,
             "durationSeconds" to 0L
@@ -213,6 +229,48 @@ class CallRepositoryImpl @Inject constructor(
                 updates["endedAt"] = System.currentTimeMillis()
             }
             firestore.collection(Constants.COLLECTION_CALLS).document(callId).update(updates).await()
+        }
+    }
+
+    override suspend fun deleteCallForMe(callId: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        firestore.collection(Constants.COLLECTION_CALLS)
+            .document(callId)
+            .update("deletedForUsers", FieldValue.arrayUnion(uid))
+            .await()
+    }
+
+    override suspend fun deleteCallsForMe(callIds: List<String>): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanIds = callIds.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return@runCatching
+        cleanIds.chunked(400).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { cid ->
+                val ref = firestore.collection(Constants.COLLECTION_CALLS).document(cid)
+                batch.update(ref, "deletedForUsers", FieldValue.arrayUnion(uid))
+            }
+            batch.commit().await()
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun clearCallHistoryForMe(): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val snap = firestore.collection(Constants.COLLECTION_CALLS)
+            .whereArrayContains("participants", uid)
+            .get()
+            .await()
+        val toHide = snap.documents.filter { doc ->
+            val deletedFor = (doc.get("deletedForUsers") as? List<String>).orEmpty()
+            !deletedFor.contains(uid)
+        }
+        toHide.chunked(400).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { doc ->
+                batch.update(doc.reference, "deletedForUsers", FieldValue.arrayUnion(uid))
+            }
+            batch.commit().await()
         }
     }
 }

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">وصال</string>
+    <string name="app_name">WESAL Messenger</string>
     <string name="tab_chats">Chats</string>
     <string name="tab_stories">Status</string>
     <string name="tab_calls">Calls</string>
@@ -9,9 +9,10 @@
     <string name="channel_messages_name">Instant Messages</string>
     <string name="channel_calls_name">Incoming Calls</string>
     <string name="channel_stories_name">Status Updates</string>
+    <string name="channel_channels_name">Channel Posts</string>
     <string name="channel_system_name">System Alerts</string>
     <string name="phone_login_title">Sign in to WESAL</string>
-    <string name="phone_login_subtitle">Sign in free with Google or Email &amp; Password — no SMS required</string>
+    <string name="phone_login_subtitle">Sign in free with Google or Email &amp; Password</string>
     <string name="send_otp">Send Verification Code</string>
     <string name="verify_otp">Verify Code</string>
     <string name="resend_otp">Resend Code</string>

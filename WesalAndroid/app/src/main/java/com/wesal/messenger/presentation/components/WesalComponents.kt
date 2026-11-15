@@ -1,5 +1,6 @@
 package com.wesal.messenger.presentation.components
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -23,15 +24,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.domain.model.MessageStatus
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 @Composable
 fun WesalAvatar(
@@ -41,6 +53,7 @@ fun WesalAvatar(
     isOnline: Boolean = false
 ) {
     val context = LocalContext.current
+    val palette = WesalColors.current
     var loadFailed by remember(imageUrl) { mutableStateOf(false) }
 
     Box(modifier = Modifier.size(size)) {
@@ -55,24 +68,24 @@ fun WesalAvatar(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
-                    .border(1.dp, WesalSurfaceBorder, CircleShape),
+                    .border(1.dp, palette.border, CircleShape),
                 contentScale = ContentScale.Crop
             )
         } else {
-            val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "و"
+            val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "W"
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
-                    .background(WesalEmeraldDark.copy(alpha = 0.45f))
-                    .border(1.dp, WesalEmerald.copy(alpha = 0.45f), CircleShape),
+                    .background(palette.emeraldDark.copy(alpha = 0.35f))
+                    .border(1.dp, palette.emerald.copy(alpha = 0.45f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = initial,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = WesalTextPrimary
+                    color = palette.textPrimary
                 )
             }
         }
@@ -82,9 +95,87 @@ fun WesalAvatar(
                     .size(size * 0.26f)
                     .align(Alignment.BottomEnd)
                     .clip(CircleShape)
-                    .background(WesalEmerald)
-                    .border(2.dp, WesalDeepBlack, CircleShape)
+                    .background(palette.emerald)
+                    .border(2.dp, palette.background, CircleShape)
             )
+        }
+    }
+}
+
+/**
+ * Official Blue Verified Seal (#1D9BF0 scalloped rosette with crisp white checkmark),
+ * visually independent of SMS phone verification status.
+ */
+@Composable
+fun WesalVerifiedBadge(
+    modifier: Modifier = Modifier,
+    size: Dp = 17.dp,
+    badgeColor: Color = WesalColors.current.verifiedBlue
+) {
+    Canvas(modifier = modifier.size(size)) {
+        val w = this.size.width
+        val h = this.size.height
+        val cx = w / 2f
+        val cy = h / 2f
+        val outerR = minOf(w, h) * 0.48f
+        val innerR = outerR * 0.78f
+        val lobes = 10
+        val points = lobes * 2
+
+        val sealPath = Path()
+        for (i in 0 until points) {
+            val angle = (i * PI / lobes) - (PI / 2.0)
+            val r = if (i % 2 == 0) outerR else innerR
+            val px = cx + (r * cos(angle)).toFloat()
+            val py = cy + (r * sin(angle)).toFloat()
+            if (i == 0) sealPath.moveTo(px, py) else sealPath.lineTo(px, py)
+        }
+        sealPath.close()
+        drawPath(path = sealPath, color = badgeColor)
+
+        val checkPath = Path().apply {
+            moveTo(cx - outerR * 0.36f, cy + outerR * 0.02f)
+            lineTo(cx - outerR * 0.08f, cy + outerR * 0.30f)
+            lineTo(cx + outerR * 0.40f, cy - outerR * 0.24f)
+        }
+        drawPath(
+            path = checkPath,
+            color = Color.White,
+            style = Stroke(
+                width = (minOf(w, h) * 0.14f).coerceAtLeast(1.8f),
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round
+            )
+        )
+    }
+}
+
+@Composable
+fun WesalNameWithBadge(
+    name: String,
+    isVerified: Boolean,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.titleMedium,
+    color: Color = WesalColors.current.textPrimary,
+    fontWeight: FontWeight? = null,
+    badgeSize: Dp = 17.dp
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text(
+            text = name,
+            style = style,
+            color = color,
+            fontWeight = fontWeight,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        if (isVerified) {
+            WesalVerifiedBadge(size = badgeSize)
         }
     }
 }
@@ -94,12 +185,13 @@ fun MessageStatusTick(
     status: MessageStatus,
     modifier: Modifier = Modifier
 ) {
+    val palette = WesalColors.current
     val (icon, tint) = when (status) {
-        MessageStatus.SENDING -> Icons.Default.Schedule to WesalTextMuted
-        MessageStatus.SENT -> Icons.Default.Done to WesalTextSecondary
-        MessageStatus.DELIVERED -> Icons.Default.DoneAll to WesalTextSecondary
-        MessageStatus.READ -> Icons.Default.DoneAll to WesalReadTick
-        MessageStatus.FAILED -> Icons.Default.ErrorOutline to WesalError
+        MessageStatus.SENDING -> Icons.Default.Schedule to palette.textMuted
+        MessageStatus.SENT -> Icons.Default.Done to palette.textSecondary
+        MessageStatus.DELIVERED -> Icons.Default.DoneAll to palette.textSecondary
+        MessageStatus.READ -> Icons.Default.DoneAll to palette.readTick
+        MessageStatus.FAILED -> Icons.Default.ErrorOutline to palette.error
     }
     Icon(
         imageVector = icon,
@@ -111,9 +203,11 @@ fun MessageStatusTick(
 
 @Composable
 fun OfflineBanner(isOnline: Boolean) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     if (!isOnline) {
         Surface(
-            color = WesalWarning.copy(alpha = 0.16f),
+            color = palette.warning.copy(alpha = 0.16f),
             shape = RoundedCornerShape(0.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -122,11 +216,11 @@ fun OfflineBanner(isOnline: Boolean) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(Icons.Default.WifiOff, contentDescription = null, tint = WesalWarning, modifier = Modifier.size(16.dp))
+                Icon(Icons.Default.WifiOff, contentDescription = null, tint = palette.warning, modifier = Modifier.size(16.dp))
                 Text(
-                    text = "لا يوجد اتصال بالإنترنت — ستتم المزامنة تلقائياً عند العودة",
+                    text = strings.offlineBannerText,
                     style = MaterialTheme.typography.labelMedium,
-                    color = WesalWarning
+                    color = palette.warning
                 )
             }
         }

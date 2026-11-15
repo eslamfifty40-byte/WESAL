@@ -36,8 +36,9 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.google.accompanist.permissions.rememberPermissionState
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.LocalWesalStrings
 import kotlinx.coroutines.delay
 import java.io.File
 import java.util.UUID
@@ -48,6 +49,8 @@ fun CameraCaptureScreen(
     onMediaConfirmed: (uri: Uri, isVideo: Boolean, caption: String) -> Unit,
     onClose: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
@@ -88,7 +91,7 @@ fun CameraCaptureScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(WesalDeepBlack),
+                .background(palette.background),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -96,11 +99,26 @@ fun CameraCaptureScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.padding(24.dp)
             ) {
-                Text("مطلوب إذن الكاميرا لالتقاط الصور والفيديو", color = WesalTextPrimary)
-                Button(onClick = { bothPermissions.launchMultiplePermissionRequest() }) {
-                    Text("منح الإذن")
+                Text(
+                    text = if (strings.isEnglish) {
+                        "Camera permission is required to take photos and videos"
+                    } else {
+                        "مطلوب إذن الكاميرا لالتقاط الصور والفيديو"
+                    },
+                    color = palette.textPrimary
+                )
+                Button(
+                    onClick = { bothPermissions.launchMultiplePermissionRequest() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.emerald,
+                        contentColor = palette.onAccent
+                    )
+                ) {
+                    Text(if (strings.isEnglish) "Grant Permission" else "منح الإذن")
                 }
-                TextButton(onClick = onClose) { Text("إلغاء", color = WesalTextSecondary) }
+                TextButton(onClick = onClose) {
+                    Text(strings.cancel, color = palette.textSecondary)
+                }
             }
         }
         return
@@ -111,12 +129,12 @@ fun CameraCaptureScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(WesalDeepBlack)
+                .background(Color.Black)
         ) {
             if (!capturedIsVideo) {
                 AsyncImage(
                     model = capturedUri,
-                    contentDescription = "معاينة الصورة",
+                    contentDescription = if (strings.isEnglish) "Photo preview" else "معاينة الصورة",
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit
                 )
@@ -131,14 +149,18 @@ fun CameraCaptureScreen(
                     .padding(16.dp)
                     .background(Color.Black.copy(alpha = 0.55f), CircleShape)
             ) {
-                Icon(Icons.Default.Close, contentDescription = "إعادة الالتقاط", tint = Color.White)
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = if (strings.isEnglish) "Retake" else "إعادة الالتقاط",
+                    tint = Color.White
+                )
             }
 
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.7f))
+                    .background(Color.Black.copy(alpha = 0.72f))
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -146,17 +168,28 @@ fun CameraCaptureScreen(
                 OutlinedTextField(
                     value = caption,
                     onValueChange = { caption = it },
-                    placeholder = { Text("أضف تعليقاً...") },
+                    placeholder = {
+                        Text(
+                            if (strings.isEnglish) "Add a caption..." else "أضف تعليقاً...",
+                            color = Color.White.copy(alpha = 0.7f)
+                        )
+                    },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
-                    shape = RoundedCornerShape(24.dp)
+                    shape = RoundedCornerShape(24.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = palette.turquoise,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.35f)
+                    )
                 )
                 FloatingActionButton(
                     onClick = { onMediaConfirmed(capturedUri!!, capturedIsVideo, caption) },
-                    containerColor = WesalEmerald,
-                    contentColor = WesalDeepBlack
+                    containerColor = palette.emerald,
+                    contentColor = palette.onAccent
                 ) {
-                    Icon(Icons.Default.Send, contentDescription = "إرسال")
+                    Icon(Icons.Default.Send, contentDescription = strings.send)
                 }
             }
         }
@@ -193,63 +226,38 @@ fun CameraCaptureScreen(
                     cameraProvider.unbindAll()
                     cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imgCap, vidCap)
                 }.onFailure { err ->
-                    captureError = err.localizedMessage ?: "تعذر تشغيل الكاميرا"
+                    captureError = err.localizedMessage ?: if (strings.isEnglish) "Failed to start camera" else "تعذر تشغيل الكاميرا"
                 }
             }, ContextCompat.getMainExecutor(context))
         }
 
         AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-                .align(Alignment.TopCenter),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
+        // Clean top area: only show recording indicator when recording or error banner when present
+        if (isRecordingVideo) {
+            Surface(
+                color = palette.error,
+                shape = RoundedCornerShape(20.dp),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 20.dp)
             ) {
-                Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = Color.White)
-            }
-            if (isRecordingVideo) {
-                Surface(
-                    color = WesalError,
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    Text(
-                        text = "● ${DateTimeUtils.formatDurationSeconds(recordingElapsedSec)}",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                    )
-                }
-            }
-            IconButton(
-                onClick = {
-                    if (!isRecordingVideo) {
-                        lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
-                            CameraSelector.LENS_FACING_FRONT
-                        } else {
-                            CameraSelector.LENS_FACING_BACK
-                        }
-                    }
-                },
-                modifier = Modifier.background(Color.Black.copy(alpha = 0.5f), CircleShape)
-            ) {
-                Icon(Icons.Default.Cameraswitch, contentDescription = "تبديل الكاميرا", tint = Color.White)
+                Text(
+                    text = "● ${DateTimeUtils.formatDurationSeconds(recordingElapsedSec)}",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                )
             }
         }
 
         captureError?.let { err ->
             Surface(
-                color = WesalError.copy(alpha = 0.9f),
+                color = palette.error.copy(alpha = 0.92f),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 74.dp, start = 16.dp, end = 16.dp)
+                    .padding(top = if (isRecordingVideo) 66.dp else 20.dp, start = 16.dp, end = 16.dp)
             ) {
                 Text(
                     text = err,
@@ -259,90 +267,161 @@ fun CameraCaptureScreen(
             }
         }
 
+        // Bottom-docked controls: Photo/Video mode selector + Close / Shutter / Switch Camera
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(bottom = 28.dp),
+                .background(Color.Black.copy(alpha = 0.42f))
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp, vertical = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 FilterChip(
                     selected = !isVideoMode,
                     onClick = { if (!isRecordingVideo) isVideoMode = false },
-                    label = { Text("صورة") }
+                    label = { Text(strings.photoMode, maxLines = 1, softWrap = false) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = palette.emerald,
+                        selectedLabelColor = palette.onAccent,
+                        containerColor = Color.Black.copy(alpha = 0.5f),
+                        labelColor = Color.White
+                    )
                 )
                 FilterChip(
                     selected = isVideoMode,
                     onClick = { if (!isRecordingVideo) isVideoMode = true },
-                    label = { Text("فيديو") }
+                    label = { Text(strings.videoMode, maxLines = 1, softWrap = false) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = palette.emerald,
+                        selectedLabelColor = palette.onAccent,
+                        containerColor = Color.Black.copy(alpha = 0.5f),
+                        labelColor = Color.White
+                    )
                 )
             }
 
-            Box(
-                modifier = Modifier
-                    .size(76.dp)
-                    .clip(CircleShape)
-                    .border(4.dp, Color.White, CircleShape)
-                    .padding(6.dp)
-                    .clip(CircleShape)
-                    .background(if (isRecordingVideo) WesalError else if (isVideoMode) WesalError.copy(alpha = 0.85f) else WesalEmerald)
-                    .clickable {
-                        captureError = null
-                        if (!isVideoMode) {
-                            val dir = File(context.cacheDir, "camera").apply { mkdirs() }
-                            val file = File(dir, "img_${UUID.randomUUID()}.jpg")
-                            val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
-                            imageCapture?.takePicture(
-                                outputOptions,
-                                ContextCompat.getMainExecutor(context),
-                                object : ImageCapture.OnImageSavedCallback {
-                                    override fun onImageSaved(output: ImageCapture.OutputFileResults) {
-                                        capturedIsVideo = false
-                                        capturedUri = Uri.fromFile(file)
-                                    }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                ) {
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = strings.close,
+                        tint = Color.White
+                    )
+                }
 
-                                    override fun onError(exception: ImageCaptureException) {
-                                        captureError = exception.localizedMessage ?: "تعذر التقاط الصورة"
-                                    }
-                                }
-                            )
-                        } else {
-                            if (isRecordingVideo) {
-                                activeRecording?.stop()
-                                isRecordingVideo = false
-                            } else {
-                                val hasMic = ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.RECORD_AUDIO
-                                ) == PackageManager.PERMISSION_GRANTED
+                Box(
+                    modifier = Modifier
+                        .size(76.dp)
+                        .clip(CircleShape)
+                        .border(4.dp, Color.White, CircleShape)
+                        .padding(6.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isRecordingVideo) palette.error
+                            else if (isVideoMode) palette.error.copy(alpha = 0.85f)
+                            else palette.emerald
+                        )
+                        .clickable {
+                            captureError = null
+                            if (!isVideoMode) {
                                 val dir = File(context.cacheDir, "camera").apply { mkdirs() }
-                                val file = File(dir, "vid_${UUID.randomUUID()}.mp4")
-                                val outputOptions = FileOutputOptions.Builder(file).build()
-                                val pending = videoCapture?.output?.prepareRecording(context, outputOptions)?.let { prep ->
-                                    if (hasMic) prep.withAudioEnabled() else prep
-                                }
-                                activeRecording = pending?.start(ContextCompat.getMainExecutor(context)) { event ->
-                                    if (event is VideoRecordEvent.Finalize) {
-                                        isRecordingVideo = false
-                                        if (!event.hasError()) {
-                                            capturedIsVideo = true
+                                val file = File(dir, "img_${UUID.randomUUID()}.jpg")
+                                val outputOptions = ImageCapture.OutputFileOptions.Builder(file).build()
+                                imageCapture?.takePicture(
+                                    outputOptions,
+                                    ContextCompat.getMainExecutor(context),
+                                    object : ImageCapture.OnImageSavedCallback {
+                                        override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                                            capturedIsVideo = false
                                             capturedUri = Uri.fromFile(file)
+                                        }
+
+                                        override fun onError(exception: ImageCaptureException) {
+                                            captureError = exception.localizedMessage ?: if (strings.isEnglish) {
+                                                "Failed to capture photo"
+                                            } else {
+                                                "تعذر التقاط الصورة"
+                                            }
+                                        }
+                                    }
+                                )
+                            } else {
+                                if (isRecordingVideo) {
+                                    activeRecording?.stop()
+                                    isRecordingVideo = false
+                                } else {
+                                    val hasMic = ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.RECORD_AUDIO
+                                    ) == PackageManager.PERMISSION_GRANTED
+                                    val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+                                    val file = File(dir, "vid_${UUID.randomUUID()}.mp4")
+                                    val outputOptions = FileOutputOptions.Builder(file).build()
+                                    val pending = videoCapture?.output?.prepareRecording(context, outputOptions)?.let { prep ->
+                                        if (hasMic) prep.withAudioEnabled() else prep
+                                    }
+                                    activeRecording = pending?.start(ContextCompat.getMainExecutor(context)) { event ->
+                                        if (event is VideoRecordEvent.Finalize) {
+                                            isRecordingVideo = false
+                                            if (!event.hasError()) {
+                                                capturedIsVideo = true
+                                                capturedUri = Uri.fromFile(file)
+                                            } else {
+                                                captureError = if (strings.isEnglish) {
+                                                    "Video recording failed (${event.error})"
+                                                } else {
+                                                    "تعذر تسجيل الفيديو (${event.error})"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if (activeRecording != null) {
+                                        isRecordingVideo = true
+                                    } else {
+                                        captureError = if (strings.isEnglish) {
+                                            "Camera is initializing, please wait"
                                         } else {
-                                            captureError = "تعذر تسجيل الفيديو (${event.error})"
+                                            "الكاميرا قيد التهيئة، حاول بعد لحظة"
                                         }
                                     }
                                 }
-                                if (activeRecording != null) {
-                                    isRecordingVideo = true
-                                } else {
-                                    captureError = "الكاميرا قيد التهيئة، حاول بعد لحظة"
-                                }
                             }
                         }
-                    }
-            )
+                )
+
+                IconButton(
+                    onClick = {
+                        if (!isRecordingVideo) {
+                            lensFacing = if (lensFacing == CameraSelector.LENS_FACING_BACK) {
+                                CameraSelector.LENS_FACING_FRONT
+                            } else {
+                                CameraSelector.LENS_FACING_BACK
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                ) {
+                    Icon(
+                        Icons.Default.Cameraswitch,
+                        contentDescription = if (strings.isEnglish) "Switch camera" else "تبديل الكاميرا",
+                        tint = Color.White
+                    )
+                }
+            }
         }
     }
 }

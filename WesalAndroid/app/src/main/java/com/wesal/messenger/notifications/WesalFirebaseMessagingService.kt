@@ -66,14 +66,18 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                 }
                 "STORY" -> {
                     if (!userSettings.notificationsStories) return@launch
-                    showStandardNotification(Constants.CHANNEL_STORIES, title, body, null, dedupId)
+                    showStandardNotification(Constants.CHANNEL_STORIES, title, body, null, null, dedupId)
+                }
+                "CHANNEL_POST" -> {
+                    if (!userSettings.notificationsMessages) return@launch
+                    showStandardNotification(Constants.CHANNEL_CHANNELS, title, body, null, data["channelId"], dedupId)
                 }
                 "SYSTEM" -> {
-                    showStandardNotification(Constants.CHANNEL_SYSTEM, title, body, null, dedupId)
+                    showStandardNotification(Constants.CHANNEL_SYSTEM, title, body, null, null, dedupId)
                 }
                 else -> {
                     if (!userSettings.notificationsMessages) return@launch
-                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], dedupId)
+                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], null, dedupId)
                 }
             }
         }
@@ -84,15 +88,17 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
         title: String,
         body: String,
         chatId: String?,
+        wesalChannelId: String?,
         notificationId: Int
     ) {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             if (!chatId.isNullOrBlank()) putExtra("chatId", chatId)
+            if (!wesalChannelId.isNullOrBlank()) putExtra("channelId", wesalChannelId)
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
-            chatId?.hashCode() ?: 0,
+            (chatId ?: wesalChannelId)?.hashCode() ?: 0,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

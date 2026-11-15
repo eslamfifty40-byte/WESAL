@@ -16,6 +16,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 
 object AccountSwitcherState {
     var show by mutableStateOf(false)
@@ -35,19 +37,22 @@ private fun saveAccounts(ctx: Context, list: List<List<String>>) {
 fun AccountSwitcherDialog(onSignOut: () -> Unit) {
     if (AccountSwitcherState.show) {
         val ctx = LocalContext.current
+        val palette = WesalColors.current
+        val strings = LocalWesalStrings.current
         val me = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
         val accounts = remember {
             val cur = loadAccounts(ctx).toMutableList()
             if (me != null) {
                 cur.removeAll { it.firstOrNull() == me.uid }
-                cur.add(0, listOf(me.uid, (me.displayName ?: "").replace("\t", " "), (me.email ?: me.phoneNumber ?: "")))
+                cur.add(0, listOf(me.uid, (me.displayName ?: "").replace("\t", " "), (me.email ?: "")))
                 saveAccounts(ctx, cur)
             }
             cur.toList()
         }
         AlertDialog(
             onDismissRequest = { AccountSwitcherState.show = false },
-            title = { Text("\u062d\u0633\u0627\u0628\u0627\u062a\u064a") },
+            containerColor = palette.surface,
+            title = { Text(strings.switchAccount, color = palette.textPrimary) },
             text = {
                 Column {
                     accounts.forEach { a ->
@@ -59,20 +64,20 @@ fun AccountSwitcherDialog(onSignOut: () -> Unit) {
                                 .clickable { if (!isMe) { AccountSwitcherState.show = false; onSignOut() } }
                                 .padding(vertical = 10.dp)
                         ) {
-                            Text((if (nm.isBlank()) sub else nm) + (if (isMe) "  \u2713" else ""))
-                            Text(sub)
+                            Text((if (nm.isBlank()) sub else nm) + (if (isMe) "  ✓" else ""), color = palette.textPrimary)
+                            Text(sub, color = palette.textSecondary)
                         }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { AccountSwitcherState.show = false; onSignOut() }) {
-                    Text("\u0625\u0636\u0627\u0641\u0629 / \u062a\u0628\u062f\u064a\u0644 \u062d\u0633\u0627\u0628")
+                    Text(strings.addAccount, color = palette.emerald)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { AccountSwitcherState.show = false }) {
-                    Text("\u0625\u0644\u063a\u0627\u0621")
+                    Text(strings.cancel, color = palette.textSecondary)
                 }
             }
         )

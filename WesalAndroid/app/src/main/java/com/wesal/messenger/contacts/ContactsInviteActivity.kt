@@ -1,10 +1,8 @@
 package com.wesal.messenger.contacts
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.provider.ContactsContract
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -17,91 +15,176 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalTheme
+import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.WesalShareUtils
+import com.wesal.messenger.data.local.AppUserSettings
+import com.wesal.messenger.data.local.UserPreferencesDataStore
+import com.wesal.messenger.domain.model.WesalUser
+import com.wesal.messenger.domain.repository.UserRepository
+import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import javax.inject.Inject
 
-private data class InviteContact(val name: String, val number: String)
-
+@AndroidEntryPoint
 class ContactsInviteActivity : ComponentActivity() {
+
+    @Inject lateinit var userRepository: UserRepository
+    @Inject lateinit var prefs: UserPreferencesDataStore
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
-                ContactsInviteScreen(onClose = { finish() })
+            val settings by prefs.settingsFlow.collectAsStateWithLifecycle(initialValue = AppUserSettings())
+            val me by userRepository.observeCurrentUser().collectAsStateWithLifecycle(initialValue = null)
+            WesalTheme(
+                darkTheme = settings.darkTheme,
+                languageTag = settings.languageTag,
+                fontScale = settings.fontScale
+            ) {
+                ContactsInviteScreen(
+                    userRepository = userRepository,
+                    myPublicId = me?.publicId,
+                    onClose = { finish() }
+                )
             }
         }
     }
-}
-
-private fun loadContacts(ctx: android.content.Context): List<InviteContact> {
-    val out = LinkedHashMap<String, InviteContact>()
-    val c = ctx.contentResolver.query(
-        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-        arrayOf(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME, ContactsContract.CommonDataKinds.Phone.NUMBER),
-        null, null, ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC"
-    )
-    c?.use {
-        while (it.moveToNext()) {
-            val name = it.getString(0) ?: continue
-            val num = (it.getString(1) ?: continue).replace(" ", "")
-            if (!out.containsKey(num)) out[num] = InviteContact(name, num)
-        }
-    }
-    return out.values.toList()
 }
 
 @Composable
-private fun ContactsInviteScreen(onClose: () -> Unit) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) }
+private fun ContactsInviteScreen(
+    userRepository: UserRepository,
+    myPublicId: String?,
+    onClose: () -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    val ctx = LocalContext.current
+    var granted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted = it }
     LaunchedEffect(Unit) { if (!granted) launcher.launch(Manifest.permission.READ_CONTACTS) }
-    var contacts by remember { mutableStateOf(emptyList<InviteContact>()) }
-    var registered by remember { mutableStateOf(setOf<String>()) }
-    LaunchedEffect(Unit) {
-        try {
-            com.google.firebase.firestore.FirebaseFirestore.getInstance().collection("users").get().addOnSuccessListener { snap -> registered = snap.documents.mapNotNull { it.getString("phoneDigits") }.toSet() }
-        } catch (e: Exception) { }
-    }
-    LaunchedEffect(granted) { if (granted) contacts = withContext(Dispatchers.IO) { loadContacts(ctx) } }
-    var q by remember { mutableStateOf("") }
-    val shown = contacts.filter { q.isBlank() || it.name.contains(q, true) || it.number.contains(q) }
-    Column(Modifier.fillMaxSize().background(Color(0xFF050A0F)).systemBarsPadding().padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("جهات الاتصال", style = MaterialTheme.typography.titleLarge, color = Color.White, modifier = Modifier.weight(1f))
-            TextButton(onClick = onClose) { Text("رجوع") }
+
+    var contacts by remember { mutableStateOf(emptyList<DeviceContact>()) }
+    var matchedUsers by remember { mutableStateOf<Map<String, WesalUser>>(emptyMap()) }
+
+    LaunchedEffect(granted) {
+        if (granted) {
+            val list = withContext(Dispatchers.IO) { PhoneContactsHelper.loadDeviceContacts(ctx) }
+            contacts = list
+            val hashes = list.mapNotNull { it.phoneHash }.distinct()
+            matchedUsers = runCatching { userRepository.findUsersByPhoneHashes(hashes) }
+                .getOrDefault(emptyMap())
         }
-        OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("بحث") }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp))
+    }
+
+    var q by remember { mutableStateOf("") }
+    val shown = remember(contacts, q) {
+        contacts.filter {
+            q.isBlank() || it.displayName.contains(q, true) || it.rawPhone.contains(q)
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.background)
+            .systemBarsPadding()
+            .padding(16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = strings.inviteFriends,
+                style = MaterialTheme.typography.titleLarge,
+                color = palette.textPrimary,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onClose) { Text(strings.back) }
+        }
+        OutlinedTextField(
+            value = q,
+            onValueChange = { q = it },
+            label = { Text(strings.search) },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
+        )
         if (!granted) {
-            Text("اسمح بالوصول لجهات الاتصال عشان تظهر هنا", color = Color.White)
-            Button(onClick = { launcher.launch(Manifest.permission.READ_CONTACTS) }) { Text("السماح") }
+            Text(
+                text = if (strings.isEnglish) {
+                    "Allow contacts access to invite friends who aren't on WESAL yet."
+                } else {
+                    "اسمح بالوصول إلى جهات الاتصال لدعوة أصدقائك إلى WESAL."
+                },
+                color = palette.textPrimary
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { launcher.launch(Manifest.permission.READ_CONTACTS) },
+                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+            ) {
+                Text(if (strings.isEnglish) "Allow" else "السماح")
+            }
         }
         LazyColumn {
-            items(shown) { c ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(c.name, color = Color.White)
-                        Text(c.number, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            items(shown, key = { "${it.contactId}_${it.rawPhone}" }) { c ->
+                val registeredUser = c.phoneHash?.let { matchedUsers[it] }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(c.displayName, color = palette.textPrimary)
+                        Text(
+                            text = c.e164Phone ?: c.rawPhone,
+                            color = palette.textSecondary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
-                    if (isRegisteredNumber(c.number, registered)) Text("\u0645\u0633\u062c\u0644", color = Color.Green) else Button(onClick = {
-                        val i = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, "أنا بستخدم تطبيق وصال للمراسلة. حمّله وسجّل معايا!")
+                    if (registeredUser != null) {
+                        Text(
+                            text = if (strings.isEnglish) "On WESAL" else "مسجّل",
+                            color = palette.emerald
+                        )
+                    } else {
+                        Button(
+                            onClick = {
+                                WesalShareUtils.shareViaWhatsApp(
+                                    context = ctx,
+                                    message = WesalShareUtils.buildInviteMessage(
+                                        myWesalId = myPublicId,
+                                        targetContactName = c.displayName,
+                                        isEnglish = strings.isEnglish
+                                    ),
+                                    targetPhoneE164 = c.e164Phone
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.emerald,
+                                contentColor = palette.onPrimary
+                            )
+                        ) {
+                            Text(strings.inviteViaWhatsApp)
                         }
-                        ctx.startActivity(Intent.createChooser(i, "دعوة"))
-                    }) { Text("دعوة") }
+                    }
                 }
+                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
             }
         }
     }
-}
-
-
-private fun isRegisteredNumber(num: String, registered: Set<String>): Boolean {
-    var d = num.filter { it.isDigit() }
-    if (d.startsWith("00")) d = d.substring(2) else if (d.startsWith("0")) d = "20" + d.substring(1)
-    return d in registered
 }

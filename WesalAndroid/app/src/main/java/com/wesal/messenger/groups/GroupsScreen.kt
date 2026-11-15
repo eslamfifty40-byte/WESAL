@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -20,19 +19,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.channels.ChannelsScreen
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.domain.model.GroupInfo
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.GroupRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -112,56 +116,97 @@ class GroupsViewModel @Inject constructor(
 @Composable
 fun GroupsScreen(
     onOpenChat: (String) -> Unit,
+    onOpenChannel: (String) -> Unit = {},
     viewModel: GroupsViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val groups by viewModel.groups.collectAsStateWithLifecycle()
     val searched by viewModel.searchedUsers.collectAsStateWithLifecycle()
     val selectedMembers by viewModel.selectedMembers.collectAsStateWithLifecycle()
     val isCreating by viewModel.isCreating.collectAsStateWithLifecycle()
 
+    var selectedSegment by remember { mutableIntStateOf(0) } // 0 = Groups, 1 = Channels
     var showCreateDialog by remember { mutableStateOf(false) }
 
-    Box(modifier = Modifier.fillMaxSize().background(WesalDeepBlack)) {
-        if (groups.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("لا توجد مجموعات حتى الآن — أنشئ مجموعة جديدة", color = WesalTextSecondary)
-            }
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
-                items(groups, key = { it.groupId }) { group ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenChat(group.chatId) }
-                            .padding(vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        WesalAvatar(imageUrl = group.avatarUrl, name = group.name, size = 54.dp)
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(group.name, style = MaterialTheme.typography.titleMedium, color = WesalTextPrimary)
-                            Text(
-                                text = "${group.memberIds.size} عضو • ${group.description.ifBlank { "مجموعة وصال" }}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = WesalTextSecondary,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                    HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
-                }
-            }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.background)
+    ) {
+        TabRow(
+            selectedTabIndex = selectedSegment,
+            containerColor = palette.surface,
+            contentColor = palette.emerald
+        ) {
+            Tab(
+                selected = selectedSegment == 0,
+                onClick = { selectedSegment = 0 },
+                text = { Text(strings.tabGroups, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            )
+            Tab(
+                selected = selectedSegment == 1,
+                onClick = { selectedSegment = 1 },
+                text = { Text(strings.tabChannels, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+            )
         }
 
-        FloatingActionButton(
-            onClick = { showCreateDialog = true },
-            containerColor = WesalEmerald,
-            contentColor = WesalDeepBlack,
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(16.dp)
-        ) {
-            Icon(Icons.Default.GroupAdd, contentDescription = "إنشاء مجموعة")
+        if (selectedSegment == 1) {
+            ChannelsScreen(onOpenChannel = onOpenChannel)
+        } else {
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (groups.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = if (strings.isEnglish) {
+                                "No groups yet — create a new group"
+                            } else {
+                                "لا توجد مجموعات حتى الآن — أنشئ مجموعة جديدة"
+                            },
+                            color = palette.textSecondary
+                        )
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp)) {
+                        items(groups, key = { it.groupId }) { group ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onOpenChat(group.chatId) }
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                WesalAvatar(imageUrl = group.avatarUrl, name = group.name, size = 54.dp)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(group.name, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary, fontWeight = FontWeight.SemiBold)
+                                    val membersLabel = if (strings.isEnglish) "${group.memberIds.size} members" else "${group.memberIds.size} عضو"
+                                    val fallbackDesc = if (strings.isEnglish) "WESAL Group" else "مجموعة WESAL"
+                                    Text(
+                                        text = "$membersLabel • ${group.description.ifBlank { fallbackDesc }}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = palette.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                        }
+                    }
+                }
+
+                FloatingActionButton(
+                    onClick = { showCreateDialog = true },
+                    containerColor = palette.emerald,
+                    contentColor = palette.onPrimary,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                ) {
+                    Icon(Icons.Default.GroupAdd, contentDescription = strings.newGroup)
+                }
+            }
         }
     }
 
@@ -177,8 +222,8 @@ fun GroupsScreen(
 
         AlertDialog(
             onDismissRequest = { showCreateDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("إنشاء مجموعة جديدة", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(strings.newGroup, color = palette.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -186,7 +231,7 @@ fun GroupsScreen(
                             modifier = Modifier
                                 .size(56.dp)
                                 .clip(CircleShape)
-                                .background(WesalSurfaceElevated)
+                                .background(palette.surfaceElevated)
                                 .clickable {
                                     avatarPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                                 },
@@ -195,13 +240,13 @@ fun GroupsScreen(
                             if (groupAvatarUri != null) {
                                 AsyncImage(model = groupAvatarUri, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             } else {
-                                Icon(Icons.Default.AddAPhoto, contentDescription = null, tint = WesalTurquoise)
+                                Icon(Icons.Default.AddAPhoto, contentDescription = null, tint = palette.turquoise)
                             }
                         }
                         OutlinedTextField(
                             value = groupName,
                             onValueChange = { groupName = it },
-                            label = { Text("اسم المجموعة") },
+                            label = { Text(if (strings.isEnglish) "Group Name" else "اسم المجموعة") },
                             singleLine = true,
                             modifier = Modifier.weight(1f)
                         )
@@ -210,7 +255,7 @@ fun GroupsScreen(
                     OutlinedTextField(
                         value = groupDesc,
                         onValueChange = { groupDesc = it },
-                        label = { Text("وصف المجموعة (اختياري)") },
+                        label = { Text(if (strings.isEnglish) "Description (Optional)" else "وصف المجموعة (اختياري)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -221,16 +266,18 @@ fun GroupsScreen(
                             memberQuery = it
                             viewModel.searchUsers(it)
                         },
-                        label = { Text("إضافة أعضاء (ابحث بالاسم أو الهاتف)") },
+                        label = { Text(if (strings.isEnglish) "Add members (@Wesal ID or name)" else "إضافة أعضاء (بالاسم أو @Wesal ID)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
 
                     if (selectedMembers.isNotEmpty()) {
                         Text(
-                            text = "الأعضاء المحددون: ${selectedMembers.joinToString("، ") { it.displayName.ifBlank { it.phoneNumber } }}",
+                            text = selectedMembers.joinToString(", ") {
+                                it.displayName.ifBlank { "@${it.publicId}" }
+                            },
                             style = MaterialTheme.typography.labelMedium,
-                            color = WesalEmerald
+                            color = palette.emerald
                         )
                     }
 
@@ -245,7 +292,11 @@ fun GroupsScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(user.displayName.ifBlank { user.phoneNumber }, color = WesalTextPrimary)
+                                WesalNameWithBadge(
+                                    name = user.displayName.ifBlank { "@${user.publicId}" },
+                                    isVerified = user.isVerified,
+                                    modifier = Modifier.weight(1f)
+                                )
                                 Checkbox(checked = isSelected, onCheckedChange = { viewModel.toggleMemberSelection(user) })
                             }
                         }
@@ -261,13 +312,16 @@ fun GroupsScreen(
                         }
                     },
                     enabled = !isCreating && groupName.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
                 ) {
-                    Text(if (isCreating) "جاري الإنشاء..." else "إنشاء")
+                    Text(
+                        if (isCreating) strings.loading
+                        else if (strings.isEnglish) "Create" else "إنشاء"
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showCreateDialog = false }) { Text("إلغاء") }
+                TextButton(onClick = { showCreateDialog = false }) { Text(strings.cancel) }
             }
         )
     }
@@ -282,6 +336,8 @@ fun GroupInfoScreen(
     onLeftGroup: () -> Unit,
     viewModel: GroupsViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val group by viewModel.observeGroup(groupId).collectAsStateWithLifecycle(initialValue = null)
     var members by remember { mutableStateOf<List<WesalUser>>(emptyList()) }
     var searchQuery by remember { mutableStateOf("") }
@@ -296,16 +352,16 @@ fun GroupInfoScreen(
     val isAdmin = group?.adminIds?.contains(viewModel.myUid) == true
 
     Scaffold(
-        containerColor = WesalDeepBlack,
+        containerColor = palette.background,
         topBar = {
             TopAppBar(
-                title = { Text(group?.name ?: "معلومات المجموعة", color = WesalTextPrimary) },
+                title = { Text(group?.name ?: (if (strings.isEnglish) "Group Info" else "معلومات المجموعة"), color = palette.textPrimary) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "رجوع", tint = WesalTextPrimary)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back, tint = palette.textPrimary)
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = WesalSurfaceDark)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
             )
         }
     ) { padding ->
@@ -324,9 +380,9 @@ fun GroupInfoScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         WesalAvatar(imageUrl = g.avatarUrl, name = g.name, size = 84.dp)
-                        Text(g.name, style = MaterialTheme.typography.headlineSmall, color = WesalTextPrimary)
+                        Text(g.name, style = MaterialTheme.typography.headlineSmall, color = palette.textPrimary)
                         if (g.description.isNotBlank()) {
-                            Text(g.description, style = MaterialTheme.typography.bodyMedium, color = WesalTextSecondary)
+                            Text(g.description, style = MaterialTheme.typography.bodyMedium, color = palette.textSecondary)
                         }
                     }
                 }
@@ -339,7 +395,7 @@ fun GroupInfoScreen(
                                 searchQuery = it
                                 viewModel.searchUsers(it)
                             },
-                            label = { Text("إضافة عضو جديد للمجموعة") },
+                            label = { Text(if (strings.isEnglish) "Add new member" else "إضافة عضو جديد للمجموعة") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true
                         )
@@ -356,14 +412,22 @@ fun GroupInfoScreen(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(user.displayName.ifBlank { user.phoneNumber }, color = WesalTextPrimary)
-                            Icon(Icons.Default.PersonAdd, contentDescription = "إضافة", tint = WesalEmerald)
+                            WesalNameWithBadge(
+                                name = user.displayName.ifBlank { "@${user.publicId}" },
+                                isVerified = user.isVerified,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Icon(Icons.Default.PersonAdd, contentDescription = null, tint = palette.emerald)
                         }
                     }
                 }
 
                 item {
-                    Text("الأعضاء (${members.size})", style = MaterialTheme.typography.titleMedium, color = WesalTurquoise)
+                    Text(
+                        text = if (strings.isEnglish) "Members (${members.size})" else "الأعضاء (${members.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.turquoise
+                    )
                 }
 
                 items(members, key = { it.uid }) { member ->
@@ -380,17 +444,31 @@ fun GroupInfoScreen(
                     ) {
                         WesalAvatar(imageUrl = member.photoUrl, name = member.displayName, size = 44.dp)
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(member.displayName.ifBlank { member.phoneNumber }, color = WesalTextPrimary)
+                            WesalNameWithBadge(
+                                name = member.displayName.ifBlank { "@${member.publicId}" },
+                                isVerified = member.isVerified
+                            )
                             if (memberIsAdmin) {
-                                Text("مشرف المجموعة", style = MaterialTheme.typography.labelSmall, color = WesalEmerald)
+                                Text(
+                                    text = if (strings.isEnglish) "Group Admin" else "مشرف المجموعة",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.emerald
+                                )
                             }
                         }
                         if (isAdmin && member.uid != viewModel.myUid) {
                             TextButton(onClick = { viewModel.toggleAdmin(g.groupId, member.uid, !memberIsAdmin) }) {
-                                Text(if (memberIsAdmin) "إزالة إشراف" else "تعيين مشرف", color = WesalTurquoise)
+                                Text(
+                                    text = if (memberIsAdmin) {
+                                        if (strings.isEnglish) "Demote" else "إزالة إشراف"
+                                    } else {
+                                        if (strings.isEnglish) "Make Admin" else "تعيين مشرف"
+                                    },
+                                    color = palette.turquoise
+                                )
                             }
                             IconButton(onClick = { viewModel.removeMember(g.groupId, member.uid) }) {
-                                Icon(Icons.Default.RemoveCircleOutline, contentDescription = "إزالة", tint = WesalError)
+                                Icon(Icons.Default.RemoveCircleOutline, contentDescription = strings.delete, tint = palette.error)
                             }
                         }
                     }
@@ -401,9 +479,9 @@ fun GroupInfoScreen(
                     OutlinedButton(
                         onClick = { viewModel.leaveGroup(g.groupId, onLeftGroup) },
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = WesalError)
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
                     ) {
-                        Text("مغادرة المجموعة")
+                        Text(if (strings.isEnglish) "Leave Group" else "مغادرة المجموعة")
                     }
                 }
             }

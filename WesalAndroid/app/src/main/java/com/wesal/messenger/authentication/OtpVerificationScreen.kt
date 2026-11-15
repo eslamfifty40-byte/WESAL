@@ -21,7 +21,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 
 @Composable
 fun OtpVerificationScreen(
@@ -30,6 +31,8 @@ fun OtpVerificationScreen(
     onNavigateToProfileSetup: () -> Unit,
     onNavigateToHome: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val activity = LocalContext.current as? Activity
 
@@ -41,7 +44,7 @@ fun OtpVerificationScreen(
     }
 
     Scaffold(
-        containerColor = WesalDeepBlack,
+        containerColor = palette.background,
         topBar = {
             Row(
                 modifier = Modifier
@@ -55,14 +58,14 @@ fun OtpVerificationScreen(
                 }) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "تعديل الرقم",
-                        tint = WesalTextPrimary
+                        contentDescription = strings.back,
+                        tint = palette.textPrimary
                     )
                 }
                 Text(
-                    text = "التحقق من رقم الهاتف",
+                    text = if (strings.isEnglish) "Phone Verification" else "التحقق من رقم الهاتف",
                     style = MaterialTheme.typography.titleLarge,
-                    color = WesalTextPrimary
+                    color = palette.textPrimary
                 )
             }
         }
@@ -76,18 +79,21 @@ fun OtpVerificationScreen(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
                 Text(
-                    text = "تم إرسال رمز تحقق مكون من 6 أرقام عبر SMS إلى:",
+                    text = if (strings.isEnglish) {
+                        "Enter the 6-digit verification code sent via SMS to:"
+                    } else {
+                        "تم إرسال رمز تحقق مكون من 6 أرقام عبر SMS إلى:"
+                    },
                     style = MaterialTheme.typography.bodyLarge,
-                    color = WesalTextSecondary
+                    color = palette.textSecondary
                 )
                 Text(
                     text = state.fullPhoneE164,
                     style = MaterialTheme.typography.titleLarge,
-                    color = WesalTurquoise,
+                    color = palette.turquoise,
                     fontWeight = FontWeight.Bold
                 )
 
-                // 6-digit OTP Input Box (always LTR digits)
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                     BasicTextField(
                         value = state.otpCode,
@@ -110,10 +116,10 @@ fun OtpVerificationScreen(
                                         modifier = Modifier
                                             .weight(1f)
                                             .height(58.dp)
-                                            .background(WesalSurfaceDark, RoundedCornerShape(12.dp))
+                                            .background(palette.surface, RoundedCornerShape(12.dp))
                                             .border(
                                                 width = if (isFocused) 2.dp else 1.dp,
-                                                color = if (isFocused) WesalTurquoise else WesalSurfaceBorder,
+                                                color = if (isFocused) palette.turquoise else palette.border,
                                                 shape = RoundedCornerShape(12.dp)
                                             ),
                                         contentAlignment = Alignment.Center
@@ -121,7 +127,7 @@ fun OtpVerificationScreen(
                                         Text(
                                             text = char,
                                             style = MaterialTheme.typography.headlineSmall,
-                                            color = WesalTextPrimary,
+                                            color = palette.textPrimary,
                                             textAlign = TextAlign.Center
                                         )
                                     }
@@ -144,29 +150,33 @@ fun OtpVerificationScreen(
                             enabled = !state.isLoading
                         ) {
                             Text(
-                                text = "إعادة إرسال الرمز",
-                                color = WesalTurquoise,
+                                text = if (strings.isEnglish) "Resend Code" else "إعادة إرسال الرمز",
+                                color = palette.turquoise,
                                 fontWeight = FontWeight.Bold
                             )
                         }
                     } else {
                         Text(
-                            text = "إعادة الإرسال متاحة خلال ${state.countdownSeconds} ثانية",
+                            text = if (strings.isEnglish) {
+                                "Resend available in ${state.countdownSeconds}s"
+                            } else {
+                                "إعادة الإرسال متاحة خلال ${state.countdownSeconds} ثانية"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = WesalTextSecondary
+                            color = palette.textSecondary
                         )
                     }
                 }
 
                 if (state.errorMessage != null) {
                     Surface(
-                        color = WesalError.copy(alpha = 0.14f),
+                        color = palette.error.copy(alpha = 0.14f),
                         shape = RoundedCornerShape(10.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, WesalError.copy(alpha = 0.4f))
+                        border = androidx.compose.foundation.BorderStroke(1.dp, palette.error.copy(alpha = 0.4f))
                     ) {
                         Text(
                             text = state.errorMessage!!,
-                            color = WesalError,
+                            color = palette.error,
                             style = MaterialTheme.typography.bodyMedium,
                             modifier = Modifier.padding(12.dp)
                         )
@@ -182,19 +192,19 @@ fun OtpVerificationScreen(
                     .height(54.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = WesalEmerald,
-                    contentColor = WesalDeepBlack
+                    containerColor = palette.emerald,
+                    contentColor = palette.onAccent
                 )
             ) {
                 if (state.isLoading) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(22.dp),
-                        color = WesalDeepBlack,
+                        color = palette.onAccent,
                         strokeWidth = 2.5.dp
                     )
                 } else {
                     Text(
-                        text = "تأكيد الرمز والمتابعة",
+                        text = if (strings.isEnglish) "Verify & Continue" else "تأكيد الرمز والمتابعة",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )

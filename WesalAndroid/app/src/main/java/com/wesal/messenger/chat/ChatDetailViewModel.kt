@@ -6,6 +6,7 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.WesalMessage
@@ -51,11 +52,15 @@ class ChatDetailViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     private val voiceRecorder: VoiceRecorderManager,
     private val voicePlayer: VoicePlayerManager,
-    private val cryptoManager: E2EECryptoManager
+    private val cryptoManager: E2EECryptoManager,
+    private val prefs: UserPreferencesDataStore
 ) : ViewModel() {
 
     val chatId: String = checkNotNull(savedStateHandle["chatId"])
     val myUid: String = authRepository.currentUserId.orEmpty()
+
+    val recentEmojis: StateFlow<List<String>> = prefs.recentEmojisFlow
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -83,11 +88,14 @@ class ChatDetailViewModel @Inject constructor(
                 userRepository.observeUser(preview.peerUid).map { peer ->
                     if (peer != null) {
                         preview.copy(
-                            title = peer.displayName.ifBlank { peer.phoneNumber }.ifBlank { preview.title },
+                            title = peer.displayName.ifBlank {
+                                peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+                            }.ifBlank { preview.title },
                             avatarUrl = peer.photoUrl,
                             peerPublicKey = peer.publicKey.ifBlank { preview.peerPublicKey },
                             peerOnline = peer.isOnline,
-                            peerLastSeen = peer.lastSeen
+                            peerLastSeen = peer.lastSeen,
+                            peerVerified = peer.isVerified
                         )
                     } else {
                         preview
@@ -116,6 +124,10 @@ class ChatDetailViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { chatRepository.markChatAsRead(chatId) }
+    }
+
+    fun recordRecentEmoji(emoji: String) {
+        viewModelScope.launch { prefs.recordRecentEmoji(emoji) }
     }
 
     fun markRead() {

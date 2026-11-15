@@ -120,6 +120,7 @@ class ChatRepositoryImpl @Inject constructor(
         var peerPubKey = ""
         var peerOnline = false
         var peerLastSeen = 0L
+        var peerVerified = false
 
         val unreadCount = unreadMap[myUid]?.toInt() ?: 0
         val lastSenderId = doc.getString("lastMessageSenderId").orEmpty()
@@ -130,11 +131,13 @@ class ChatRepositoryImpl @Inject constructor(
             if (peerUid.isNotBlank()) {
                 val peer = fetchUserCached(peerUid)
                 if (peer != null) {
-                    title = peer.displayName.ifBlank { peer.phoneNumber }
+                    val safeHandle = peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+                    title = peer.displayName.ifBlank { safeHandle }
                     avatar = if (peer.privacySettings.profilePhotoVisibility == com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY) "" else peer.photoUrl
                     peerPubKey = peer.publicKey
                     peerOnline = peer.isOnline && peer.privacySettings.onlineVisibility != com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY
                     peerLastSeen = if (peer.privacySettings.lastSeenVisibility == com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY) 0L else peer.lastSeen
+                    peerVerified = peer.isVerified
                 }
             }
         }
@@ -150,11 +153,12 @@ class ChatRepositoryImpl @Inject constructor(
             groupId = groupId,
             participantIds = participantIds,
             peerUid = peerUid,
-            title = title.ifBlank { "محادثة وصال" },
+            title = title.ifBlank { "محادثة WESAL" },
             avatarUrl = avatar,
             peerPublicKey = peerPubKey,
             peerOnline = peerOnline,
             peerLastSeen = peerLastSeen,
+            peerVerified = peerVerified,
             lastMessagePreview = doc.getString("lastMessagePreview").orEmpty(),
             lastMessageTime = doc.getLong("lastMessageTime") ?: 0L,
             lastMessageSenderId = lastSenderId,
@@ -371,11 +375,21 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun getOrCreateDirectChat(peerUid: String): Result<String> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        require(peerUid.isNotBlank() && peerUid != myUid) { "Invalid peer user" }
         val sortedIds = listOf(myUid, peerUid).sorted()
         val deterministicChatId = "dm_${sortedIds[0]}_${sortedIds[1]}"
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(deterministicChatId)
         val snap = chatRef.get().await()
         if (!snap.exists()) {
+            val reqId = "${sortedIds[0]}_${sortedIds[1]}"
+            val reqSnap = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
+                .document(reqId)
+                .get()
+                .await()
+            val isAccepted = reqSnap.exists() && reqSnap.getString("status") == "ACCEPTED"
+            require(isAccepted) {
+                "لا يمكنك مراسلة هذا المستخدم قبل إرسال طلب تعارف وموافقته"
+            }
             val data = mapOf(
                 "chatId" to deterministicChatId,
                 "isGroup" to false,
@@ -441,7 +455,9 @@ class ChatRepositoryImpl @Inject constructor(
             "messageId" to messageId,
             "chatId" to chatId,
             "senderId" to myUid,
-            "senderName" to (me?.displayName?.ifBlank { me.phoneNumber } ?: "مستخدم وصال"),
+            "senderName" to (me?.displayName?.ifBlank {
+                me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
+            } ?: "WESAL User"),
             "type" to MessageType.TEXT.raw,
             "ciphertext" to ciphertext,
             "text" to if (isEncrypted) "" else text,
@@ -555,7 +571,9 @@ class ChatRepositoryImpl @Inject constructor(
                     "messageId" to messageId,
                     "chatId" to chatId,
                     "senderId" to myUid,
-                    "senderName" to (me?.displayName?.ifBlank { me.phoneNumber } ?: "مستخدم وصال"),
+                    "senderName" to (me?.displayName?.ifBlank {
+                        me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
+                    } ?: "WESAL User"),
                     "type" to type.raw,
                     "text" to caption,
                     "isEncrypted" to true,
@@ -666,7 +684,9 @@ class ChatRepositoryImpl @Inject constructor(
             "messageId" to messageId,
             "chatId" to chatId,
             "senderId" to myUid,
-            "senderName" to (me?.displayName?.ifBlank { me.phoneNumber } ?: "مستخدم وصال"),
+            "senderName" to (me?.displayName?.ifBlank {
+                me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
+            } ?: "WESAL User"),
             "type" to MessageType.LOCATION.raw,
             "text" to address.ifBlank { "الموقع الجغرافي" },
             "latitude" to latitude,

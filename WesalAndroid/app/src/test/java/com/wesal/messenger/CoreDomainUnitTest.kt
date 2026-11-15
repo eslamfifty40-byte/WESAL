@@ -1,14 +1,21 @@
 package com.wesal.messenger
 
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import com.wesal.messenger.authentication.CountryCatalog
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalIdUtils
+import com.wesal.messenger.core.util.WesalShareUtils
+import com.wesal.messenger.domain.model.CallRecord
+import com.wesal.messenger.domain.model.ChannelRole
 import com.wesal.messenger.domain.model.SavedWesalAccount
 import com.wesal.messenger.domain.model.StoryItem
 import com.wesal.messenger.domain.model.StoryType
 import com.wesal.messenger.domain.model.StoryViewer
+import com.wesal.messenger.domain.model.WesalChannel
 import com.wesal.messenger.domain.model.WesalUser
+import com.wesal.messenger.presentation.components.WesalEmojiUtils
 import org.junit.Assert.*
 import org.junit.Test
 import java.security.KeyPairGenerator
@@ -168,5 +175,73 @@ class CoreDomainUnitTest {
         assertEquals("u1", merged[0].uid)
         assertEquals("new@wesal.app", merged[0].email)
         assertEquals("u2", merged[1].uid)
+    }
+
+    @Test
+    fun whatsappInviteMessage_containsStrictlyOneWesalJoinUrlAndNoGithubUrl() {
+        val msgAr = WesalShareUtils.buildInviteMessage(
+            myWesalId = "@eslam_wesal",
+            targetContactName = "أحمد",
+            isEnglish = false
+        )
+        val urlRegex = Regex("""https?://\S+""")
+        val urlsAr = urlRegex.findAll(msgAr).map { it.value }.toList()
+        assertEquals(1, urlsAr.size)
+        assertEquals("https://wesal.app/join?id=eslam_wesal", urlsAr.first())
+        assertFalse(msgAr.contains("github", ignoreCase = true))
+        assertFalse(msgAr.contains(".apk", ignoreCase = true))
+
+        val msgEn = WesalShareUtils.buildInviteMessage(
+            myWesalId = "sara_99",
+            targetContactName = null,
+            isEnglish = true
+        )
+        val urlsEn = urlRegex.findAll(msgEn).map { it.value }.toList()
+        assertEquals(1, urlsEn.size)
+        assertEquals("https://wesal.app/join?id=sara_99", urlsEn.first())
+    }
+
+    @Test
+    fun emojiUtils_insertAndGraphemeBackspacePreserveSurrogates() {
+        val initial = TextFieldValue(text = "أهلاً ", selection = TextRange(6))
+        val inserted = WesalEmojiUtils.insertAtSelection(initial, "😀")
+        assertEquals("أهلاً 😀", inserted.text)
+        assertEquals(8, inserted.selection.start)
+
+        val afterBackspace = WesalEmojiUtils.backspaceAtSelection(inserted)
+        assertEquals("أهلاً ", afterBackspace.text)
+        assertEquals(6, afterBackspace.selection.start)
+    }
+
+    @Test
+    fun callHistoryPerUserDeletion_hidesOnlyForDeletingUser() {
+        val myUid = "uid_me"
+        val peerUid = "uid_peer"
+        val allCalls = listOf(
+            CallRecord(callId = "c1", callerId = myUid, calleeId = peerUid, deletedForUsers = emptyList()),
+            CallRecord(callId = "c2", callerId = myUid, calleeId = peerUid, deletedForUsers = listOf(myUid)),
+            CallRecord(callId = "c3", callerId = peerUid, calleeId = myUid, deletedForUsers = listOf(peerUid))
+        )
+
+        val visibleToMe = allCalls.filter { !it.deletedForUsers.contains(myUid) }
+        val visibleToPeer = allCalls.filter { !it.deletedForUsers.contains(peerUid) }
+
+        assertEquals(listOf("c1", "c3"), visibleToMe.map { it.callId })
+        assertEquals(listOf("c1", "c2"), visibleToPeer.map { it.callId })
+    }
+
+    @Test
+    fun channelRoleResolution_distinguishesOwnerModeratorSubscriberAndNone() {
+        val channel = WesalChannel(
+            channelId = "ch_1",
+            ownerUid = "owner_1",
+            moderatorIds = listOf("mod_1"),
+            subscriberIds = listOf("owner_1", "mod_1", "sub_1")
+        )
+        assertEquals(ChannelRole.OWNER, channel.roleFor("owner_1"))
+        assertEquals(ChannelRole.MODERATOR, channel.roleFor("mod_1"))
+        assertEquals(ChannelRole.SUBSCRIBER, channel.roleFor("sub_1"))
+        assertEquals(ChannelRole.NONE, channel.roleFor("stranger"))
+        assertEquals(ChannelRole.NONE, channel.roleFor(""))
     }
 }

@@ -28,7 +28,10 @@ data class AppUserSettings(
     val notificationsStories: Boolean = false,
     val pendingVerificationId: String = "",
     val pendingPhoneNumber: String = "",
-    val pendingOtpTimestamp: Long = 0L
+    val pendingOtpTimestamp: Long = 0L,
+    val pendingInviteId: String = "",
+    val pendingChannelInvite: String = "",
+    val recentEmojis: List<String> = emptyList()
 )
 
 @Singleton
@@ -50,6 +53,9 @@ class UserPreferencesDataStore @Inject constructor(
         val PENDING_OTP_TS = longPreferencesKey("pending_otp_ts")
         val DEVICE_SESSION_ID = stringPreferencesKey("device_session_id")
         val SAVED_ACCOUNTS_JSON = stringPreferencesKey("saved_accounts_json")
+        val PENDING_INVITE_ID = stringPreferencesKey("pending_invite_id")
+        val PENDING_CHANNEL_INVITE = stringPreferencesKey("pending_channel_invite")
+        val RECENT_EMOJIS_JSON = stringPreferencesKey("recent_emojis_json")
     }
 
     val settingsFlow: Flow<AppUserSettings> = context.wesalDataStore.data.map { prefs ->
@@ -63,8 +69,15 @@ class UserPreferencesDataStore @Inject constructor(
             notificationsStories = prefs[Keys.NOTIF_STORIES] ?: false,
             pendingVerificationId = prefs[Keys.PENDING_VERIFICATION_ID] ?: "",
             pendingPhoneNumber = prefs[Keys.PENDING_PHONE] ?: "",
-            pendingOtpTimestamp = prefs[Keys.PENDING_OTP_TS] ?: 0L
+            pendingOtpTimestamp = prefs[Keys.PENDING_OTP_TS] ?: 0L,
+            pendingInviteId = prefs[Keys.PENDING_INVITE_ID] ?: "",
+            pendingChannelInvite = prefs[Keys.PENDING_CHANNEL_INVITE] ?: "",
+            recentEmojis = decodeStringList(prefs[Keys.RECENT_EMOJIS_JSON])
         )
+    }
+
+    val recentEmojisFlow: Flow<List<String>> = context.wesalDataStore.data.map { prefs ->
+        decodeStringList(prefs[Keys.RECENT_EMOJIS_JSON])
     }
 
     val savedAccountsFlow: Flow<List<SavedWesalAccount>> = context.wesalDataStore.data.map { prefs ->
@@ -109,6 +122,13 @@ class UserPreferencesDataStore @Inject constructor(
         }.getOrDefault(emptyList())
     }
 
+    private fun decodeStringList(raw: String?): List<String> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.decodeFromString<List<String>>(raw)
+        }.getOrDefault(emptyList())
+    }
+
     suspend fun setDarkTheme(enabled: Boolean) {
         context.wesalDataStore.edit { it[Keys.DARK_THEME] = enabled }
     }
@@ -148,6 +168,46 @@ class UserPreferencesDataStore @Inject constructor(
             prefs.remove(Keys.PENDING_VERIFICATION_ID)
             prefs.remove(Keys.PENDING_PHONE)
             prefs.remove(Keys.PENDING_OTP_TS)
+        }
+    }
+
+    suspend fun setPendingInviteId(id: String) {
+        val clean = id.trim().removePrefix("@")
+        if (clean.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            prefs[Keys.PENDING_INVITE_ID] = clean
+        }
+    }
+
+    suspend fun clearPendingInviteId() {
+        context.wesalDataStore.edit { prefs ->
+            prefs.remove(Keys.PENDING_INVITE_ID)
+        }
+    }
+
+    suspend fun setPendingChannelInvite(code: String) {
+        val clean = code.trim()
+        if (clean.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            prefs[Keys.PENDING_CHANNEL_INVITE] = clean
+        }
+    }
+
+    suspend fun clearPendingChannelInvite() {
+        context.wesalDataStore.edit { prefs ->
+            prefs.remove(Keys.PENDING_CHANNEL_INVITE)
+        }
+    }
+
+    suspend fun recordRecentEmoji(emoji: String) {
+        if (emoji.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val current = decodeStringList(prefs[Keys.RECENT_EMOJIS_JSON])
+                .filterNot { it == emoji }
+                .toMutableList()
+            current.add(0, emoji)
+            val trimmed = current.take(36)
+            prefs[Keys.RECENT_EMOJIS_JSON] = json.encodeToString(trimmed)
         }
     }
 

@@ -3,7 +3,9 @@ package com.wesal.messenger.contacts
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.WesalUser
+import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -26,21 +28,28 @@ data class ContactsUiState(
     val isLoadingDiscoverable: Boolean = false,
     val searchResults: List<WesalUser> = emptyList(),
     val isSearching: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val feedback: String? = null
 )
 
 @HiltViewModel
 class ContactsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val userRepository: UserRepository,
-    private val chatRepository: ChatRepository
+    private val chatRepository: ChatRepository,
+    private val authRepository: AuthRepository
 ) : ViewModel() {
+
+    val myUid: String get() = authRepository.currentUserId.orEmpty()
 
     private val _uiState = MutableStateFlow(ContactsUiState())
     val uiState: StateFlow<ContactsUiState> = _uiState.asStateFlow()
 
     val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val contactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
         refreshDiscoverableUsers()
@@ -118,12 +127,49 @@ class ContactsViewModel @Inject constructor(
         }
     }
 
+    fun sendContactRequest(targetUid: String) {
+        viewModelScope.launch {
+            userRepository.sendContactRequest(targetUid)
+                .onSuccess {
+                    _uiState.update { it.copy(feedback = "تم إرسال طلب التعارف ✓") }
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(error = err.message ?: "تعذر إرسال الطلب") }
+                }
+        }
+    }
+
+    fun acceptContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.acceptContactRequest(requestId)
+                .onFailure { err -> _uiState.update { it.copy(error = err.message) } }
+        }
+    }
+
+    fun rejectContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.rejectContactRequest(requestId)
+                .onFailure { err -> _uiState.update { it.copy(error = err.message) } }
+        }
+    }
+
+    fun cancelContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.cancelOrRemoveContactRequest(requestId)
+                .onFailure { err -> _uiState.update { it.copy(error = err.message) } }
+        }
+    }
+
     fun startChatWith(peerUid: String, onChatReady: (String) -> Unit) {
         viewModelScope.launch {
             chatRepository.getOrCreateDirectChat(peerUid)
                 .onSuccess { chatId -> onChatReady(chatId) }
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage) } }
+                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر فتح المحادثة") } }
         }
+    }
+
+    fun clearFeedback() {
+        _uiState.update { it.copy(feedback = null, error = null) }
     }
 
     fun unblock(targetUid: String) {

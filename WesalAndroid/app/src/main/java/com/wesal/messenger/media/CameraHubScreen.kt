@@ -27,7 +27,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.PrivacyVisibility
@@ -160,6 +161,8 @@ fun CameraHubScreen(
     onOpenChat: (String) -> Unit,
     viewModel: CameraHubViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val chats by viewModel.chats.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
@@ -179,20 +182,25 @@ fun CameraHubScreen(
     val (mediaUri, isVideo, caption) = activeCapture
 
     Scaffold(
-        containerColor = WesalDeepBlack,
+        containerColor = palette.background,
         topBar = {
             TopAppBar(
-                title = { Text("اختر وجهة الإرسال", color = WesalTextPrimary) },
+                title = {
+                    Text(
+                        if (strings.isEnglish) "Send To" else "اختر وجهة الإرسال",
+                        color = palette.textPrimary
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = { if (!uiState.isSending) capturedMedia = null }) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "إعادة الالتقاط",
-                            tint = WesalTextPrimary
+                            contentDescription = strings.back,
+                            tint = palette.textPrimary
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = WesalSurfaceDark)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
             )
         }
     ) { padding ->
@@ -203,11 +211,10 @@ fun CameraHubScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Compact preview card
             Surface(
-                color = WesalSurfaceDark,
+                color = palette.surface,
                 shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.dp, WesalSurfaceBorder),
+                border = BorderStroke(1.dp, palette.border),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -219,7 +226,7 @@ fun CameraHubScreen(
                         Box(
                             modifier = Modifier
                                 .size(64.dp)
-                                .background(WesalDeepBlack, RoundedCornerShape(10.dp)),
+                                .background(palette.background, RoundedCornerShape(10.dp)),
                             contentAlignment = Alignment.Center
                         ) {
                             VideoPlayerBox(uri = mediaUri, modifier = Modifier.fillMaxSize())
@@ -227,23 +234,28 @@ fun CameraHubScreen(
                     } else {
                         AsyncImage(
                             model = mediaUri,
-                            contentDescription = "معاينة",
+                            contentDescription = null,
                             modifier = Modifier
                                 .size(64.dp)
-                                .background(WesalDeepBlack, RoundedCornerShape(10.dp)),
+                                .background(palette.background, RoundedCornerShape(10.dp)),
                             contentScale = ContentScale.Crop
                         )
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (isVideo) "فيديو ملتقط بالكاميرا" else "صورة ملتقطة بالكاميرا",
-                            color = WesalTextPrimary,
+                            text = when {
+                                strings.isEnglish && isVideo -> "Captured Video"
+                                strings.isEnglish -> "Captured Photo"
+                                isVideo -> "فيديو ملتقط بالكاميرا"
+                                else -> "صورة ملتقطة بالكاميرا"
+                            },
+                            color = palette.textPrimary,
                             fontWeight = FontWeight.Bold
                         )
                         if (caption.isNotBlank()) {
                             Text(
                                 text = caption,
-                                color = WesalTextSecondary,
+                                color = palette.textSecondary,
                                 style = MaterialTheme.typography.bodySmall,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
@@ -257,13 +269,13 @@ fun CameraHubScreen(
                 LinearProgressIndicator(
                     progress = { uiState.progress },
                     modifier = Modifier.fillMaxWidth(),
-                    color = WesalEmerald
+                    color = palette.emerald
                 )
             }
 
             uiState.error?.let { err ->
                 Surface(
-                    color = WesalError.copy(alpha = 0.14f),
+                    color = palette.error.copy(alpha = 0.14f),
                     shape = RoundedCornerShape(10.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -272,15 +284,14 @@ fun CameraHubScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(err, color = WesalError, modifier = Modifier.weight(1f))
+                        Text(err, color = palette.error, modifier = Modifier.weight(1f))
                         TextButton(onClick = { viewModel.clearError() }) {
-                            Text("إغلاق", color = WesalTextSecondary)
+                            Text(strings.close, color = palette.textSecondary)
                         }
                     }
                 }
             }
 
-            // Destination 1: Publish to My Story (24h)
             Button(
                 onClick = {
                     viewModel.publishAsStory(
@@ -296,20 +307,27 @@ fun CameraHubScreen(
                     .height(54.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = WesalEmerald,
-                    contentColor = WesalDeepBlack
+                    containerColor = palette.emerald,
+                    contentColor = palette.onAccent
                 )
             ) {
                 Icon(Icons.Default.AutoAwesome, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text("نشر في حالتي (24 ساعة)", fontWeight = FontWeight.Bold)
+                Text(
+                    if (strings.isEnglish) "Publish to My Story (24h)" else "نشر في حالتي (24 ساعة)",
+                    fontWeight = FontWeight.Bold
+                )
             }
 
-            HorizontalDivider(color = WesalSurfaceBorder)
+            HorizontalDivider(color = palette.border)
             Text(
-                text = "أو إرسال إلى محادثة مباشرة (${chats.size})",
+                text = if (strings.isEnglish) {
+                    "Or send to a direct chat (${chats.size})"
+                } else {
+                    "أو إرسال إلى محادثة مباشرة (${chats.size})"
+                },
                 style = MaterialTheme.typography.titleSmall,
-                color = WesalTurquoise,
+                color = palette.turquoise,
                 fontWeight = FontWeight.Bold
             )
 
@@ -321,8 +339,12 @@ fun CameraHubScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "لا توجد محادثات نشطة حالياً — يمكنك النشر في حالتك أعلاه أو بدء محادثة من الأصدقاء",
-                        color = WesalTextSecondary,
+                        text = if (strings.isEnglish) {
+                            "No active chats yet — publish to your story above or start a chat from Contacts"
+                        } else {
+                            "لا توجد محادثات نشطة حالياً — يمكنك النشر في حالتك أعلاه أو بدء محادثة من الأصدقاء"
+                        },
+                        color = palette.textSecondary,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -333,8 +355,9 @@ fun CameraHubScreen(
                 ) {
                     items(chats, key = { it.chatId }) { chat ->
                         Surface(
-                            color = WesalSurfaceDark,
+                            color = palette.surface,
                             shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, palette.border),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable(enabled = !uiState.isSending) {
@@ -354,14 +377,14 @@ fun CameraHubScreen(
                             ) {
                                 WesalAvatar(
                                     imageUrl = chat.avatarUrl,
-                                    name = chat.title.ifBlank { "محادثة" },
+                                    name = chat.title.ifBlank { strings.appShortName },
                                     isOnline = chat.peerOnline,
                                     size = 44.dp
                                 )
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = chat.title.ifBlank { "محادثة وصال" },
-                                        color = WesalTextPrimary,
+                                        text = chat.title.ifBlank { strings.appDisplayName },
+                                        color = palette.textPrimary,
                                         fontWeight = FontWeight.Bold,
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
@@ -369,7 +392,7 @@ fun CameraHubScreen(
                                     if (chat.lastMessagePreview.isNotBlank()) {
                                         Text(
                                             text = chat.lastMessagePreview,
-                                            color = WesalTextSecondary,
+                                            color = palette.textSecondary,
                                             style = MaterialTheme.typography.labelSmall,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -378,8 +401,8 @@ fun CameraHubScreen(
                                 }
                                 Icon(
                                     Icons.Default.Send,
-                                    contentDescription = "إرسال",
-                                    tint = WesalEmerald
+                                    contentDescription = strings.send,
+                                    tint = palette.emerald
                                 )
                             }
                         }

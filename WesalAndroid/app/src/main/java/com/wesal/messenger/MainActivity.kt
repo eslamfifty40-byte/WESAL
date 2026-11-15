@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
 
     private val mainViewModel: MainViewModel by viewModels()
     private val deepLinkChatIdState = mutableStateOf<String?>(null)
+    private val deepLinkChannelIdState = mutableStateOf<String?>(null)
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
@@ -47,7 +48,7 @@ class MainActivity : AppCompatActivity() {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        deepLinkChatIdState.value = intent?.getStringExtra("chatId")
+        handleIntent(intent)
 
         setContent {
             val settings by mainViewModel.appSettings.collectAsStateWithLifecycle()
@@ -55,7 +56,10 @@ class MainActivity : AppCompatActivity() {
             val authUid by mainViewModel.authUid.collectAsStateWithLifecycle()
             val incomingCall by mainViewModel.incomingCall.collectAsStateWithLifecycle()
             val isOnline by mainViewModel.isOnline.collectAsStateWithLifecycle()
+            val pendingInviteId by mainViewModel.pendingInviteId.collectAsStateWithLifecycle()
+            val resolvedChannelId by mainViewModel.resolvedChannelId.collectAsStateWithLifecycle()
             val deepLinkChatId by deepLinkChatIdState
+            val deepLinkChannelId by deepLinkChannelIdState
             var lastHandledCallId by remember { mutableStateOf<String?>(null) }
 
             LaunchedEffect(incomingCall?.callId) {
@@ -82,6 +86,7 @@ class MainActivity : AppCompatActivity() {
 
             WesalTheme(
                 darkTheme = settings.darkTheme,
+                languageTag = settings.languageTag,
                 fontScale = settings.fontScale
             ) {
                 CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
@@ -91,7 +96,14 @@ class MainActivity : AppCompatActivity() {
                             authUid = authUid,
                             isOnline = isOnline,
                             initialChatId = deepLinkChatId,
-                            onConsumedDeepLinkChat = { deepLinkChatIdState.value = null }
+                            initialChannelId = deepLinkChannelId ?: resolvedChannelId,
+                            pendingInviteId = pendingInviteId,
+                            onConsumedDeepLinkChat = { deepLinkChatIdState.value = null },
+                            onConsumedDeepLinkChannel = {
+                                deepLinkChannelIdState.value = null
+                                mainViewModel.consumePendingChannelInvite()
+                            },
+                            onConsumePendingInvite = { mainViewModel.consumePendingInvite() }
                         )
                     }
                 }
@@ -102,9 +114,19 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        if (intent == null) return
         val newChatId = intent.getStringExtra("chatId")
         if (!newChatId.isNullOrBlank()) {
             deepLinkChatIdState.value = newChatId
         }
+        val newChannelId = intent.getStringExtra("channelId")
+        if (!newChannelId.isNullOrBlank()) {
+            deepLinkChannelIdState.value = newChannelId
+        }
+        mainViewModel.handleIncomingUri(intent.data)
     }
 }

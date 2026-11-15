@@ -114,7 +114,7 @@ class StoryRepositoryImpl @Inject constructor(
         val data = mapOf(
             "storyId" to storyId,
             "ownerUid" to uid,
-            "ownerName" to (userSnap.getString("displayName")?.ifBlank { userSnap.getString("phoneNumber") } ?: "مستخدم وصال"),
+            "ownerName" to (userSnap.getString("displayName")?.takeIf { it.isNotBlank() } ?: userSnap.getString("publicId")?.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "مستخدم WESAL"),
             "ownerAvatarUrl" to (userSnap.getString("photoUrl") ?: ""),
             "type" to StoryType.TEXT.raw,
             "textContent" to text.trim(),
@@ -184,7 +184,7 @@ class StoryRepositoryImpl @Inject constructor(
                 val data = mapOf(
                     "storyId" to storyId,
                     "ownerUid" to uid,
-                    "ownerName" to (userSnap.getString("displayName")?.ifBlank { userSnap.getString("phoneNumber") } ?: "مستخدم وصال"),
+                    "ownerName" to (userSnap.getString("displayName")?.takeIf { it.isNotBlank() } ?: userSnap.getString("publicId")?.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "مستخدم WESAL"),
                     "ownerAvatarUrl" to (userSnap.getString("photoUrl") ?: ""),
                     "type" to if (isVideo) StoryType.VIDEO.raw else StoryType.IMAGE.raw,
                     "textContent" to "",
@@ -254,7 +254,7 @@ class StoryRepositoryImpl @Inject constructor(
                 val data = mapOf(
                     "storyId" to storyId,
                     "ownerUid" to uid,
-                    "ownerName" to (userSnap.getString("displayName")?.ifBlank { userSnap.getString("phoneNumber") } ?: "مستخدم وصال"),
+                    "ownerName" to (userSnap.getString("displayName")?.takeIf { it.isNotBlank() } ?: userSnap.getString("publicId")?.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "مستخدم WESAL"),
                     "ownerAvatarUrl" to (userSnap.getString("photoUrl") ?: ""),
                     "type" to StoryType.AUDIO.raw,
                     "textContent" to "",

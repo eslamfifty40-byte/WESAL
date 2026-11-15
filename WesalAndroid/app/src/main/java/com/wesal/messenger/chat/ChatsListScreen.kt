@@ -21,11 +21,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.presentation.components.MessageStatusTick
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 
 @Composable
 fun ChatsListScreen(
@@ -33,23 +35,31 @@ fun ChatsListScreen(
     onNewChat: () -> Unit,
     viewModel: ChatsListViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val chats by viewModel.chats.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val showArchived by viewModel.showArchived.collectAsStateWithLifecycle()
     val archivedCount by viewModel.archivedCount.collectAsStateWithLifecycle()
     var selectedChatForMenu by remember { mutableStateOf<ChatPreview?>(null) }
 
-    Box(modifier = Modifier.fillMaxSize().background(WesalDeepBlack)) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.background)
+    ) {
         Column(modifier = Modifier.fillMaxSize()) {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = viewModel::updateSearchQuery,
-                placeholder = { Text("ابحث في المحادثات...") },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = WesalTextSecondary) },
+                placeholder = {
+                    Text(if (strings.isEnglish) "Search chats..." else "ابحث في المحادثات...")
+                },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.textSecondary) },
                 trailingIcon = {
                     if (searchQuery.isNotBlank()) {
                         IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                            Icon(Icons.Default.Close, contentDescription = "مسح")
+                            Icon(Icons.Default.Close, contentDescription = strings.clear)
                         }
                     }
                 },
@@ -59,10 +69,10 @@ fun ChatsListScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = WesalTurquoise,
-                    unfocusedBorderColor = WesalSurfaceBorder,
-                    focusedContainerColor = WesalSurfaceDark,
-                    unfocusedContainerColor = WesalSurfaceDark
+                    focusedBorderColor = palette.turquoise,
+                    unfocusedBorderColor = palette.border,
+                    focusedContainerColor = palette.surface,
+                    unfocusedContainerColor = palette.surface
                 )
             )
 
@@ -79,18 +89,22 @@ fun ChatsListScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Icon(Icons.Default.Archive, contentDescription = null, tint = WesalEmerald)
+                        Icon(Icons.Default.Archive, contentDescription = null, tint = palette.emerald)
                         Text(
-                            text = if (showArchived) "العودة للمحادثات النشطة" else "المؤرشفة",
+                            text = if (showArchived) {
+                                if (strings.isEnglish) "Back to Active Chats" else "العودة للمحادثات النشطة"
+                            } else {
+                                if (strings.isEnglish) "Archived" else "المؤرشفة"
+                            },
                             style = MaterialTheme.typography.titleMedium,
-                            color = WesalTextPrimary
+                            color = palette.textPrimary
                         )
                     }
                     if (!showArchived) {
-                        Text(text = archivedCount.toString(), color = WesalEmerald, fontWeight = FontWeight.Bold)
+                        Text(text = archivedCount.toString(), color = palette.emerald, fontWeight = FontWeight.Bold)
                     }
                 }
-                HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
+                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
             }
 
             if (chats.isEmpty()) {
@@ -106,18 +120,26 @@ fun ChatsListScreen(
                         Icon(
                             imageVector = Icons.Default.ChatBubbleOutline,
                             contentDescription = null,
-                            tint = WesalTurquoise.copy(alpha = 0.6f),
+                            tint = palette.turquoise.copy(alpha = 0.6f),
                             modifier = Modifier.size(56.dp)
                         )
                         Text(
-                            text = if (showArchived) "لا توجد محادثات مؤرشفة" else "لا توجد محادثات حتى الآن",
+                            text = if (showArchived) {
+                                if (strings.isEnglish) "No archived chats" else "لا توجد محادثات مؤرشفة"
+                            } else {
+                                if (strings.isEnglish) "No chats yet" else "لا توجد محادثات حتى الآن"
+                            },
                             style = MaterialTheme.typography.titleMedium,
-                            color = WesalTextPrimary
+                            color = palette.textPrimary
                         )
                         Text(
-                            text = "اضغط على زر + لبدء محادثة جديدة عبر معرف وصال (@Wesal ID) أو جهات الاتصال",
+                            text = if (strings.isEnglish) {
+                                "Tap + to start a chat via @Wesal ID or approved contacts"
+                            } else {
+                                "اضغط على زر + لبدء محادثة جديدة عبر معرف وصال (@Wesal ID) أو جهات الاتصال"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = WesalTextSecondary
+                            color = palette.textSecondary
                         )
                     }
                 }
@@ -137,50 +159,76 @@ fun ChatsListScreen(
 
         FloatingActionButton(
             onClick = onNewChat,
-            containerColor = WesalEmerald,
-            contentColor = WesalDeepBlack,
+            containerColor = palette.emerald,
+            contentColor = palette.onPrimary,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(16.dp)
         ) {
-            Icon(Icons.Default.AddComment, contentDescription = "محادثة جديدة")
+            Icon(Icons.Default.AddComment, contentDescription = strings.newMessage)
         }
     }
 
     selectedChatForMenu?.let { chat ->
         AlertDialog(
             onDismissRequest = { selectedChatForMenu = null },
-            containerColor = WesalSurfaceDark,
-            title = { Text(chat.title, color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { WesalNameWithBadge(name = chat.title, isVerified = chat.peerVerified) },
             text = {
                 Column {
                     ListItem(
-                        headlineContent = { Text(if (chat.isPinned) "إلغاء التثبيت" else "تثبيت المحادثة") },
-                        leadingContent = { Icon(Icons.Default.PushPin, contentDescription = null, tint = WesalTurquoise) },
+                        headlineContent = {
+                            Text(
+                                if (chat.isPinned) {
+                                    if (strings.isEnglish) "Unpin" else "إلغاء التثبيت"
+                                } else {
+                                    if (strings.isEnglish) "Pin Chat" else "تثبيت المحادثة"
+                                }
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Default.PushPin, contentDescription = null, tint = palette.turquoise) },
                         modifier = Modifier.clickable {
                             viewModel.togglePin(chat)
                             selectedChatForMenu = null
                         }
                     )
                     ListItem(
-                        headlineContent = { Text(if (chat.isArchived) "إلغاء الأرشفة" else "أرشفة المحادثة") },
-                        leadingContent = { Icon(Icons.Default.Archive, contentDescription = null, tint = WesalEmerald) },
+                        headlineContent = {
+                            Text(
+                                if (chat.isArchived) {
+                                    if (strings.isEnglish) "Unarchive" else "إلغاء الأرشفة"
+                                } else {
+                                    if (strings.isEnglish) "Archive Chat" else "أرشفة المحادثة"
+                                }
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Default.Archive, contentDescription = null, tint = palette.emerald) },
                         modifier = Modifier.clickable {
                             viewModel.toggleArchive(chat)
                             selectedChatForMenu = null
                         }
                     )
                     ListItem(
-                        headlineContent = { Text(if (chat.isMuted) "إلغاء الكتم" else "كتم الإشعارات") },
-                        leadingContent = { Icon(Icons.Default.NotificationsOff, contentDescription = null, tint = WesalTextSecondary) },
+                        headlineContent = {
+                            Text(
+                                if (chat.isMuted) {
+                                    if (strings.isEnglish) "Unmute" else "إلغاء الكتم"
+                                } else {
+                                    if (strings.isEnglish) "Mute Notifications" else "كتم الإشعارات"
+                                }
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Default.NotificationsOff, contentDescription = null, tint = palette.textSecondary) },
                         modifier = Modifier.clickable {
                             viewModel.toggleMute(chat)
                             selectedChatForMenu = null
                         }
                     )
                     ListItem(
-                        headlineContent = { Text("حذف المحادثة", color = WesalError) },
-                        leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = WesalError) },
+                        headlineContent = {
+                            Text(if (strings.isEnglish) "Delete Chat" else "حذف المحادثة", color = palette.error)
+                        },
+                        leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = palette.error) },
                         modifier = Modifier.clickable {
                             viewModel.deleteChat(chat)
                             selectedChatForMenu = null
@@ -189,7 +237,7 @@ fun ChatsListScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { selectedChatForMenu = null }) { Text("إغلاق") }
+                TextButton(onClick = { selectedChatForMenu = null }) { Text(strings.close) }
             }
         )
     }
@@ -203,6 +251,9 @@ private fun ChatRowItem(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -229,24 +280,23 @@ private fun ChatRowItem(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text(
-                        text = chat.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = WesalTextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    WesalNameWithBadge(
+                        name = chat.title,
+                        isVerified = !chat.isGroup && chat.peerVerified,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     if (chat.isPinned) {
-                        Icon(Icons.Default.PushPin, contentDescription = "مثبت", tint = WesalTurquoise, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.PushPin, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(14.dp))
                     }
                     if (chat.isMuted) {
-                        Icon(Icons.Default.VolumeOff, contentDescription = "مكتوم", tint = WesalTextMuted, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.VolumeOff, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(14.dp))
                     }
                 }
                 Text(
                     text = DateTimeUtils.formatChatListTime(chat.lastMessageTime),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (chat.unreadCount > 0) WesalEmerald else WesalTextSecondary
+                    color = if (chat.unreadCount > 0) palette.emerald else palette.textSecondary
                 )
             }
 
@@ -262,9 +312,9 @@ private fun ChatRowItem(
                 ) {
                     if (chat.typingUsers.isNotEmpty()) {
                         Text(
-                            text = "جاري الكتابة...",
+                            text = strings.typingNow,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = WesalEmerald,
+                            color = palette.emerald,
                             fontWeight = FontWeight.Medium
                         )
                     } else {
@@ -272,9 +322,11 @@ private fun ChatRowItem(
                             MessageStatusTick(status = chat.lastMessageStatus)
                         }
                         Text(
-                            text = chat.lastMessagePreview.ifBlank { "اضغط لبدء المحادثة" },
+                            text = chat.lastMessagePreview.ifBlank {
+                                if (strings.isEnglish) "Tap to start chatting" else "اضغط لبدء المحادثة"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = WesalTextSecondary,
+                            color = palette.textSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -286,14 +338,14 @@ private fun ChatRowItem(
                         modifier = Modifier
                             .defaultMinSize(minWidth = 22.dp, minHeight = 22.dp)
                             .clip(CircleShape)
-                            .background(WesalEmerald)
+                            .background(palette.emerald)
                             .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = chat.unreadCount.toString(),
                             style = MaterialTheme.typography.labelSmall,
-                            color = WesalDeepBlack,
+                            color = palette.onPrimary,
                             fontWeight = FontWeight.Bold
                         )
                     }

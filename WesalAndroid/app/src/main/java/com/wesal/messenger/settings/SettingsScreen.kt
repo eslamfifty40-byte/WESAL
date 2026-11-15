@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,8 +34,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.LocaleManager
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -46,6 +48,7 @@ import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
@@ -79,23 +82,21 @@ class SettingsViewModel @Inject constructor(
     val statusMessage = MutableStateFlow<String?>(null)
 
     fun removeSavedAccount(uid: String) {
-        viewModelScope.launch {
-            authRepository.removeSavedAccount(uid)
-        }
+        viewModelScope.launch { authRepository.removeSavedAccount(uid) }
     }
 
-    fun switchToGoogleIdToken(idToken: String, onComplete: (Boolean) -> Unit) {
+    fun switchToGoogleIdToken(idToken: String, isEn: Boolean, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch {
             isSwitchingAccount.value = true
             authRepository.signInWithGoogleIdToken(idToken)
                 .onSuccess { isNewProfile ->
                     isSwitchingAccount.value = false
-                    statusMessage.value = "تم تبديل الحساب بنجاح"
+                    statusMessage.value = if (isEn) "Account switched successfully" else "تم تبديل الحساب بنجاح"
                     onComplete(isNewProfile)
                 }
                 .onFailure { err ->
                     isSwitchingAccount.value = false
-                    statusMessage.value = err.localizedMessage ?: "تعذر تبديل حساب Google"
+                    statusMessage.value = err.localizedMessage ?: if (isEn) "Failed to switch Google account" else "تعذر تبديل حساب Google"
                 }
         }
     }
@@ -136,9 +137,9 @@ class SettingsViewModel @Inject constructor(
         return String.format("%.2f MB", bytes / (1024f * 1024f))
     }
 
-    fun clearMediaCache() {
+    fun clearMediaCache(isEn: Boolean) {
         context.cacheDir.deleteRecursively()
-        statusMessage.value = "تم مسح ذاكرة التخزين المؤقتة"
+        statusMessage.value = if (isEn) "Cache cleared" else "تم مسح ذاكرة التخزين المؤقتة"
     }
 
     fun showMessage(msg: String) {
@@ -166,6 +167,8 @@ fun SettingsScreen(
     onAccountSwitched: (isNewProfile: Boolean) -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
@@ -181,9 +184,10 @@ fun SettingsScreen(
     var showSessionsDialog by remember { mutableStateOf(false) }
     var showBlockedDialog by remember { mutableStateOf(false) }
     var showAccountsDialog by remember { mutableStateOf(false) }
+    var showSignOutConfirm by remember { mutableStateOf(false) }
     var cacheText by remember { mutableStateOf(viewModel.getCacheSizeMb()) }
 
-    fun launchGoogleAccountChooser() {
+    fun switchToAuthorizedGoogleAccount() {
         if (activity == null || isSwitchingAccount) return
         scope.launch {
             try {
@@ -194,13 +198,14 @@ fun SettingsScreen(
                 )
                 val serverClientId = if (webClientResId != 0) activity.getString(webClientResId) else ""
                 if (serverClientId.isBlank()) {
-                    viewModel.showMessage("معرّف Google OAuth غير متوفر في google-services.json")
+                    viewModel.showMessage(if (strings.isEnglish) "Google OAuth Client ID missing" else "معرّف Google OAuth غير متوفر")
                     return@launch
                 }
                 val credentialManager = CredentialManager.create(activity)
                 runCatching { credentialManager.clearCredentialState(ClearCredentialStateRequest()) }
+                // Use setFilterByAuthorizedAccounts(true) so clicking a previously authorized Google account switches cleanly instead of opening generic OS signup chooser
                 val googleIdOption = GetGoogleIdOption.Builder()
-                    .setFilterByAuthorizedAccounts(false)
+                    .setFilterByAuthorizedAccounts(true)
                     .setAutoSelectEnabled(false)
                     .setServerClientId(serverClientId)
                     .build()
@@ -210,14 +215,14 @@ fun SettingsScreen(
                 val result = credentialManager.getCredential(activity, request)
                 val googleCred = GoogleIdTokenCredential.createFrom(result.credential.data)
                 showAccountsDialog = false
-                viewModel.switchToGoogleIdToken(googleCred.idToken, onAccountSwitched)
+                viewModel.switchToGoogleIdToken(googleCred.idToken, strings.isEnglish, onAccountSwitched)
             } catch (_: GetCredentialCancellationException) {
-                viewModel.showMessage("تم إلغاء اختيار حساب Google")
+                viewModel.showMessage(if (strings.isEnglish) "Google switch cancelled" else "تم إلغاء تبديل الحساب")
             } catch (_: NoCredentialException) {
                 showAccountsDialog = false
                 onOpenAddAccount(null)
             } catch (e: Exception) {
-                viewModel.showMessage("تعذر فتح قائمة حسابات Google: ${e.localizedMessage ?: "حاول مرة أخرى"}")
+                viewModel.showMessage(e.localizedMessage ?: if (strings.isEnglish) "Unable to switch account" else "تعذر تبديل الحساب")
             }
         }
     }
@@ -225,23 +230,23 @@ fun SettingsScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .background(WesalDeepBlack)
+            .background(palette.background)
             .padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp),
         contentPadding = PaddingValues(vertical = 12.dp)
     ) {
         statusMessage?.let { msg ->
             item {
-                Surface(color = WesalEmerald.copy(alpha = 0.16f), shape = RoundedCornerShape(10.dp)) {
-                    Text(msg, color = WesalEmerald, modifier = Modifier.padding(12.dp))
+                Surface(color = palette.emerald.copy(alpha = 0.16f), shape = RoundedCornerShape(10.dp)) {
+                    Text(msg, color = palette.emerald, modifier = Modifier.padding(12.dp))
                 }
             }
         }
 
-        // User Profile Card -> opens full ProfileScreen with Crop & Delete Photo
+        // User Profile Card
         item {
             Surface(
-                color = WesalSurfaceDark,
+                color = palette.surface,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -254,17 +259,24 @@ fun SettingsScreen(
                 ) {
                     WesalAvatar(
                         imageUrl = user?.photoUrl.orEmpty(),
-                        name = user?.displayName ?: "وصال",
+                        name = user?.displayName ?: "WESAL",
                         size = 64.dp
                     )
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = user?.displayName?.ifBlank { "أكمل اسمك" } ?: "جاري التحميل...",
+                        WesalNameWithBadge(
+                            name = user?.displayName?.ifBlank { if (strings.isEnglish) "Complete your name" else "أكمل اسمك" }
+                                ?: strings.loading,
+                            isVerified = user?.isVerified == true,
                             style = MaterialTheme.typography.titleLarge,
-                            color = WesalTextPrimary
+                            color = palette.textPrimary
                         )
-                        val contactLine = user?.phoneNumber?.takeIf { it.isNotBlank() }
-                            ?: user?.email?.takeIf { it.isNotBlank() }
+                        val hiddenPhone = user?.privacySettings?.hidePhoneNumber == true
+                        val contactLine = if (hiddenPhone) {
+                            user?.email?.takeIf { it.isNotBlank() }
+                        } else {
+                            user?.phoneNumber?.takeIf { it.isNotBlank() }
+                                ?: user?.email?.takeIf { it.isNotBlank() }
+                        }
                         val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
                         Text(
                             text = listOfNotNull(
@@ -272,16 +284,16 @@ fun SettingsScreen(
                                 contactLine
                             ).joinToString(" • "),
                             style = MaterialTheme.typography.labelMedium,
-                            color = WesalTurquoise
+                            color = palette.turquoise
                         )
                         Text(
                             text = user?.bio.orEmpty(),
                             style = MaterialTheme.typography.bodyMedium,
-                            color = WesalTextSecondary,
+                            color = palette.textSecondary,
                             maxLines = 1
                         )
                     }
-                    Icon(Icons.Default.Edit, contentDescription = "تعديل", tint = WesalTurquoise)
+                    Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise)
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -290,29 +302,41 @@ fun SettingsScreen(
         item {
             SettingsRow(
                 icon = Icons.Default.ManageAccounts,
-                title = "تبديل الحساب وإدارة الحسابات",
+                title = strings.switchAccount,
                 subtitle = if (savedAccounts.size > 1) {
-                    "${savedAccounts.size} حسابات مسجلة على هذا الجهاز"
+                    if (strings.isEnglish) "${savedAccounts.size} accounts saved on this device" else "${savedAccounts.size} حسابات مسجلة على هذا الجهاز"
                 } else {
-                    "أضف حساب Google أو بريد إلكتروني آخر للتبديل الفوري"
+                    if (strings.isEnglish) "Manage saved accounts or add another WESAL account" else "أضف حساب Google أو بريد إلكتروني آخر للتبديل السريع"
                 },
-                tint = WesalEmerald
+                tint = palette.emerald
             ) {
                 showAccountsDialog = true
             }
-            SettingsRow(Icons.Default.AccountCircle, "الحساب والملف الشخصي", "تعديل الاسم، المعرف الفريد، وصورة الحساب") {
+            SettingsRow(
+                Icons.Default.AccountCircle,
+                if (strings.isEnglish) "Account & Profile" else "الحساب والملف الشخصي",
+                if (strings.isEnglish) "Name, @wesal_id, phone OTP & avatar" else "الاسم، المعرف الفريد، توثيق الهاتف، وصورة الحساب"
+            ) {
                 onOpenProfile()
             }
-            SettingsRow(Icons.Default.Lock, "الخصوصية والأمان", "آخر ظهور، الحالة، صورة الحساب، وإيصالات القراءة") {
+            SettingsRow(
+                Icons.Default.Lock,
+                if (strings.isEnglish) "Privacy & Security" else "الخصوصية والأمان",
+                if (strings.isEnglish) "Hide phone, last seen, online status & read receipts" else "إخفاء الهاتف، آخر ظهور، الحالة، وإيصالات القراءة"
+            ) {
                 showPrivacyDialog = true
             }
-            SettingsRow(Icons.Default.Notifications, "الإشعارات", "الرسائل، المجموعات، المكالمات، والحالات") {
+            SettingsRow(
+                Icons.Default.Notifications,
+                if (strings.isEnglish) "Notifications" else "الإشعارات",
+                if (strings.isEnglish) "Messages, groups, calls, and stories" else "الرسائل، المجموعات، المكالمات، والحالات"
+            ) {
                 showNotifDialog = true
             }
             SettingsRow(
                 icon = Icons.Default.DarkMode,
-                title = "المظهر والوضع الليلي",
-                subtitle = if (appSettings.darkTheme) "الوضع الليلي الداكن (الرسمي)" else "الوضع الفاتح",
+                title = strings.darkThemeTitle,
+                subtitle = if (appSettings.darkTheme) strings.darkMode else strings.lightMode,
                 trailing = {
                     Switch(
                         checked = appSettings.darkTheme,
@@ -322,36 +346,51 @@ fun SettingsScreen(
             )
             SettingsRow(
                 icon = Icons.Default.Language,
-                title = "لغة التطبيق",
-                subtitle = if (appSettings.languageTag == "ar") "العربية (RTL)" else "English",
+                title = strings.languageTitle,
+                subtitle = if (appSettings.languageTag == "ar") strings.arabicLabel else strings.englishLabel,
                 onClick = {
                     viewModel.setLanguage(if (appSettings.languageTag == "ar") "en" else "ar")
                 }
             )
             Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                Text("حجم الخط (${(appSettings.fontScale * 100).toInt()}%)", color = WesalTextPrimary)
+                Text(
+                    text = if (strings.isEnglish) "Font Size (${(appSettings.fontScale * 100).toInt()}%)" else "حجم الخط (${(appSettings.fontScale * 100).toInt()}%)",
+                    color = palette.textPrimary
+                )
                 Slider(
                     value = appSettings.fontScale,
                     onValueChange = viewModel::setFontScale,
                     valueRange = 0.85f..1.3f,
-                    colors = SliderDefaults.colors(thumbColor = WesalTurquoise, activeTrackColor = WesalEmerald)
+                    colors = SliderDefaults.colors(thumbColor = palette.turquoise, activeTrackColor = palette.emerald)
                 )
             }
-            SettingsRow(Icons.Default.Storage, "إدارة التخزين", "الملفات المؤقتة: $cacheText (اضغط للمسح)") {
-                viewModel.clearMediaCache()
+            SettingsRow(
+                Icons.Default.Storage,
+                if (strings.isEnglish) "Storage Cache" else "إدارة التخزين",
+                if (strings.isEnglish) "Cache: $cacheText (Tap to clear)" else "الملفات المؤقتة: $cacheText (اضغط للمسح)"
+            ) {
+                viewModel.clearMediaCache(strings.isEnglish)
                 cacheText = viewModel.getCacheSizeMb()
             }
-            SettingsRow(Icons.Default.Devices, "الأجهزة والجلسات", "${sessions.size} جلسة نشطة") {
+            SettingsRow(
+                Icons.Default.Devices,
+                if (strings.isEnglish) "Devices & Sessions" else "الأجهزة والجلسات",
+                if (strings.isEnglish) "${sessions.size} active sessions" else "${sessions.size} جلسة نشطة"
+            ) {
                 showSessionsDialog = true
             }
-            SettingsRow(Icons.Default.Block, "قائمة الحظر", "${user?.blockedUsers?.size ?: 0} مستخدم محظور") {
+            SettingsRow(
+                Icons.Default.Block,
+                if (strings.isEnglish) "Blocked Users" else "قائمة الحظر",
+                if (strings.isEnglish) "${user?.blockedUsers?.size ?: 0} blocked" else "${user?.blockedUsers?.size ?: 0} مستخدم محظور"
+            ) {
                 showBlockedDialog = true
             }
             SettingsRow(
                 icon = Icons.Default.SupportAgent,
-                title = "التواصل مع مطور التطبيق",
-                subtitle = "تواصل مباشر عبر واتساب",
-                tint = WesalEmerald
+                title = if (strings.isEnglish) "Contact Developer" else "التواصل مع مطور التطبيق",
+                subtitle = if (strings.isEnglish) "Direct WhatsApp support" else "تواصل مباشر عبر واتساب",
+                tint = palette.emerald
             ) {
                 runCatching {
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(DEVELOPER_WHATSAPP_URL)).apply {
@@ -359,40 +398,56 @@ fun SettingsScreen(
                     }
                     context.startActivity(intent)
                 }.onFailure {
-                    viewModel.showMessage("تعذر فتح واتساب أو المتصفح على هذا الجهاز")
+                    viewModel.showMessage(if (strings.isEnglish) "Unable to open WhatsApp" else "تعذر فتح واتساب على هذا الجهاز")
                 }
             }
             SettingsRow(
                 icon = Icons.AutoMirrored.Filled.ExitToApp,
-                title = "تسجيل الخروج",
-                subtitle = "إنهاء الجلسة على هذا الجهاز",
-                tint = WesalError,
-                onClick = { viewModel.signOut(onSignedOut) }
+                title = strings.signOut,
+                subtitle = if (strings.isEnglish) "End current device session" else "إنهاء الجلسة على هذا الجهاز",
+                tint = palette.error,
+                onClick = { showSignOutConfirm = true }
             )
         }
+    }
+
+    if (showSignOutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSignOutConfirm = false },
+            containerColor = palette.surface,
+            title = { Text(strings.signOutConfirmTitle, color = palette.textPrimary) },
+            text = { Text(strings.signOutConfirmMessage, color = palette.textSecondary) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showSignOutConfirm = false
+                        viewModel.signOut(onSignedOut)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.error)
+                ) { Text(strings.signOut) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSignOutConfirm = false }) { Text(strings.cancel) }
+            }
+        )
     }
 
     if (showAccountsDialog) {
         AlertDialog(
             onDismissRequest = { if (!isSwitchingAccount) showAccountsDialog = false },
-            containerColor = WesalSurfaceDark,
+            containerColor = palette.surface,
             title = {
-                Text(
-                    text = "إدارة وتبديل الحسابات",
-                    color = WesalTextPrimary,
-                    fontWeight = FontWeight.Bold
-                )
+                Text(strings.switchAccount, color = palette.textPrimary, fontWeight = FontWeight.Bold)
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (isSwitchingAccount) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = WesalEmerald)
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = palette.emerald)
                     }
                     if (savedAccounts.isEmpty()) {
                         Text(
-                            text = "أضف حساب Google أو بريد إلكتروني آخر للتنقل السريع بين الحسابات.",
-                            color = WesalTextSecondary,
-                            style = MaterialTheme.typography.bodyMedium
+                            text = if (strings.isEnglish) "Add another Google or email account to switch quickly." else "أضف حساب Google أو بريد إلكتروني آخر للتنقل السريع.",
+                            color = palette.textSecondary
                         )
                     } else {
                         LazyColumn(
@@ -402,17 +457,17 @@ fun SettingsScreen(
                             items(savedAccounts, key = { it.uid }) { acc ->
                                 val isActive = acc.uid == user?.uid
                                 Surface(
-                                    color = if (isActive) WesalEmerald.copy(alpha = 0.12f) else WesalDeepBlack,
+                                    color = if (isActive) palette.emerald.copy(alpha = 0.12f) else palette.background,
                                     shape = RoundedCornerShape(12.dp),
                                     border = BorderStroke(
                                         1.dp,
-                                        if (isActive) WesalEmerald.copy(alpha = 0.5f) else WesalSurfaceBorder
+                                        if (isActive) palette.emerald.copy(alpha = 0.5f) else palette.border
                                     ),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable(enabled = !isActive && !isSwitchingAccount) {
                                             if (acc.provider == "google") {
-                                                launchGoogleAccountChooser()
+                                                switchToAuthorizedGoogleAccount()
                                             } else {
                                                 showAccountsDialog = false
                                                 onOpenAddAccount(acc.email.takeIf { it.isNotBlank() })
@@ -426,7 +481,7 @@ fun SettingsScreen(
                                     ) {
                                         WesalAvatar(
                                             imageUrl = acc.photoUrl,
-                                            name = acc.displayName.ifBlank { acc.email.ifBlank { "وصال" } },
+                                            name = acc.displayName.ifBlank { acc.email.ifBlank { "WESAL" } },
                                             size = 40.dp
                                         )
                                         Column(modifier = Modifier.weight(1f)) {
@@ -435,21 +490,18 @@ fun SettingsScreen(
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
                                                 Text(
-                                                    text = acc.displayName.ifBlank { acc.email.ifBlank { "حساب وصال" } },
-                                                    color = WesalTextPrimary,
+                                                    text = acc.displayName.ifBlank { acc.email.ifBlank { "WESAL" } },
+                                                    color = palette.textPrimary,
                                                     fontWeight = FontWeight.Bold,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
                                                     modifier = Modifier.weight(1f, fill = false)
                                                 )
                                                 if (isActive) {
-                                                    Surface(
-                                                        color = WesalEmerald.copy(alpha = 0.2f),
-                                                        shape = RoundedCornerShape(6.dp)
-                                                    ) {
+                                                    Surface(color = palette.emerald.copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp)) {
                                                         Text(
-                                                            text = "نشط ✓",
-                                                            color = WesalEmerald,
+                                                            text = if (strings.isEnglish) "Active ✓" else "نشط ✓",
+                                                            color = palette.emerald,
                                                             style = MaterialTheme.typography.labelSmall,
                                                             fontWeight = FontWeight.Bold,
                                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -459,13 +511,13 @@ fun SettingsScreen(
                                             }
                                             val meta = listOfNotNull(
                                                 acc.publicId.takeIf { it.isNotBlank() }?.let { "@$it" },
-                                                acc.email.takeIf { it.isNotBlank() } ?: acc.phoneNumber.takeIf { it.isNotBlank() }
+                                                acc.email.takeIf { it.isNotBlank() }
                                             ).joinToString(" • ")
                                             if (meta.isNotBlank()) {
                                                 Text(
                                                     text = meta,
                                                     style = MaterialTheme.typography.labelSmall,
-                                                    color = WesalTextSecondary,
+                                                    color = palette.textSecondary,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
@@ -476,12 +528,7 @@ fun SettingsScreen(
                                                 onClick = { viewModel.removeSavedAccount(acc.uid) },
                                                 modifier = Modifier.size(32.dp)
                                             ) {
-                                                Icon(
-                                                    Icons.Default.Close,
-                                                    contentDescription = "إزالة الحساب",
-                                                    tint = WesalTextMuted,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
+                                                Icon(Icons.Default.Close, contentDescription = strings.delete, tint = palette.textMuted, modifier = Modifier.size(18.dp))
                                             }
                                         }
                                     }
@@ -497,24 +544,18 @@ fun SettingsScreen(
                         },
                         enabled = !isSwitchingAccount,
                         modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = WesalEmerald,
-                            contentColor = WesalDeepBlack
-                        ),
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent),
                         shape = RoundedCornerShape(10.dp)
                     ) {
                         Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("إضافة حساب جديد", fontWeight = FontWeight.Bold)
+                        Text(strings.addAccount, fontWeight = FontWeight.Bold)
                     }
                 }
             },
             confirmButton = {
-                TextButton(
-                    enabled = !isSwitchingAccount,
-                    onClick = { showAccountsDialog = false }
-                ) {
-                    Text("إغلاق", color = WesalTurquoise)
+                TextButton(enabled = !isSwitchingAccount, onClick = { showAccountsDialog = false }) {
+                    Text(strings.close, color = palette.turquoise)
                 }
             }
         )
@@ -524,29 +565,29 @@ fun SettingsScreen(
         var ps by remember { mutableStateOf(user!!.privacySettings) }
         AlertDialog(
             onDismissRequest = { showPrivacyDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("إعدادات الخصوصية", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Privacy Settings" else "إعدادات الخصوصية", color = palette.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    PrivacyCycleRow("آخر ظهور", ps.lastSeenVisibility) { ps = ps.copy(lastSeenVisibility = it) }
-                    PrivacyCycleRow("حالة الاتصال", ps.onlineVisibility) { ps = ps.copy(onlineVisibility = it) }
-                    PrivacyCycleRow("صورة الحساب", ps.profilePhotoVisibility) { ps = ps.copy(profilePhotoVisibility = it) }
-                    PrivacyCycleRow("الحالات", ps.storiesVisibility) { ps = ps.copy(storiesVisibility = it) }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("إيصالات القراءة", color = WesalTextPrimary)
+                    PrivacyCycleRow(if (strings.isEnglish) "Last Seen" else "آخر ظهور", ps.lastSeenVisibility) { ps = ps.copy(lastSeenVisibility = it) }
+                    PrivacyCycleRow(if (strings.isEnglish) "Online Status" else "حالة الاتصال", ps.onlineVisibility) { ps = ps.copy(onlineVisibility = it) }
+                    PrivacyCycleRow(if (strings.isEnglish) "Profile Photo" else "صورة الحساب", ps.profilePhotoVisibility) { ps = ps.copy(profilePhotoVisibility = it) }
+                    PrivacyCycleRow(if (strings.isEnglish) "Stories" else "الحالات", ps.storiesVisibility) { ps = ps.copy(storiesVisibility = it) }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (strings.isEnglish) "Read Receipts" else "إيصالات القراءة", color = palette.textPrimary)
                         Switch(checked = ps.readReceiptsEnabled, onCheckedChange = { ps = ps.copy(readReceiptsEnabled = it) })
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(strings.hidePhoneNumberTitle, color = palette.textPrimary)
+                        Switch(checked = ps.hidePhoneNumber, onCheckedChange = { ps = ps.copy(hidePhoneNumber = it) })
                     }
                 }
             },
             confirmButton = {
-                Button(onClick = { viewModel.updatePrivacy(ps); showPrivacyDialog = false }) { Text("حفظ") }
+                Button(onClick = { viewModel.updatePrivacy(ps); showPrivacyDialog = false }) { Text(strings.save) }
             },
             dismissButton = {
-                TextButton(onClick = { showPrivacyDialog = false }) { Text("إغلاق") }
+                TextButton(onClick = { showPrivacyDialog = false }) { Text(strings.close) }
             }
         )
     }
@@ -554,26 +595,26 @@ fun SettingsScreen(
     if (showNotifDialog) {
         AlertDialog(
             onDismissRequest = { showNotifDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("تفضيلات الإشعارات", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Notification Preferences" else "تفضيلات الإشعارات", color = palette.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NotifSwitchRow("رسائل الدردشة", appSettings.notificationsMessages) {
+                    NotifSwitchRow(if (strings.isEnglish) "Chat Messages" else "رسائل الدردشة", appSettings.notificationsMessages) {
                         viewModel.updateNotificationPrefs(messages = it)
                     }
-                    NotifSwitchRow("رسائل المجموعات", appSettings.notificationsGroups) {
+                    NotifSwitchRow(if (strings.isEnglish) "Group Messages" else "رسائل المجموعات", appSettings.notificationsGroups) {
                         viewModel.updateNotificationPrefs(groups = it)
                     }
-                    NotifSwitchRow("المكالمات الواردة", appSettings.notificationsCalls) {
+                    NotifSwitchRow(if (strings.isEnglish) "Incoming Calls" else "المكالمات الواردة", appSettings.notificationsCalls) {
                         viewModel.updateNotificationPrefs(calls = it)
                     }
-                    NotifSwitchRow("الحالات الجديدة", appSettings.notificationsStories) {
+                    NotifSwitchRow(if (strings.isEnglish) "New Stories" else "الحالات الجديدة", appSettings.notificationsStories) {
                         viewModel.updateNotificationPrefs(stories = it)
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showNotifDialog = false }) { Text("تم") }
+                TextButton(onClick = { showNotifDialog = false }) { Text(strings.close) }
             }
         )
     }
@@ -581,8 +622,8 @@ fun SettingsScreen(
     if (showSessionsDialog) {
         AlertDialog(
             onDismissRequest = { showSessionsDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("الأجهزة والجلسات النشطة", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Active Sessions" else "الأجهزة والجلسات النشطة", color = palette.textPrimary) },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 280.dp)) {
                     items(sessions, key = { it.sessionId }) { session ->
@@ -593,28 +634,26 @@ fun SettingsScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = session.deviceName + if (session.isCurrent) " (هذا الجهاز)" else "",
-                                    color = WesalTextPrimary,
+                                    text = session.deviceName + if (session.isCurrent) (if (strings.isEnglish) " (This Device)" else " (هذا الجهاز)") else "",
+                                    color = palette.textPrimary,
                                     fontWeight = FontWeight.Medium
                                 )
                                 Text(
                                     text = "${session.osVersion} • ${DateTimeUtils.formatChatListTime(session.lastActiveAt)}",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = WesalTextSecondary
+                                    color = palette.textSecondary
                                 )
                             }
                             if (!session.isCurrent) {
                                 TextButton(onClick = { viewModel.revokeSession(session.sessionId) }) {
-                                    Text("إنهاء", color = WesalError)
+                                    Text(if (strings.isEnglish) "Revoke" else "إنهاء", color = palette.error)
                                 }
                             }
                         }
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showSessionsDialog = false }) { Text("إغلاق") }
-            }
+            confirmButton = { TextButton(onClick = { showSessionsDialog = false }) { Text(strings.close) } }
         )
     }
 
@@ -622,11 +661,11 @@ fun SettingsScreen(
         val blocked = user?.blockedUsers.orEmpty()
         AlertDialog(
             onDismissRequest = { showBlockedDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("المستخدمون المحظورون", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Blocked Users" else "المستخدمون المحظورون", color = palette.textPrimary) },
             text = {
                 if (blocked.isEmpty()) {
-                    Text("لا يوجد مستخدمون محظورون", color = WesalTextSecondary)
+                    Text(if (strings.isEnglish) "No blocked users" else "لا يوجد مستخدمون محظورون", color = palette.textSecondary)
                 } else {
                     LazyColumn(modifier = Modifier.heightIn(max = 250.dp)) {
                         items(blocked) { uid ->
@@ -635,18 +674,16 @@ fun SettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(uid, color = WesalTextPrimary, modifier = Modifier.weight(1f))
+                                Text(uid, color = palette.textPrimary, modifier = Modifier.weight(1f))
                                 TextButton(onClick = { viewModel.unblockUser(uid) }) {
-                                    Text("إلغاء الحظر", color = WesalTurquoise)
+                                    Text(if (strings.isEnglish) "Unblock" else "إلغاء الحظر", color = palette.turquoise)
                                 }
                             }
                         }
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showBlockedDialog = false }) { Text("إغلاق") }
-            }
+            confirmButton = { TextButton(onClick = { showBlockedDialog = false }) { Text(strings.close) } }
         )
     }
 }
@@ -656,10 +693,11 @@ private fun SettingsRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     subtitle: String,
-    tint: androidx.compose.ui.graphics.Color = WesalTurquoise,
+    tint: Color = WesalColors.current.turquoise,
     trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit = {}
 ) {
+    val palette = WesalColors.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -670,8 +708,8 @@ private fun SettingsRow(
     ) {
         Icon(icon, contentDescription = null, tint = tint)
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, color = WesalTextPrimary)
-            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = WesalTextSecondary)
+            Text(title, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary)
+            Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = palette.textSecondary)
         }
         trailing?.invoke()
     }
@@ -683,10 +721,12 @@ private fun PrivacyCycleRow(
     value: PrivacyVisibility,
     onChange: (PrivacyVisibility) -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val labelText = when (value) {
-        PrivacyVisibility.EVERYONE -> "الجميع"
-        PrivacyVisibility.CONTACTS -> "جهات الاتصال"
-        PrivacyVisibility.NOBODY -> "لا أحد"
+        PrivacyVisibility.EVERYONE -> if (strings.isEnglish) "Everyone" else "الجميع"
+        PrivacyVisibility.CONTACTS -> if (strings.isEnglish) "Contacts" else "جهات الاتصال"
+        PrivacyVisibility.NOBODY -> if (strings.isEnglish) "Nobody" else "لا أحد"
     }
     Row(
         modifier = Modifier
@@ -702,19 +742,20 @@ private fun PrivacyCycleRow(
             .padding(vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label, color = WesalTextPrimary)
-        Text(labelText, color = WesalTurquoise, fontWeight = FontWeight.Bold)
+        Text(label, color = palette.textPrimary)
+        Text(labelText, color = palette.turquoise, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
 private fun NotifSwitchRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    val palette = WesalColors.current
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = WesalTextPrimary)
+        Text(label, color = palette.textPrimary)
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }

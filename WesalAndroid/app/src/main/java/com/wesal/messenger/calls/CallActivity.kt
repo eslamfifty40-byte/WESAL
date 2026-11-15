@@ -27,12 +27,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalTheme
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.data.local.AppUserSettings
+import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.CallStatus
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.CallRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
@@ -48,6 +53,7 @@ class CallActivity : AppCompatActivity() {
 
     @Inject lateinit var webRtcManager: WebRtcCallManager
     @Inject lateinit var callRepository: CallRepository
+    @Inject lateinit var prefs: UserPreferencesDataStore
 
     private var activeCallId: String = ""
     private var startedSeconds: Long = 0L
@@ -60,13 +66,22 @@ class CallActivity : AppCompatActivity() {
         val isIncoming = intent.getBooleanExtra(EXTRA_IS_INCOMING, false)
         val initialCallId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         val peerUid = intent.getStringExtra(EXTRA_PEER_UID).orEmpty()
-        val peerName = intent.getStringExtra(EXTRA_PEER_NAME) ?: "مستخدم وصال"
+        val peerName = intent.getStringExtra(EXTRA_PEER_NAME) ?: "WESAL User"
         val peerAvatar = intent.getStringExtra(EXTRA_PEER_AVATAR).orEmpty()
+        val peerVerified = intent.getBooleanExtra(EXTRA_PEER_VERIFIED, false)
         val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
         activeCallId = initialCallId
 
         setContent {
-            WesalTheme(darkTheme = true) {
+            val settings by prefs.settingsFlow.collectAsStateWithLifecycle(initialValue = AppUserSettings())
+            WesalTheme(
+                darkTheme = settings.darkTheme,
+                languageTag = settings.languageTag,
+                fontScale = settings.fontScale
+            ) {
+                val palette = WesalColors.current
+                val strings = LocalWesalStrings.current
+
                 val permissions = rememberMultiplePermissionsState(
                     if (isVideo) {
                         listOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
@@ -79,7 +94,9 @@ class CallActivity : AppCompatActivity() {
                 var cameraOff by remember { mutableStateOf(!isVideo) }
                 var speakerOn by remember { mutableStateOf(isVideo) }
                 var durationSeconds by remember { mutableLongStateOf(0L) }
-                var callStatusLabel by remember { mutableStateOf(if (isIncoming) "جاري الاتصال..." else "جاري الرنين...") }
+                var callStatusLabel by remember(strings.isEnglish) {
+                    mutableStateOf(if (isIncoming) strings.connectingCall else strings.ringingCall)
+                }
 
                 val connState by webRtcManager.connectionState.collectAsStateWithLifecycle()
                 val remoteVideo by webRtcManager.remoteVideoTrack.collectAsStateWithLifecycle()
@@ -124,7 +141,12 @@ class CallActivity : AppCompatActivity() {
                     if (!isIncoming) {
                         webRtcManager.createOffer { offerSdp ->
                             lifecycleScope.launch {
-                                val targetUser = WesalUser(uid = peerUid, displayName = peerName, photoUrl = peerAvatar)
+                                val targetUser = WesalUser(
+                                    uid = peerUid,
+                                    displayName = peerName,
+                                    photoUrl = peerAvatar,
+                                    isVerified = peerVerified
+                                )
                                 callRepository.initiateCall(targetUser, isVideo, offerSdp)
                                     .onSuccess { newCallId ->
                                         activeCallId = newCallId
@@ -142,12 +164,12 @@ class CallActivity : AppCompatActivity() {
                                                 )
                                             }
                                         }
-                                        listenToCallAndCandidates(newCallId, isCaller = true) { status ->
+                                        listenToCallAndCandidates(newCallId, isCaller = true, connectedText = strings.connectedCall) { status ->
                                             callStatusLabel = status
                                         }
                                     }
                                     .onFailure {
-                                        callStatusLabel = "تعذر بدء المكالمة"
+                                        callStatusLabel = if (strings.isEnglish) "Unable to start call" else "تعذر بدء المكالمة"
                                     }
                             }
                         }
@@ -159,13 +181,13 @@ class CallActivity : AppCompatActivity() {
                             webRtcManager.setRemoteOfferAndCreateAnswer(callDoc.offerSdp) { answerSdp ->
                                 lifecycleScope.launch {
                                     callRepository.submitAnswer(initialCallId, answerSdp)
-                                    listenToCallAndCandidates(initialCallId, isCaller = false) { status ->
+                                    listenToCallAndCandidates(initialCallId, isCaller = false, connectedText = strings.connectedCall) { status ->
                                         callStatusLabel = status
                                     }
                                 }
                             }
                         } else {
-                            callStatusLabel = "تعذر الاتصال بالمكالمة"
+                            callStatusLabel = if (strings.isEnglish) "Unable to connect" else "تعذر الاتصال بالمكالمة"
                         }
                     }
                 }
@@ -179,11 +201,10 @@ class CallActivity : AppCompatActivity() {
                             callStatusLabel = DateTimeUtils.formatDurationSeconds(durationSeconds)
                         }
                     } else if (connState == PeerConnection.PeerConnectionState.FAILED) {
-                        callStatusLabel = "انقطع الاتصال — جاري إعادة المحاولة..."
+                        callStatusLabel = if (strings.isEnglish) "Connection lost — retrying..." else "انقطع الاتصال — جاري إعادة المحاولة..."
                     }
                 }
 
-                // End unanswered outgoing call cleanly after 45 seconds
                 LaunchedEffect(isIncoming, connState) {
                     if (!isIncoming && connState != PeerConnection.PeerConnectionState.CONNECTED) {
                         delay(45_000L)
@@ -196,7 +217,7 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                Box(modifier = Modifier.fillMaxSize().background(WesalDeepBlack)) {
+                Box(modifier = Modifier.fillMaxSize().background(palette.background)) {
                     if (!permissions.allPermissionsGranted) {
                         Column(
                             modifier = Modifier
@@ -205,17 +226,21 @@ class CallActivity : AppCompatActivity() {
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            Icon(Icons.Default.MicOff, contentDescription = null, tint = WesalError, modifier = Modifier.size(48.dp))
+                            Icon(Icons.Default.MicOff, contentDescription = null, tint = palette.error, modifier = Modifier.size(48.dp))
                             Text(
-                                text = if (isVideo) "تحتاج مكالمة الفيديو لصلاحية الميكروفون والكاميرا" else "تحتاج المكالمة لصلاحية الميكروفون",
+                                text = if (strings.isEnglish) {
+                                    if (isVideo) "Video call requires microphone & camera permission" else "Call requires microphone permission"
+                                } else {
+                                    if (isVideo) "تحتاج مكالمة الفيديو لصلاحية الميكروفون والكاميرا" else "تحتاج المكالمة لصلاحية الميكروفون"
+                                },
                                 style = MaterialTheme.typography.titleMedium,
-                                color = WesalTextPrimary
+                                color = palette.textPrimary
                             )
                             Button(
                                 onClick = { permissions.launchMultiplePermissionRequest() },
-                                colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
                             ) {
-                                Text("منح الصلاحيات")
+                                Text(if (strings.isEnglish) "Grant Permissions" else "منح الصلاحيات")
                             }
                             OutlinedButton(
                                 onClick = {
@@ -226,7 +251,7 @@ class CallActivity : AppCompatActivity() {
                                     runCatching { startActivity(settingsIntent) }
                                 }
                             ) {
-                                Text("فتح إعدادات التطبيق", color = WesalTurquoise)
+                                Text(if (strings.isEnglish) "App Settings" else "فتح إعدادات التطبيق", color = palette.turquoise)
                             }
                         }
                     } else if (isVideo && remoteVideo != null) {
@@ -254,8 +279,13 @@ class CallActivity : AppCompatActivity() {
                                 .padding(top = 48.dp, start = 16.dp)
                         ) {
                             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
-                                Text(peerName, style = MaterialTheme.typography.titleMedium, color = WesalTextPrimary)
-                                Text(callStatusLabel, style = MaterialTheme.typography.labelMedium, color = WesalTurquoise)
+                                WesalNameWithBadge(
+                                    name = peerName,
+                                    isVerified = peerVerified,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = Color.White
+                                )
+                                Text(callStatusLabel, style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
                             }
                         }
                     } else {
@@ -265,8 +295,13 @@ class CallActivity : AppCompatActivity() {
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             WesalAvatar(imageUrl = peerAvatar, name = peerName, size = 112.dp)
-                            Text(peerName, style = MaterialTheme.typography.headlineSmall, color = WesalTextPrimary)
-                            Text(callStatusLabel, style = MaterialTheme.typography.titleMedium, color = WesalTurquoise)
+                            WesalNameWithBadge(
+                                name = peerName,
+                                isVerified = peerVerified,
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = palette.textPrimary
+                            )
+                            Text(callStatusLabel, style = MaterialTheme.typography.titleMedium, color = palette.turquoise)
                         }
                     }
 
@@ -336,12 +371,12 @@ class CallActivity : AppCompatActivity() {
                         )
                         FloatingActionButton(
                             onClick = { hangupCall() },
-                            containerColor = WesalError,
+                            containerColor = palette.error,
                             contentColor = Color.White,
                             shape = CircleShape,
                             modifier = Modifier.size(62.dp)
                         ) {
-                            Icon(Icons.Default.CallEnd, contentDescription = "إنهاء")
+                            Icon(Icons.Default.CallEnd, contentDescription = null)
                         }
                     }
                 }
@@ -349,7 +384,12 @@ class CallActivity : AppCompatActivity() {
         }
     }
 
-    private fun listenToCallAndCandidates(callId: String, isCaller: Boolean, onStatus: (String) -> Unit) {
+    private fun listenToCallAndCandidates(
+        callId: String,
+        isCaller: Boolean,
+        connectedText: String,
+        onStatus: (String) -> Unit
+    ) {
         lifecycleScope.launch {
             callRepository.observeRemoteIceCandidates(callId, listenForCaller = !isCaller)
                 .collect { (mid, idx, cand) ->
@@ -363,7 +403,7 @@ class CallActivity : AppCompatActivity() {
                 if (isCaller && !answerApplied && call.answerSdp.isNotBlank()) {
                     answerApplied = true
                     webRtcManager.setRemoteAnswer(call.answerSdp)
-                    onStatus("متصل")
+                    onStatus(connectedText)
                 }
                 if (call.status == CallStatus.ENDED || call.status == CallStatus.REJECTED) {
                     finishCallLocally()
@@ -399,14 +439,21 @@ class CallActivity : AppCompatActivity() {
         private const val EXTRA_PEER_UID = "peer_uid"
         private const val EXTRA_PEER_NAME = "peer_name"
         private const val EXTRA_PEER_AVATAR = "peer_avatar"
+        private const val EXTRA_PEER_VERIFIED = "peer_verified"
         private const val EXTRA_IS_VIDEO = "is_video"
 
         fun createOutgoingIntent(context: Context, peer: WesalUser, isVideo: Boolean): Intent =
             Intent(context, CallActivity::class.java).apply {
                 putExtra(EXTRA_IS_INCOMING, false)
                 putExtra(EXTRA_PEER_UID, peer.uid)
-                putExtra(EXTRA_PEER_NAME, peer.displayName.ifBlank { peer.phoneNumber })
+                putExtra(
+                    EXTRA_PEER_NAME,
+                    peer.displayName.ifBlank {
+                        peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
+                    }
+                )
                 putExtra(EXTRA_PEER_AVATAR, peer.photoUrl)
+                putExtra(EXTRA_PEER_VERIFIED, peer.isVerified)
                 putExtra(EXTRA_IS_VIDEO, isVideo)
             }
 
@@ -415,12 +462,14 @@ class CallActivity : AppCompatActivity() {
             callId: String,
             peerName: String,
             peerAvatar: String,
-            isVideo: Boolean
+            isVideo: Boolean,
+            peerVerified: Boolean = false
         ): Intent = Intent(context, CallActivity::class.java).apply {
             putExtra(EXTRA_IS_INCOMING, true)
             putExtra(EXTRA_CALL_ID, callId)
             putExtra(EXTRA_PEER_NAME, peerName)
             putExtra(EXTRA_PEER_AVATAR, peerAvatar)
+            putExtra(EXTRA_PEER_VERIFIED, peerVerified)
             putExtra(EXTRA_IS_VIDEO, isVideo)
         }
     }
@@ -432,11 +481,12 @@ private fun CallControlBtn(
     active: Boolean,
     onClick: () -> Unit
 ) {
+    val palette = WesalColors.current
     FilledIconButton(
         onClick = onClick,
         colors = IconButtonDefaults.filledIconButtonColors(
-            containerColor = if (active) WesalTurquoise else WesalSurfaceElevated,
-            contentColor = if (active) WesalDeepBlack else WesalTextPrimary
+            containerColor = if (active) palette.turquoise else palette.surfaceElevated,
+            contentColor = if (active) palette.onPrimary else palette.textPrimary
         ),
         modifier = Modifier.size(52.dp)
     ) {

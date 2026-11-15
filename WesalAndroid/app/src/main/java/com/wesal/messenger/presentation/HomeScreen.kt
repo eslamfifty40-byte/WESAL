@@ -1,29 +1,50 @@
 package com.wesal.messenger.presentation
 
+import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.calls.CallHistoryScreen
 import com.wesal.messenger.chat.ChatsListScreen
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.contacts.ContactsInviteActivity
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.groups.GroupsScreen
 import com.wesal.messenger.presentation.components.OfflineBanner
 import com.wesal.messenger.settings.SettingsScreen
 import com.wesal.messenger.stories.StoriesScreen
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import javax.inject.Inject
+
+@HiltViewModel
+class HomeViewModel @Inject constructor(
+    userRepository: UserRepository
+) : ViewModel() {
+    val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+}
 
 private enum class HomeTab(
-    val labelAr: String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector
 ) {
-    CHATS("المحادثات", Icons.Default.Chat),
-    STORIES("الحالات", Icons.Default.AutoAwesome),
-    CALLS("المكالمات", Icons.Default.Call),
-    GROUPS("المجموعات", Icons.Default.Groups),
-    SETTINGS("الإعدادات", Icons.Default.Settings)
+    CHATS(Icons.Default.Chat),
+    STORIES(Icons.Default.AutoAwesome),
+    CALLS(Icons.Default.Call),
+    GROUPS(Icons.Default.Groups),
+    SETTINGS(Icons.Default.Settings)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,65 +55,110 @@ fun HomeScreen(
     onOpenNewChat: () -> Unit,
     onOpenProfile: () -> Unit,
     onOpenCameraHub: () -> Unit = {},
+    onOpenChannel: (String) -> Unit = {},
+    onOpenAdminVerification: () -> Unit = {},
     onOpenAddAccount: (String?) -> Unit = {},
     onAccountSwitched: (Boolean) -> Unit = {},
-    onSignedOut: () -> Unit
+    onSignedOut: () -> Unit,
+    homeViewModel: HomeViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    val isSuperAdmin by homeViewModel.isSuperAdmin.collectAsStateWithLifecycle()
+
     var selectedTab by remember { mutableStateOf(HomeTab.CHATS) }
     var menuOpen by remember { mutableStateOf(false) }
-    val ctxHome = androidx.compose.ui.platform.LocalContext.current
+    val ctxHome = LocalContext.current
 
     Scaffold(
-        containerColor = WesalDeepBlack,
+        containerColor = palette.background,
         topBar = {
             Column {
                 TopAppBar(
                     title = {
                         Text(
-                            text = "وصال",
+                            text = strings.appShortName,
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold,
-                            color = WesalTextPrimary
+                            color = palette.textPrimary
                         )
                     },
                     actions = {
+                        if (isSuperAdmin) {
+                            IconButton(onClick = onOpenAdminVerification) {
+                                Icon(
+                                    imageVector = Icons.Default.Verified,
+                                    contentDescription = strings.adminVerificationTitle,
+                                    tint = palette.verifiedBlue
+                                )
+                            }
+                        }
                         IconButton(onClick = onOpenCameraHub) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = "كاميرا", tint = WesalTextPrimary)
+                            Icon(Icons.Default.CameraAlt, contentDescription = strings.camera, tint = palette.textPrimary)
                         }
                         Box {
                             IconButton(onClick = { menuOpen = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = "المزيد", tint = WesalTextPrimary)
+                                Icon(Icons.Default.MoreVert, contentDescription = strings.more, tint = palette.textPrimary)
                             }
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                                DropdownMenuItem(text = { Text("مجموعة جديدة") }, onClick = { menuOpen = false; selectedTab = HomeTab.GROUPS })
-                                DropdownMenuItem(text = { Text("رسالة جديدة") }, onClick = { menuOpen = false; onOpenNewChat() })
-                                DropdownMenuItem(text = { Text("دعوة الأصدقاء") }, onClick = {
-                                    menuOpen = false
-                                    ctxHome.startActivity(android.content.Intent(ctxHome, com.wesal.messenger.contacts.ContactsInviteActivity::class.java))
-                                })
-                                DropdownMenuItem(text = { Text("الإعدادات") }, onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS })
+                                DropdownMenuItem(
+                                    text = { Text(strings.newGroup) },
+                                    onClick = { menuOpen = false; selectedTab = HomeTab.GROUPS }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(strings.tabChannels) },
+                                    onClick = { menuOpen = false; selectedTab = HomeTab.GROUPS }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(strings.newMessage) },
+                                    onClick = { menuOpen = false; onOpenNewChat() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(strings.inviteFriends) },
+                                    onClick = {
+                                        menuOpen = false
+                                        ctxHome.startActivity(Intent(ctxHome, ContactsInviteActivity::class.java))
+                                    }
+                                )
+                                if (isSuperAdmin) {
+                                    DropdownMenuItem(
+                                        text = { Text(strings.adminVerificationTitle, color = palette.verifiedBlue) },
+                                        onClick = { menuOpen = false; onOpenAdminVerification() }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text(strings.settings) },
+                                    onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS }
+                                )
                             }
                         }
                     },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = WesalSurfaceDark)
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
                 )
                 OfflineBanner(isOnline = isOnline)
             }
         },
         bottomBar = {
-            NavigationBar(containerColor = WesalSurfaceDark) {
+            NavigationBar(containerColor = palette.surface) {
                 HomeTab.entries.forEach { tab ->
+                    val label = when (tab) {
+                        HomeTab.CHATS -> strings.tabChats
+                        HomeTab.STORIES -> strings.tabStories
+                        HomeTab.CALLS -> strings.tabCalls
+                        HomeTab.GROUPS -> strings.tabGroups
+                        HomeTab.SETTINGS -> strings.tabSettings
+                    }
                     NavigationBarItem(
                         selected = selectedTab == tab,
                         onClick = { selectedTab = tab },
-                        icon = { Icon(tab.icon, contentDescription = tab.labelAr) },
-                        label = { Text(tab.labelAr, maxLines = 1) },
+                        icon = { Icon(tab.icon, contentDescription = label) },
+                        label = { Text(label, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = WesalTurquoise,
-                            selectedTextColor = WesalTurquoise,
-                            indicatorColor = WesalEmerald.copy(alpha = 0.16f),
-                            unselectedIconColor = WesalTextSecondary,
-                            unselectedTextColor = WesalTextSecondary
+                            selectedIconColor = palette.turquoise,
+                            selectedTextColor = palette.turquoise,
+                            indicatorColor = palette.emerald.copy(alpha = 0.16f),
+                            unselectedIconColor = palette.textSecondary,
+                            unselectedTextColor = palette.textSecondary
                         )
                     )
                 }
@@ -107,7 +173,10 @@ fun HomeScreen(
                 )
                 HomeTab.STORIES -> StoriesScreen()
                 HomeTab.CALLS -> CallHistoryScreen()
-                HomeTab.GROUPS -> GroupsScreen(onOpenChat = onOpenChat)
+                HomeTab.GROUPS -> GroupsScreen(
+                    onOpenChat = onOpenChat,
+                    onOpenChannel = onOpenChannel
+                )
                 HomeTab.SETTINGS -> SettingsScreen(
                     onOpenProfile = onOpenProfile,
                     onSignedOut = onSignedOut,

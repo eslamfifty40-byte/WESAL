@@ -11,11 +11,14 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.wesal.messenger.admin.AdminVerificationScreen
 import com.wesal.messenger.authentication.AuthViewModel
 import com.wesal.messenger.authentication.OtpVerificationScreen
 import com.wesal.messenger.authentication.PhoneLoginScreen
 import com.wesal.messenger.authentication.ProfileSetupScreen
+import com.wesal.messenger.channels.ChannelDetailScreen
 import com.wesal.messenger.chat.ChatDetailScreen
+import com.wesal.messenger.contacts.InviteLandingScreen
 import com.wesal.messenger.contacts.NewChatContactsScreen
 import com.wesal.messenger.groups.GroupInfoScreen
 import com.wesal.messenger.media.CameraHubScreen
@@ -32,6 +35,9 @@ private object Routes {
     const val NEW_CHAT = "new_chat"
     const val CHAT_DETAIL = "chat/{chatId}"
     const val GROUP_INFO = "group/{groupId}"
+    const val CHANNEL_DETAIL = "channel_detail/{channelId}"
+    const val INVITE_LANDING = "invite_landing/{inviteId}"
+    const val ADMIN_VERIFICATION = "admin_verification"
     const val PROFILE = "profile"
     const val USER_PROFILE = "user_profile/{uid}"
 }
@@ -42,7 +48,11 @@ fun WesalNavHost(
     authUid: String?,
     isOnline: Boolean,
     initialChatId: String? = null,
-    onConsumedDeepLinkChat: () -> Unit = {}
+    initialChannelId: String? = null,
+    pendingInviteId: String? = null,
+    onConsumedDeepLinkChat: () -> Unit = {},
+    onConsumedDeepLinkChannel: () -> Unit = {},
+    onConsumePendingInvite: () -> Unit = {}
 ) {
     val navController = rememberNavController()
     val authViewModel: AuthViewModel = hiltViewModel()
@@ -65,6 +75,24 @@ fun WesalNavHost(
         }
     }
 
+    LaunchedEffect(initialChannelId, authUid, currentRoute) {
+        if (!initialChannelId.isNullOrBlank() && authUid != null && currentRoute == Routes.HOME) {
+            navController.navigate("channel_detail/$initialChannelId") {
+                launchSingleTop = true
+            }
+            onConsumedDeepLinkChannel()
+        }
+    }
+
+    LaunchedEffect(pendingInviteId, authUid, currentRoute) {
+        if (!pendingInviteId.isNullOrBlank() && authUid != null && currentRoute == Routes.HOME) {
+            navController.navigate("invite_landing/${Uri.encode(pendingInviteId)}") {
+                launchSingleTop = true
+            }
+            onConsumePendingInvite()
+        }
+    }
+
     // Automatically force back-stack reset to login if authUid becomes null while inside authenticated routes
     LaunchedEffect(authUid, currentRoute) {
         val protectedRoutes = setOf(
@@ -73,6 +101,9 @@ fun WesalNavHost(
             Routes.NEW_CHAT,
             Routes.CHAT_DETAIL,
             Routes.GROUP_INFO,
+            Routes.CHANNEL_DETAIL,
+            Routes.INVITE_LANDING,
+            Routes.ADMIN_VERIFICATION,
             Routes.PROFILE,
             Routes.USER_PROFILE,
             Routes.PROFILE_SETUP
@@ -173,6 +204,8 @@ fun WesalNavHost(
                 onOpenNewChat = { navController.navigate(Routes.NEW_CHAT) },
                 onOpenProfile = { navController.navigate(Routes.PROFILE) },
                 onOpenCameraHub = { navController.navigate(Routes.CAMERA_HUB) },
+                onOpenChannel = { channelId -> navController.navigate("channel_detail/$channelId") },
+                onOpenAdminVerification = { navController.navigate(Routes.ADMIN_VERIFICATION) },
                 onOpenAddAccount = { email ->
                     val encoded = Uri.encode(email.orEmpty())
                     navController.navigate("add_account?email=$encoded")
@@ -250,6 +283,44 @@ fun WesalNavHost(
                         popUpTo(Routes.HOME) { inclusive = true }
                     }
                 }
+            )
+        }
+
+        composable(
+            route = Routes.CHANNEL_DETAIL,
+            arguments = listOf(navArgument("channelId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val channelId = backStackEntry.arguments?.getString("channelId").orEmpty()
+            ChannelDetailScreen(
+                channelId = channelId,
+                onBack = { navController.popBackStack() }
+            )
+        }
+
+        composable(
+            route = Routes.INVITE_LANDING,
+            arguments = listOf(navArgument("inviteId") { type = NavType.StringType })
+        ) { backStackEntry ->
+            val inviteId = Uri.decode(backStackEntry.arguments?.getString("inviteId").orEmpty())
+            InviteLandingScreen(
+                inviteId = inviteId,
+                onBack = { navController.popBackStack() },
+                onOpenChat = { chatId ->
+                    navController.popBackStack()
+                    navController.navigate("chat/$chatId") {
+                        launchSingleTop = true
+                    }
+                },
+                onOpenUserProfile = { uid ->
+                    navController.navigate("user_profile/$uid")
+                }
+            )
+        }
+
+        composable(Routes.ADMIN_VERIFICATION) {
+            AdminVerificationScreen(
+                onBack = { navController.popBackStack() },
+                onOpenUserProfile = { uid -> navController.navigate("user_profile/$uid") }
             )
         }
 

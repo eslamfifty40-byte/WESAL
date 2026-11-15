@@ -29,11 +29,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -46,8 +52,9 @@ import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.android.gms.location.LocationServices
 import com.wesal.messenger.calls.CallActivity
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.WesalMessage
 import com.wesal.messenger.media.CameraCaptureScreen
@@ -55,6 +62,9 @@ import com.wesal.messenger.media.FullscreenImageViewer
 import com.wesal.messenger.media.VideoPlayerBox
 import com.wesal.messenger.presentation.components.MessageStatusTick
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalEmojiKeyboard
+import com.wesal.messenger.presentation.components.WesalEmojiUtils
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -66,8 +76,12 @@ fun ChatDetailScreen(
     onOpenUserProfile: (String) -> Unit = {},
     viewModel: ChatDetailViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
+    val composerFocusRequester = remember { FocusRequester() }
 
     val chat by viewModel.chatPreview.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
@@ -80,12 +94,13 @@ fun ChatDetailScreen(
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val toastMsg by viewModel.toastMessage.collectAsStateWithLifecycle()
     val allChats by viewModel.allChatsForForward.collectAsStateWithLifecycle()
+    val recentEmojis by viewModel.recentEmojis.collectAsStateWithLifecycle()
 
-    var inputText by remember { mutableStateOf("") }
+    var inputValue by remember { mutableStateOf(TextFieldValue("")) }
     var showSearchBar by remember { mutableStateOf(false) }
     var showCamera by remember { mutableStateOf(false) }
     var showAttachSheet by remember { mutableStateOf(false) }
-    var showEmojiBar by remember { mutableStateOf(false) }
+    var showEmojiKeyboard by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var showFingerprintDialog by remember { mutableStateOf(false) }
     var fullscreenImageFile by remember { mutableStateOf<File?>(null) }
@@ -115,7 +130,9 @@ fun ChatDetailScreen(
     }
 
     LaunchedEffect(editingMessage?.messageId) {
-        editingMessage?.let { inputText = it.text }
+        editingMessage?.let {
+            inputValue = TextFieldValue(it.text, TextRange(it.text.length))
+        }
     }
 
     LaunchedEffect(messages.size) {
@@ -159,21 +176,21 @@ fun ChatDetailScreen(
                 onClick = { playingVideoFile = null },
                 modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
             ) {
-                Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = Color.White)
+                Icon(Icons.Default.Close, contentDescription = strings.close, tint = Color.White)
             }
         }
         return
     }
 
     Scaffold(
-        containerColor = WesalDeepBlack,
+        containerColor = palette.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = WesalSurfaceDark),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface),
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "رجوع", tint = WesalTextPrimary)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back, tint = palette.textPrimary)
                     }
                 },
                 title = {
@@ -193,33 +210,33 @@ fun ChatDetailScreen(
                     ) {
                         WesalAvatar(
                             imageUrl = chat?.avatarUrl.orEmpty(),
-                            name = chat?.title ?: "وصال",
+                            name = chat?.title ?: strings.appShortName,
                             size = 38.dp,
                             isOnline = chat?.isGroup == false && chat?.peerOnline == true
                         )
                         Column {
-                            Text(
-                                text = chat?.title ?: "محادثة",
+                            WesalNameWithBadge(
+                                name = chat?.title ?: if (strings.isEnglish) "Chat" else "محادثة",
+                                isVerified = chat?.isGroup == false && chat?.peerVerified == true,
                                 style = MaterialTheme.typography.titleMedium,
-                                color = WesalTextPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                color = palette.textPrimary
                             )
                             val subtitle = when {
-                                chat?.typingUsers?.isNotEmpty() == true -> "جاري الكتابة..."
-                                chat?.isGroup == true -> "${chat?.participantIds?.size ?: 0} عضو"
-                                chat?.peerOnline == true -> "متصل الآن"
+                                chat?.typingUsers?.isNotEmpty() == true -> strings.typingNow
+                                chat?.isGroup == true -> if (strings.isEnglish) "${chat?.participantIds?.size ?: 0} members" else "${chat?.participantIds?.size ?: 0} عضو"
+                                chat?.peerOnline == true -> strings.onlineNow
                                 (chat?.peerLastSeen ?: 0L) > 0L ->
-                                    "آخر ظهور ${DateTimeUtils.formatChatListTime(chat!!.peerLastSeen)}"
-                                else -> "مشفرة من طرف إلى طرف"
+                                    if (strings.isEnglish) "Last seen ${DateTimeUtils.formatChatListTime(chat!!.peerLastSeen)}"
+                                    else "آخر ظهور ${DateTimeUtils.formatChatListTime(chat!!.peerLastSeen)}"
+                                else -> if (strings.isEnglish) "End-to-end encrypted" else "مشفرة من طرف إلى طرف"
                             }
                             Text(
                                 text = subtitle,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (chat?.typingUsers?.isNotEmpty() == true || chat?.peerOnline == true) {
-                                    WesalEmerald
+                                    palette.emerald
                                 } else {
-                                    WesalTextSecondary
+                                    palette.textSecondary
                                 }
                             )
                         }
@@ -235,7 +252,7 @@ fun ChatDetailScreen(
                                 )
                             }
                         }) {
-                            Icon(Icons.Default.Videocam, contentDescription = "مكالمة فيديو", tint = WesalTextPrimary)
+                            Icon(Icons.Default.Videocam, contentDescription = null, tint = palette.textPrimary)
                         }
                         IconButton(onClick = {
                             scope.launch {
@@ -245,17 +262,17 @@ fun ChatDetailScreen(
                                 )
                             }
                         }) {
-                            Icon(Icons.Default.Call, contentDescription = "مكالمة صوتية", tint = WesalTextPrimary)
+                            Icon(Icons.Default.Call, contentDescription = null, tint = palette.textPrimary)
                         }
                     }
                     Box {
                         IconButton(onClick = { showMenu = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "المزيد", tint = WesalTextPrimary)
+                            Icon(Icons.Default.MoreVert, contentDescription = strings.more, tint = palette.textPrimary)
                         }
                         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                             if (chat?.isGroup == false && !chat?.peerUid.isNullOrBlank()) {
                                 DropdownMenuItem(
-                                    text = { Text("عرض الملف الشخصي") },
+                                    text = { Text(if (strings.isEnglish) "View Profile" else "عرض الملف الشخصي") },
                                     onClick = {
                                         onOpenUserProfile(chat!!.peerUid)
                                         showMenu = false
@@ -263,25 +280,25 @@ fun ChatDetailScreen(
                                 )
                             }
                             DropdownMenuItem(
-                                text = { Text("بحث في المحادثة") },
+                                text = { Text(if (strings.isEnglish) "Search in Chat" else "بحث في المحادثة") },
                                 onClick = { showSearchBar = !showSearchBar; showMenu = false }
                             )
                             DropdownMenuItem(
-                                text = { Text("التحقق من التشفير الطرفي") },
+                                text = { Text(if (strings.isEnglish) "Verify E2EE Fingerprint" else "التحقق من التشفير الطرفي") },
                                 onClick = { showFingerprintDialog = true; showMenu = false }
                             )
                             if (chat?.isGroup == false && !chat?.peerUid.isNullOrBlank()) {
                                 DropdownMenuItem(
-                                    text = { Text("حظر المستخدم", color = WesalError) },
+                                    text = { Text(if (strings.isEnglish) "Block User" else "حظر المستخدم", color = palette.error) },
                                     onClick = {
                                         viewModel.blockPeer(chat!!.peerUid)
                                         showMenu = false
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("إبلاغ عن إساءة") },
+                                    text = { Text(if (strings.isEnglish) "Report Abuse" else "إبلاغ عن إساءة") },
                                     onClick = {
-                                        viewModel.reportPeer(chat!!.peerUid, "إبلاغ من داخل المحادثة")
+                                        viewModel.reportPeer(chat!!.peerUid, "Reported from chat")
                                         showMenu = false
                                     }
                                 )
@@ -301,10 +318,10 @@ fun ChatDetailScreen(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = viewModel::setSearchQuery,
-                    placeholder = { Text("ابحث داخل الرسائل...") },
+                    placeholder = { Text(if (strings.isEnglish) "Search messages..." else "ابحث داخل الرسائل...") },
                     trailingIcon = {
                         IconButton(onClick = { viewModel.setSearchQuery(""); showSearchBar = false }) {
-                            Icon(Icons.Default.Close, contentDescription = "إغلاق البحث")
+                            Icon(Icons.Default.Close, contentDescription = strings.close)
                         }
                     },
                     singleLine = true,
@@ -314,7 +331,6 @@ fun ChatDetailScreen(
                 )
             }
 
-            // Messages List
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -324,8 +340,6 @@ fun ChatDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(vertical = 12.dp)
             ) {
-                
-
                 items(messages, key = { it.messageId }) { msg ->
                     val isMine = msg.senderId == viewModel.myUid
                     MessageBubble(
@@ -363,19 +377,23 @@ fun ChatDetailScreen(
 
                 items(pendingUploads, key = { it.id }) { upload ->
                     Surface(
-                        color = WesalBubbleOutgoing.copy(alpha = 0.6f),
+                        color = palette.bubbleOutgoing.copy(alpha = 0.7f),
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth(0.75f)
                     ) {
                         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("جاري إرسال: ${upload.fileName}", color = WesalTextPrimary, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = if (strings.isEnglish) "Sending: ${upload.fileName}" else "جاري إرسال: ${upload.fileName}",
+                                color = palette.textPrimary,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
                             if (upload.error != null) {
-                                Text(upload.error, color = WesalError, style = MaterialTheme.typography.labelSmall)
+                                Text(upload.error, color = palette.error, style = MaterialTheme.typography.labelSmall)
                                 TextButton(onClick = { viewModel.retryUpload(upload) }) {
-                                    Text("إعادة المحاولة", color = WesalTurquoise)
+                                    Text(strings.retry, color = palette.turquoise)
                                 }
                             } else {
-                                LinearProgressIndicator(progress = { upload.progress }, color = WesalTurquoise)
+                                LinearProgressIndicator(progress = { upload.progress }, color = palette.turquoise)
                             }
                         }
                     }
@@ -384,22 +402,22 @@ fun ChatDetailScreen(
 
             // Reply / Edit Banner
             val bannerTitle = when {
-                editingMessage != null -> "تعديل الرسالة"
-                replyingTo != null -> "رد على ${replyingTo!!.senderName}"
+                editingMessage != null -> if (strings.isEnglish) "Editing message" else "تعديل الرسالة"
+                replyingTo != null -> if (strings.isEnglish) "Reply to ${replyingTo!!.senderName}" else "رد على ${replyingTo!!.senderName}"
                 else -> null
             }
             if (bannerTitle != null) {
-                Surface(color = WesalSurfaceElevated, modifier = Modifier.fillMaxWidth()) {
+                Surface(color = palette.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(bannerTitle, color = WesalTurquoise, style = MaterialTheme.typography.labelMedium)
+                            Text(bannerTitle, color = palette.turquoise, style = MaterialTheme.typography.labelMedium)
                             Text(
                                 text = (editingMessage?.text ?: replyingTo?.text).orEmpty(),
-                                color = WesalTextSecondary,
+                                color = palette.textSecondary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.bodyMedium
@@ -409,49 +427,26 @@ fun ChatDetailScreen(
                             viewModel.setReplyingTo(null)
                             viewModel.setEditingMessage(null)
                         }) {
-                            Icon(Icons.Default.Close, contentDescription = "إلغاء", tint = WesalTextSecondary)
+                            Icon(Icons.Default.Close, contentDescription = strings.cancel, tint = palette.textSecondary)
                         }
                     }
                 }
             }
 
-            if (showEmojiBar) {
-                val emojis = listOf("👍", "❤️", "😂", "🙏", "🔥", "👏", "🎉", "😢", "🤝", "✅")
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(WesalSurfaceDark)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    emojis.forEach { emoji ->
-                        Text(
-                            text = emoji,
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.clickable {
-                                inputText += emoji
-                                viewModel.onInputTextChanged(inputText)
-                            }
-                        )
-                    }
-                }
-            }
-
-            // Recording indicator or Composer bar
+            // Composer / Recording Bar
             if (recordingState.isRecording) {
-                Surface(color = WesalSurfaceDark, modifier = Modifier.fillMaxWidth()) {
+                Surface(color = palette.surface, modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Icon(Icons.Default.Mic, contentDescription = null, tint = WesalError)
+                        Icon(Icons.Default.Mic, contentDescription = null, tint = palette.error)
                         Text(
                             text = DateTimeUtils.formatDurationMillis(recordingState.elapsedMs),
-                            color = WesalTextPrimary,
+                            color = palette.textPrimary,
                             fontWeight = FontWeight.Bold
                         )
-                        // Live amplitude waveform preview
                         val liveBars = if (recordingState.amplitudes.isEmpty()) {
                             List(18) { 20 }
                         } else {
@@ -469,18 +464,18 @@ fun ChatDetailScreen(
                                         .weight(1f)
                                         .height(barHeight)
                                         .clip(RoundedCornerShape(2.dp))
-                                        .background(WesalTurquoise)
+                                        .background(palette.turquoise)
                                 )
                             }
                         }
                         TextButton(onClick = viewModel::cancelVoiceRecording) {
-                            Text("إلغاء", color = WesalError)
+                            Text(strings.cancel, color = palette.error)
                         }
                         Button(
                             onClick = viewModel::stopAndSendVoiceRecording,
-                            colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
                         ) {
-                            Text("إرسال", fontWeight = FontWeight.Bold)
+                            Text(strings.send, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -488,60 +483,84 @@ fun ChatDetailScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(WesalSurfaceDark)
+                        .background(palette.surface)
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    IconButton(onClick = { showEmojiBar = !showEmojiBar }) {
-                        Icon(Icons.Default.EmojiEmotions, contentDescription = "رموز تعبيرية", tint = WesalTextSecondary)
+                    IconButton(
+                        onClick = {
+                            if (showEmojiKeyboard) {
+                                showEmojiKeyboard = false
+                                composerFocusRequester.requestFocus()
+                                keyboardController?.show()
+                            } else {
+                                keyboardController?.hide()
+                                showEmojiKeyboard = true
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (showEmojiKeyboard) Icons.Default.Keyboard else Icons.Default.EmojiEmotions,
+                            contentDescription = strings.switchToTextKeyboard,
+                            tint = if (showEmojiKeyboard) palette.emerald else palette.textSecondary
+                        )
                     }
                     OutlinedTextField(
-                        value = inputText,
+                        value = inputValue,
                         onValueChange = {
-                            inputText = it
-                            viewModel.onInputTextChanged(it)
+                            inputValue = it
+                            viewModel.onInputTextChanged(it.text)
                         },
-                        placeholder = { Text("اكتب رسالة...") },
-                        modifier = Modifier.weight(1f),
+                        placeholder = {
+                            Text(if (strings.isEnglish) "Type a message..." else "اكتب رسالة...")
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(composerFocusRequester)
+                            .onFocusChanged { focusState ->
+                                if (focusState.isFocused && showEmojiKeyboard) {
+                                    showEmojiKeyboard = false
+                                }
+                            },
                         maxLines = 4,
                         shape = RoundedCornerShape(24.dp),
                         trailingIcon = {
                             Row {
                                 IconButton(onClick = { showAttachSheet = true }) {
-                                    Icon(Icons.Default.AttachFile, contentDescription = "إرفاق", tint = WesalTextSecondary)
+                                    Icon(Icons.Default.AttachFile, contentDescription = null, tint = palette.textSecondary)
                                 }
                                 IconButton(onClick = { showCamera = true }) {
-                                    Icon(Icons.Default.CameraAlt, contentDescription = "كاميرا", tint = WesalTextSecondary)
+                                    Icon(Icons.Default.CameraAlt, contentDescription = strings.camera, tint = palette.textSecondary)
                                 }
                             }
                         },
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = WesalTurquoise,
-                            unfocusedBorderColor = WesalSurfaceBorder,
-                            focusedContainerColor = WesalSurfaceElevated,
-                            unfocusedContainerColor = WesalSurfaceElevated
+                            focusedBorderColor = palette.turquoise,
+                            unfocusedBorderColor = palette.border,
+                            focusedContainerColor = palette.surfaceElevated,
+                            unfocusedContainerColor = palette.surfaceElevated
                         )
                     )
 
-                    if (inputText.isNotBlank()) {
+                    if (inputValue.text.isNotBlank()) {
                         FloatingActionButton(
                             onClick = {
-                                viewModel.sendOrEditText(inputText)
-                                inputText = ""
+                                viewModel.sendOrEditText(inputValue.text)
+                                inputValue = TextFieldValue("")
                             },
                             modifier = Modifier.size(48.dp),
-                            containerColor = WesalEmerald,
-                            contentColor = WesalDeepBlack
+                            containerColor = palette.emerald,
+                            contentColor = palette.onPrimary
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "إرسال")
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = strings.send)
                         }
                     } else {
                         Box(
                             modifier = Modifier
                                 .size(48.dp)
                                 .clip(CircleShape)
-                                .background(WesalEmerald)
+                                .background(palette.emerald)
                                 .pointerInput(micPermission.status.isGranted) {
                                     detectTapGestures(
                                         onPress = {
@@ -553,7 +572,6 @@ fun ChatDetailScreen(
                                             viewModel.startVoiceRecording()
                                             val released = tryAwaitRelease()
                                             val heldMs = System.currentTimeMillis() - pressedAt
-                                            // Hold & release (>= 700ms) sends immediately; short tap leaves bar open for manual Send/Cancel
                                             if (released && heldMs >= 700L) {
                                                 viewModel.stopAndSendVoiceRecording()
                                             }
@@ -562,29 +580,53 @@ fun ChatDetailScreen(
                                 },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.Mic, contentDescription = "اضغط مطولاً أو انقر للتسجيل الصوتي", tint = WesalDeepBlack)
+                            Icon(Icons.Default.Mic, contentDescription = null, tint = palette.onPrimary)
                         }
                     }
                 }
+            }
+
+            if (showEmojiKeyboard) {
+                WesalEmojiKeyboard(
+                    recentEmojis = recentEmojis,
+                    onEmojiSelected = { emoji ->
+                        inputValue = WesalEmojiUtils.insertAtSelection(inputValue, emoji)
+                        viewModel.recordRecentEmoji(emoji)
+                        viewModel.onInputTextChanged(inputValue.text)
+                    },
+                    onBackspace = {
+                        inputValue = WesalEmojiUtils.backspaceAtSelection(inputValue)
+                        viewModel.onInputTextChanged(inputValue.text)
+                    },
+                    onSwitchToSystemKeyboard = {
+                        showEmojiKeyboard = false
+                        composerFocusRequester.requestFocus()
+                        keyboardController?.show()
+                    }
+                )
             }
         }
     }
 
     if (showAttachSheet) {
-        ModalBottomSheet(onDismissRequest = { showAttachSheet = false }, containerColor = WesalSurfaceDark) {
+        ModalBottomSheet(onDismissRequest = { showAttachSheet = false }, containerColor = palette.surface) {
             Column(modifier = Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("إرسال مرفق", style = MaterialTheme.typography.titleLarge, color = WesalTextPrimary)
+                Text(
+                    text = if (strings.isEnglish) "Send Attachment" else "إرسال مرفق",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = palette.textPrimary
+                )
                 ListItem(
-                    headlineContent = { Text("صور أو فيديو من المعرض") },
-                    leadingContent = { Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = WesalTurquoise) },
+                    headlineContent = { Text(if (strings.isEnglish) "Photos or Videos" else "صور أو فيديو من المعرض") },
+                    leadingContent = { Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = palette.turquoise) },
                     modifier = Modifier.clickable {
                         showAttachSheet = false
                         photoVideoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                     }
                 )
                 ListItem(
-                    headlineContent = { Text("ملف (PDF / Word / Excel / نصوص)") },
-                    leadingContent = { Icon(Icons.Default.Description, contentDescription = null, tint = WesalEmerald) },
+                    headlineContent = { Text(if (strings.isEnglish) "Document (PDF / Office / Text)" else "ملف (PDF / Word / Excel / نصوص)") },
+                    leadingContent = { Icon(Icons.Default.Description, contentDescription = null, tint = palette.emerald) },
                     modifier = Modifier.clickable {
                         showAttachSheet = false
                         documentPicker.launch(
@@ -601,8 +643,8 @@ fun ChatDetailScreen(
                     }
                 )
                 ListItem(
-                    headlineContent = { Text("مشاركة الموقع الجغرافي الحالي") },
-                    leadingContent = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = WesalWarning) },
+                    headlineContent = { Text(if (strings.isEnglish) "Share Current Location" else "مشاركة الموقع الجغرافي الحالي") },
+                    leadingContent = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = palette.warning) },
                     modifier = Modifier.clickable {
                         showAttachSheet = false
                         if (locationPermissions.allPermissionsGranted) {
@@ -612,7 +654,7 @@ fun ChatDetailScreen(
                                     viewModel.sendLocation(
                                         loc.latitude,
                                         loc.longitude,
-                                        "الموقع الجغرافي (${String.format("%.4f", loc.latitude)}, ${String.format("%.4f", loc.longitude)})"
+                                        "Location (${String.format("%.4f", loc.latitude)}, ${String.format("%.4f", loc.longitude)})"
                                     )
                                 }
                             }
@@ -629,23 +671,23 @@ fun ChatDetailScreen(
     selectedMessageForActions?.let { msg ->
         AlertDialog(
             onDismissRequest = { selectedMessageForActions = null },
-            containerColor = WesalSurfaceDark,
-            title = { Text("خيارات الرسالة", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Message Actions" else "خيارات الرسالة", color = palette.textPrimary) },
             text = {
                 Column {
                     ListItem(
-                        headlineContent = { Text("رد") },
+                        headlineContent = { Text(if (strings.isEnglish) "Reply" else "رد") },
                         leadingContent = { Icon(Icons.Default.Reply, contentDescription = null) },
                         modifier = Modifier.clickable { viewModel.setReplyingTo(msg); selectedMessageForActions = null }
                     )
                     ListItem(
-                        headlineContent = { Text("إعادة توجيه") },
+                        headlineContent = { Text(if (strings.isEnglish) "Forward" else "إعادة توجيه") },
                         leadingContent = { Icon(Icons.Default.Forward, contentDescription = null) },
                         modifier = Modifier.clickable { forwardingMessage = msg; selectedMessageForActions = null }
                     )
                     if (msg.text.isNotBlank()) {
                         ListItem(
-                            headlineContent = { Text("نسخ النص") },
+                            headlineContent = { Text(strings.copy) },
                             leadingContent = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
                             modifier = Modifier.clickable {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -656,27 +698,27 @@ fun ChatDetailScreen(
                     }
                     if (msg.senderId == viewModel.myUid && msg.type == MessageType.TEXT && !msg.isDeletedForEveryone) {
                         ListItem(
-                            headlineContent = { Text("تعديل الرسالة") },
+                            headlineContent = { Text(strings.edit) },
                             leadingContent = { Icon(Icons.Default.Edit, contentDescription = null) },
                             modifier = Modifier.clickable { viewModel.setEditingMessage(msg); selectedMessageForActions = null }
                         )
                     }
                     ListItem(
-                        headlineContent = { Text("حذف لدي") },
+                        headlineContent = { Text(if (strings.isEnglish) "Delete for me" else "حذف لدي") },
                         leadingContent = { Icon(Icons.Default.DeleteOutline, contentDescription = null) },
                         modifier = Modifier.clickable { viewModel.deleteForMe(msg.messageId); selectedMessageForActions = null }
                     )
                     if (msg.senderId == viewModel.myUid && !msg.isDeletedForEveryone) {
                         ListItem(
-                            headlineContent = { Text("حذف لدى الجميع", color = WesalError) },
-                            leadingContent = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = WesalError) },
+                            headlineContent = { Text(if (strings.isEnglish) "Delete for everyone" else "حذف لدى الجميع", color = palette.error) },
+                            leadingContent = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = palette.error) },
                             modifier = Modifier.clickable { viewModel.deleteForEveryone(msg.messageId); selectedMessageForActions = null }
                         )
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { selectedMessageForActions = null }) { Text("إغلاق") }
+                TextButton(onClick = { selectedMessageForActions = null }) { Text(strings.close) }
             }
         )
     }
@@ -684,13 +726,13 @@ fun ChatDetailScreen(
     forwardingMessage?.let { msg ->
         AlertDialog(
             onDismissRequest = { forwardingMessage = null },
-            containerColor = WesalSurfaceDark,
-            title = { Text("إعادة توجيه إلى", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Forward to" else "إعادة توجيه إلى", color = palette.textPrimary) },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
                     items(allChats, key = { it.chatId }) { target ->
                         ListItem(
-                            headlineContent = { Text(target.title, color = WesalTextPrimary) },
+                            headlineContent = { Text(target.title, color = palette.textPrimary) },
                             modifier = Modifier.clickable {
                                 viewModel.forwardMessage(target.chatId, msg)
                                 forwardingMessage = null
@@ -700,7 +742,7 @@ fun ChatDetailScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { forwardingMessage = null }) { Text("إلغاء") }
+                TextButton(onClick = { forwardingMessage = null }) { Text(strings.cancel) }
             }
         )
     }
@@ -710,30 +752,34 @@ fun ChatDetailScreen(
         val verified = remember(fp) { fp != null && viewModel.isEncryptionVerified() }
         AlertDialog(
             onDismissRequest = { showFingerprintDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("رمز أمان التشفير الطرفي", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "E2EE Safety Number" else "رمز أمان التشفير الطرفي", color = palette.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        text = "قارن بصمة المفتاح التالية مع الطرف الآخر للتحقق من عدم وجود وسيط:",
-                        color = WesalTextSecondary
+                        text = if (strings.isEnglish) "Compare this key fingerprint with your contact:" else "قارن بصمة المفتاح التالية مع الطرف الآخر:",
+                        color = palette.textSecondary
                     )
                     Text(
-                        text = fp ?: "التشفير الطرفي يستخدم مفاتيح الجلسة لكل عضو في المجموعة",
-                        color = WesalTurquoise,
+                        text = fp ?: if (strings.isEnglish) "Group chats use per-member wrapped session keys" else "التشفير الطرفي يستخدم مفاتيح الجلسة لكل عضو في المجموعة",
+                        color = palette.turquoise,
                         fontWeight = FontWeight.Bold
                     )
                     if (fp != null) {
                         Text(
-                            text = if (verified) "تم التحقق من التشفير الثنائي ECDH + AES-GCM بنجاح ✓" else "تعذر التحقق من التشفير — أعد مزامنة مفاتيح الجلسة",
-                            color = if (verified) WesalEmerald else WesalError,
+                            text = if (verified) {
+                                if (strings.isEnglish) "ECDH + AES-GCM verified ✓" else "تم التحقق من التشفير الثنائي ECDH + AES-GCM بنجاح ✓"
+                            } else {
+                                if (strings.isEnglish) "Re-sync keys to verify" else "تعذر التحقق من التشفير"
+                            },
+                            color = if (verified) palette.emerald else palette.error,
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showFingerprintDialog = false }) { Text("حسناً") }
+                TextButton(onClick = { showFingerprintDialog = false }) { Text(strings.confirm) }
             }
         )
     }
@@ -756,6 +802,9 @@ private fun MessageBubble(
     onOpenLocation: () -> Unit,
     onLongClick: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+
     LaunchedEffect(message.messageId, message.type) {
         if ((message.type == MessageType.IMAGE) && decryptedFile == null && message.mediaUrl.isNotBlank()) {
             onRequestMedia()
@@ -763,7 +812,7 @@ private fun MessageBubble(
     }
 
     val alignment = if (isMine) Alignment.CenterEnd else Alignment.CenterStart
-    val bubbleColor = if (isMine) WesalBubbleOutgoing else WesalBubbleIncoming
+    val bubbleColor = if (isMine) palette.bubbleOutgoing else palette.bubbleIncoming
 
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = alignment) {
         Surface(
@@ -780,19 +829,23 @@ private fun MessageBubble(
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (!isMine && isGroup && message.senderName.isNotBlank()) {
-                    Text(message.senderName, style = MaterialTheme.typography.labelMedium, color = WesalTurquoise)
+                    Text(message.senderName, style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
                 }
 
                 if (!message.forwardedFromName.isNullOrBlank()) {
-                    Text("محولة من ${message.forwardedFromName}", style = MaterialTheme.typography.labelSmall, color = WesalTextSecondary)
+                    Text(
+                        text = if (strings.isEnglish) "Forwarded from ${message.forwardedFromName}" else "محولة من ${message.forwardedFromName}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
                 }
 
                 if (!message.replyToPreview.isNullOrBlank()) {
-                    Surface(color = Color.Black.copy(alpha = 0.25f), shape = RoundedCornerShape(8.dp)) {
+                    Surface(color = Color.Black.copy(alpha = 0.14f), shape = RoundedCornerShape(8.dp)) {
                         Text(
                             text = message.replyToPreview,
                             style = MaterialTheme.typography.labelSmall,
-                            color = WesalTextSecondary,
+                            color = palette.textSecondary,
                             maxLines = 2,
                             modifier = Modifier.padding(6.dp)
                         )
@@ -806,23 +859,23 @@ private fun MessageBubble(
                                 .fillMaxWidth()
                                 .height(200.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(WesalSurfaceDark)
+                                .background(palette.surface)
                                 .clickable { onOpenImage() },
                             contentAlignment = Alignment.Center
                         ) {
                             if (decryptedFile != null) {
                                 AsyncImage(
                                     model = decryptedFile,
-                                    contentDescription = "صورة",
+                                    contentDescription = null,
                                     modifier = Modifier.fillMaxSize(),
                                     contentScale = ContentScale.Crop
                                 )
                             } else {
-                                CircularProgressIndicator(color = WesalTurquoise, modifier = Modifier.size(26.dp))
+                                CircularProgressIndicator(color = palette.turquoise, modifier = Modifier.size(26.dp))
                             }
                         }
                         if (message.text.isNotBlank()) {
-                            Text(message.text, style = MaterialTheme.typography.bodyLarge, color = WesalTextPrimary)
+                            Text(message.text, style = MaterialTheme.typography.bodyLarge, color = palette.textPrimary)
                         }
                     }
 
@@ -832,14 +885,14 @@ private fun MessageBubble(
                                 .fillMaxWidth()
                                 .height(160.dp)
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(WesalSurfaceDark)
+                                .background(palette.surface)
                                 .clickable { onPlayVideo() },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.PlayCircleFilled, contentDescription = "تشغيل الفيديو", tint = WesalTurquoise, modifier = Modifier.size(52.dp))
+                            Icon(Icons.Default.PlayCircleFilled, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(52.dp))
                         }
                         if (message.text.isNotBlank()) {
-                            Text(message.text, style = MaterialTheme.typography.bodyLarge, color = WesalTextPrimary)
+                            Text(message.text, style = MaterialTheme.typography.bodyLarge, color = palette.textPrimary)
                         }
                     }
 
@@ -857,8 +910,8 @@ private fun MessageBubble(
                             IconButton(onClick = onToggleVoice, modifier = Modifier.size(38.dp)) {
                                 Icon(
                                     imageVector = if (isVoicePlaying) Icons.Default.PauseCircleFilled else Icons.Default.PlayCircleFilled,
-                                    contentDescription = if (isVoicePlaying) "إيقاف مؤقت" else "تشغيل الصوت",
-                                    tint = WesalTurquoise,
+                                    contentDescription = null,
+                                    tint = palette.turquoise,
                                     modifier = Modifier.size(34.dp)
                                 )
                             }
@@ -880,14 +933,14 @@ private fun MessageBubble(
                                                 .weight(1f)
                                                 .height(barHeight)
                                                 .clip(RoundedCornerShape(2.dp))
-                                                .background(if (isPlayed) WesalTurquoise else WesalSurfaceBorder)
+                                                .background(if (isPlayed) palette.turquoise else palette.border)
                                         )
                                     }
                                 }
                                 Text(
                                     text = DateTimeUtils.formatDurationMillis(message.mediaDurationMs),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = WesalTextSecondary
+                                    color = palette.textSecondary
                                 )
                             }
                         }
@@ -898,18 +951,18 @@ private fun MessageBubble(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color.Black.copy(alpha = 0.22f))
+                                .background(Color.Black.copy(alpha = 0.14f))
                                 .clickable { onOpenDocument() }
                                 .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = WesalTurquoise)
+                            Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = palette.turquoise)
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(message.mediaFileName.ifBlank { "مستند" }, color = WesalTextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text("${(message.mediaSizeBytes / 1024L).coerceAtLeast(1)} KB", style = MaterialTheme.typography.labelSmall, color = WesalTextSecondary)
+                                Text(message.mediaFileName.ifBlank { "Document" }, color = palette.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${(message.mediaSizeBytes / 1024L).coerceAtLeast(1)} KB", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
                             }
-                            Icon(Icons.Default.Download, contentDescription = "فتح", tint = WesalEmerald)
+                            Icon(Icons.Default.Download, contentDescription = null, tint = palette.emerald)
                         }
                     }
 
@@ -918,16 +971,16 @@ private fun MessageBubble(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color.Black.copy(alpha = 0.22f))
+                                .background(Color.Black.copy(alpha = 0.14f))
                                 .clickable { onOpenLocation() }
                                 .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(Icons.Default.LocationOn, contentDescription = null, tint = WesalEmerald)
+                            Icon(Icons.Default.LocationOn, contentDescription = null, tint = palette.emerald)
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("موقع جغرافي", color = WesalTextPrimary, fontWeight = FontWeight.Bold)
-                                Text(message.locationAddress, style = MaterialTheme.typography.labelSmall, color = WesalTextSecondary)
+                                Text(if (strings.isEnglish) "Location" else "موقع جغرافي", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                                Text(message.locationAddress, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
                             }
                         }
                     }
@@ -936,7 +989,7 @@ private fun MessageBubble(
                         Text(
                             text = message.text,
                             style = MaterialTheme.typography.bodyLarge,
-                            color = if (message.isDeletedForEveryone) WesalTextMuted else WesalTextPrimary
+                            color = if (message.isDeletedForEveryone) palette.textMuted else palette.textPrimary
                         )
                     }
                 }
@@ -947,12 +1000,16 @@ private fun MessageBubble(
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (message.isEdited) {
-                        Text("معدلة", style = MaterialTheme.typography.labelSmall, color = WesalTextMuted)
+                        Text(
+                            text = if (strings.isEnglish) "edited" else "معدلة",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textMuted
+                        )
                     }
                     Text(
                         text = DateTimeUtils.formatMessageTime(message.timestamp),
                         style = MaterialTheme.typography.labelSmall,
-                        color = WesalTextSecondary
+                        color = palette.textSecondary
                     )
                     if (isMine) {
                         MessageStatusTick(status = message.status)

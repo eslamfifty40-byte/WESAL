@@ -51,5 +51,11 @@ service firebase.storage {
       allow create, update: if isSignedIn() && underMaxSize();
       allow delete: if isSignedIn();
     }
+
+    match /channel_media/{channelId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
+    }
   }
 }

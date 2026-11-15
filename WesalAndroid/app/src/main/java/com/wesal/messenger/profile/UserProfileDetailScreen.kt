@@ -28,8 +28,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.calls.CallActivity
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.domain.model.ContactRequest
+import com.wesal.messenger.domain.model.ContactRequestStatus
 import com.wesal.messenger.domain.model.PrivacyVisibility
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
@@ -37,13 +40,10 @@ import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.media.FullscreenImageViewer
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.security.E2EECryptoManager
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -65,6 +65,9 @@ class UserProfileDetailViewModel @Inject constructor(
     val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val contactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
@@ -77,31 +80,52 @@ class UserProfileDetailViewModel @Inject constructor(
         return fp to ok
     }
 
+    fun sendContactRequest() {
+        viewModelScope.launch {
+            userRepository.sendContactRequest(targetUid)
+                .onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun acceptContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.acceptContactRequest(requestId)
+                .onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun rejectContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.rejectContactRequest(requestId)
+                .onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
+
     fun startDirectChat(onOpenChat: (String) -> Unit) {
         viewModelScope.launch {
             chatRepository.getOrCreateDirectChat(targetUid)
                 .onSuccess(onOpenChat)
-                .onFailure { _statusMessage.value = "تعذر فتح المحادثة" }
+                .onFailure { _statusMessage.value = it.localizedMessage }
         }
     }
 
-    fun toggleBlock(currentlyBlocked: Boolean) {
+    fun toggleBlock(currentlyBlocked: Boolean, isEn: Boolean) {
         viewModelScope.launch {
-            val res = if (currentlyBlocked) {
-                userRepository.unblockUser(targetUid)
-            } else {
-                userRepository.blockUser(targetUid)
-            }
+            val res = if (currentlyBlocked) userRepository.unblockUser(targetUid) else userRepository.blockUser(targetUid)
             res.onSuccess {
-                _statusMessage.value = if (currentlyBlocked) "تم إلغاء حظر المستخدم" else "تم حظر المستخدم"
+                _statusMessage.value = if (currentlyBlocked) {
+                    if (isEn) "User unblocked" else "تم إلغاء حظر المستخدم"
+                } else {
+                    if (isEn) "User blocked" else "تم حظر المستخدم"
+                }
             }
         }
     }
 
-    fun reportUser(reason: String) {
+    fun reportUser(reason: String, isEn: Boolean) {
         viewModelScope.launch {
             userRepository.reportUser(targetUid, reason).onSuccess {
-                _statusMessage.value = "تم إرسال البلاغ بنجاح"
+                _statusMessage.value = if (isEn) "Report submitted" else "تم إرسال البلاغ بنجاح"
             }
         }
     }
@@ -118,9 +142,12 @@ fun UserProfileDetailScreen(
     onOpenChat: (String) -> Unit,
     viewModel: UserProfileDetailViewModel = hiltViewModel()
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val peer by viewModel.peerUser.collectAsStateWithLifecycle()
     val me by viewModel.currentUser.collectAsStateWithLifecycle()
+    val requests by viewModel.contactRequests.collectAsStateWithLifecycle()
     val statusMsg by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     var showFullscreenAvatar by remember { mutableStateOf(false) }
@@ -141,45 +168,45 @@ fun UserProfileDetailScreen(
         target.privacySettings.profilePhotoVisibility != PrivacyVisibility.NOBODY
 
     if (showFullscreenAvatar && showAvatar && target != null) {
-        FullscreenImageViewer(
-            imageModel = target.photoUrl,
-            onClose = { showFullscreenAvatar = false }
-        )
+        FullscreenImageViewer(imageModel = target.photoUrl, onClose = { showFullscreenAvatar = false })
         return
     }
 
+    val req = remember(requests, target?.uid, viewModel.myUid) {
+        if (target == null) null
+        else requests.firstOrNull {
+            (it.senderUid == target.uid && it.receiverUid == viewModel.myUid) ||
+                (it.receiverUid == target.uid && it.senderUid == viewModel.myUid)
+        }
+    }
+
     Scaffold(
-        containerColor = WesalDeepBlack,
+        containerColor = palette.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text("بيانات الحساب", color = WesalTextPrimary) },
+                title = { Text(if (strings.isEnglish) "Account Details" else "بيانات الحساب", color = palette.textPrimary) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "رجوع", tint = WesalTextPrimary)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back, tint = palette.textPrimary)
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = WesalSurfaceDark)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
             )
         }
     ) { padding ->
         if (target == null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = WesalTurquoise)
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = palette.turquoise)
             }
         } else {
             val isBlocked = me?.blockedUsers?.contains(target.uid) == true
             val canSeeOnline = target.privacySettings.onlineVisibility != PrivacyVisibility.NOBODY
             val canSeeLastSeen = target.privacySettings.lastSeenVisibility != PrivacyVisibility.NOBODY
             val presenceLabel = when {
-                canSeeOnline && target.isOnline -> "متصل الآن"
-                canSeeLastSeen && target.lastSeen > 0L -> "آخر ظهور ${DateTimeUtils.formatChatListTime(target.lastSeen)}"
-                else -> "الخصوصية مفعّلة"
+                canSeeOnline && target.isOnline -> strings.onlineNow
+                canSeeLastSeen && target.lastSeen > 0L -> DateTimeUtils.formatChatListTime(target.lastSeen)
+                else -> if (strings.isEnglish) "Privacy enabled" else "الخصوصية مفعّلة"
             }
 
             Column(
@@ -191,9 +218,7 @@ fun UserProfileDetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Box(
-                    modifier = Modifier.clickable(enabled = showAvatar) { showFullscreenAvatar = true }
-                ) {
+                Box(modifier = Modifier.clickable(enabled = showAvatar) { showFullscreenAvatar = true }) {
                     WesalAvatar(
                         imageUrl = if (showAvatar) target.photoUrl else "",
                         name = target.displayName.ifBlank { target.publicId },
@@ -202,14 +227,12 @@ fun UserProfileDetailScreen(
                     )
                 }
 
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = target.displayName.ifBlank { "@${target.publicId}" },
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    WesalNameWithBadge(
+                        name = target.displayName.ifBlank { "@${target.publicId}" },
+                        isVerified = target.isVerified,
                         style = MaterialTheme.typography.headlineSmall,
-                        color = WesalTextPrimary,
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold
                     )
                     if (target.publicId.isNotBlank()) {
@@ -219,148 +242,148 @@ fun UserProfileDetailScreen(
                             modifier = Modifier.clickable {
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 cm.setPrimaryClip(ClipData.newPlainText("wesal_id", "@${target.publicId}"))
-                                Toast.makeText(context, "تم نسخ @${target.publicId}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "@${target.publicId}", Toast.LENGTH_SHORT).show()
                             }
                         ) {
-                            Text(
-                                text = "@${target.publicId}",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = WesalTurquoise,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Icon(
-                                imageVector = Icons.Default.ContentCopy,
-                                contentDescription = "نسخ المعرف",
-                                tint = WesalTurquoise,
-                                modifier = Modifier.size(16.dp)
-                            )
+                            Text("@${target.publicId}", style = MaterialTheme.typography.titleMedium, color = palette.turquoise, fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(16.dp))
                         }
                     }
                     Text(
                         text = presenceLabel,
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (canSeeOnline && target.isOnline) WesalEmerald else WesalTextSecondary
+                        color = if (canSeeOnline && target.isOnline) palette.emerald else palette.textSecondary
                     )
-                    if (target.isPhoneVerified) {
-                        Surface(
-                            color = WesalEmerald.copy(alpha = 0.14f),
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, WesalEmerald.copy(alpha = 0.4f)),
-                            modifier = Modifier.padding(top = 4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                }
+
+                if (target.uid != viewModel.myUid) {
+                    when {
+                        req?.status == ContactRequestStatus.ACCEPTED -> {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(
+                                    onClick = { viewModel.startDirectChat(onOpenChat) },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent)
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (strings.isEnglish) "Message" else "مراسلة", fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = { context.startActivity(CallActivity.createOutgoingIntent(context, target, isVideo = false)) },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(14.dp)
+                                ) {
+                                    Icon(Icons.Default.Call, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (strings.isEnglish) "Call" else "اتصال", color = palette.textPrimary)
+                                }
+                                OutlinedButton(
+                                    onClick = { context.startActivity(CallActivity.createOutgoingIntent(context, target, isVideo = true)) },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(14.dp)
+                                ) {
+                                    Icon(Icons.Default.Videocam, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (strings.isEnglish) "Video" else "فيديو", color = palette.textPrimary)
+                                }
+                            }
+                        }
+                        req?.status == ContactRequestStatus.PENDING && req.receiverUid == viewModel.myUid -> {
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(
+                                    onClick = { viewModel.acceptContactRequest(req.requestId) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text(strings.acceptContactRequest, fontWeight = FontWeight.Bold) }
+                                OutlinedButton(
+                                    onClick = { viewModel.rejectContactRequest(req.requestId) },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text(strings.rejectContactRequest, color = palette.error) }
+                            }
+                        }
+                        req?.status == ContactRequestStatus.PENDING && req.senderUid == viewModel.myUid -> {
+                            Surface(color = palette.surfaceElevated, shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                                Row(modifier = Modifier.padding(14.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.HourglassTop, contentDescription = null, tint = palette.turquoise)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(strings.pendingRequestSent, color = palette.turquoise, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                        else -> {
+                            Button(
+                                onClick = { viewModel.sendContactRequest() },
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
-                                Icon(Icons.Default.Verified, contentDescription = null, tint = WesalEmerald, modifier = Modifier.size(15.dp))
-                                Text("حساب موثق على وصال", color = WesalEmerald, style = MaterialTheme.typography.labelSmall)
+                                Icon(Icons.Default.PersonAdd, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text(strings.sendContactRequest, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
                 }
 
-                // Quick Communication Actions
-                if (target.uid != viewModel.myUid) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Button(
-                            onClick = { viewModel.startDirectChat(onOpenChat) },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("مراسلة", fontWeight = FontWeight.Bold)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, target, isVideo = false))
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(Icons.Default.Call, contentDescription = null, tint = WesalEmerald, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("اتصال", color = WesalTextPrimary)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                context.startActivity(CallActivity.createOutgoingIntent(context, target, isVideo = true))
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(Icons.Default.Videocam, contentDescription = null, tint = WesalTurquoise, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("فيديو", color = WesalTextPrimary)
-                        }
-                    }
-                }
-
-                // Bio Card
+                // Phone card strictly respects hidePhoneNumber privacy
                 Surface(
-                    color = WesalSurfaceDark,
+                    color = palette.surface,
                     shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, WesalSurfaceBorder),
+                    border = BorderStroke(1.dp, palette.border),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text("نبذة عن الحساب", style = MaterialTheme.typography.labelMedium, color = WesalTurquoise)
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(strings.phoneNumberLabel, style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
                         Text(
-                            text = target.bio.ifBlank { "أستخدم تطبيق وصال" },
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = WesalTextPrimary
+                            text = if (target.privacySettings.hidePhoneNumber || target.phoneNumber.isBlank()) {
+                                strings.phoneHiddenValue
+                            } else {
+                                target.phoneNumber
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.textPrimary
                         )
+                        HorizontalDivider(color = palette.border)
+                        Text(if (strings.isEnglish) "Bio" else "نبذة عن الحساب", style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
+                        Text(target.bio.ifBlank { "WESAL Messenger" }, style = MaterialTheme.typography.bodyLarge, color = palette.textPrimary)
                     }
                 }
 
-                // Security & Moderation Actions
                 if (target.uid != viewModel.myUid) {
                     Surface(
-                        color = WesalSurfaceDark,
+                        color = palette.surface,
                         shape = RoundedCornerShape(14.dp),
-                        border = BorderStroke(1.dp, WesalSurfaceBorder),
+                        border = BorderStroke(1.dp, palette.border),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column {
                             ListItem(
-                                headlineContent = { Text("التشفير الطرفي وبصمة الأمان", color = WesalTextPrimary) },
-                                supportingContent = { Text("اضغط لعرض والتحقق من بصمة ECDH P-256", color = WesalTextSecondary) },
-                                leadingContent = { Icon(Icons.Default.Lock, contentDescription = null, tint = WesalTurquoise) },
+                                headlineContent = { Text(if (strings.isEnglish) "E2EE Security Fingerprint" else "التشفير الطرفي وبصمة الأمان", color = palette.textPrimary) },
+                                supportingContent = { Text("ECDH P-256 + AES-256-GCM", color = palette.textSecondary) },
+                                leadingContent = { Icon(Icons.Default.Lock, contentDescription = null, tint = palette.turquoise) },
                                 modifier = Modifier.clickable { showFingerprintDialog = true },
-                                colors = ListItemDefaults.colors(containerColor = WesalSurfaceDark)
+                                colors = ListItemDefaults.colors(containerColor = palette.surface)
                             )
-                            HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
+                            HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                             ListItem(
                                 headlineContent = {
                                     Text(
-                                        text = if (isBlocked) "إلغاء حظر المستخدم" else "حظر المستخدم",
-                                        color = if (isBlocked) WesalEmerald else WesalError
+                                        text = if (isBlocked) (if (strings.isEnglish) "Unblock User" else "إلغاء حظر المستخدم") else (if (strings.isEnglish) "Block User" else "حظر المستخدم"),
+                                        color = if (isBlocked) palette.emerald else palette.error
                                     )
                                 },
-                                leadingContent = {
-                                    Icon(
-                                        Icons.Default.Block,
-                                        contentDescription = null,
-                                        tint = if (isBlocked) WesalEmerald else WesalError
-                                    )
-                                },
-                                modifier = Modifier.clickable { viewModel.toggleBlock(isBlocked) },
-                                colors = ListItemDefaults.colors(containerColor = WesalSurfaceDark)
+                                leadingContent = { Icon(Icons.Default.Block, contentDescription = null, tint = if (isBlocked) palette.emerald else palette.error) },
+                                modifier = Modifier.clickable { viewModel.toggleBlock(isBlocked, strings.isEnglish) },
+                                colors = ListItemDefaults.colors(containerColor = palette.surface)
                             )
-                            HorizontalDivider(color = WesalSurfaceBorder, thickness = 0.5.dp)
+                            HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                             ListItem(
-                                headlineContent = { Text("الإبلاغ عن المستخدم", color = WesalWarning) },
-                                leadingContent = { Icon(Icons.Default.Report, contentDescription = null, tint = WesalWarning) },
+                                headlineContent = { Text(if (strings.isEnglish) "Report User" else "الإبلاغ عن المستخدم", color = palette.warning) },
+                                leadingContent = { Icon(Icons.Default.Report, contentDescription = null, tint = palette.warning) },
                                 modifier = Modifier.clickable { showReportDialog = true },
-                                colors = ListItemDefaults.colors(containerColor = WesalSurfaceDark)
+                                colors = ListItemDefaults.colors(containerColor = palette.surface)
                             )
                         }
                     }
@@ -373,27 +396,24 @@ fun UserProfileDetailScreen(
         val result = remember(target.uid, target.publicKey) { viewModel.computeFingerprintAndVerify(target) }
         AlertDialog(
             onDismissRequest = { showFingerprintDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("بصمة أمان التشفير الطرفي", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "E2EE Safety Fingerprint" else "بصمة أمان التشفير الطرفي", color = palette.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (result == null) {
-                        Text("لا يتوفر مفتاح تشفير لهذا الحساب حالياً.", color = WesalTextSecondary)
+                        Text(if (strings.isEnglish) "Key unavailable." else "لا يتوفر مفتاح تشفير لهذا الحساب حالياً.", color = palette.textSecondary)
                     } else {
                         val (fp, verified) = result
-                        Text("قارن بصمة المفتاح التالية مع ${target.displayName}:", color = WesalTextSecondary)
-                        Text(fp, color = WesalTurquoise, fontWeight = FontWeight.Bold)
+                        Text(fp, color = palette.turquoise, fontWeight = FontWeight.Bold)
                         Text(
-                            text = if (verified) "تم التحقق من التشفير الثنائي ECDH + AES-GCM بنجاح ✓" else "تعذر التحقق من مفتاح الجلسة",
-                            color = if (verified) WesalEmerald else WesalError,
+                            text = if (verified) "ECDH + AES-GCM Verified ✓" else "Error",
+                            color = if (verified) palette.emerald else palette.error,
                             style = MaterialTheme.typography.labelMedium
                         )
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showFingerprintDialog = false }) { Text("حسناً") }
-            }
+            confirmButton = { TextButton(onClick = { showFingerprintDialog = false }) { Text(strings.close) } }
         )
     }
 
@@ -401,30 +421,26 @@ fun UserProfileDetailScreen(
         var reason by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showReportDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("إبلاغ عن إساءة", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Report Abuse" else "إبلاغ عن إساءة", color = palette.textPrimary) },
             text = {
                 OutlinedTextField(
                     value = reason,
                     onValueChange = { reason = it },
-                    label = { Text("سبب البلاغ") },
+                    label = { Text(if (strings.isEnglish) "Reason" else "سبب البلاغ") },
                     modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.reportUser(reason.ifBlank { "سلوك مخالف" })
+                        viewModel.reportUser(reason.ifBlank { "Abuse" }, strings.isEnglish)
                         showReportDialog = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = WesalWarning, contentColor = WesalDeepBlack)
-                ) {
-                    Text("إرسال البلاغ")
-                }
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.warning, contentColor = palette.onAccent)
+                ) { Text(strings.send) }
             },
-            dismissButton = {
-                TextButton(onClick = { showReportDialog = false }) { Text("إلغاء") }
-            }
+            dismissButton = { TextButton(onClick = { showReportDialog = false }) { Text(strings.cancel) } }
         )
     }
 }

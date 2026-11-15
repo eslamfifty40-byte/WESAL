@@ -31,6 +31,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -40,6 +41,7 @@ import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
 import com.wesal.messenger.core.theme.*
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.crop.CropActivity
 import com.wesal.messenger.domain.model.PrivacyVisibility
 import com.wesal.messenger.domain.model.StoryItem
@@ -262,6 +264,8 @@ class StoriesViewModel @Inject constructor(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val myUid by viewModel.myUid.collectAsStateWithLifecycle()
     val stories by viewModel.stories.collectAsStateWithLifecycle()
@@ -633,7 +637,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
     val myStories = stories.filter { it.ownerUid == myUid }
     val friendsStories = stories.filter { it.ownerUid != myUid }
 
-    Box(modifier = Modifier.fillMaxSize().background(WesalDeepBlack)) {
+    Box(modifier = Modifier.fillMaxSize().background(palette.background)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 140.dp),
@@ -641,20 +645,24 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
         ) {
             if (uploadState.isPublishing) {
                 item {
-                    Surface(color = WesalSurfaceDark, shape = RoundedCornerShape(12.dp)) {
+                    Surface(color = palette.surface, shape = RoundedCornerShape(12.dp)) {
                         Column(
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
-                                text = "جاري رفع ونشر الحالة (${(uploadState.uploadProgress * 100).toInt()}%)",
-                                color = WesalTurquoise,
+                                text = if (strings.isEnglish) {
+                                    "Uploading & publishing story (${(uploadState.uploadProgress * 100).toInt()}%)"
+                                } else {
+                                    "جاري رفع ونشر الحالة (${(uploadState.uploadProgress * 100).toInt()}%)"
+                                },
+                                color = palette.turquoise,
                                 fontWeight = FontWeight.Medium
                             )
                             LinearProgressIndicator(
                                 progress = { uploadState.uploadProgress },
                                 modifier = Modifier.fillMaxWidth(),
-                                color = WesalTurquoise
+                                color = palette.turquoise
                             )
                         }
                     }
@@ -664,7 +672,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
             uploadState.errorMessage?.let { errMsg ->
                 item {
                     Surface(
-                        color = WesalError.copy(alpha = 0.14f),
+                        color = palette.error.copy(alpha = 0.14f),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -672,18 +680,18 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(errMsg, color = WesalError, style = MaterialTheme.typography.bodyMedium)
+                            Text(errMsg, color = palette.error, style = MaterialTheme.typography.bodyMedium)
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (uploadState.failedRequest != null) {
                                     Button(
                                         onClick = { viewModel.retryFailedUpload() },
-                                        colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                                        colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent)
                                     ) {
-                                        Text("إعادة المحاولة", fontWeight = FontWeight.Bold)
+                                        Text(strings.retry, fontWeight = FontWeight.Bold)
                                     }
                                 }
                                 TextButton(onClick = { viewModel.clearError() }) {
-                                    Text("إغلاق", color = WesalTextSecondary)
+                                    Text(strings.close, color = palette.textSecondary)
                                 }
                             }
                         }
@@ -694,7 +702,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
             uploadState.statusBanner?.let { msg ->
                 item {
                     Surface(
-                        color = WesalEmerald.copy(alpha = 0.16f),
+                        color = palette.emerald.copy(alpha = 0.16f),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -703,9 +711,9 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(msg, color = WesalEmerald)
+                            Text(msg, color = palette.emerald)
                             IconButton(onClick = { viewModel.clearBanner() }, modifier = Modifier.size(24.dp)) {
-                                Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = WesalEmerald, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.Close, contentDescription = strings.close, tint = palette.emerald, modifier = Modifier.size(16.dp))
                             }
                         }
                     }
@@ -718,7 +726,11 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("حالتي (تنتهي بعد 24 ساعة)", style = MaterialTheme.typography.titleMedium, color = WesalTurquoise)
+                    Text(
+                        text = if (strings.isEnglish) "My Story (expires after 24h)" else "حالتي (تنتهي بعد 24 ساعة)",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.turquoise
+                    )
                     TextButton(onClick = {
                         selectedVisibility = when (selectedVisibility) {
                             PrivacyVisibility.EVERYONE -> PrivacyVisibility.CONTACTS
@@ -727,19 +739,23 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                         }
                     }) {
                         val visLabel = when (selectedVisibility) {
-                            PrivacyVisibility.EVERYONE -> "الجميع"
-                            PrivacyVisibility.CONTACTS -> "جهات الاتصال"
-                            PrivacyVisibility.NOBODY -> "أنا فقط"
+                            PrivacyVisibility.EVERYONE -> if (strings.isEnglish) "Everyone" else "الجميع"
+                            PrivacyVisibility.CONTACTS -> if (strings.isEnglish) "Contacts" else "جهات الاتصال"
+                            PrivacyVisibility.NOBODY -> if (strings.isEnglish) "Only me" else "أنا فقط"
                         }
-                        Text("الخصوصية: $visLabel", color = WesalEmerald)
+                        Text(
+                            text = if (strings.isEnglish) "Privacy: $visLabel" else "الخصوصية: $visLabel",
+                            color = palette.emerald
+                        )
                     }
                 }
             }
 
             item {
                 Surface(
-                    color = WesalSurfaceDark,
+                    color = palette.surface,
                     shape = RoundedCornerShape(14.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, palette.border),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -759,46 +775,82 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                                 modifier = Modifier
                                     .size(48.dp)
                                     .clip(CircleShape)
-                                    .background(WesalEmerald.copy(alpha = 0.2f)),
+                                    .background(palette.emerald.copy(alpha = 0.2f)),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null, tint = WesalEmerald)
+                                Icon(Icons.Default.Add, contentDescription = null, tint = palette.emerald)
                             }
                             Column {
-                                Text("إضافة حالة جديدة", color = WesalTextPrimary, fontWeight = FontWeight.Bold)
-                                Text("صورة، فيديو، كاميرا، حالة صوتية، أو نصية", style = MaterialTheme.typography.labelMedium, color = WesalTextSecondary)
+                                Text(
+                                    text = if (strings.isEnglish) "Add a New Story" else "إضافة حالة جديدة",
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (strings.isEnglish) {
+                                        "Photo, video, camera, voice note, or text"
+                                    } else {
+                                        "صورة، فيديو، كاميرا، حالة صوتية، أو نصية"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.textSecondary
+                                )
                             }
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             OutlinedButton(
                                 onClick = { showInlineCamera = true },
                                 modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
                             ) {
-                                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = WesalEmerald, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.CameraAlt, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("كاميرا", color = WesalEmerald)
+                                Text(
+                                    text = strings.storyCamera,
+                                    color = palette.emerald,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.labelLarge
+                                )
                             }
                             OutlinedButton(
                                 onClick = { showAudioDialog = true },
                                 modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
                             ) {
-                                Icon(Icons.Default.Mic, contentDescription = null, tint = WesalTurquoise, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.Mic, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("صوتية", color = WesalTurquoise)
+                                Text(
+                                    text = strings.storyVoice,
+                                    color = palette.turquoise,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.labelLarge
+                                )
                             }
                             OutlinedButton(
                                 onClick = { showTextDialog = true },
                                 modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
                             ) {
-                                Icon(Icons.Default.Edit, contentDescription = null, tint = WesalTextPrimary, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.Edit, contentDescription = null, tint = palette.textPrimary, modifier = Modifier.size(16.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("نصية", color = WesalTextPrimary)
+                                Text(
+                                    text = strings.storyText,
+                                    color = palette.textPrimary,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.labelLarge
+                                )
                             }
                         }
                     }
@@ -817,12 +869,19 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
             }
 
             item {
-                Text("تحديثات الأصدقاء", style = MaterialTheme.typography.titleMedium, color = WesalTextSecondary)
+                Text(
+                    text = if (strings.isEnglish) "Friends Updates" else "تحديثات الأصدقاء",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = palette.textSecondary
+                )
             }
 
             if (friendsStories.isEmpty()) {
                 item {
-                    Text("لا توجد حالات نشطة من الأصدقاء حالياً", color = WesalTextMuted)
+                    Text(
+                        text = if (strings.isEnglish) "No active stories from friends right now" else "لا توجد حالات نشطة من الأصدقاء حالياً",
+                        color = palette.textMuted
+                    )
                 }
             } else {
                 items(friendsStories, key = { it.storyId }) { story ->
@@ -840,24 +899,24 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
         ) {
             SmallFloatingActionButton(
                 onClick = { showAudioDialog = true },
-                containerColor = WesalSurfaceElevated,
-                contentColor = WesalEmerald
+                containerColor = palette.surfaceElevated,
+                contentColor = palette.emerald
             ) {
-                Icon(Icons.Default.Mic, contentDescription = "حالة صوتية")
+                Icon(Icons.Default.Mic, contentDescription = strings.storyVoice)
             }
             SmallFloatingActionButton(
                 onClick = { showTextDialog = true },
-                containerColor = WesalSurfaceElevated,
-                contentColor = WesalTurquoise
+                containerColor = palette.surfaceElevated,
+                contentColor = palette.turquoise
             ) {
-                Icon(Icons.Default.Edit, contentDescription = "حالة نصية")
+                Icon(Icons.Default.Edit, contentDescription = strings.storyText)
             }
             FloatingActionButton(
                 onClick = { showInlineCamera = true },
-                containerColor = WesalEmerald,
-                contentColor = WesalDeepBlack
+                containerColor = palette.emerald,
+                contentColor = palette.onAccent
             ) {
-                Icon(Icons.Default.CameraAlt, contentDescription = "التقاط حالة بالكاميرا")
+                Icon(Icons.Default.CameraAlt, contentDescription = strings.storyCamera)
             }
         }
     }
@@ -870,8 +929,14 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                 recordedAudioDraft = null
                 showAudioDialog = false
             },
-            containerColor = WesalSurfaceDark,
-            title = { Text("تسجيل حالة صوتية", color = WesalTextPrimary, fontWeight = FontWeight.Bold) },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Record Voice Story" else "تسجيل حالة صوتية",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 Column(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -881,11 +946,11 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     val recFile = recordedAudioDraft
                     Text(
                         text = when {
-                            recordingState.isRecording -> "جاري التسجيل: ${DateTimeUtils.formatDurationMillis(recordingState.elapsedMs)}"
-                            recFile != null -> "تم تسجيل المقطع (${DateTimeUtils.formatDurationMillis(recFile.second)})"
-                            else -> "اضغط بدء لتسجيل رسالة صوتية لحالتك"
+                            recordingState.isRecording -> (if (strings.isEnglish) "Recording: " else "جاري التسجيل: ") + DateTimeUtils.formatDurationMillis(recordingState.elapsedMs)
+                            recFile != null -> (if (strings.isEnglish) "Clip recorded (" else "تم تسجيل المقطع (") + DateTimeUtils.formatDurationMillis(recFile.second) + ")"
+                            else -> if (strings.isEnglish) "Tap Start to record a voice clip" else "اضغط بدء لتسجيل رسالة صوتية لحالتك"
                         },
-                        color = if (recordingState.isRecording) WesalError else WesalTurquoise,
+                        color = if (recordingState.isRecording) palette.error else palette.turquoise,
                         fontWeight = FontWeight.Bold
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -904,31 +969,38 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                                     }
                                 },
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = WesalEmerald,
-                                    contentColor = WesalDeepBlack
+                                    containerColor = palette.emerald,
+                                    contentColor = palette.onAccent
                                 )
                             ) {
                                 Icon(Icons.Default.Mic, contentDescription = null)
                                 Spacer(Modifier.width(6.dp))
-                                Text(if (recFile == null) "بدء التسجيل" else "إعادة التسجيل", fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = if (recFile == null) {
+                                        if (strings.isEnglish) "Start Recording" else "بدء التسجيل"
+                                    } else {
+                                        if (strings.isEnglish) "Re-record" else "إعادة التسجيل"
+                                    },
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         } else {
                             Button(
                                 onClick = {
                                     recordedAudioDraft = viewModel.stopAudioRecording()
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = WesalError)
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.error)
                             ) {
                                 Icon(Icons.Default.Stop, contentDescription = null)
                                 Spacer(Modifier.width(6.dp))
-                                Text("إيقاف")
+                                Text(if (strings.isEnglish) "Stop" else "إيقاف")
                             }
                         }
                     }
                     OutlinedTextField(
                         value = audioCaption,
                         onValueChange = { audioCaption = it },
-                        label = { Text("وصف الحالة الصوتية (اختياري)") },
+                        label = { Text(if (strings.isEnglish) "Voice note caption (optional)" else "وصف الحالة الصوتية (اختياري)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -949,9 +1021,9 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                         recordedAudioDraft = null
                         showAudioDialog = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent)
                 ) {
-                    Text("نشر", fontWeight = FontWeight.Bold)
+                    Text(if (strings.isEnglish) "Publish" else "نشر", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -960,7 +1032,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     recordedAudioDraft = null
                     showAudioDialog = false
                 }) {
-                    Text("إلغاء", color = WesalTextSecondary)
+                    Text(strings.cancel, color = palette.textSecondary)
                 }
             }
         )
@@ -971,14 +1043,19 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
         var bgHex by remember { mutableLongStateOf(0xFF064E3B) }
         AlertDialog(
             onDismissRequest = { showTextDialog = false },
-            containerColor = WesalSurfaceDark,
-            title = { Text("حالة نصية جديدة", color = WesalTextPrimary) },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    if (strings.isEnglish) "New Text Story" else "حالة نصية جديدة",
+                    color = palette.textPrimary
+                )
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
                         value = storyText,
                         onValueChange = { storyText = it },
-                        label = { Text("اكتب حالتك...") },
+                        label = { Text(if (strings.isEnglish) "Write your story..." else "اكتب حالتك...") },
                         maxLines = 4,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1006,13 +1083,15 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                         viewModel.publishTextStory(storyText, bgHex, selectedVisibility)
                         showTextDialog = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = WesalEmerald, contentColor = WesalDeepBlack)
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent)
                 ) {
-                    Text("نشر")
+                    Text(if (strings.isEnglish) "Publish" else "نشر")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showTextDialog = false }) { Text("إلغاء") }
+                TextButton(onClick = { showTextDialog = false }) {
+                    Text(strings.cancel, color = palette.textSecondary)
+                }
             }
         )
     }
@@ -1033,10 +1112,12 @@ private fun StoryViewersBottomSheet(
     viewersFlow: Flow<List<StoryViewer>>,
     onDismiss: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     val viewers by viewersFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = WesalSurfaceDark
+        containerColor = palette.surface
     ) {
         Column(
             modifier = Modifier
@@ -1054,19 +1135,23 @@ private fun StoryViewersBottomSheet(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Visibility, contentDescription = null, tint = WesalTurquoise)
+                    Icon(Icons.Default.Visibility, contentDescription = null, tint = palette.turquoise)
                     Text(
-                        text = "المشاهدات (${maxOf(viewers.size, story.viewerIds.size)})",
+                        text = if (strings.isEnglish) {
+                            "Views (${maxOf(viewers.size, story.viewerIds.size)})"
+                        } else {
+                            "المشاهدات (${maxOf(viewers.size, story.viewerIds.size)})"
+                        },
                         style = MaterialTheme.typography.titleLarge,
-                        color = WesalTextPrimary,
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "إغلاق", tint = WesalTextSecondary)
+                    Icon(Icons.Default.Close, contentDescription = strings.close, tint = palette.textSecondary)
                 }
             }
-            HorizontalDivider(color = WesalSurfaceBorder)
+            HorizontalDivider(color = palette.border)
             if (viewers.isEmpty()) {
                 Box(
                     modifier = Modifier
@@ -1075,9 +1160,9 @@ private fun StoryViewersBottomSheet(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "لا توجد مشاهدات حتى الآن",
+                        text = if (strings.isEnglish) "No views yet" else "لا توجد مشاهدات حتى الآن",
                         style = MaterialTheme.typography.bodyLarge,
-                        color = WesalTextSecondary
+                        color = palette.textSecondary
                     )
                 }
             } else {
@@ -1096,16 +1181,20 @@ private fun StoryViewersBottomSheet(
                                 Text(
                                     text = viewer.displayName,
                                     style = MaterialTheme.typography.titleMedium,
-                                    color = WesalTextPrimary
+                                    color = palette.textPrimary
                                 )
                                 Text(
                                     text = if (viewer.viewedAt > 0L) {
-                                        "شاهدها ${DateTimeUtils.formatChatListTime(viewer.viewedAt)}"
+                                        if (strings.isEnglish) {
+                                            "Viewed ${DateTimeUtils.formatChatListTime(viewer.viewedAt)}"
+                                        } else {
+                                            "شاهدها ${DateTimeUtils.formatChatListTime(viewer.viewedAt)}"
+                                        }
                                     } else {
-                                        "شاهد الحالة"
+                                        if (strings.isEnglish) "Viewed story" else "شاهد الحالة"
                                     },
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = WesalTextSecondary
+                                    color = palette.textSecondary
                                 )
                             }
                         }
@@ -1123,6 +1212,8 @@ private fun StoryRowCard(
     onClick: () -> Unit,
     onShowViewers: (() -> Unit)? = null
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1136,32 +1227,33 @@ private fun StoryRowCard(
             modifier = Modifier
                 .size(58.dp)
                 .clip(CircleShape)
-                .border(2.5.dp, WesalEmerald, CircleShape)
+                .border(2.5.dp, palette.emerald, CircleShape)
                 .padding(3.dp)
         ) {
             WesalAvatar(imageUrl = story.ownerAvatarUrl, name = story.ownerName, size = 52.dp)
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = if (isMine) "حالتي" else story.ownerName,
+                text = if (isMine) (if (strings.isEnglish) "My Story" else "حالتي") else story.ownerName,
                 style = MaterialTheme.typography.titleMedium,
-                color = WesalTextPrimary
+                color = palette.textPrimary
             )
             val typeTag = when (story.type) {
-                StoryType.AUDIO -> "صوتية • "
-                StoryType.VIDEO -> "فيديو • "
-                StoryType.IMAGE -> "صورة • "
-                StoryType.TEXT -> "نصية • "
+                StoryType.AUDIO -> if (strings.isEnglish) "Voice • " else "صوتية • "
+                StoryType.VIDEO -> if (strings.isEnglish) "Video • " else "فيديو • "
+                StoryType.IMAGE -> if (strings.isEnglish) "Photo • " else "صورة • "
+                StoryType.TEXT -> if (strings.isEnglish) "Text • " else "نصية • "
             }
+            val viewsSuffix = if (strings.isEnglish) "views" else "مشاهدة"
             Text(
-                text = "$typeTag${DateTimeUtils.formatChatListTime(story.createdAt)} • ${story.viewerIds.size} مشاهدة",
+                text = "$typeTag${DateTimeUtils.formatChatListTime(story.createdAt)} • ${story.viewerIds.size} $viewsSuffix",
                 style = MaterialTheme.typography.labelSmall,
-                color = WesalTextSecondary
+                color = palette.textSecondary
             )
         }
         if (isMine && onShowViewers != null) {
             Surface(
-                color = WesalSurfaceElevated,
+                color = palette.surfaceElevated,
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier.clickable(onClick = onShowViewers)
             ) {
@@ -1172,14 +1264,14 @@ private fun StoryRowCard(
                 ) {
                     Icon(
                         Icons.Default.Visibility,
-                        contentDescription = "عرض المشاهدين",
-                        tint = WesalTurquoise,
+                        contentDescription = null,
+                        tint = palette.turquoise,
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
                         text = "${story.viewerIds.size}",
                         style = MaterialTheme.typography.labelMedium,
-                        color = WesalTextPrimary,
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold
                     )
                 }

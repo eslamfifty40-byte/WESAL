@@ -23,7 +23,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.wesal.messenger.R
-import com.wesal.messenger.core.theme.*
+import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.LocalWesalStrings
 import com.yalantis.ucrop.UCrop
 import java.io.File
 
@@ -55,6 +56,7 @@ object AvatarCropHelper {
             .withOptions(options)
             .getIntent(context)
     }
+
     fun createCameraPhotoUri(context: Context): Uri {
         val camDir = File(context.cacheDir, "camera").apply { mkdirs() }
         val photoFile = File(camDir, "avatar_cam_${System.currentTimeMillis()}.jpg")
@@ -73,9 +75,11 @@ fun AvatarSourceBottomSheet(
     onTakePhoto: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = WesalSurfaceDark
+        containerColor = palette.surface
     ) {
         Column(
             modifier = Modifier
@@ -85,40 +89,50 @@ fun AvatarSourceBottomSheet(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "اختيار الصورة الشخصية",
+                text = if (strings.isEnglish) "Choose Profile Photo" else "اختيار الصورة الشخصية",
                 style = MaterialTheme.typography.titleLarge,
-                color = WesalTextPrimary,
+                color = palette.textPrimary,
                 fontWeight = FontWeight.Bold
             )
             ListItem(
-                headlineContent = { Text("اختيار من معرض الصور", color = WesalTextPrimary) },
+                headlineContent = {
+                    Text(
+                        if (strings.isEnglish) "Choose from Gallery" else "اختيار من معرض الصور",
+                        color = palette.textPrimary
+                    )
+                },
                 leadingContent = {
                     Icon(
                         imageVector = Icons.Default.PhotoLibrary,
                         contentDescription = null,
-                        tint = WesalTurquoise
+                        tint = palette.turquoise
                     )
                 },
                 modifier = Modifier.clickable {
                     onDismiss()
                     onPickGallery()
                 },
-                colors = ListItemDefaults.colors(containerColor = WesalSurfaceDark)
+                colors = ListItemDefaults.colors(containerColor = palette.surface)
             )
             ListItem(
-                headlineContent = { Text("التقاط صورة بالكاميرا", color = WesalTextPrimary) },
+                headlineContent = {
+                    Text(
+                        if (strings.isEnglish) "Take Photo with Camera" else "التقاط صورة بالكاميرا",
+                        color = palette.textPrimary
+                    )
+                },
                 leadingContent = {
                     Icon(
                         imageVector = Icons.Default.CameraAlt,
                         contentDescription = null,
-                        tint = WesalEmerald
+                        tint = palette.emerald
                     )
                 },
                 modifier = Modifier.clickable {
                     onDismiss()
                     onTakePhoto()
                 },
-                colors = ListItemDefaults.colors(containerColor = WesalSurfaceDark)
+                colors = ListItemDefaults.colors(containerColor = palette.surface)
             )
         }
     }
@@ -131,13 +145,15 @@ fun AvatarPreviewConfirmDialog(
     onRecrop: () -> Unit,
     onCancel: () -> Unit
 ) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
     AlertDialog(
         onDismissRequest = onCancel,
-        containerColor = WesalSurfaceDark,
+        containerColor = palette.surface,
         title = {
             Text(
-                text = "معاينة الصورة الشخصية",
-                color = WesalTextPrimary,
+                text = if (strings.isEnglish) "Preview Profile Photo" else "معاينة الصورة الشخصية",
+                color = palette.textPrimary,
                 fontWeight = FontWeight.Bold
             )
         },
@@ -149,17 +165,21 @@ fun AvatarPreviewConfirmDialog(
             ) {
                 AsyncImage(
                     model = imageUri,
-                    contentDescription = "معاينة الصورة المقصوصة",
+                    contentDescription = null,
                     modifier = Modifier
                         .size(180.dp)
                         .clip(CircleShape)
-                        .border(2.5.dp, WesalTurquoise, CircleShape),
+                        .border(2.5.dp, palette.turquoise, CircleShape),
                     contentScale = ContentScale.Crop
                 )
                 Text(
-                    text = "ستظهر صورتك بهذا الشكل الدائري لدى جهات الاتصال والمحادثات.",
+                    text = if (strings.isEnglish) {
+                        "Your avatar will appear in a circular frame across contacts and chats."
+                    } else {
+                        "ستظهر صورتك بهذا الشكل الدائري لدى جهات الاتصال والمحادثات."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = WesalTextSecondary
+                    color = palette.textSecondary
                 )
             }
         },
@@ -167,20 +187,23 @@ fun AvatarPreviewConfirmDialog(
             Button(
                 onClick = onConfirm,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = WesalEmerald,
-                    contentColor = WesalDeepBlack
+                    containerColor = palette.emerald,
+                    contentColor = palette.onAccent
                 )
             ) {
-                Text("اعتماد وحفظ", fontWeight = FontWeight.Bold)
+                Text(
+                    if (strings.isEnglish) "Confirm & Save" else "اعتماد وحفظ",
+                    fontWeight = FontWeight.Bold
+                )
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = onRecrop) {
-                    Text("إعادة القص", color = WesalTurquoise)
+                    Text(if (strings.isEnglish) "Re-crop" else "إعادة القص", color = palette.turquoise)
                 }
                 TextButton(onClick = onCancel) {
-                    Text("إلغاء", color = WesalTextSecondary)
+                    Text(strings.cancel, color = palette.textSecondary)
                 }
             }
         }

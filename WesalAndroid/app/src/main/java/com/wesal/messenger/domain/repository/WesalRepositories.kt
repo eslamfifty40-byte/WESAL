@@ -31,6 +31,12 @@ interface AuthRepository {
         resendingToken: PhoneAuthProvider.ForceResendingToken? = null
     ): Flow<PhoneAuthEvent>
     suspend fun verifyOtpCode(verificationId: String, smsCode: String): Result<Boolean>
+    fun sendOtpForPhoneLink(
+        phoneNumber: String,
+        activity: Activity,
+        resendingToken: PhoneAuthProvider.ForceResendingToken? = null
+    ): Flow<PhoneAuthEvent>
+    suspend fun verifyOtpAndLinkPhone(verificationId: String, smsCode: String): Result<Unit>
     suspend fun completeUserProfile(
         displayName: String,
         bio: String,
@@ -48,6 +54,7 @@ interface UserRepository {
     fun observeCurrentUser(): Flow<WesalUser?>
     fun observeUser(uid: String): Flow<WesalUser?>
     suspend fun getUserOnce(uid: String): WesalUser?
+    suspend fun findUserByPublicIdOrUid(idOrUid: String): WesalUser?
     suspend fun searchUsers(query: String): List<WesalUser>
     suspend fun listDiscoverableUsers(limit: Int = 30): List<WesalUser>
     suspend fun findUsersByPhoneHashes(phoneHashes: List<String>): Map<String, WesalUser>
@@ -61,6 +68,20 @@ interface UserRepository {
     suspend fun reportUser(targetUid: String, reason: String): Result<Unit>
     fun observeSessions(): Flow<List<DeviceSession>>
     suspend fun revokeSession(sessionId: String): Result<Unit>
+
+    // Super Admin & Blue Verification Seal
+    fun observeIsSuperAdmin(): Flow<Boolean>
+    suspend fun isSuperAdmin(): Boolean
+    suspend fun setAccountVerification(targetUid: String, verified: Boolean, note: String = ""): Result<Unit>
+    fun observeVerificationAuditLogs(): Flow<List<VerificationAuditLog>>
+
+    // Contact Requests & Friendship Gating
+    fun observeContactRequests(): Flow<List<ContactRequest>>
+    suspend fun sendContactRequest(targetUid: String): Result<ContactRequest>
+    suspend fun acceptContactRequest(requestId: String): Result<Unit>
+    suspend fun rejectContactRequest(requestId: String): Result<Unit>
+    suspend fun cancelOrRemoveContactRequest(requestId: String): Result<Unit>
+    suspend fun areContactsAccepted(peerUid: String): Boolean
 }
 
 interface ChatRepository {
@@ -118,6 +139,51 @@ interface GroupRepository {
     suspend fun leaveGroup(groupId: String): Result<Unit>
 }
 
+interface ChannelRepository {
+    fun observePublicChannels(): Flow<List<WesalChannel>>
+    fun observeMyChannels(): Flow<List<WesalChannel>>
+    fun observeChannel(channelId: String): Flow<WesalChannel?>
+    suspend fun findChannelByInviteCode(code: String): WesalChannel?
+    suspend fun createChannel(
+        title: String,
+        description: String,
+        isPublic: Boolean,
+        avatarUri: Uri?
+    ): Result<WesalChannel>
+    suspend fun updateChannel(
+        channelId: String,
+        title: String,
+        description: String,
+        isPublic: Boolean,
+        avatarUri: Uri?
+    ): Result<Unit>
+    suspend fun regenerateInviteCode(channelId: String): Result<String>
+    suspend fun subscribePublicChannel(channelId: String): Result<Unit>
+    suspend fun unsubscribeChannel(channelId: String): Result<Unit>
+    suspend fun requestJoinPrivateChannel(channelId: String): Result<Unit>
+    fun observeJoinRequests(channelId: String): Flow<List<ChannelJoinRequest>>
+    suspend fun approveJoinRequest(channelId: String, requestId: String, requesterUid: String): Result<Unit>
+    suspend fun rejectJoinRequest(channelId: String, requestId: String): Result<Unit>
+    suspend fun setModerator(channelId: String, targetUid: String, makeModerator: Boolean): Result<Unit>
+    fun observePosts(channelId: String): Flow<List<ChannelPost>>
+    fun publishPost(
+        channelId: String,
+        type: ChannelPostType,
+        text: String,
+        mediaUri: Uri? = null,
+        fileName: String = "",
+        mimeType: String = "",
+        sizeBytes: Long = 0L,
+        durationMs: Long = 0L
+    ): Flow<Result<Float>>
+    suspend fun deletePost(channelId: String, postId: String): Result<Unit>
+    suspend fun pinPost(channelId: String, postId: String, pinned: Boolean): Result<Unit>
+    suspend fun toggleReaction(channelId: String, postId: String, emoji: String): Result<Unit>
+    fun observeComments(channelId: String, postId: String): Flow<List<ChannelComment>>
+    suspend fun addComment(channelId: String, postId: String, text: String): Result<Unit>
+    suspend fun deleteComment(channelId: String, postId: String, commentId: String): Result<Unit>
+}
+
 sealed interface StoryPublishEvent {
     data class Progress(val fraction: Float) : StoryPublishEvent
     data object Success : StoryPublishEvent
@@ -143,4 +209,7 @@ interface CallRepository {
     suspend fun addIceCandidate(callId: String, sdpMid: String, sdpMLineIndex: Int, candidate: String, fromCaller: Boolean)
     fun observeRemoteIceCandidates(callId: String, listenForCaller: Boolean): Flow<Triple<String, Int, String>>
     suspend fun updateCallStatus(callId: String, status: CallStatus, durationSeconds: Long = 0L)
+    suspend fun deleteCallForMe(callId: String): Result<Unit>
+    suspend fun deleteCallsForMe(callIds: List<String>): Result<Unit>
+    suspend fun clearCallHistoryForMe(): Result<Unit>
 }

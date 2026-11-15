@@ -136,6 +136,12 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             NotificationManager.IMPORTANCE_DEFAULT
         )
 
+        val channelsChannel = NotificationChannel(
+            Constants.CHANNEL_CHANNELS,
+            getString(R.string.channel_channels_name),
+            NotificationManager.IMPORTANCE_DEFAULT
+        )
+
         val systemChannel = NotificationChannel(
             Constants.CHANNEL_SYSTEM,
             getString(R.string.channel_system_name),
@@ -143,7 +149,7 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         )
 
         manager.createNotificationChannels(
-            listOf(messagesChannel, callsChannel, storiesChannel, systemChannel)
+            listOf(messagesChannel, callsChannel, storiesChannel, channelsChannel, systemChannel)
         )
     }
 }
