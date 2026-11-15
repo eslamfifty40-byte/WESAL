@@ -29,10 +29,10 @@ object Constants {
 
     // Super Admin primary identity; paste the real UID from Firebase Authentication in CONFIRMED_SUPER_ADMIN_UID before release.
     const val SUPER_ADMIN_EMAIL = "eslamfifty40@gmail.com"
-    const val CONFIRMED_SUPER_ADMIN_UID = "" // <الصق UID هنا>
+    const val CONFIRMED_SUPER_ADMIN_UID = "الصق-الـUID-هنا" // <الصق UID هنا>
 
     // رابط التحميل المباشر الوحيد لتطبيق WESAL.apk — الصق الرابط المباشر هنا قبل بناء النسخة النهائية
-    const val APK_DOWNLOAD_URL = "" // <الصق الرابط المباشر هنا>
+    const val APK_DOWNLOAD_URL = "الصق-الرابط-المباشر-هنا" // <الصق الرابط المباشر هنا>
 
     const val OTP_TIMEOUT_SECONDS = 60L
     const val MESSAGE_EDIT_WINDOW_MS = 15 * 60 * 1000L // 15 minutes edit policy
