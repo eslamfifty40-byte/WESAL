@@ -187,7 +187,7 @@ class CoreDomainUnitTest {
         assertTrue(msgAr.contains("معرّفي @eslam_wesal"))
         assertFalse(msgAr.contains("wesal.app", ignoreCase = true))
         assertFalse(msgAr.contains("/join", ignoreCase = true))
-        assertFalse(msgAr.contains("github", ignoreCase = true))
+        assertTrue(msgAr.contains(com.wesal.messenger.core.util.Constants.APK_DOWNLOAD_URL))
 
         val msgEn = WesalShareUtils.buildInviteMessage(
             myWesalId = "sara_99",
@@ -197,7 +197,7 @@ class CoreDomainUnitTest {
         assertTrue(msgEn.contains("My ID: @sara_99"))
         assertFalse(msgEn.contains("wesal.app", ignoreCase = true))
         assertFalse(msgEn.contains("/join", ignoreCase = true))
-        assertFalse(msgEn.contains("github", ignoreCase = true))
+        assertTrue(msgEn.contains(com.wesal.messenger.core.util.Constants.APK_DOWNLOAD_URL))
     }
 
     @Test
