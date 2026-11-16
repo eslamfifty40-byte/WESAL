@@ -513,15 +513,16 @@ class ChatRepositoryImpl @Inject constructor(
             "حساب الدعم الرسمي المعتمد هو ${Constants.OWNER_ADMIN_NUMERIC_ID} فقط"
         }
 
+        val indexUid = runCatching { firestore.collection(Constants.COLLECTION_WESAL_ID_INDEX).document(cleanTarget).get().await().getString("uid") }.getOrNull()?.takeIf { it.isNotBlank() }
         val colQuery = firestore.collection(Constants.COLLECTION_USERS)
             .whereEqualTo("numericId", cleanTarget)
             .limit(5)
         val snap = runCatching { colQuery.get(Source.SERVER).await() }.getOrNull()
-            ?: colQuery.get().await()
-        val adminDoc = snap.documents.firstOrNull { it.getString("numericId")?.trim() == cleanTarget }
-            ?: error("تعذر العثور على حساب إدارة WESAL ($cleanTarget) في قاعدة البيانات")
+            ?: runCatching { colQuery.get().await() }.getOrNull()
+        val adminDoc = (snap?.documents ?: emptyList()).firstOrNull { it.getString("numericId")?.trim() == cleanTarget }
+            ?: null
 
-        val adminUid = adminDoc.getString("uid")?.takeIf { it.isNotBlank() } ?: adminDoc.id
+        val adminUid = indexUid ?: adminDoc?.getString("uid")?.takeIf { it.isNotBlank() } ?: adminDoc?.id ?: error("تعذر العثور على حساب إدارة WESAL ($cleanTarget)")
         require(adminUid != myUid) { "أنت مسجّل الدخول حالياً بحساب الإدارة ($cleanTarget)" }
 
         val sortedIds = listOf(myUid, adminUid).sorted()
