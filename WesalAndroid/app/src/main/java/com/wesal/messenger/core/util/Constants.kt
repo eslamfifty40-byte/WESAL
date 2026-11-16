@@ -31,6 +31,8 @@ object Constants {
     // Super Admin primary identity; paste the real UID from Firebase Authentication in CONFIRMED_SUPER_ADMIN_UID before release.
     const val SUPER_ADMIN_EMAIL = "eslamfifty40@gmail.com"
     const val CONFIRMED_SUPER_ADMIN_UID = "fxKvKnbnksPqZyO7rQjTzxIKzzP2" // <الصق UID هنا>
+    val SUPER_ADMIN_EMAILS = listOf("eslamfifty40@gmail.com", "tbtbttbbt7@gmail.com")
+    val CONFIRMED_SUPER_ADMIN_UIDS = listOf("fxKvKnbnksPqZyO7rQjTzxIKzzP2", "D6Z812za9ZNUW0kAt7SaFD3a9UN2")
 
     // رابط التحميل المباشر الوحيد لتطبيق WESAL.apk — الصق الرابط المباشر هنا قبل بناء النسخة النهائية
     const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-Messenger" // <الصق الرابط المباشر هنا>

@@ -647,11 +647,11 @@ class UserRepositoryImpl @Inject constructor(
         if (
             uid == null ||
             user == null ||
-            !email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) ||
+            !Constants.SUPER_ADMIN_EMAILS.any { it.equals(email, ignoreCase = true) } ||
             !user.isEmailVerified
         ) {
             flowOf(false)
-        } else if (Constants.CONFIRMED_SUPER_ADMIN_UID.isNotBlank() && uid != Constants.CONFIRMED_SUPER_ADMIN_UID) {
+        } else if (Constants.CONFIRMED_SUPER_ADMIN_UIDS.isNotEmpty() && uid !in Constants.CONFIRMED_SUPER_ADMIN_UIDS) {
             flowOf(false)
         } else {
             callbackFlow {
@@ -674,9 +674,9 @@ class UserRepositoryImpl @Inject constructor(
     override suspend fun isSuperAdmin(): Boolean {
         val user = auth.currentUser ?: return false
         val email = user.email.orEmpty()
-        if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true)) return false
+        if (!Constants.SUPER_ADMIN_EMAILS.any { it.equals(email, ignoreCase = true) }) return false
         if (!user.isEmailVerified) return false
-        if (Constants.CONFIRMED_SUPER_ADMIN_UID.isNotBlank() && user.uid != Constants.CONFIRMED_SUPER_ADMIN_UID) {
+        if (Constants.CONFIRMED_SUPER_ADMIN_UIDS.isNotEmpty() && user.uid !in Constants.CONFIRMED_SUPER_ADMIN_UIDS) {
             return false
         }
         val doc = runCatching {
