@@ -342,7 +342,7 @@ class AuthViewModel @Inject constructor(
             }
             return
         }
-        val phoneResult = PhoneUtils.validateForCountry(country.dialCode, localPhone)
+        val phoneResult = PhoneUtils.validateForCountry(country, localPhone)
         val e164Phone = phoneResult.e164
         if (!phoneResult.isValid || e164Phone.isNullOrBlank()) {
             _uiState.update {

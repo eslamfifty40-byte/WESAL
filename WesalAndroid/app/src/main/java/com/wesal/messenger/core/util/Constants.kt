@@ -40,6 +40,9 @@ object Constants {
     // Sole approved Owner Super Admin & Support identity (NEVER use old deleted IDs)
     const val SUPER_ADMIN_EMAIL = "eslamfifty40@gmail.com"
     const val APK_INVITE_URL = "https://tinyurl.com/wesal-Messenger"
+    const val COLLECTION_PHONE_UNIQUENESS = "phone_uniqueness"
+    const val OFFICIAL_WESAL_SENDER_ID = "wesal_official"
+    const val OFFICIAL_WESAL_SENDER_NAME = "WESAL"
     val SUPER_ADMIN_EMAILS = listOf("eslamfifty40@gmail.com", "tbtbttbbt7@gmail.com")
     val CONFIRMED_SUPER_ADMIN_UIDS = listOf("fxKvKnbnksPqZy07rQjTzxIKzzP2", "D6Z812za9ZNUW0kAt7SaFD3a9UN2")
     const val CONFIRMED_SUPER_ADMIN_UID = "" // Optional hard lock once deployed

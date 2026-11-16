@@ -56,8 +56,7 @@ fun AccountShareScreen(
     val primaryId = numericId.ifBlank { publicId }
     val deepLink = if (primaryId.isNotBlank()) "wesal://join?id=$primaryId" else ""
     val shareMessage = WesalShareUtils.buildInviteMessage(
-        recipientName = "",
-        senderId = primaryId,
+        myWesalId = primaryId,
         senderName = user?.displayName.orEmpty(),
         isEnglish = strings.isEnglish
     )
@@ -194,7 +193,7 @@ fun AccountShareScreen(
 
                     OutlinedButton(
                         onClick = {
-                            clipboard.setText(AnnotatedString(WesalShareUtils.APK_INVITE_URL))
+                            clipboard.setText(AnnotatedString(com.wesal.messenger.core.util.Constants.APK_INVITE_URL))
                             Toast.makeText(
                                 context,
                                 if (strings.isEnglish) "Official link copied" else "تم نسخ رابط الدعوة",

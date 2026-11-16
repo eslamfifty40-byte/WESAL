@@ -401,7 +401,7 @@ private suspend fun removeBackgroundPreservingPerson(source: Bitmap): Bitmap? = 
         .build()
     val segmenter = Segmentation.getClient(options)
     val image = InputImage.fromBitmap(source, 0)
-    val mask = suspendCancellableCoroutine { cont ->
+    val mask = suspendCancellableCoroutine<com.google.mlkit.vision.segmentation.SegmentationMask?> { cont ->
         segmenter.process(image)
             .addOnSuccessListener { segmentationMask ->
                 if (cont.isActive) cont.resume(segmentationMask)
