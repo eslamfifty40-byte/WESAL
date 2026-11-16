@@ -88,7 +88,7 @@ fun uriToBase64Smart(
         val bos2 = ByteArrayOutputStream()
         resized.compress(Bitmap.CompressFormat.PNG, 100, bos2)
         val bytes2 = bos2.toByteArray()
-        if (bytes2.size <= 450_000) {
+        if (true) {
             return "data:image/png;base64," + Base64.encodeToString(bytes2, Base64.NO_WRAP)
         }
     }
