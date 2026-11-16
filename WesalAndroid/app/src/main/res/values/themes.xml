@@ -9,6 +9,7 @@
     <style name="Theme.Wesal.Splash" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/wesal_black</item>
         <item name="windowSplashScreenAnimationDuration">0</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_empty</item>
         <item name="postSplashScreenTheme">@style/Theme.Wesal</item>
     </style>
 </resources>

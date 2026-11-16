@@ -82,7 +82,6 @@ object WesalFrameCatalog {
         WesalFrameSpec("cust_02", "إطار عملاء #2", "Customer Frame #2", FrameCategory.CUSTOMER, R.drawable.wesal_frame_cust_02, true),
         WesalFrameSpec("cust_03", "إطار عملاء #3", "Customer Frame #3", FrameCategory.CUSTOMER, R.drawable.wesal_frame_cust_03, true),
         WesalFrameSpec("cust_04", "إطار عملاء #4", "Customer Frame #4", FrameCategory.CUSTOMER, R.drawable.wesal_frame_cust_04, true),
-        WesalFrameSpec("cust_05", "إطار عملاء #5", "Customer Frame #5", FrameCategory.CUSTOMER, R.drawable.wesal_frame_cust_05, true),
         WesalFrameSpec("cust_06", "إطار عملاء #6", "Customer Frame #6", FrameCategory.CUSTOMER, R.drawable.wesal_frame_cust_06, true),
         WesalFrameSpec("cust_07", "إطار عملاء #7", "Customer Frame #7", FrameCategory.CUSTOMER, R.drawable.wesal_frame_cust_07, true),
         WesalFrameSpec("cust_08", "إطار عملاء #8", "Customer Frame #8", FrameCategory.CUSTOMER, R.drawable.wesal_frame_cust_08, true),
