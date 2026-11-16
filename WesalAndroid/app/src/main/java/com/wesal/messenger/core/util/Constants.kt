@@ -47,6 +47,7 @@ object Constants {
     val CONFIRMED_SUPER_ADMIN_UIDS = listOf("fxKvKnbnksPqZy07rQjTzxIKzzP2", "D6Z812za9ZNUW0kAt7SaFD3a9UN2")
     const val CONFIRMED_SUPER_ADMIN_UID = "" // Optional hard lock once deployed
     const val OWNER_ADMIN_NUMERIC_ID = "10001"
+    val ADMIN_NUMERIC_IDS = listOf("10001", "10002")
     const val OFFICIAL_WESAL_TEAM_CHANNEL_ID = "wesal_official_team_channel"
     const val OFFICIAL_CHAT_PREFIX = "wesal_official_"
 

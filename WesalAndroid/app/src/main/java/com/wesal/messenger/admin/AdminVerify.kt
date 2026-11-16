@@ -33,7 +33,7 @@ suspend fun checkIsAdmin(): Boolean {
     return try {
         val user = FirebaseAuth.getInstance().currentUser ?: return false
         val email = user.email.orEmpty()
-        if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) || !user.isEmailVerified) {
+        if (Constants.SUPER_ADMIN_EMAILS.none { it.equals(email, ignoreCase = true) } || !user.isEmailVerified) {
             return false
         }
         val db = adminDb()
@@ -45,11 +45,11 @@ suspend fun checkIsAdmin(): Boolean {
         if (!doc.exists() || doc.getBoolean("active") == false) return false
 
         val saNumId = doc.getString("numericId").orEmpty()
-        if (saNumId.isNotBlank() && saNumId != Constants.OWNER_ADMIN_NUMERIC_ID) return false
+        if (saNumId.isNotBlank() && saNumId !in Constants.ADMIN_NUMERIC_IDS) return false
 
         val userDoc = db.collection(Constants.COLLECTION_USERS).document(user.uid).get(Source.SERVER).await()
         val userNumId = userDoc.getString("numericId").orEmpty()
-        if (userNumId.isNotBlank() && userNumId != Constants.OWNER_ADMIN_NUMERIC_ID) return false
+        if (userNumId.isNotBlank() && userNumId !in Constants.ADMIN_NUMERIC_IDS) return false
 
         true
     } catch (_: Exception) {
