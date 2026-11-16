@@ -38,6 +38,7 @@ zxing = "3.5.3"
 mlkitSelfieSegmentation = "16.0.0-beta6"
 
 [libraries]
+mlkit-selfie-segmentation = { group = "com.google.mlkit", name = "segmentation-selfie", version.ref = "mlkitSelfieSegmentation" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "splashscreen" }
