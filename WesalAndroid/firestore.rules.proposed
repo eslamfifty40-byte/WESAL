@@ -1,0 +1,396 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // Strict Owner Super Admin check locked exclusively to WESAL ID 10001 / eslamfifty40@gmail.com
+    function isSuperAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email == 'eslamfifty40@gmail.com' &&
+        request.auth.token.email_verified == true &&
+        exists(/databases/$(database)/documents/super_admins/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/super_admins/$(request.auth.uid)).data.active != false;
+    }
+
+    function areContactsAccepted(uidA, uidB) {
+      let idForward = uidA + '_' + uidB;
+      let idReverse = uidB + '_' + uidA;
+      return (
+        (exists(/databases/$(database)/documents/contact_requests/$(idForward)) &&
+         get(/databases/$(database)/documents/contact_requests/$(idForward)).data.status == 'ACCEPTED') ||
+        (exists(/databases/$(database)/documents/contact_requests/$(idReverse)) &&
+         get(/databases/$(database)/documents/contact_requests/$(idReverse)).data.status == 'ACCEPTED')
+      );
+    }
+
+    function isChatParticipant(chatId) {
+      return isSignedIn() &&
+        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds;
+    }
+
+    function isGroupAdmin(groupId) {
+      return isSignedIn() &&
+        request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.adminIds;
+    }
+
+    function channelData(channelId) {
+      return get(/databases/$(database)/documents/channels/$(channelId)).data;
+    }
+
+    function isChannelManager(channelId) {
+      let data = channelData(channelId);
+      return isSignedIn() && (
+        (channelId == 'wesal_official_team_channel' && isSuperAdmin()) ||
+        (channelId != 'wesal_official_team_channel' && (
+          data.ownerUid == request.auth.uid ||
+          request.auth.uid in data.moderatorIds
+        ))
+      );
+    }
+
+    function canReadChannelPosts(channelId) {
+      let data = channelData(channelId);
+      return isSignedIn() && (
+        isSuperAdmin() ||
+        (data.isSuspended != true && (
+          data.isPublic == true ||
+          data.ownerUid == request.auth.uid ||
+          request.auth.uid in data.moderatorIds ||
+          request.auth.uid in data.subscriberIds
+        ))
+      );
+    }
+
+    // Super Admin registry (managed only by Firebase Console / Admin SDK for ID 10001)
+    match /super_admins/{adminUid} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Unique Numeric ID Index (e.g., 10001)
+    match /wesal_id_index/{numericId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.uid == request.auth.uid &&
+        numericId.matches('^[1-9][0-9]{4,7}$');
+      allow update, delete: if isSuperAdmin();
+    }
+
+    // Optional Verified Phone Uniqueness Registry
+    match /phone_uniqueness/{phoneHash} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if (isSignedIn() && resource.data.uid == request.auth.uid) || isSuperAdmin();
+    }
+
+    // Banned Email & Phone Hashes Registry
+    match /banned_identifiers/{hashId} {
+      allow read: if isSignedIn();
+      allow write, delete: if isSuperAdmin();
+    }
+
+    // Live Presence Heartbeat Docs
+    match /presence/{userId} {
+      allow read: if isSignedIn();
+      allow write, delete: if isOwner(userId) || isSuperAdmin();
+    }
+
+    // Global System Configuration (Welcome Message, Global Customer Frame)
+    match /system_config/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // Official System Announcements
+    match /official_announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow write, delete: if isSuperAdmin();
+    }
+
+    // Audit Logs (Verification, Hidden Search, General Admin Actions)
+    match /verification_audit_logs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin() && request.resource.data.adminUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /hidden_audit_logs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin() && request.resource.data.adminUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /admin_audit_logs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin() && request.resource.data.adminUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Users Collection & Private Subcollections
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId) &&
+        !('isVerified' in request.resource.data && request.resource.data.isVerified == true) &&
+        !('verifiedByUid' in request.resource.data && request.resource.data.verifiedByUid != '') &&
+        !('isBanned' in request.resource.data && request.resource.data.isBanned == true) &&
+        !('hiddenFromSearch' in request.resource.data && request.resource.data.hiddenFromSearch == true);
+      allow update: if (
+        isOwner(userId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'isVerified',
+          'verificationType',
+          'verificationExpiresAt',
+          'verifiedByUid',
+          'verifiedAt',
+          'verificationNote',
+          'frameId',
+          'frameExpiresAt',
+          'neonColor',
+          'neonGlowIntensity',
+          'isBanned',
+          'banType',
+          'banReason',
+          'banExpiresAt',
+          'warningsCount',
+          'hiddenFromSearch',
+          'hideFromSearchReason',
+          'hiddenAt',
+          'hiddenByUid'
+        ])
+      ) || isSuperAdmin();
+      allow delete: if isOwner(userId) || isSuperAdmin();
+
+      match /sessions/{sessionId} {
+        allow read, write, delete: if isOwner(userId);
+      }
+
+      match /private/{docId} {
+        allow read: if isOwner(userId) || isSuperAdmin();
+        allow write, delete: if isOwner(userId);
+      }
+
+      match /profile_visitors/{visitorId} {
+        allow read, delete: if isOwner(userId) || isSuperAdmin();
+        allow create, update: if isSignedIn() && request.resource.data.visitorUid == request.auth.uid;
+      }
+    }
+
+    // Contact Requests & Friendship Gating
+    match /contact_requests/{requestId} {
+      allow read: if isSignedIn() && (
+        resource.data.senderUid == request.auth.uid ||
+        resource.data.receiverUid == request.auth.uid
+      );
+      allow create: if isSignedIn() &&
+        request.resource.data.senderUid == request.auth.uid &&
+        request.resource.data.receiverUid != request.auth.uid &&
+        request.resource.data.status == 'PENDING';
+      allow update: if isSignedIn() && (
+        resource.data.senderUid == request.auth.uid ||
+        resource.data.receiverUid == request.auth.uid
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.senderUid == request.auth.uid ||
+        resource.data.receiverUid == request.auth.uid
+      );
+    }
+
+    // Chats & Messages (Official WESAL chats & E2EE direct/group chats)
+    match /chats/{chatId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        isSuperAdmin()
+      );
+      allow create: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          request.auth.uid in request.resource.data.participantIds && (
+            request.resource.data.isGroup == true ||
+            request.resource.data.isOfficialWesalChat == true ||
+            request.resource.data.isSupportChat == true ||
+            (
+              request.resource.data.participantIds.size() == 2 &&
+              areContactsAccepted(
+                request.resource.data.participantIds[0],
+                request.resource.data.participantIds[1]
+              )
+            )
+          )
+        )
+      );
+      allow update: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        isSuperAdmin()
+      );
+      allow delete: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        isSuperAdmin()
+      );
+
+      match /messages/{messageId} {
+        allow read: if isChatParticipant(chatId) || isSuperAdmin();
+        allow create: if (isChatParticipant(chatId) &&
+          request.resource.data.senderId == request.auth.uid) || isSuperAdmin();
+        allow update: if isChatParticipant(chatId) && (
+          resource.data.senderId == request.auth.uid ||
+          request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['status', 'deletedForUsers', 'isDeletedForEveryone', 'viewedBy', 'text'])
+        );
+        allow delete: if isSuperAdmin();
+      }
+    }
+
+    // Groups & Join Requests
+    match /groups/{groupId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.memberIds ||
+        resource.data.joinMode != 'CLOSED' ||
+        isSuperAdmin()
+      );
+      allow create: if isSignedIn() &&
+        request.resource.data.creatorId == request.auth.uid &&
+        request.auth.uid in request.resource.data.adminIds &&
+        request.auth.uid in request.resource.data.memberIds;
+      allow update: if isGroupAdmin(groupId) || isSuperAdmin() || (
+        isSignedIn() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'adminIds']) &&
+        (
+          request.auth.uid in resource.data.memberIds ||
+          resource.data.joinMode == 'OPEN'
+        )
+      );
+      allow delete: if isSuperAdmin();
+
+      match /join_requests/{requestId} {
+        allow read: if isGroupAdmin(groupId) || (
+          isSignedIn() && resource.data.requesterUid == request.auth.uid
+        );
+        allow create: if isSignedIn() &&
+          request.resource.data.requesterUid == request.auth.uid &&
+          request.resource.data.status == 'PENDING';
+        allow update: if isGroupAdmin(groupId);
+        allow delete: if isGroupAdmin(groupId) || (
+          isSignedIn() && resource.data.requesterUid == request.auth.uid
+        );
+      }
+    }
+
+    // Broadcast Channels (Public, Private & Official WESAL Team Channel)
+    match /channels/{channelId} {
+      allow read: if isSignedIn();
+      allow create: if (
+        channelId == 'wesal_official_team_channel' && isSuperAdmin()
+      ) || (
+        channelId != 'wesal_official_team_channel' &&
+        isSignedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.auth.uid in request.resource.data.subscriberIds &&
+        request.resource.data.isOfficialTeamChannel != true
+      );
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          channelId != 'wesal_official_team_channel' &&
+          (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.moderatorIds) &&
+          request.resource.data.ownerUid == resource.data.ownerUid &&
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isSuspended', 'isOfficialTeamChannel', 'isVerified'])
+        ) || (
+          resource.data.isPublic == true &&
+          resource.data.isSuspended != true &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'subscribersCount'])
+        ) || (
+          request.auth.uid in resource.data.subscriberIds &&
+          request.auth.uid != resource.data.ownerUid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'moderatorIds', 'subscribersCount'])
+        )
+      );
+      allow delete: if channelId != 'wesal_official_team_channel' && (
+        (isSignedIn() && resource.data.ownerUid == request.auth.uid) || isSuperAdmin()
+      );
+
+      match /posts/{postId} {
+        allow read: if canReadChannelPosts(channelId);
+        allow create: if isChannelManager(channelId) &&
+          request.resource.data.authorUid == request.auth.uid;
+        allow update: if isChannelManager(channelId) || (
+          canReadChannelPosts(channelId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactionCounts', 'userReactions', 'commentsCount'])
+        );
+        allow delete: if isChannelManager(channelId);
+
+        match /comments/{commentId} {
+          allow read: if canReadChannelPosts(channelId);
+          allow create: if canReadChannelPosts(channelId) &&
+            request.resource.data.authorUid == request.auth.uid;
+          allow delete: if isChannelManager(channelId) || (
+            isSignedIn() && resource.data.authorUid == request.auth.uid
+          );
+          allow update: if false;
+        }
+      }
+
+      match /join_requests/{requestId} {
+        allow read: if isChannelManager(channelId) || (
+          isSignedIn() && resource.data.requesterUid == request.auth.uid
+        );
+        allow create: if isSignedIn() &&
+          request.resource.data.requesterUid == request.auth.uid &&
+          request.resource.data.status == 'PENDING';
+        allow update: if isChannelManager(channelId);
+        allow delete: if isChannelManager(channelId) || (
+          isSignedIn() && resource.data.requesterUid == request.auth.uid
+        );
+      }
+    }
+
+    // Stories (24h TTL + Strict Owner-Only Viewers List Privacy)
+    match /stories/{storyId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        resource.data.ownerUid == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewerIds'])
+      );
+      allow delete: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+
+      match /viewers/{viewerId} {
+        allow read: if isSignedIn() &&
+          get(/databases/$(database)/documents/stories/$(storyId)).data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() &&
+          request.auth.uid == viewerId &&
+          get(/databases/$(database)/documents/stories/$(storyId)).data.ownerUid != request.auth.uid &&
+          request.resource.data.uid == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+
+    // WebRTC Calls Signaling (CONNECTING -> RINGING ack + per-user delete)
+    match /calls/{callId} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn() &&
+        request.resource.data.callerId == request.auth.uid &&
+        request.auth.uid in request.resource.data.participants;
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow delete: if false;
+
+      match /candidates/{candidateId} {
+        allow read, create: if isSignedIn() &&
+          request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participants;
+      }
+    }
+
+    // Abuse Reports (Reporter writes; Super Admin 10001 reads & updates status)
+    match /reports/{reportId} {
+      allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
+      allow read, update: if isSuperAdmin();
+      allow delete: if false;
+    }
+  }
+}

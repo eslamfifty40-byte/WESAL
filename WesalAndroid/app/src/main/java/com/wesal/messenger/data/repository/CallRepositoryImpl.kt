@@ -41,7 +41,8 @@ class CallRepositoryImpl @Inject constructor(
             callbackFlow {
                 val reg = firestore.collection(Constants.COLLECTION_CALLS)
                     .whereArrayContains("participants", uid)
-                    .addSnapshotListener { snap, _ ->
+                    .addSnapshotListener { snap, err ->
+                        if (err != null) return@addSnapshotListener
                         val list = snap?.documents?.mapNotNull { doc ->
                             val deletedFor = (doc.get("deletedForUsers") as? List<String>).orEmpty()
                             if (deletedFor.contains(uid)) return@mapNotNull null
@@ -57,6 +58,8 @@ class CallRepositoryImpl @Inject constructor(
                                 calleeVerified = doc.getBoolean("calleeVerified") ?: false,
                                 isVideo = doc.getBoolean("isVideo") ?: false,
                                 status = CallStatus.fromRaw(doc.getString("status")),
+                                calleeRingingAck = doc.getBoolean("calleeRingingAck") ?: false,
+                                ringingAt = doc.getLong("ringingAt") ?: 0L,
                                 deletedForUsers = deletedFor,
                                 startedAt = doc.getLong("startedAt") ?: 0L,
                                 endedAt = doc.getLong("endedAt") ?: 0L,
@@ -78,25 +81,36 @@ class CallRepositoryImpl @Inject constructor(
             callbackFlow {
                 val reg = firestore.collection(Constants.COLLECTION_CALLS)
                     .whereEqualTo("calleeId", uid)
-                    .whereEqualTo("status", CallStatus.RINGING.raw)
-                    .addSnapshotListener { snap, _ ->
-                        val activeRing = snap?.documents?.firstOrNull()?.let { doc ->
-                            CallRecord(
-                                callId = doc.id,
-                                callerId = doc.getString("callerId").orEmpty(),
-                                callerName = doc.getString("callerName").orEmpty(),
-                                callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
-                                callerVerified = doc.getBoolean("callerVerified") ?: false,
-                                calleeId = doc.getString("calleeId").orEmpty(),
-                                calleeName = doc.getString("calleeName").orEmpty(),
-                                calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
-                                calleeVerified = doc.getBoolean("calleeVerified") ?: false,
-                                isVideo = doc.getBoolean("isVideo") ?: false,
-                                status = CallStatus.RINGING,
-                                offerSdp = doc.getString("offerSdp").orEmpty(),
-                                startedAt = doc.getLong("startedAt") ?: 0L
-                            )
-                        }
+                    .whereIn("status", listOf(CallStatus.CONNECTING.raw, CallStatus.RINGING.raw))
+                    .addSnapshotListener { snap, err ->
+                        if (err != null) return@addSnapshotListener
+                        val cutoff = System.currentTimeMillis() - 90_000L
+                        val activeRing = snap?.documents
+                            ?.mapNotNull { doc ->
+                                val startedAt = doc.getLong("startedAt") ?: 0L
+                                val callerId = doc.getString("callerId").orEmpty()
+                                if (startedAt < cutoff || callerId.isBlank() || callerId == uid) {
+                                    return@mapNotNull null
+                                }
+                                CallRecord(
+                                    callId = doc.id,
+                                    callerId = callerId,
+                                    callerName = doc.getString("callerName").orEmpty(),
+                                    callerAvatarUrl = doc.getString("callerAvatarUrl").orEmpty(),
+                                    callerVerified = doc.getBoolean("callerVerified") ?: false,
+                                    calleeId = doc.getString("calleeId").orEmpty(),
+                                    calleeName = doc.getString("calleeName").orEmpty(),
+                                    calleeAvatarUrl = doc.getString("calleeAvatarUrl").orEmpty(),
+                                    calleeVerified = doc.getBoolean("calleeVerified") ?: false,
+                                    isVideo = doc.getBoolean("isVideo") ?: false,
+                                    status = CallStatus.fromRaw(doc.getString("status")),
+                                    calleeRingingAck = doc.getBoolean("calleeRingingAck") ?: false,
+                                    ringingAt = doc.getLong("ringingAt") ?: 0L,
+                                    offerSdp = doc.getString("offerSdp").orEmpty(),
+                                    startedAt = startedAt
+                                )
+                            }
+                            ?.maxByOrNull { it.startedAt }
                         trySend(activeRing)
                     }
                 awaitClose { reg.remove() }
@@ -107,7 +121,8 @@ class CallRepositoryImpl @Inject constructor(
     override fun observeCall(callId: String): Flow<CallRecord?> = callbackFlow {
         val reg = firestore.collection(Constants.COLLECTION_CALLS)
             .document(callId)
-            .addSnapshotListener { doc, _ ->
+            .addSnapshotListener { doc, err ->
+                if (err != null) return@addSnapshotListener
                 if (doc == null || !doc.exists()) {
                     trySend(null)
                     return@addSnapshotListener
@@ -125,6 +140,8 @@ class CallRepositoryImpl @Inject constructor(
                         calleeVerified = doc.getBoolean("calleeVerified") ?: false,
                         isVideo = doc.getBoolean("isVideo") ?: false,
                         status = CallStatus.fromRaw(doc.getString("status")),
+                        calleeRingingAck = doc.getBoolean("calleeRingingAck") ?: false,
+                        ringingAt = doc.getLong("ringingAt") ?: 0L,
                         offerSdp = doc.getString("offerSdp").orEmpty(),
                         answerSdp = doc.getString("answerSdp").orEmpty(),
                         startedAt = doc.getLong("startedAt") ?: 0L,
@@ -154,7 +171,10 @@ class CallRepositoryImpl @Inject constructor(
             "calleeAvatarUrl" to callee.photoUrl,
             "calleeVerified" to callee.isVerified,
             "isVideo" to isVideo,
-            "status" to CallStatus.RINGING.raw,
+            // Starts in CONNECTING; switches to RINGING only when callee confirms active reception
+            "status" to CallStatus.CONNECTING.raw,
+            "calleeRingingAck" to false,
+            "ringingAt" to 0L,
             "offerSdp" to offerSdp,
             "answerSdp" to "",
             "deletedForUsers" to emptyList<String>(),
@@ -164,6 +184,27 @@ class CallRepositoryImpl @Inject constructor(
         )
         firestore.collection(Constants.COLLECTION_CALLS).document(callId).set(data).await()
         callId
+    }
+
+    override suspend fun acknowledgeIncomingRing(callId: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val callRef = firestore.collection(Constants.COLLECTION_CALLS).document(callId)
+        firestore.runTransaction { tx ->
+            val snap = tx.get(callRef)
+            if (!snap.exists()) return@runTransaction
+            if (snap.getString("calleeId") != uid) return@runTransaction
+            val status = CallStatus.fromRaw(snap.getString("status"))
+            if (status == CallStatus.CONNECTING) {
+                tx.update(
+                    callRef,
+                    mapOf(
+                        "status" to CallStatus.RINGING.raw,
+                        "calleeRingingAck" to true,
+                        "ringingAt" to System.currentTimeMillis()
+                    )
+                )
+            }
+        }.await()
     }
 
     override suspend fun submitAnswer(callId: String, answerSdp: String): Result<Unit> = runCatching {

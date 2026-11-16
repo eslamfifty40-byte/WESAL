@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -78,6 +79,7 @@ private fun ContactsInviteScreen(
 
     var contacts by remember { mutableStateOf(emptyList<DeviceContact>()) }
     var matchedUsers by remember { mutableStateOf<Map<String, WesalUser>>(emptyMap()) }
+    var invitedPhones by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     LaunchedEffect(granted) {
         if (granted) {
@@ -104,12 +106,16 @@ private fun ContactsInviteScreen(
             .padding(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = strings.inviteFriends,
-                style = MaterialTheme.typography.titleLarge,
-                color = palette.textPrimary,
-                modifier = Modifier.weight(1f)
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(strings.inviteFriends, style = MaterialTheme.typography.titleLarge, color = palette.textPrimary)
+                if (invitedPhones.isNotEmpty()) {
+                    Text(
+                        text = if (strings.isEnglish) "Invited in session: ${invitedPhones.size}" else "عدد الدعوات المرسلة: ${invitedPhones.size}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.emerald
+                    )
+                }
+            }
             TextButton(onClick = onClose) { Text(strings.back) }
         }
         OutlinedTextField(
@@ -128,9 +134,7 @@ private fun ContactsInviteScreen(
                 focusedContainerColor = palette.surface,
                 unfocusedContainerColor = palette.surface
             ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 8.dp)
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
         )
         if (!granted) {
             Text(
@@ -145,36 +149,28 @@ private fun ContactsInviteScreen(
             Button(
                 onClick = { launcher.launch(Manifest.permission.READ_CONTACTS) },
                 colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
-            ) {
-                Text(if (strings.isEnglish) "Allow" else "السماح")
-            }
+            ) { Text(if (strings.isEnglish) "Allow" else "السماح") }
         }
         LazyColumn {
             items(shown, key = { "${it.contactId}_${it.rawPhone}" }) { c ->
                 val registeredUser = c.phoneHash?.let { matchedUsers[it] }
+                val phoneKey = c.e164Phone ?: c.rawPhone
+                val isInvited = invitedPhones.contains(phoneKey)
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(c.displayName, color = palette.textPrimary)
-                        Text(
-                            text = c.e164Phone ?: c.rawPhone,
-                            color = palette.textSecondary,
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                        Text(phoneKey, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
                     }
                     if (registeredUser != null) {
-                        Text(
-                            text = if (strings.isEnglish) "On WESAL" else "مسجّل",
-                            color = palette.emerald
-                        )
+                        Text(if (strings.isEnglish) "On WESAL" else "مسجّل", color = palette.emerald, fontWeight = FontWeight.Bold)
                     } else {
                         Button(
                             onClick = {
+                                invitedPhones = invitedPhones + phoneKey
                                 WesalShareUtils.shareViaWhatsApp(
                                     context = ctx,
                                     message = WesalShareUtils.buildInviteMessage(
@@ -186,11 +182,11 @@ private fun ContactsInviteScreen(
                                 )
                             },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = palette.emerald,
-                                contentColor = palette.onPrimary
+                                containerColor = if (isInvited) palette.surfaceElevated else palette.emerald,
+                                contentColor = if (isInvited) palette.emerald else palette.onPrimary
                             )
                         ) {
-                            Text(strings.inviteViaWhatsApp)
+                            Text(if (isInvited) (if (strings.isEnglish) "Invited ✓" else "تمت الدعوة ✓") else strings.inviteViaWhatsApp)
                         }
                     }
                 }

@@ -1,11 +1,25 @@
 import * as admin from "firebase-admin";
-import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 
 admin.initializeApp();
 const db = admin.firestore();
 
 const SUPER_ADMIN_EMAIL = "eslamfifty40@gmail.com";
+const OWNER_NUMERIC_ID = "10001";
+
+async function verifyOwnerSuperAdmin(uid: string, tokenEmail?: string): Promise<boolean> {
+  if (!uid) return false;
+  if ((tokenEmail || "").toLowerCase() !== SUPER_ADMIN_EMAIL.toLowerCase()) return false;
+  const saDoc = await db.collection("super_admins").doc(uid).get();
+  if (!saDoc.exists || saDoc.data()?.active === false) return false;
+  const saNumeric = String(saDoc.data()?.numericId || "");
+  if (saNumeric && saNumeric !== OWNER_NUMERIC_ID) return false;
+  const userDoc = await db.collection("users").doc(uid).get();
+  const userNumeric = String(userDoc.data()?.numericId || "");
+  if (userNumeric && userNumeric !== OWNER_NUMERIC_ID) return false;
+  return true;
+}
 
 export const onNewMessagePush = onDocumentCreated(
   "chats/{chatId}/messages/{messageId}",
@@ -27,31 +41,38 @@ export const onNewMessagePush = onDocumentCreated(
     const title = isGroup ? (chat.groupName || "مجموعة WESAL") : (msg.senderName || "رسالة جديدة");
     const body = msg.isEncrypted ? "رسالة مشفرة جديدة" : (msg.text || "مرفق جديد");
 
-    const tokens: string[] = [];
     for (const uid of recipients) {
       const userSnap = await db.collection("users").doc(uid).get();
       const userData = userSnap.data();
       const blocked: string[] = userData?.blockedUsers || [];
       if (blocked.includes(senderId)) continue;
       const token = userData?.fcmToken;
-      if (token) tokens.push(token);
+      if (!token) continue;
+
+      const hiddenChatIds: string[] = userData?.hiddenChatIds || [];
+      const isHiddenForRecipient = hiddenChatIds.includes(chatId);
+
+      await admin.messaging().send({
+        token,
+        data: isHiddenForRecipient
+          ? {
+              type: "HIDDEN_MESSAGE",
+              messageId: event.params.messageId,
+              title: "WESAL Messenger",
+              body: "لديك رسالة جديدة"
+            }
+          : {
+              type: isGroup ? "GROUP_MESSAGE" : "MESSAGE",
+              messageId: event.params.messageId,
+              chatId,
+              title,
+              body
+            },
+        android: {
+          priority: "high"
+        }
+      });
     }
-
-    if (tokens.length === 0) return;
-
-    await admin.messaging().sendEachForMulticast({
-      tokens,
-      data: {
-        type: isGroup ? "GROUP_MESSAGE" : "MESSAGE",
-        messageId: event.params.messageId,
-        chatId,
-        title,
-        body
-      },
-      android: {
-        priority: "high"
-      }
-    });
   }
 );
 
@@ -59,7 +80,7 @@ export const onIncomingCallPush = onDocumentCreated(
   "calls/{callId}",
   async (event) => {
     const call = event.data?.data();
-    if (!call || call.status !== "RINGING") return;
+    if (!call || (call.status !== "CONNECTING" && call.status !== "RINGING")) return;
 
     const calleeSnap = await db.collection("users").doc(call.calleeId).get();
     const calleeData = calleeSnap.data();
@@ -82,6 +103,19 @@ export const onIncomingCallPush = onDocumentCreated(
         priority: "high"
       }
     });
+  }
+);
+
+export const onCallStateChanged = onDocumentUpdated(
+  "calls/{callId}",
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!before || !after) return;
+
+    if (before.status !== "MISSED" && after.status === "MISSED" && !after.endedAt) {
+      await event.data?.after.ref.update({ endedAt: Date.now() });
+    }
   }
 );
 
@@ -142,7 +176,7 @@ export const onNewChannelPostPush = onDocumentCreated(
     const channelId = event.params.channelId;
     const channelSnap = await db.collection("channels").doc(channelId).get();
     const channel = channelSnap.data();
-    if (!channel) return;
+    if (!channel || channel.isSuspended === true) return;
 
     const authorUid: string = post.authorUid || "";
     const subscribers: string[] = (channel.subscriberIds || []).filter(
@@ -192,7 +226,8 @@ export const inspectFirstAdminCandidate = onCall(async (request) => {
   return {
     uid: userRecord.uid,
     email: userRecord.email || SUPER_ADMIN_EMAIL,
-    emailVerified: userRecord.emailVerified
+    emailVerified: userRecord.emailVerified,
+    ownerNumericId: OWNER_NUMERIC_ID
   };
 });
 
@@ -202,15 +237,18 @@ export const setAccountVerification = onCall(async (request) => {
   }
 
   const callerUid = request.auth.uid;
-  const callerEmail = (request.auth.token.email || "").toLowerCase();
-  const superAdminDoc = await db.collection("super_admins").doc(callerUid).get();
-  const isAuthorized = superAdminDoc.exists || callerEmail === SUPER_ADMIN_EMAIL.toLowerCase();
+  const callerEmail = String(request.auth.token.email || "");
+  const isAuthorized = await verifyOwnerSuperAdmin(callerUid, callerEmail);
   if (!isAuthorized) {
-    throw new HttpsError("permission-denied", "Only the Super Admin can manage verification seals");
+    throw new HttpsError("permission-denied", "Only Owner Super Admin (10001) can manage verification seals");
   }
 
   const targetUid = String(request.data?.targetUid || "").trim();
   const verified = Boolean(request.data?.verified);
+  const verificationTypeRaw = String(request.data?.verificationType || "BLUE").toUpperCase();
+  const verificationType = ["BLUE", "BLACK", "GREEN"].includes(verificationTypeRaw) ? verificationTypeRaw : "BLUE";
+  const expiresAt = Number(request.data?.expiresAt || 0);
+  const durationLabel = String(request.data?.durationLabel || (expiresAt === 0 ? "دائم" : "مؤقت")).trim();
   const note = String(request.data?.note || "").trim();
   if (!targetUid) {
     throw new HttpsError("invalid-argument", "targetUid is required");
@@ -226,6 +264,8 @@ export const setAccountVerification = onCall(async (request) => {
 
   await targetRef.update({
     isVerified: verified,
+    verificationType,
+    verificationExpiresAt: verified ? expiresAt : 0,
     verifiedByUid: verified ? callerUid : "",
     verifiedAt: verified ? now : 0,
     verificationNote: note
@@ -234,15 +274,20 @@ export const setAccountVerification = onCall(async (request) => {
   const logRef = db.collection("verification_audit_logs").doc();
   await logRef.set({
     logId: logRef.id,
+    operationId: logRef.id,
     targetUid,
+    targetNumericId: targetData.numericId || "",
     targetPublicId: targetData.publicId || "",
     targetName: targetData.displayName || "",
     action: verified ? "GRANTED" : "REVOKED",
+    verificationType,
+    durationLabel,
+    expiresAt: verified ? expiresAt : 0,
     adminUid: callerUid,
     adminEmail: callerEmail || SUPER_ADMIN_EMAIL,
     note,
     timestamp: now
   });
 
-  return { ok: true, targetUid, isVerified: verified };
+  return { ok: true, targetUid, isVerified: verified, verificationType };
 });

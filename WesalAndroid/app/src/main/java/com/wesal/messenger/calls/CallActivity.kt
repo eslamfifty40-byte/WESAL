@@ -3,9 +3,13 @@ package com.wesal.messenger.calls
 import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
@@ -42,6 +46,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
@@ -57,11 +62,14 @@ class CallActivity : AppCompatActivity() {
 
     private var activeCallId: String = ""
     private var startedSeconds: Long = 0L
+    private var isFinishingCall: Boolean = false
     private val pendingLocalCandidates = mutableListOf<IceCandidate>()
 
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Strict screenshot & screen-recording protection during active calls
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val isIncoming = intent.getBooleanExtra(EXTRA_IS_INCOMING, false)
         val initialCallId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
@@ -92,19 +100,45 @@ class CallActivity : AppCompatActivity() {
 
                 var micMuted by remember { mutableStateOf(false) }
                 var cameraOff by remember { mutableStateOf(!isVideo) }
-                var speakerOn by remember { mutableStateOf(isVideo) }
                 var durationSeconds by remember { mutableLongStateOf(0L) }
+                // Start strictly with CONNECTING ("جاري الاتصال...") — switches to RINGING only on real callee ACK
                 var callStatusLabel by remember(strings.isEnglish) {
-                    mutableStateOf(if (isIncoming) strings.connectingCall else strings.ringingCall)
+                    mutableStateOf(strings.connectingCall)
                 }
 
                 val connState by webRtcManager.connectionState.collectAsStateWithLifecycle()
                 val remoteVideo by webRtcManager.remoteVideoTrack.collectAsStateWithLifecycle()
                 val localVideo by webRtcManager.localVideoTrackFlow.collectAsStateWithLifecycle()
+                val audioRoute by webRtcManager.audioRoute.collectAsStateWithLifecycle()
+
+                BackHandler { hangupCall() }
 
                 LaunchedEffect(Unit) {
                     if (!permissions.allPermissionsGranted) {
                         permissions.launchMultiplePermissionRequest()
+                    }
+                }
+
+                // Outgoing ringback tone ONLY after callee genuinely acknowledges ringing
+                LaunchedEffect(isIncoming, callStatusLabel, connState, permissions.allPermissionsGranted) {
+                    if (
+                        !isIncoming &&
+                        permissions.allPermissionsGranted &&
+                        callStatusLabel == strings.ringingCall &&
+                        connState != PeerConnection.PeerConnectionState.CONNECTED
+                    ) {
+                        val toneGen = runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 65) }.getOrNull()
+                        try {
+                            while (isActive) {
+                                runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_RINGTONE, 1000) }
+                                delay(3500L)
+                            }
+                        } finally {
+                            runCatching {
+                                toneGen?.stopTone()
+                                toneGen?.release()
+                            }
+                        }
                     }
                 }
 
@@ -164,7 +198,14 @@ class CallActivity : AppCompatActivity() {
                                                 )
                                             }
                                         }
-                                        listenToCallAndCandidates(newCallId, isCaller = true, connectedText = strings.connectedCall) { status ->
+                                        listenToCallAndCandidates(
+                                            callId = newCallId,
+                                            isCaller = true,
+                                            ringingText = strings.ringingCall,
+                                            connectedText = strings.connectedCall,
+                                            rejectedText = strings.callRejected,
+                                            missedText = strings.callMissed
+                                        ) { status ->
                                             callStatusLabel = status
                                         }
                                     }
@@ -181,7 +222,14 @@ class CallActivity : AppCompatActivity() {
                             webRtcManager.setRemoteOfferAndCreateAnswer(callDoc.offerSdp) { answerSdp ->
                                 lifecycleScope.launch {
                                     callRepository.submitAnswer(initialCallId, answerSdp)
-                                    listenToCallAndCandidates(initialCallId, isCaller = false, connectedText = strings.connectedCall) { status ->
+                                    listenToCallAndCandidates(
+                                        callId = initialCallId,
+                                        isCaller = false,
+                                        ringingText = strings.ringingCall,
+                                        connectedText = strings.connectedCall,
+                                        rejectedText = strings.callRejected,
+                                        missedText = strings.callMissed
+                                    ) { status ->
                                         callStatusLabel = status
                                     }
                                 }
@@ -208,10 +256,12 @@ class CallActivity : AppCompatActivity() {
                 LaunchedEffect(isIncoming, connState) {
                     if (!isIncoming && connState != PeerConnection.PeerConnectionState.CONNECTED) {
                         delay(45_000L)
-                        if (webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED) {
+                        if (webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED && !isFinishingCall) {
+                            callStatusLabel = strings.callMissed
                             if (activeCallId.isNotBlank()) {
                                 callRepository.updateCallStatus(activeCallId, CallStatus.MISSED, 0L)
                             }
+                            delay(1100L)
                             finishCallLocally()
                         }
                     }
@@ -341,6 +391,7 @@ class CallActivity : AppCompatActivity() {
                         CallControlBtn(
                             icon = if (micMuted) Icons.Default.MicOff else Icons.Default.Mic,
                             active = micMuted,
+                            label = if (micMuted) (if (strings.isEnglish) "Muted" else "مكتوم") else (if (strings.isEnglish) "Mic" else "الميكروفون"),
                             onClick = {
                                 micMuted = !micMuted
                                 webRtcManager.setMicEnabled(!micMuted)
@@ -350,6 +401,7 @@ class CallActivity : AppCompatActivity() {
                             CallControlBtn(
                                 icon = if (cameraOff) Icons.Default.VideocamOff else Icons.Default.Videocam,
                                 active = cameraOff,
+                                label = strings.camera,
                                 onClick = {
                                     cameraOff = !cameraOff
                                     webRtcManager.setCameraEnabled(!cameraOff)
@@ -358,25 +410,36 @@ class CallActivity : AppCompatActivity() {
                             CallControlBtn(
                                 icon = Icons.Default.Cameraswitch,
                                 active = false,
+                                label = if (strings.isEnglish) "Flip" else "تبديل",
                                 onClick = { webRtcManager.switchCamera() }
                             )
                         }
+                        val (audioIcon, audioLabel) = when (audioRoute) {
+                            CallAudioRoute.BLUETOOTH -> Icons.Default.BluetoothAudio to strings.bluetoothAudio
+                            CallAudioRoute.SPEAKER -> Icons.Default.VolumeUp to strings.speakerAudio
+                            CallAudioRoute.EARPIECE -> Icons.Default.Hearing to strings.earpieceAudio
+                        }
                         CallControlBtn(
-                            icon = if (speakerOn) Icons.Default.VolumeUp else Icons.Default.Hearing,
-                            active = speakerOn,
-                            onClick = {
-                                speakerOn = !speakerOn
-                                webRtcManager.setSpeakerphone(speakerOn)
-                            }
+                            icon = audioIcon,
+                            active = audioRoute != CallAudioRoute.EARPIECE,
+                            label = audioLabel,
+                            onClick = { webRtcManager.cycleAudioRoute() }
                         )
-                        FloatingActionButton(
-                            onClick = { hangupCall() },
-                            containerColor = palette.error,
-                            contentColor = Color.White,
-                            shape = CircleShape,
-                            modifier = Modifier.size(62.dp)
-                        ) {
-                            Icon(Icons.Default.CallEnd, contentDescription = null)
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            FloatingActionButton(
+                                onClick = { hangupCall() },
+                                containerColor = palette.error,
+                                contentColor = Color.White,
+                                shape = CircleShape,
+                                modifier = Modifier.size(62.dp)
+                            ) {
+                                Icon(Icons.Default.CallEnd, contentDescription = null)
+                            }
+                            Text(
+                                text = if (strings.isEnglish) "End" else "إنهاء",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textSecondary
+                            )
                         }
                     }
                 }
@@ -387,7 +450,10 @@ class CallActivity : AppCompatActivity() {
     private fun listenToCallAndCandidates(
         callId: String,
         isCaller: Boolean,
+        ringingText: String,
         connectedText: String,
+        rejectedText: String,
+        missedText: String,
         onStatus: (String) -> Unit
     ) {
         lifecycleScope.launch {
@@ -399,20 +465,43 @@ class CallActivity : AppCompatActivity() {
         lifecycleScope.launch {
             var answerApplied = false
             callRepository.observeCall(callId).collect { call ->
-                if (call == null) return@collect
+                if (call == null || isFinishingCall) return@collect
+                if (isCaller && (call.status == CallStatus.RINGING || call.calleeRingingAck) &&
+                    !answerApplied && webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED
+                ) {
+                    onStatus(ringingText)
+                }
                 if (isCaller && !answerApplied && call.answerSdp.isNotBlank()) {
                     answerApplied = true
                     webRtcManager.setRemoteAnswer(call.answerSdp)
                     onStatus(connectedText)
                 }
-                if (call.status == CallStatus.ENDED || call.status == CallStatus.REJECTED) {
-                    finishCallLocally()
+                when (call.status) {
+                    CallStatus.REJECTED -> {
+                        isFinishingCall = true
+                        onStatus(rejectedText)
+                        delay(1200L)
+                        finishCallLocally()
+                    }
+                    CallStatus.MISSED -> {
+                        isFinishingCall = true
+                        onStatus(missedText)
+                        delay(1200L)
+                        finishCallLocally()
+                    }
+                    CallStatus.ENDED -> {
+                        isFinishingCall = true
+                        finishCallLocally()
+                    }
+                    else -> Unit
                 }
             }
         }
     }
 
     private fun hangupCall() {
+        if (isFinishingCall) return
+        isFinishingCall = true
         lifecycleScope.launch {
             if (activeCallId.isNotBlank()) {
                 callRepository.updateCallStatus(activeCallId, CallStatus.ENDED, startedSeconds)
@@ -428,6 +517,7 @@ class CallActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         webRtcManager.endSession()
         stopService(Intent(this, CallForegroundService::class.java))
         super.onDestroy()
@@ -463,10 +553,12 @@ class CallActivity : AppCompatActivity() {
             peerName: String,
             peerAvatar: String,
             isVideo: Boolean,
-            peerVerified: Boolean = false
+            peerVerified: Boolean = false,
+            peerUid: String = ""
         ): Intent = Intent(context, CallActivity::class.java).apply {
             putExtra(EXTRA_IS_INCOMING, true)
             putExtra(EXTRA_CALL_ID, callId)
+            putExtra(EXTRA_PEER_UID, peerUid)
             putExtra(EXTRA_PEER_NAME, peerName)
             putExtra(EXTRA_PEER_AVATAR, peerAvatar)
             putExtra(EXTRA_PEER_VERIFIED, peerVerified)
@@ -479,17 +571,25 @@ class CallActivity : AppCompatActivity() {
 private fun CallControlBtn(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     active: Boolean,
+    label: String,
     onClick: () -> Unit
 ) {
     val palette = WesalColors.current
-    FilledIconButton(
-        onClick = onClick,
-        colors = IconButtonDefaults.filledIconButtonColors(
-            containerColor = if (active) palette.turquoise else palette.surfaceElevated,
-            contentColor = if (active) palette.onPrimary else palette.textPrimary
-        ),
-        modifier = Modifier.size(52.dp)
-    ) {
-        Icon(icon, contentDescription = null)
+    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        FilledIconButton(
+            onClick = onClick,
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = if (active) palette.turquoise else palette.surfaceElevated,
+                contentColor = if (active) palette.onPrimary else palette.textPrimary
+            ),
+            modifier = Modifier.size(52.dp)
+        ) {
+            Icon(icon, contentDescription = label)
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = palette.textSecondary
+        )
     }
 }

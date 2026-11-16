@@ -10,6 +10,8 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.wesal.messenger.MainActivity
 import com.wesal.messenger.R
+import com.wesal.messenger.calls.CallActionReceiver
+import com.wesal.messenger.calls.CallActivity
 import com.wesal.messenger.calls.IncomingCallActivity
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -44,25 +46,39 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
         val type = data["type"] ?: "MESSAGE"
         if (type != "SYSTEM" && auth.currentUser == null) return
 
-        val title = data["title"] ?: message.notification?.title ?: getString(R.string.app_name)
-        val body = data["body"] ?: message.notification?.body.orEmpty()
-        val dedupId = (data["messageId"] ?: "${type}_${data["chatId"].orEmpty()}_${body.hashCode()}").hashCode()
+        val rawTitle = data["title"] ?: message.notification?.title ?: getString(R.string.app_name)
+        val rawBody = data["body"] ?: message.notification?.body.orEmpty()
+        val chatId = data["chatId"]
+        val dedupId = (data["messageId"] ?: "${type}_${chatId.orEmpty()}_${rawBody.hashCode()}").hashCode()
 
         serviceScope.launch {
             val userSettings = prefs.settingsFlow.first()
+            val isHiddenChat = !chatId.isNullOrBlank() && userSettings.hiddenChatIds.contains(chatId)
+            val title = if (isHiddenChat) getString(R.string.app_name) else rawTitle
+            val body = if (isHiddenChat) "لديك رسالة جديدة" else rawBody
+
             when (type) {
                 "INCOMING_CALL" -> {
                     if (!userSettings.notificationsCalls) return@launch
                     showIncomingCallNotification(
                         callId = data["callId"].orEmpty(),
+                        callerUid = data["callerId"].orEmpty(),
                         callerName = data["callerName"] ?: title,
                         callerAvatar = data["callerAvatar"].orEmpty(),
+                        callerVerified = data["callerVerified"] == "true",
                         isVideo = data["isVideo"] == "true"
                     )
                 }
                 "GROUP_MESSAGE" -> {
                     if (!userSettings.notificationsGroups) return@launch
-                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], null, dedupId)
+                    showStandardNotification(
+                        channelId = Constants.CHANNEL_MESSAGES,
+                        title = title,
+                        body = body,
+                        chatId = if (isHiddenChat) null else chatId,
+                        wesalChannelId = null,
+                        notificationId = dedupId
+                    )
                 }
                 "STORY" -> {
                     if (!userSettings.notificationsStories) return@launch
@@ -73,11 +89,18 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                     showStandardNotification(Constants.CHANNEL_CHANNELS, title, body, null, data["channelId"], dedupId)
                 }
                 "SYSTEM" -> {
-                    showStandardNotification(Constants.CHANNEL_SYSTEM, title, body, null, null, dedupId)
+                    showStandardNotification(Constants.CHANNEL_SYSTEM, rawTitle, rawBody, null, null, dedupId)
                 }
                 else -> {
                     if (!userSettings.notificationsMessages) return@launch
-                    showStandardNotification(Constants.CHANNEL_MESSAGES, title, body, data["chatId"], null, dedupId)
+                    showStandardNotification(
+                        channelId = Constants.CHANNEL_MESSAGES,
+                        title = title,
+                        body = body,
+                        chatId = if (isHiddenChat) null else chatId,
+                        wesalChannelId = null,
+                        notificationId = dedupId
+                    )
                 }
             }
         }
@@ -118,21 +141,55 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
 
     private fun showIncomingCallNotification(
         callId: String,
+        callerUid: String,
         callerName: String,
         callerAvatar: String,
+        callerVerified: Boolean,
         isVideo: Boolean
     ) {
+        val notifId = callId.hashCode()
         val callIntent = Intent(this, IncomingCallActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra(IncomingCallActivity.EXTRA_CALL_ID, callId)
+            putExtra(IncomingCallActivity.EXTRA_CALLER_UID, callerUid)
             putExtra(IncomingCallActivity.EXTRA_CALLER_NAME, callerName)
             putExtra(IncomingCallActivity.EXTRA_CALLER_AVATAR, callerAvatar)
+            putExtra(IncomingCallActivity.EXTRA_CALLER_VERIFIED, callerVerified)
             putExtra(IncomingCallActivity.EXTRA_IS_VIDEO, isVideo)
         }
         val fullScreenPendingIntent = PendingIntent.getActivity(
             this,
-            callId.hashCode(),
+            notifId,
             callIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val answerIntent = CallActivity.createIncomingAnswerIntent(
+            context = this,
+            callId = callId,
+            peerName = callerName,
+            peerAvatar = callerAvatar,
+            isVideo = isVideo,
+            peerVerified = callerVerified,
+            peerUid = callerUid
+        ).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val answerPendingIntent = PendingIntent.getActivity(
+            this,
+            notifId + 1,
+            answerIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val rejectIntent = Intent(this, CallActionReceiver::class.java).apply {
+            action = CallActionReceiver.ACTION_REJECT_CALL
+            putExtra(CallActionReceiver.EXTRA_CALL_ID, callId)
+        }
+        val rejectPendingIntent = PendingIntent.getBroadcast(
+            this,
+            notifId + 2,
+            rejectIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -142,11 +199,14 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             .setContentText(if (isVideo) "مكالمة فيديو واردة" else "مكالمة صوتية واردة")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setAutoCancel(true)
+            .setOngoing(true)
+            .setAutoCancel(false)
             .setFullScreenIntent(fullScreenPendingIntent, true)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "رفض", rejectPendingIntent)
+            .addAction(android.R.drawable.ic_menu_call, "رد", answerPendingIntent)
             .build()
 
         val manager = getSystemService(NotificationManager::class.java) ?: return
-        manager.notify(callId.hashCode(), notification)
+        manager.notify(notifId, notification)
     }
 }

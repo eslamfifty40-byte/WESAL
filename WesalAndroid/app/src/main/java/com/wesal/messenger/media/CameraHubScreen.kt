@@ -29,13 +29,20 @@ import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.PrivacyVisibility
+import com.wesal.messenger.domain.model.StoryAudienceMode
+import com.wesal.messenger.domain.model.WesalUser
+import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.StoryPublishEvent
 import com.wesal.messenger.domain.repository.StoryRepository
+import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.stories.StoryAudienceSummaryRow
+import com.wesal.messenger.stories.StoryContactsPickerDialog
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
@@ -53,28 +60,63 @@ data class CameraHubUiState(
 class CameraHubViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val chatRepository: ChatRepository,
-    private val storyRepository: StoryRepository
+    private val storyRepository: StoryRepository,
+    private val userRepository: UserRepository,
+    private val authRepository: AuthRepository,
+    private val prefs: UserPreferencesDataStore
 ) : ViewModel() {
 
-    val chats: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val chats: StateFlow<List<ChatPreview>> = combine(
+        chatRepository.observeChats(),
+        prefs.settingsFlow.map { it.hiddenChatIds }
+    ) { list, hiddenIds ->
+        list.filterNot { it.isOfficialWesalChat || it.chatId in hiddenIds }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val savedAudienceMode: StateFlow<StoryAudienceMode> = prefs.settingsFlow
+        .map { StoryAudienceMode.fromRaw(it.lastStoryAudienceMode) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, StoryAudienceMode.CONTACTS)
+
+    val acceptedContacts: StateFlow<List<WesalUser>> = combine(
+        authRepository.observeAuthState().map { it.orEmpty() },
+        userRepository.observeContactRequests()
+    ) { uid, requests ->
+        uid to requests.filter { it.status.raw == "ACCEPTED" }
+    }.map { (uid, accepted) ->
+        if (uid.isBlank()) emptyList()
+        else accepted.map { if (it.senderUid == uid) it.receiverUid else it.senderUid }
+            .distinct()
+            .filter { it.isNotBlank() && it != uid }
+            .mapNotNull { pid -> userRepository.getUserOnce(pid) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _uiState = MutableStateFlow(CameraHubUiState())
     val uiState: StateFlow<CameraHubUiState> = _uiState.asStateFlow()
+
+    fun persistAudienceMode(mode: StoryAudienceMode) {
+        viewModelScope.launch { prefs.setLastStoryAudienceMode(mode.raw) }
+    }
 
     fun publishAsStory(
         uri: Uri,
         isVideo: Boolean,
         caption: String,
+        audienceMode: StoryAudienceMode,
+        allowedViewerIds: List<String>,
+        excludedViewerIds: List<String>,
         onSuccess: () -> Unit
     ) {
+        val visibility = if (audienceMode == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
         viewModelScope.launch {
             _uiState.value = CameraHubUiState(isSending = true, progress = 0.05f)
             storyRepository.publishMediaStory(
                 uri = uri,
                 isVideo = isVideo,
                 caption = caption,
-                visibility = PrivacyVisibility.EVERYONE
+                visibility = visibility,
+                audienceMode = audienceMode,
+                allowedViewerIds = allowedViewerIds,
+                excludedViewerIds = excludedViewerIds
             ).collect { event ->
                 when (event) {
                     is StoryPublishEvent.Progress -> {
@@ -165,8 +207,13 @@ fun CameraHubScreen(
     val strings = LocalWesalStrings.current
     val chats by viewModel.chats.collectAsStateWithLifecycle()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val savedAudience by viewModel.savedAudienceMode.collectAsStateWithLifecycle()
+    val contacts by viewModel.acceptedContacts.collectAsStateWithLifecycle()
 
     var capturedMedia by remember { mutableStateOf<Triple<Uri, Boolean, String>?>(null) }
+    var selectedAudience by remember(savedAudience) { mutableStateOf(savedAudience) }
+    var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showContactsPickerForMode by remember { mutableStateOf<StoryAudienceMode?>(null) }
 
     val activeCapture = capturedMedia
     if (activeCapture == null) {
@@ -292,12 +339,30 @@ fun CameraHubScreen(
                 }
             }
 
+            StoryAudienceSummaryRow(
+                audienceMode = selectedAudience,
+                selectedCount = selectedContactIds.size,
+                totalContactsCount = contacts.size,
+                onSelectMode = { mode ->
+                    selectedAudience = mode
+                    viewModel.persistAudienceMode(mode)
+                    if (mode == StoryAudienceMode.CONTACTS_EXCEPT || mode == StoryAudienceMode.ONLY_WITH) {
+                        showContactsPickerForMode = mode
+                    }
+                }
+            )
+
             Button(
                 onClick = {
+                    val allowed = if (selectedAudience == StoryAudienceMode.ONLY_WITH) selectedContactIds.toList() else emptyList()
+                    val excluded = if (selectedAudience == StoryAudienceMode.CONTACTS_EXCEPT) selectedContactIds.toList() else emptyList()
                     viewModel.publishAsStory(
                         uri = mediaUri,
                         isVideo = isVideo,
                         caption = caption,
+                        audienceMode = selectedAudience,
+                        allowedViewerIds = allowed,
+                        excludedViewerIds = excluded,
                         onSuccess = onStoryPublished
                     )
                 },
@@ -410,5 +475,18 @@ fun CameraHubScreen(
                 }
             }
         }
+    }
+
+    showContactsPickerForMode?.let { mode ->
+        StoryContactsPickerDialog(
+            mode = mode,
+            contacts = contacts,
+            initialSelectedIds = selectedContactIds,
+            onDismiss = { showContactsPickerForMode = null },
+            onConfirm = { picked ->
+                selectedContactIds = picked
+                showContactsPickerForMode = null
+            }
+        )
     }
 }

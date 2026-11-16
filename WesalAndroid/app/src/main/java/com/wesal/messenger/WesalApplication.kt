@@ -22,6 +22,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
+import com.google.firebase.firestore.SetOptions
 import com.wesal.messenger.core.util.Constants
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -63,20 +64,24 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     }
 
     private fun configureFirestoreOfflinePersistence() {
-        val settings = FirebaseFirestoreSettings.Builder()
-            .setLocalCacheSettings(PersistentCacheSettings.newBuilder().build())
-            .build()
-        firestore.firestoreSettings = settings
+        runCatching {
+            val settings = FirebaseFirestoreSettings.Builder()
+                .setLocalCacheSettings(PersistentCacheSettings.newBuilder().build())
+                .build()
+            firestore.firestoreSettings = settings
+        }
     }
 
     private fun configureAppCheck() {
-        val appCheck = FirebaseAppCheck.getInstance()
-        val factory = if (BuildConfig.DEBUG) {
-            DebugAppCheckProviderFactory.getInstance()
-        } else {
-            PlayIntegrityAppCheckProviderFactory.getInstance()
+        runCatching {
+            val appCheck = FirebaseAppCheck.getInstance()
+            val factory = if (BuildConfig.DEBUG) {
+                DebugAppCheckProviderFactory.getInstance()
+            } else {
+                PlayIntegrityAppCheckProviderFactory.getInstance()
+            }
+            appCheck.installAppCheckProviderFactory(factory)
         }
-        appCheck.installAppCheckProviderFactory(factory)
     }
 
     override fun onStart(owner: LifecycleOwner) {
@@ -89,13 +94,31 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
 
     private fun updateUserPresence(isOnline: Boolean) {
         val uid = firebaseAuth.currentUser?.uid ?: return
+        val now = System.currentTimeMillis()
         val updates = hashMapOf<String, Any>(
             "isOnline" to isOnline,
-            "lastSeen" to FieldValue.serverTimestamp()
+            "lastSeen" to FieldValue.serverTimestamp(),
+            "lastHeartbeatAt" to if (isOnline) now else 0L
         )
+        if (!isOnline) {
+            updates["lastActivityType"] = "NONE"
+            updates["lastActivityChatId"] = ""
+            updates["lastActivityParticipantsCount"] = 0
+        }
         firestore.collection(Constants.COLLECTION_USERS)
             .document(uid)
             .update(updates)
+        firestore.collection(Constants.COLLECTION_PRESENCE)
+            .document(uid)
+            .set(
+                mapOf(
+                    "uid" to uid,
+                    "isOnline" to isOnline,
+                    "lastHeartbeatAt" to if (isOnline) now else 0L,
+                    "updatedAt" to now
+                ),
+                SetOptions.merge()
+            )
     }
 
     private fun createNotificationChannels() {

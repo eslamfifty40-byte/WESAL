@@ -1,6 +1,6 @@
 package com.wesal.messenger.presentation.components
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -24,13 +24,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,61 +39,125 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.domain.model.MessageStatus
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
+
+@Composable
+fun wesalNeonTextStyle(
+    baseStyle: TextStyle,
+    neonColorKey: String,
+    glowIntensity: Float,
+    fallbackColor: Color = WesalColors.current.textPrimary
+): TextStyle {
+    val palette = WesalColors.current
+    val preset = NeonColorPreset.fromKey(neonColorKey)
+    if (preset == NeonColorPreset.NONE) {
+        return baseStyle.copy(color = fallbackColor)
+    }
+    val glow = glowIntensity.coerceIn(0.15f, 1.0f)
+    val resolvedColor = if (palette.isDark) preset.textColorDarkBg else preset.textColorLightBg
+    val shadowColor = if (palette.isDark) {
+        preset.glowColor.copy(alpha = (0.55f + 0.45f * glow).coerceIn(0f, 1f))
+    } else {
+        preset.glowColor.copy(alpha = (0.30f * glow).coerceIn(0f, 0.5f))
+    }
+    return baseStyle.copy(
+        color = resolvedColor,
+        shadow = Shadow(
+            color = shadowColor,
+            offset = Offset.Zero,
+            blurRadius = if (palette.isDark) 20f * glow else 10f * glow
+        )
+    )
+}
 
 @Composable
 fun WesalAvatar(
     imageUrl: String,
     name: String,
     size: Dp = 50.dp,
-    isOnline: Boolean = false
+    isOnline: Boolean = false,
+    frameId: String = "",
+    frameExpiresAt: Long = 0L
 ) {
     val context = LocalContext.current
     val palette = WesalColors.current
     var loadFailed by remember(imageUrl) { mutableStateOf(false) }
-
     val imageModel = remember(imageUrl) { wesalImageModel(imageUrl) }
+    val activeFrame = remember(frameId, frameExpiresAt) {
+        WesalFrameCatalog.findActiveFrame(frameId, frameExpiresAt)
+    }
 
-    Box(modifier = Modifier.size(size)) {
-        if (imageUrl.isNotBlank() && !loadFailed) {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(imageModel)
-                    .crossfade(true)
-                    .build(),
-                contentDescription = name,
-                onError = { loadFailed = true },
+    val containerSize = if (activeFrame != null) size * 1.20f else size
+    val innerAvatarSize = when {
+        activeFrame == null -> size
+        activeFrame.overlayOnTop -> size * 0.90f
+        else -> size * 0.80f
+    }
+
+    Box(modifier = Modifier.size(containerSize), contentAlignment = Alignment.Center) {
+        // Opaque JPG royal frames render UNDER the centered circular avatar so the face is never covered
+        if (activeFrame != null && !activeFrame.overlayOnTop) {
+            Image(
+                painter = painterResource(id = activeFrame.resId),
+                contentDescription = null,
                 modifier = Modifier
                     .fillMaxSize()
-                    .clip(CircleShape)
-                    .border(1.dp, palette.border, CircleShape),
+                    .clip(CircleShape),
                 contentScale = ContentScale.Crop
             )
-        } else {
-            val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "W"
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape)
-                    .background(palette.emeraldDark.copy(alpha = 0.35f))
-                    .border(1.dp, palette.emerald.copy(alpha = 0.45f), CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = initial,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = palette.textPrimary
+        }
+
+        Box(modifier = Modifier.size(innerAvatarSize), contentAlignment = Alignment.Center) {
+            if (imageUrl.isNotBlank() && !loadFailed) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(imageModel)
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = name,
+                    onError = { loadFailed = true },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .border(1.dp, palette.border, CircleShape),
+                    contentScale = ContentScale.Crop
                 )
+            } else {
+                val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "W"
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .background(palette.emeraldDark.copy(alpha = 0.35f))
+                        .border(1.dp, palette.emerald.copy(alpha = 0.45f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = initial,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.textPrimary
+                    )
+                }
             }
         }
+
+        // Transparent PNG frames overlay cleanly around the avatar border
+        if (activeFrame != null && activeFrame.overlayOnTop) {
+            Image(
+                painter = painterResource(id = activeFrame.resId),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        }
+
         if (isOnline) {
             Box(
                 modifier = Modifier
-                    .size(size * 0.26f)
+                    .size((innerAvatarSize * 0.25f).coerceIn(10.dp, 18.dp))
                     .align(Alignment.BottomEnd)
                     .clip(CircleShape)
                     .background(palette.emerald)
@@ -104,20 +167,18 @@ fun WesalAvatar(
     }
 }
 
-/**
- * Official Blue Verified Seal (#1D9BF0 scalloped rosette with crisp white checkmark),
- * visually independent of SMS phone verification status.
- */
 @Composable
 fun WesalVerifiedBadge(
     modifier: Modifier = Modifier,
     size: Dp = 17.dp,
-    badgeColor: Color = WesalColors.current.verifiedBlue
+    badgeColor: Color = WesalColors.current.verifiedBlue,
+    verificationType: String = "BLUE"
 ) {
     WesalVerifiedMark(
         badgeSize = size,
         modifier = modifier,
-        badgeColor = badgeColor
+        badgeColor = badgeColor,
+        verificationType = verificationType
     )
 }
 
@@ -129,8 +190,17 @@ fun WesalNameWithBadge(
     style: TextStyle = MaterialTheme.typography.titleMedium,
     color: Color = WesalColors.current.textPrimary,
     fontWeight: FontWeight? = null,
-    badgeSize: Dp = 17.dp
+    badgeSize: Dp = 17.dp,
+    verificationType: String = "BLUE",
+    neonColor: String = "",
+    neonGlowIntensity: Float = 0.7f
 ) {
+    val resolvedStyle = wesalNeonTextStyle(
+        baseStyle = style,
+        neonColorKey = neonColor,
+        glowIntensity = neonGlowIntensity,
+        fallbackColor = color
+    )
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
@@ -138,15 +208,14 @@ fun WesalNameWithBadge(
     ) {
         Text(
             text = name,
-            style = style,
-            color = color,
+            style = resolvedStyle,
             fontWeight = fontWeight,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false)
         )
         if (isVerified) {
-            WesalVerifiedBadge(size = badgeSize)
+            WesalVerifiedBadge(size = badgeSize, verificationType = verificationType)
         }
     }
 }

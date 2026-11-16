@@ -12,35 +12,44 @@ object WesalShareUtils {
     }
 
     /**
-     * Single Direct-Download Invite Policy:
-     * Emits ONLY the direct APK URL from Constants.APK_DOWNLOAD_URL (when configured)
-     * paired with plain text user ID (`معرّفي @<wesalId>`), with NO wesal.app, /join, or GitHub URLs.
+     * Approved invite template (Sec 37):
+     * «مرحبًا [اسم المستلم] 👋
+     * انضم إليّ في تطبيق WESAL للمراسلة الفورية.
+     * معرفي: [معرف المرسل]
+     * [اسم المرسل]
+     * https://tinyurl.com/wesal-Messenger»
      */
     fun buildInviteMessage(
         myWesalId: String?,
         targetContactName: String? = null,
-        isEnglish: Boolean = false
+        isEnglish: Boolean = false,
+        senderName: String? = null
     ): String {
         val cleanId = myWesalId?.trim()?.removePrefix("@").orEmpty()
-        val directApkUrl = Constants.APK_DOWNLOAD_URL.trim()
+        val cleanSenderName = senderName?.trim().orEmpty()
+        val directApkUrl = Constants.APK_DOWNLOAD_URL.trim().ifBlank { "https://tinyurl.com/wesal-Messenger" }
+        val cleanTarget = targetContactName?.trim().orEmpty()
 
         return buildString {
-            if (!targetContactName.isNullOrBlank()) {
+            if (cleanTarget.isNotBlank()) {
                 append(
-                    if (isEnglish) "Hi ${targetContactName.trim()},\n"
-                    else "مرحباً ${targetContactName.trim()} 👋\n"
+                    if (isEnglish) "Hello $cleanTarget 👋\n"
+                    else "مرحبًا $cleanTarget 👋\n"
                 )
+            } else {
+                append(if (isEnglish) "Hello 👋\n" else "مرحبًا 👋\n")
             }
             append(
-                if (isEnglish) "Join me on WESAL Messenger"
-                else "انضم إليّ في تطبيق WESAL للمراسلة الفورية"
+                if (isEnglish) "Join me on WESAL Messenger for instant messaging."
+                else "انضم إليّ في تطبيق WESAL للمراسلة الفورية."
             )
             if (cleanId.isNotBlank()) {
-                append(if (isEnglish) "\nMy ID: @$cleanId" else "\nمعرّفي @$cleanId")
+                append(if (isEnglish) "\nMy ID: $cleanId" else "\nمعرفي: $cleanId")
             }
-            if (directApkUrl.isNotBlank()) {
-                append("\n$directApkUrl")
+            if (cleanSenderName.isNotBlank()) {
+                append("\n$cleanSenderName")
             }
+            append("\n$directApkUrl")
         }
     }
 

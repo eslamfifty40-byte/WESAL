@@ -26,13 +26,69 @@ enum class PrivacyVisibility(val key: String) {
     }
 }
 
+enum class StoryAudienceMode(val raw: String) {
+    CONTACTS("CONTACTS"),
+    CONTACTS_EXCEPT("CONTACTS_EXCEPT"),
+    ONLY_WITH("ONLY_WITH"),
+    ALL_CONTACTS("ALL_CONTACTS");
+
+    companion object {
+        fun fromRaw(raw: String?): StoryAudienceMode =
+            entries.firstOrNull { it.raw == raw } ?: CONTACTS
+    }
+}
+
+enum class GroupJoinMode(val raw: String) {
+    OPEN("OPEN"),
+    APPROVAL_REQUIRED("APPROVAL_REQUIRED"),
+    CLOSED("CLOSED"),
+    INVITE_ONLY("INVITE_ONLY");
+
+    companion object {
+        fun fromRaw(raw: String?): GroupJoinMode =
+            entries.firstOrNull { it.raw == raw } ?: OPEN
+    }
+}
+
+@Serializable
+data class BusinessDaySlot(
+    val openTime: String = "09:00",
+    val closeTime: String = "17:00"
+)
+
+@Serializable
+data class BusinessDayHours(
+    val dayKey: String = "SAT", // SAT, SUN, MON, TUE, WED, THU, FRI
+    val isClosed: Boolean = false,
+    val isOpen24Hours: Boolean = false,
+    val slots: List<BusinessDaySlot> = listOf(BusinessDaySlot())
+)
+
+@Serializable
+data class BusinessHoursSchedule(
+    val enabled: Boolean = false,
+    val businessName: String = "",
+    val timeZoneId: String = "Africa/Cairo",
+    val days: List<BusinessDayHours> = listOf(
+        BusinessDayHours("SAT"),
+        BusinessDayHours("SUN"),
+        BusinessDayHours("MON"),
+        BusinessDayHours("TUE"),
+        BusinessDayHours("WED"),
+        BusinessDayHours("THU"),
+        BusinessDayHours("FRI", isClosed = true)
+    )
+)
+
 data class PrivacySettings(
     val lastSeenVisibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
     val onlineVisibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
     val profilePhotoVisibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
     val storiesVisibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
     val readReceiptsEnabled: Boolean = true,
-    val hidePhoneNumber: Boolean = false
+    val hidePhoneNumber: Boolean = false,
+    val hideBirthDate: Boolean = false,
+    val recordProfileVisits: Boolean = true
 )
 
 data class WesalUser(
@@ -41,6 +97,8 @@ data class WesalUser(
     val phoneNumber: String = "",
     val isPhoneVerified: Boolean = false,
     val isVerified: Boolean = false,
+    val verificationType: String = "BLUE", // BLUE, BLACK, GREEN
+    val verificationExpiresAt: Long = 0L, // 0 = permanent
     val verifiedByUid: String = "",
     val verifiedAt: Long = 0L,
     val verificationNote: String = "",
@@ -49,9 +107,40 @@ data class WesalUser(
     val numericId: String = "",
     val bio: String = "أستخدم تطبيق WESAL",
     val photoUrl: String = "",
+    val coverUrl: String = "",
+    val birthDate: String = "", // ISO YYYY-MM-DD (timezone-independent)
+    val frameId: String = "",
+    val frameExpiresAt: Long = 0L, // 0 = permanent
+    val neonColor: String = "", // "", RED, GREEN, BLACK, BLUE
+    val neonGlowIntensity: Float = 0.7f,
+    val facebookUrl: String = "",
+    val instagramUrl: String = "",
+    val businessHours: BusinessHoursSchedule = BusinessHoursSchedule(),
+    val locationGranted: Boolean = false,
+    val locationFallbackStartedAt: Long = 0L,
+    val profileCompleted: Boolean = false,
+    val welcomeSent: Boolean = false,
+    val hiddenFromSearch: Boolean = false,
+    val hideFromSearchReason: String = "",
+    val hiddenAt: Long = 0L,
+    val hiddenByUid: String = "",
+    val isBanned: Boolean = false,
+    val banType: String = "", // TEMPORARY, PERMANENT
+    val banReason: String = "",
+    val banExpiresAt: Long = 0L,
+    val warningsCount: Int = 0,
+    val deletedAt: Long = 0L,
     val createdAt: Long = 0L,
     val lastSeen: Long = 0L,
+    val lastHeartbeatAt: Long = 0L,
     val isOnline: Boolean = false,
+    val activeSessionsCount: Int = 0,
+    val lastDeviceName: String = "",
+    val lastAppVersion: String = "",
+    val lastActivityType: String = "", // CHAT, GROUP, CHANNEL, NONE
+    val lastActivityChatId: String = "",
+    val lastActivityParticipantsCount: Int = 0,
+    val lastActivityAt: Long = 0L,
     val fcmToken: String = "",
     val publicKey: String = "",
     val privacySettings: PrivacySettings = PrivacySettings(),
@@ -86,16 +175,98 @@ data class ContactRequest(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+data class ProfileVisitor(
+    val visitorUid: String = "",
+    val visitorName: String = "",
+    val visitorPublicId: String = "",
+    val visitorNumericId: String = "",
+    val visitorAvatarUrl: String = "",
+    val visitorVerified: Boolean = false,
+    val visitorVerificationType: String = "BLUE",
+    val visitedAt: Long = System.currentTimeMillis()
+)
+
 data class VerificationAuditLog(
     val logId: String = "",
+    val operationId: String = "",
     val targetUid: String = "",
+    val targetNumericId: String = "",
     val targetPublicId: String = "",
     val targetName: String = "",
-    val action: String = "GRANTED",
+    val action: String = "GRANTED", // GRANTED, REVOKED, EXPIRED, FRAME_GRANTED, NEON_UPDATED, HIDDEN, UNHIDDEN, etc.
+    val verificationType: String = "BLUE",
+    val durationLabel: String = "",
+    val expiresAt: Long = 0L,
     val adminUid: String = "",
     val adminEmail: String = "",
     val note: String = "",
+    val details: String = "",
     val timestamp: Long = System.currentTimeMillis()
+)
+
+data class AdminReportRecord(
+    val reportId: String = "",
+    val reporterUid: String = "",
+    val reporterName: String = "",
+    val reportedUid: String = "",
+    val reportedName: String = "",
+    val targetType: String = "USER", // USER, MESSAGE, CHAT, CHANNEL, POST, STORY
+    val targetChatId: String = "",
+    val targetMessageId: String = "",
+    val targetContentSnapshot: String = "",
+    val reason: String = "",
+    val status: String = "NEW", // NEW, IN_REVIEW, RESOLVED, REJECTED, CLOSED
+    val adminNote: String = "",
+    val resolutionAction: String = "",
+    val reviewedByUid: String = "",
+    val reviewedAt: Long = 0L,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class OfficialAnnouncement(
+    val announcementId: String = "",
+    val title: String = "WESAL Messenger",
+    val body: String = "",
+    val adminUid: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class SystemWelcomeConfig(
+    val enabled: Boolean = true,
+    val messageTemplate: String = DEFAULT_OFFICIAL_WELCOME_TEMPLATE,
+    val previousVersions: List<String> = emptyList(),
+    val updatedAt: Long = 0L,
+    val updatedByUid: String = ""
+) {
+    companion object {
+        const val DEFAULT_OFFICIAL_WELCOME_TEMPLATE =
+            "مرحبًا بك يا [اسم المستخدم] 👋\n\n" +
+                "أهلًا وسهلًا بك في WESAL Messenger ❤️\n\n" +
+                "سعداء جدًا بانضمامك إلى عائلة وصال!\n\n" +
+                "من هنا تبدأ رحلتك للتواصل مع أصدقائك ومشاركة لحظاتك بكل سهولة.\n\n" +
+                "يمكنك إرسال الرسائل والصور والفيديوهات والتسجيلات الصوتية، وإجراء المكالمات الصوتية والمرئية، وإنشاء المجموعات والقنوات والتواصل مع الأشخاص الذين تعرفهم.\n\n" +
+                "نحرص دائمًا على توفير تجربة سهلة وآمنة تحترم خصوصيتك.\n\n" +
+                "نتمنى لك وقتًا ممتعًا وتجربة رائعة معنا ❤️\n\n" +
+                "أهلًا بك بيننا.\n\n" +
+                "فريق وصال | WESAL Team"
+    }
+}
+
+data class AdminDashboardStats(
+    val totalAccounts: Int = 0,
+    val onlineNowCount: Int = 0,
+    val offlineCount: Int = 0,
+    val newTodayCount: Int = 0,
+    val newTwoDaysCount: Int = 0,
+    val newWeekCount: Int = 0,
+    val newMonthCount: Int = 0,
+    val activeTodayCount: Int = 0,
+    val activeWeekCount: Int = 0,
+    val activeMonthCount: Int = 0,
+    val bannedCount: Int = 0,
+    val deletedCount: Int = 0,
+    val hiddenCount: Int = 0,
+    val verifiedCount: Int = 0
 )
 
 enum class MessageType(val raw: String) {
@@ -103,6 +274,7 @@ enum class MessageType(val raw: String) {
     IMAGE("IMAGE"),
     VIDEO("VIDEO"),
     VOICE("VOICE"),
+    AUDIO("AUDIO"),
     DOCUMENT("DOCUMENT"),
     LOCATION("LOCATION"),
     SYSTEM("SYSTEM");
@@ -135,6 +307,8 @@ data class WesalMessage(
     val ciphertext: String = "",
     val text: String = "",
     val isEncrypted: Boolean = false,
+    val isViewOnce: Boolean = false,
+    val viewedBy: List<String> = emptyList(),
     val mediaUrl: String = "",
     val mediaLocalPath: String = "",
     val mediaMimeType: String = "",
@@ -169,14 +343,20 @@ data class ChatPreview(
     val peerOnline: Boolean = false,
     val peerLastSeen: Long = 0L,
     val peerVerified: Boolean = false,
+    val peerVerificationType: String = "BLUE",
+    val peerFrameId: String = "",
+    val peerFrameExpiresAt: Long = 0L,
+    val officialWallpaperUrl: String = "",
     val lastMessagePreview: String = "",
     val lastMessageTime: Long = 0L,
     val lastMessageSenderId: String = "",
     val lastMessageStatus: MessageStatus = MessageStatus.SENT,
     val unreadCount: Int = 0,
     val isPinned: Boolean = false,
-    val isArchived: Boolean = false,
     val isMuted: Boolean = false,
+    val isSupportChat: Boolean = false,
+    val isOfficialWesalChat: Boolean = false,
+    val deletedForUsers: List<String> = emptyList(),
     val typingUsers: List<String> = emptyList()
 )
 
@@ -189,6 +369,20 @@ data class GroupInfo(
     val creatorId: String = "",
     val adminIds: List<String> = emptyList(),
     val memberIds: List<String> = emptyList(),
+    val joinMode: GroupJoinMode = GroupJoinMode.OPEN,
+    val inviteCode: String = "",
+    val inviteRevokedAt: Long = 0L,
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class GroupJoinRequest(
+    val requestId: String = "",
+    val groupId: String = "",
+    val requesterUid: String = "",
+    val requesterName: String = "",
+    val requesterNumericId: String = "",
+    val requesterAvatarUrl: String = "",
+    val status: String = "PENDING",
     val createdAt: Long = System.currentTimeMillis()
 )
 
@@ -204,13 +398,17 @@ data class WesalChannel(
     val title: String = "",
     val description: String = "",
     val avatarUrl: String = "",
+    val officialWallpaperUrl: String = "",
     val isPublic: Boolean = true,
+    val isOfficialTeamChannel: Boolean = false,
+    val isSuspended: Boolean = false,
     val inviteCode: String = "",
     val ownerUid: String = "",
     val moderatorIds: List<String> = emptyList(),
     val subscriberIds: List<String> = emptyList(),
     val subscribersCount: Int = 0,
     val isVerified: Boolean = false,
+    val verificationType: String = "BLUE",
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun roleFor(uid: String): ChannelRole = when {
@@ -296,6 +494,7 @@ data class StoryItem(
     val ownerUid: String = "",
     val ownerName: String = "",
     val ownerAvatarUrl: String = "",
+    val ownerVerified: Boolean = false,
     val type: StoryType = StoryType.TEXT,
     val textContent: String = "",
     val backgroundColorHex: Long = 0xFF064E3B,
@@ -303,7 +502,10 @@ data class StoryItem(
     val caption: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val expiresAt: Long = System.currentTimeMillis() + 24 * 60 * 60 * 1000L,
-    val visibility: PrivacyVisibility = PrivacyVisibility.EVERYONE,
+    val visibility: PrivacyVisibility = PrivacyVisibility.CONTACTS,
+    val audienceMode: StoryAudienceMode = StoryAudienceMode.CONTACTS,
+    val allowedViewerIds: List<String> = emptyList(),
+    val excludedViewerIds: List<String> = emptyList(),
     val viewerIds: List<String> = emptyList()
 )
 
@@ -315,6 +517,7 @@ data class StoryViewer(
 )
 
 enum class CallStatus(val raw: String) {
+    CONNECTING("CONNECTING"),
     RINGING("RINGING"),
     ACTIVE("ACTIVE"),
     ENDED("ENDED"),
@@ -338,7 +541,9 @@ data class CallRecord(
     val calleeAvatarUrl: String = "",
     val calleeVerified: Boolean = false,
     val isVideo: Boolean = false,
-    val status: CallStatus = CallStatus.RINGING,
+    val status: CallStatus = CallStatus.CONNECTING,
+    val calleeRingingAck: Boolean = false,
+    val ringingAt: Long = 0L,
     val offerSdp: String = "",
     val answerSdp: String = "",
     val deletedForUsers: List<String> = emptyList(),

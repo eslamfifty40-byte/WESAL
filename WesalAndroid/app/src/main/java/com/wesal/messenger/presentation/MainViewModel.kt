@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.network.NetworkMonitor
+import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.CallRecord
@@ -12,14 +13,16 @@ import com.wesal.messenger.domain.repository.CallRepository
 import com.wesal.messenger.domain.repository.ChannelRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 sealed interface StartDestination {
     data object Loading : StartDestination
     data object PhoneLogin : StartDestination
-    data object OtpPending : StartDestination
     data object ProfileSetup : StartDestination
     data object Home : StartDestination
 }
@@ -53,28 +56,84 @@ class MainViewModel @Inject constructor(
     private val _resolvedChannelId = MutableStateFlow<String?>(null)
     val resolvedChannelId: StateFlow<String?> = _resolvedChannelId.asStateFlow()
 
-    private val _startDestination = MutableStateFlow<StartDestination>(StartDestination.Loading)
+    private val _startDestination = MutableStateFlow<StartDestination>(
+        if (authRepository.currentUserId != null) StartDestination.Home else StartDestination.PhoneLogin
+    )
     val startDestination: StateFlow<StartDestination> = _startDestination.asStateFlow()
 
+    private var heartbeatJob: Job? = null
+
     init {
-        resolveInitialRoute()
+        resolveInitialRouteFast()
         observePendingChannelInvite()
+        observeBanAndProfileStatus()
     }
 
-    private fun resolveInitialRoute() {
+    private fun resolveInitialRouteFast() {
         viewModelScope.launch {
-            val uid = authRepository.observeAuthState().first()
+            val uid = authRepository.currentUserId ?: authRepository.observeAuthState().first()
             if (uid != null) {
+                val cached = prefs.settingsFlow.first()
+                // Fast cache-first navigation directly to Chats (Home) without any splash delay (Sec 3 & 4)
+                _startDestination.value = if (cached.cachedUid == uid && !cached.cachedProfileComplete) {
+                    StartDestination.ProfileSetup
+                } else {
+                    StartDestination.Home
+                }
+
+                // Background verification without blocking cold launch
                 launch { authRepository.syncFcmToken() }
-                val userResult = runCatching { userRepository.getUserOnce(uid) }
-                val user = userResult.getOrNull()
-                _startDestination.value = when {
-                    user != null && user.displayName.isBlank() -> StartDestination.ProfileSetup
-                    userResult.isSuccess && user == null -> StartDestination.ProfileSetup
-                    else -> StartDestination.Home
+                launch {
+                    val userResult = runCatching { userRepository.getUserOnce(uid) }
+                    val user = userResult.getOrNull()
+                    if (user != null) {
+                        val now = System.currentTimeMillis()
+                        val banActive = user.isBanned && (user.banType == "PERMANENT" || user.banExpiresAt == 0L || now <= user.banExpiresAt)
+                        if (user.deletedAt > 0L || banActive) {
+                            authRepository.signOut()
+                            _startDestination.value = StartDestination.PhoneLogin
+                            return@launch
+                        }
+                        val complete = (user.profileCompleted ||
+                            (user.displayName.isNotBlank() && user.phoneNumber.isNotBlank() && user.birthDate.isNotBlank()))
+                        prefs.setCachedStartupProfileState(uid, complete)
+                        _startDestination.value = if (complete) StartDestination.Home else StartDestination.ProfileSetup
+                    } else if (userResult.isSuccess) {
+                        prefs.setCachedStartupProfileState(uid, false)
+                        _startDestination.value = StartDestination.ProfileSetup
+                    }
                 }
             } else {
                 _startDestination.value = StartDestination.PhoneLogin
+            }
+        }
+    }
+
+    private fun observeBanAndProfileStatus() {
+        viewModelScope.launch {
+            userRepository.observeCurrentUser().collect { user ->
+                if (user == null) return@collect
+                val now = System.currentTimeMillis()
+                val banActive = user.isBanned && (user.banType == "PERMANENT" || user.banExpiresAt == 0L || now <= user.banExpiresAt)
+                if (user.deletedAt > 0L || banActive) {
+                    authRepository.signOut()
+                }
+            }
+        }
+    }
+
+    fun setAppForeground(foreground: Boolean) {
+        heartbeatJob?.cancel()
+        if (foreground && authRepository.currentUserId != null) {
+            heartbeatJob = viewModelScope.launch {
+                while (isActive) {
+                    runCatching { userRepository.updatePresenceHeartbeat(isOnline = true) }
+                    delay(Constants.PRESENCE_HEARTBEAT_INTERVAL_MS)
+                }
+            }
+        } else if (!foreground && authRepository.currentUserId != null) {
+            viewModelScope.launch {
+                runCatching { userRepository.updatePresenceHeartbeat(isOnline = false) }
             }
         }
     }

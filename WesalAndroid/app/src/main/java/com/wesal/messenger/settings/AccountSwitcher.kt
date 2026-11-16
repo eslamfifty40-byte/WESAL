@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -14,8 +15,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.google.firebase.auth.FirebaseAuth
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
 
@@ -39,7 +42,7 @@ fun AccountSwitcherDialog(onSignOut: () -> Unit) {
         val ctx = LocalContext.current
         val palette = WesalColors.current
         val strings = LocalWesalStrings.current
-        val me = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+        val me = FirebaseAuth.getInstance().currentUser
         val accounts = remember {
             val cur = loadAccounts(ctx).toMutableList()
             if (me != null) {
@@ -52,7 +55,7 @@ fun AccountSwitcherDialog(onSignOut: () -> Unit) {
         AlertDialog(
             onDismissRequest = { AccountSwitcherState.show = false },
             containerColor = palette.surface,
-            title = { Text(strings.switchAccount, color = palette.textPrimary) },
+            title = { Text(strings.switchAccount, color = palette.textPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column {
                     accounts.forEach { a ->
@@ -64,8 +67,14 @@ fun AccountSwitcherDialog(onSignOut: () -> Unit) {
                                 .clickable { if (!isMe) { AccountSwitcherState.show = false; onSignOut() } }
                                 .padding(vertical = 10.dp)
                         ) {
-                            Text((if (nm.isBlank()) sub else nm) + (if (isMe) "  ✓" else ""), color = palette.textPrimary)
-                            Text(sub, color = palette.textSecondary)
+                            Text(
+                                text = (if (nm.isBlank()) sub else nm) + (if (isMe) "  ✓" else ""),
+                                color = if (isMe) palette.emerald else palette.textPrimary,
+                                fontWeight = if (isMe) FontWeight.Bold else FontWeight.Medium
+                            )
+                            if (sub.isNotBlank()) {
+                                Text(sub, color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                     }
                 }

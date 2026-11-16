@@ -1,63 +1,161 @@
 package com.wesal.messenger.admin
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Verified
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.firestore.FirebaseFirestore
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.VerificationDurationOption
+import com.wesal.messenger.core.util.VerificationSealType
+import com.wesal.messenger.core.util.WesalFrameCatalog
+import com.wesal.messenger.domain.model.AdminDashboardStats
+import com.wesal.messenger.domain.model.AdminReportRecord
+import com.wesal.messenger.domain.model.ChannelPostType
+import com.wesal.messenger.domain.model.OfficialAnnouncement
+import com.wesal.messenger.domain.model.SystemWelcomeConfig
 import com.wesal.messenger.domain.model.VerificationAuditLog
+import com.wesal.messenger.domain.model.WesalChannel
 import com.wesal.messenger.domain.model.WesalUser
+import com.wesal.messenger.domain.repository.ChannelRepository
+import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalVerifiedBadge
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
 
+enum class AdminSection(
+    val number: Int,
+    val titleAr: String,
+    val titleEn: String,
+    val icon: ImageVector
+) {
+    OVERVIEW(1, "الرئيسية", "Overview", Icons.Default.Dashboard),
+    STATISTICS(2, "الإحصائيات", "Stats", Icons.Default.BarChart),
+    USERS(3, "المستخدمون", "Users", Icons.Default.People),
+    SEARCH(4, "البحث", "Search", Icons.Default.Search),
+    REPORTS(5, "البلاغات", "Reports", Icons.Default.Report),
+    BANS_WARNINGS(6, "الحظر والإنذارات", "Bans & Warn", Icons.Default.Block),
+    CHANNELS(7, "إدارة القنوات", "Channels", Icons.Default.Campaign),
+    CONTENT_MOD(8, "إدارة المحتوى", "Moderation", Icons.Default.Gavel),
+    VERIFICATION_APPEARANCE(9, "التوثيق والإطارات والنيون", "Verify & Frames", Icons.Default.Verified),
+    WESAL_TEAM(10, "فريق وصال", "WESAL Team", Icons.Default.VerifiedUser),
+    WELCOME_MSG(11, "رسالة الترحيب", "Welcome Msg", Icons.Default.AutoAwesome),
+    ANNOUNCEMENTS(12, "الإعلانات الرسمية", "Broadcasts", Icons.Default.NotificationsActive),
+    ACTION_LOGS(13, "سجل الإجراءات", "Action Logs", Icons.Default.History),
+    ADMIN_SETTINGS(14, "إعدادات الإدارة", "Settings", Icons.Default.AdminPanelSettings),
+    HIDDEN_ACCOUNTS(15, "إخفاء الحسابات", "Hidden Users", Icons.Default.VisibilityOff),
+    HIDDEN_LOGS(16, "سجل الإخفاء", "Hidden Logs", Icons.Default.ManageHistory),
+    ONLINE_NOW(17, "المتصلون الآن", "Online Now", Icons.Default.Wifi),
+    CHAT_ACTIVITY(18, "نشاط المحادثات", "Chat Activity", Icons.Default.Timeline),
+    CONTENT_REVIEW(19, "مراجعة المحتوى", "Content Review", Icons.Default.RateReview)
+}
+
 @HiltViewModel
 class AdminVerificationViewModel @Inject constructor(
-    private val userRepository: UserRepository
+    private val userRepository: UserRepository,
+    private val channelRepository: ChannelRepository,
+    private val chatRepository: ChatRepository,
+    private val firestore: FirebaseFirestore
 ) : ViewModel() {
 
     val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    val auditLogs: StateFlow<List<VerificationAuditLog>> = userRepository.observeVerificationAuditLogs()
+    val verificationLogs: StateFlow<List<VerificationAuditLog>> = userRepository.observeVerificationAuditLogs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+    val hiddenLogs: StateFlow<List<VerificationAuditLog>> = userRepository.observeHiddenAuditLogs()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val adminActionLogs: StateFlow<List<VerificationAuditLog>> = userRepository.observeAdminActionLogs()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val reports: StateFlow<List<AdminReportRecord>> = userRepository.observeAdminReports()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val announcements: StateFlow<List<OfficialAnnouncement>> = userRepository.observeOfficialAnnouncements()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _stats = MutableStateFlow(AdminDashboardStats())
+    val stats: StateFlow<AdminDashboardStats> = _stats.asStateFlow()
 
     private val _users = MutableStateFlow<List<WesalUser>>(emptyList())
     val users: StateFlow<List<WesalUser>> = _users.asStateFlow()
 
-    private val _busyUid = MutableStateFlow<String?>(null)
-    val busyUid: StateFlow<String?> = _busyUid.asStateFlow()
+    private val _searchResults = MutableStateFlow<List<WesalUser>>(emptyList())
+    val searchResults: StateFlow<List<WesalUser>> = _searchResults.asStateFlow()
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _channels = MutableStateFlow<List<WesalChannel>>(emptyList())
+    val channels: StateFlow<List<WesalChannel>> = _channels.asStateFlow()
+
+    private val _officialTeamChannel = MutableStateFlow<WesalChannel?>(null)
+    val officialTeamChannel: StateFlow<WesalChannel?> = _officialTeamChannel.asStateFlow()
+
+    private val _welcomeConfig = MutableStateFlow(SystemWelcomeConfig())
+    val welcomeConfig: StateFlow<SystemWelcomeConfig> = _welcomeConfig.asStateFlow()
+
+    private val _globalCustomerFrameEnabled = MutableStateFlow(true)
+    val globalCustomerFrameEnabled: StateFlow<Boolean> = _globalCustomerFrameEnabled.asStateFlow()
+
+    private val _inspectedUser = MutableStateFlow<WesalUser?>(null)
+    val inspectedUser: StateFlow<WesalUser?> = _inspectedUser.asStateFlow()
+
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
@@ -69,10 +167,71 @@ class AdminVerificationViewModel @Inject constructor(
             isSuperAdmin.collect { allowed ->
                 if (!allowed) {
                     _users.value = emptyList()
+                    _searchResults.value = emptyList()
+                    _channels.value = emptyList()
                 } else {
-                    refreshUsers()
+                    refreshAll()
                 }
             }
+        }
+    }
+
+    fun refreshAll() {
+        viewModelScope.launch {
+            if (!userRepository.isSuperAdmin()) return@launch
+            _busy.value = true
+            runCatching { _stats.value = userRepository.computeAdminStats() }
+            runCatching {
+                val allUsers = userRepository.getAdminUsersList(limit = 250)
+                _users.value = allUsers
+                if (_searchQuery.value.isBlank()) _searchResults.value = allUsers
+            }
+            runCatching { _welcomeConfig.value = userRepository.getWelcomeConfig() }
+            runCatching { _globalCustomerFrameEnabled.value = userRepository.getGlobalCustomerFrameEnabled() }
+            runCatching { _officialTeamChannel.value = channelRepository.ensureOfficialTeamChannel() }
+            loadAllChannels()
+            _busy.value = false
+        }
+    }
+
+    fun loadAllChannels() {
+        viewModelScope.launch {
+            if (!userRepository.isSuperAdmin()) return@launch
+            val snap = runCatching {
+                firestore.collection(Constants.COLLECTION_CHANNELS).limit(150).get().await()
+            }.getOrNull() ?: return@launch
+            val mapped = snap.documents.mapNotNull { d ->
+                if (!d.exists()) return@mapNotNull null
+                @Suppress("UNCHECKED_CAST")
+                val subs = (d.get("subscriberIds") as? List<String>).orEmpty()
+                @Suppress("UNCHECKED_CAST")
+                val mods = (d.get("moderatorIds") as? List<String>).orEmpty()
+                WesalChannel(
+                    channelId = d.getString("channelId") ?: d.id,
+                    title = d.getString("title").orEmpty(),
+                    description = d.getString("description").orEmpty(),
+                    avatarUrl = d.getString("avatarUrl").orEmpty(),
+                    officialWallpaperUrl = d.getString("officialWallpaperUrl").orEmpty(),
+                    isPublic = d.getBoolean("isPublic") ?: true,
+                    isOfficialTeamChannel = d.getBoolean("isOfficialTeamChannel")
+                        ?: (d.id == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID),
+                    isSuspended = d.getBoolean("isSuspended") ?: false,
+                    inviteCode = d.getString("inviteCode").orEmpty(),
+                    ownerUid = d.getString("ownerUid").orEmpty(),
+                    moderatorIds = mods,
+                    subscriberIds = subs,
+                    subscribersCount = (d.getLong("subscribersCount") ?: subs.size.toLong()).toInt(),
+                    isVerified = d.getBoolean("isVerified") ?: false,
+                    verificationType = d.getString("verificationType") ?: "BLUE",
+                    createdAt = d.getLong("createdAt") ?: 0L
+                )
+            }.sortedWith(
+                compareByDescending<WesalChannel> { it.isOfficialTeamChannel }
+                    .thenByDescending { it.subscribersCount }
+            )
+            _channels.value = mapped
+            _officialTeamChannel.value = mapped.firstOrNull { it.isOfficialTeamChannel }
+                ?: _officialTeamChannel.value
         }
     }
 
@@ -81,45 +240,309 @@ class AdminVerificationViewModel @Inject constructor(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             delay(250L)
-            refreshUsers()
+            if (!userRepository.isSuperAdmin()) return@launch
+            val trimmed = q.trim()
+            _searchResults.value = if (trimmed.isBlank()) {
+                _users.value
+            } else {
+                runCatching { userRepository.adminSearchUsers(trimmed) }.getOrDefault(emptyList())
+            }
         }
     }
 
-    fun refreshUsers() {
+    fun inspectUser(uid: String) {
         viewModelScope.launch {
-            if (!userRepository.isSuperAdmin()) {
-                _users.value = emptyList()
+            _busy.value = true
+            userRepository.adminGetUserFullDetails(uid, reason = "معاينة الحساب من لوحة المشرف الأعلى")
+                .onSuccess { _inspectedUser.value = it }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر جلب تفاصيل المستخدم" }
+            _busy.value = false
+        }
+    }
+
+    fun dismissInspectedUser() {
+        _inspectedUser.value = null
+    }
+
+    fun applyVerification(
+        target: WesalUser,
+        verified: Boolean,
+        sealType: VerificationSealType,
+        expiresAt: Long,
+        durationLabel: String,
+        note: String
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.setAccountVerification(
+                targetUid = target.uid,
+                verified = verified,
+                note = note,
+                verificationType = sealType.key,
+                expiresAt = if (verified) expiresAt else 0L,
+                durationLabel = if (verified) durationLabel else "سحب"
+            ).onSuccess {
+                _statusMessage.value = if (verified) {
+                    "تم منح ${sealType.labelAr} (${durationLabel}) لـ ${target.displayName.ifBlank { target.numericId }}"
+                } else {
+                    "تم إلغاء توثيق ${target.displayName.ifBlank { target.numericId }}"
+                }
+                refreshAll()
+            }.onFailure { _statusMessage.value = it.message ?: "فشل تحديث التوثيق" }
+            _busy.value = false
+        }
+    }
+
+    fun applyFrame(
+        target: WesalUser,
+        frameId: String,
+        expiresAt: Long,
+        durationLabel: String
+    ) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.setAccountFrame(target.uid, frameId, expiresAt, durationLabel)
+                .onSuccess {
+                    _statusMessage.value = if (frameId.isBlank()) {
+                        "تمت إزالة الإطار الشخصي"
+                    } else {
+                        "تم تعيين الإطار ($durationLabel) بنجاح"
+                    }
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الإطار" }
+            _busy.value = false
+        }
+    }
+
+    fun toggleGlobalCustomerFrame(enabled: Boolean) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.setGlobalCustomerFrameEnabled(enabled)
+                .onSuccess { updatedCount ->
+                    _globalCustomerFrameEnabled.value = enabled
+                    _statusMessage.value = if (enabled) {
+                        "تم تفعيل إطار عملاء WESAL لـ $updatedCount حساب"
+                    } else {
+                        "تم إيقاف الإطار الافتراضي لـ $updatedCount حساب"
+                    }
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر تطبيق الإطار الجماعي" }
+            _busy.value = false
+        }
+    }
+
+    fun applyNeon(target: WesalUser, preset: NeonColorPreset, glowIntensity: Float) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.setAccountNeonStyle(target.uid, preset.key, glowIntensity)
+                .onSuccess {
+                    _statusMessage.value = "تم تحديث لون النيون (${preset.labelAr}) بنسبة ${(glowIntensity * 100).toInt()}%"
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث النيون" }
+            _busy.value = false
+        }
+    }
+
+    fun warnUser(target: WesalUser, reason: String) {
+        if (reason.isBlank()) {
+            _statusMessage.value = "اكتب سبب الإنذار أولاً"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.warnUser(target.uid, reason)
+                .onSuccess {
+                    _statusMessage.value = "تم إرسال الإنذار الرسمي إلى ${target.displayName.ifBlank { target.numericId }}"
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر إرسال الإنذار" }
+            _busy.value = false
+        }
+    }
+
+    fun banUser(
+        target: WesalUser,
+        permanent: Boolean,
+        expiresAt: Long,
+        reason: String,
+        blockIdentifiers: Boolean
+    ) {
+        if (target.numericId == Constants.OWNER_ADMIN_NUMERIC_ID) {
+            _statusMessage.value = "لا يمكن حظر حساب المالك الرئيسي 10001"
+            return
+        }
+        if (reason.isBlank()) {
+            _statusMessage.value = "يرجى كتابة سبب الحظر"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.banUser(target.uid, permanent, expiresAt, reason, blockIdentifiers)
+                .onSuccess {
+                    _statusMessage.value = if (permanent) "تم حظر الحساب نهائياً" else "تم تطبيق الحظر المؤقت بنجاح"
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "فشل تطبيق الحظر" }
+            _busy.value = false
+        }
+    }
+
+    fun unbanUser(target: WesalUser) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.unbanUser(target.uid, note = "رفع الحظر من لوحة الإدارة")
+                .onSuccess {
+                    _statusMessage.value = "تم رفع الحظر عن الحساب"
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر رفع الحظر" }
+            _busy.value = false
+        }
+    }
+
+    fun setHiddenFromSearch(target: WesalUser, hidden: Boolean, reason: String) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.setAccountHiddenFromSearch(target.uid, hidden, reason)
+                .onSuccess {
+                    _statusMessage.value = if (hidden) "تم إخفاء الحساب من البحث" else "تم إعادة إظهار الحساب"
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر تحديث حالة الإخفاء" }
+            _busy.value = false
+        }
+    }
+
+    fun updateReport(reportId: String, status: String, note: String, resolution: String) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.updateReportStatus(reportId, status, note, resolution)
+                .onSuccess { _statusMessage.value = "تم تحديث البلاغ إلى: $status" }
+                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث البلاغ" }
+            _busy.value = false
+        }
+    }
+
+    fun inspectReportedChat(report: AdminReportRecord, onOpenChat: (String) -> Unit) {
+        if (report.targetChatId.isBlank()) {
+            _statusMessage.value = "لا يوجد معرف محادثة مرتبط بهذا البلاغ"
+            return
+        }
+        viewModelScope.launch {
+            userRepository.adminLogReportChatInspection(
+                reportId = report.reportId,
+                chatId = report.targetChatId,
+                targetUid = report.reportedUid,
+                reason = report.reason
+            )
+            onOpenChat(report.targetChatId)
+        }
+    }
+
+    fun setChannelSuspended(channel: WesalChannel, suspended: Boolean) {
+        if (channel.isOfficialTeamChannel) {
+            _statusMessage.value = "لا يمكن تعليق قناة فريق وصال الرسمية"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            channelRepository.adminSetChannelSuspended(channel.channelId, suspended)
+                .onSuccess {
+                    _statusMessage.value = if (suspended) "تم تعليق القناة" else "تم تفعيل القناة"
+                    loadAllChannels()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر تعديل حالة القناة" }
+            _busy.value = false
+        }
+    }
+
+    fun deleteChannel(channel: WesalChannel) {
+        if (channel.isOfficialTeamChannel) {
+            _statusMessage.value = "لا يمكن حذف قناة فريق وصال الرسمية"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            channelRepository.deleteChannel(channel.channelId)
+                .onSuccess {
+                    _statusMessage.value = "تم حذف القناة"
+                    loadAllChannels()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر حذف القناة" }
+            _busy.value = false
+        }
+    }
+
+    fun publishOfficialTeamPost(text: String) {
+        val clean = text.trim()
+        if (clean.isBlank()) {
+            _statusMessage.value = "اكتب نص المنشور أولاً"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            val ch = channelRepository.ensureOfficialTeamChannel()
+            if (ch == null) {
+                _statusMessage.value = "تعذر العثور على قناة فريق وصال"
+                _busy.value = false
                 return@launch
             }
-            val q = _searchQuery.value.trim()
-            val list = runCatching {
-                if (q.isBlank()) userRepository.listDiscoverableUsers(limit = 40)
-                else userRepository.searchUsers(q)
-            }.getOrDefault(emptyList())
-            _users.value = list.sortedByDescending { it.isVerified }
+            channelRepository.publishPost(ch.channelId, ChannelPostType.TEXT, clean)
+                .collect { res ->
+                    res.onSuccess { frac ->
+                        if (frac >= 1f) {
+                            _statusMessage.value = "تم النشر في قناة فريق وصال بنجاح"
+                            _busy.value = false
+                        }
+                    }.onFailure { err ->
+                        _statusMessage.value = err.message ?: "فشل النشر في القناة"
+                        _busy.value = false
+                    }
+                }
         }
     }
 
-    fun toggleVerification(target: WesalUser, verified: Boolean, note: String) {
+    fun saveWelcomeConfig(enabled: Boolean, template: String) {
         viewModelScope.launch {
-            _busyUid.value = target.uid
-            userRepository.setAccountVerification(target.uid, verified, note)
+            _busy.value = true
+            userRepository.updateWelcomeConfig(enabled, template)
                 .onSuccess {
-                    _users.update { current ->
-                        current.map { u ->
-                            if (u.uid == target.uid) u.copy(isVerified = verified, verificationNote = note) else u
-                        }
-                    }
-                    _statusMessage.value = if (verified) {
-                        "تم منح شارة التوثيق لـ @${target.publicId.ifBlank { target.displayName }}"
-                    } else {
-                        "تمت إزالة شارة التوثيق"
-                    }
+                    _welcomeConfig.value = userRepository.getWelcomeConfig()
+                    _statusMessage.value = "تم حفظ إعدادات رسالة الترحيب"
                 }
-                .onFailure { err ->
-                    _statusMessage.value = err.message ?: "تعذر تحديث حالة التوثيق"
-                }
-            _busyUid.value = null
+                .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ رسالة الترحيب" }
+            _busy.value = false
+        }
+    }
+
+    fun sendWelcomeTestToSelf() {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.sendWelcomeTestToSelf()
+                .onSuccess { _statusMessage.value = "تم إرسال رسالة ترحيب تجريبية إلى محادثة WESAL Messenger لديك" }
+                .onFailure { _statusMessage.value = it.message ?: "فشل إرسال الرسالة التجريبية" }
+            _busy.value = false
+        }
+    }
+
+    fun publishOfficialAnnouncement(title: String, body: String) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.publishOfficialAnnouncement(title, body)
+                .onSuccess { _statusMessage.value = "تم إرسال الإعلان الرسمي إلى جميع المستخدمين بنجاح" }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر إرسال الإعلان" }
+            _busy.value = false
+        }
+    }
+
+    fun openDirectChatWithUser(uid: String, onOpenChat: (String) -> Unit) {
+        viewModelScope.launch {
+            chatRepository.getOrCreateDirectChat(uid)
+                .onSuccess { chatId -> onOpenChat(chatId) }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر فتح المحادثة" }
         }
     }
 
@@ -128,41 +551,109 @@ class AdminVerificationViewModel @Inject constructor(
     }
 }
 
+private fun calculateDurationExpiresAt(option: VerificationDurationOption, customCount: Int): Pair<Long, String> {
+    val now = System.currentTimeMillis()
+    val safeCount = customCount.coerceAtLeast(1)
+    return when (option) {
+        VerificationDurationOption.HOUR_1 -> (now + 3600_000L) to "ساعة واحدة"
+        VerificationDurationOption.CUSTOM_HOURS -> (now + safeCount * 3600_000L) to "$safeCount ساعات"
+        VerificationDurationOption.DAY_1 -> (now + 24L * 3600_000L) to "يوم واحد"
+        VerificationDurationOption.CUSTOM_DAYS -> (now + safeCount * 24L * 3600_000L) to "$safeCount أيام"
+        VerificationDurationOption.MONTH_1 -> {
+            val cal = Calendar.getInstance().apply {
+                timeInMillis = now
+                add(Calendar.MONTH, 1)
+            }
+            cal.timeInMillis to "شهر تقويمي"
+        }
+        VerificationDurationOption.CUSTOM_MONTHS -> {
+            val cal = Calendar.getInstance().apply {
+                timeInMillis = now
+                add(Calendar.MONTH, safeCount)
+            }
+            cal.timeInMillis to "$safeCount شهور تقويمية"
+        }
+        VerificationDurationOption.PERMANENT -> 0L to "دائم"
+    }
+}
+
+private fun formatAdminTime(ts: Long): String {
+    if (ts <= 0L) return "—"
+    return SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(ts))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AdminVerificationScreen(
     onBack: () -> Unit,
+    onOpenChat: (String) -> Unit = {},
     onOpenUserProfile: (String) -> Unit,
+    onOpenChannel: (String) -> Unit = {},
     viewModel: AdminVerificationViewModel = hiltViewModel()
 ) {
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
+
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
+    val stats by viewModel.stats.collectAsStateWithLifecycle()
     val users by viewModel.users.collectAsStateWithLifecycle()
-    val logs by viewModel.auditLogs.collectAsStateWithLifecycle()
-    val query by viewModel.searchQuery.collectAsStateWithLifecycle()
-    val busyUid by viewModel.busyUid.collectAsStateWithLifecycle()
+    val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val channels by viewModel.channels.collectAsStateWithLifecycle()
+    val officialTeamChannel by viewModel.officialTeamChannel.collectAsStateWithLifecycle()
+    val welcomeConfig by viewModel.welcomeConfig.collectAsStateWithLifecycle()
+    val globalFrameEnabled by viewModel.globalCustomerFrameEnabled.collectAsStateWithLifecycle()
+    val reports by viewModel.reports.collectAsStateWithLifecycle()
+    val verificationLogs by viewModel.verificationLogs.collectAsStateWithLifecycle()
+    val hiddenLogs by viewModel.hiddenLogs.collectAsStateWithLifecycle()
+    val adminActionLogs by viewModel.adminActionLogs.collectAsStateWithLifecycle()
+    val announcements by viewModel.announcements.collectAsStateWithLifecycle()
+    val inspectedUser by viewModel.inspectedUser.collectAsStateWithLifecycle()
+    val busy by viewModel.busy.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
-    var selectedTab by remember { mutableStateOf(0) } // 0 = Users, 1 = Verified Only, 2 = Audit Logs
-    var dialogTarget by remember { mutableStateOf<WesalUser?>(null) }
-    var dialogTargetVerify by remember { mutableStateOf(true) }
-    var noteInput by remember { mutableStateOf("") }
+    var currentSection by remember { mutableStateOf(AdminSection.OVERVIEW) }
+
+    // Modal action targets
+    var verifyTarget by remember { mutableStateOf<WesalUser?>(null) }
+    var frameNeonTarget by remember { mutableStateOf<WesalUser?>(null) }
+    var warnTarget by remember { mutableStateOf<WesalUser?>(null) }
+    var banTarget by remember { mutableStateOf<WesalUser?>(null) }
+    var hideTarget by remember { mutableStateOf<WesalUser?>(null) }
+    var reviewReportTarget by remember { mutableStateOf<AdminReportRecord?>(null) }
 
     Scaffold(
         containerColor = palette.background,
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = strings.adminVerificationTitle,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column {
+                        Text(
+                            text = if (strings.isEnglish) "WESAL Super Admin" else "لوحة إدارة WESAL",
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${currentSection.number}. ${if (strings.isEnglish) currentSection.titleEn else currentSection.titleAr} • ID: ${Constants.OWNER_ADMIN_NUMERIC_ID}",
+                            color = palette.emerald,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back, tint = palette.textPrimary)
+                    }
+                },
+                actions = {
+                    if (isSuperAdmin) {
+                        IconButton(onClick = { viewModel.refreshAll() }, enabled = !busy) {
+                            Icon(Icons.Default.Refresh, contentDescription = "تحديث", tint = palette.turquoise)
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
@@ -177,16 +668,25 @@ fun AdminVerificationScreen(
                     .padding(24.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Default.Lock, contentDescription = null, tint = palette.error, modifier = Modifier.size(48.dp))
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = null, tint = palette.error, modifier = Modifier.size(56.dp))
                     Text(
                         text = if (strings.isEnglish) {
-                            "Restricted to the primary WESAL Super Admin."
+                            "Restricted strictly to Owner Super Admin (ID: 10001)."
                         } else {
-                            "هذه اللوحة مخصصة لمدير النظام الرئيسي (Super Admin) فقط."
+                            "هذه اللوحة مقفولة بالكامل لحساب المالك الإداري (WESAL ID: 10001) فقط."
                         },
                         color = palette.textPrimary,
-                        style = MaterialTheme.typography.titleMedium
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = Constants.SUPER_ADMIN_EMAIL,
+                        color = palette.textMuted,
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
@@ -198,16 +698,29 @@ fun AdminVerificationScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            if (busy) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = palette.emerald,
+                    trackColor = palette.surfaceElevated
+                )
+            }
+
             statusMessage?.let { msg ->
                 Surface(
                     color = palette.emerald.copy(alpha = 0.14f),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(msg, color = palette.emerald, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            text = msg,
+                            color = palette.emerald,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f)
+                        )
                         IconButton(onClick = viewModel::clearMessage, modifier = Modifier.size(24.dp)) {
                             Icon(Icons.Default.Close, contentDescription = strings.close, tint = palette.emerald)
                         }
@@ -215,182 +728,794 @@ fun AdminVerificationScreen(
                 }
             }
 
-            TabRow(
-                selectedTabIndex = selectedTab,
-                containerColor = palette.surface,
-                contentColor = palette.emerald
-            ) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text(if (strings.isEnglish) "Accounts" else "الحسابات", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text(strings.verifiedUsersTitle, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                )
-                Tab(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    text = { Text(strings.auditLogsTitle, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                )
-            }
-
-            if (selectedTab != 2) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = viewModel::updateSearch,
-                    placeholder = { Text(strings.searchContactsPlaceholder) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.turquoise) },
-                    trailingIcon = {
-                        if (query.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.updateSearch("") }) {
-                                Icon(Icons.Default.Close, contentDescription = strings.clear, tint = palette.textSecondary)
-                            }
-                        }
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = palette.textPrimary,
-                        unfocusedTextColor = palette.textPrimary,
-                        focusedPlaceholderColor = palette.textMuted,
-                        unfocusedPlaceholderColor = palette.textMuted,
-                        focusedBorderColor = palette.turquoise,
-                        unfocusedBorderColor = palette.border,
-                        cursorColor = palette.turquoise
-                    ),
-                    singleLine = true,
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(12.dp)
-                )
-
-                val visibleUsers = if (selectedTab == 1) users.filter { it.isVerified } else users
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            // 19-Section Horizontal Selector Ribbon (Clean unclipped labels)
+            Surface(color = palette.surface, tonalElevation = 2.dp) {
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(visibleUsers, key = { it.uid }) { user ->
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = palette.surface),
-                            shape = RoundedCornerShape(16.dp),
+                    items(AdminSection.entries, key = { it.number }) { section ->
+                        val selected = section == currentSection
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (selected) palette.emerald else palette.surfaceElevated,
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onOpenUserProfile(user.uid) }
+                                .border(
+                                    width = 1.dp,
+                                    color = if (selected) palette.emerald else palette.border,
+                                    shape = RoundedCornerShape(14.dp)
+                                )
+                                .clickable { currentSection = section }
                         ) {
                             Row(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                WesalAvatar(
-                                    imageUrl = user.photoUrl,
-                                    name = user.displayName.ifBlank { "@${user.publicId}" },
-                                    size = 46.dp,
-                                    isOnline = user.isOnline
+                                Icon(
+                                    imageVector = section.icon,
+                                    contentDescription = null,
+                                    tint = if (selected) palette.onPrimary else palette.turquoise,
+                                    modifier = Modifier.size(16.dp)
                                 )
-                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    WesalNameWithBadge(
-                                        name = user.displayName.ifBlank { "WESAL User" },
-                                        isVerified = user.isVerified,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    val subIds = listOfNotNull(
-                                        user.numericId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
-                                        user.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }
-                                    ).joinToString(" • ")
-                                    if (subIds.isNotBlank()) {
-                                        Text(
-                                            text = subIds,
-                                            color = palette.textSecondary,
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    }
-                                    Text(
-                                        text = if (user.isVerified) strings.verifiedAccountLabel else strings.unverifiedAccountLabel,
-                                        color = if (user.isVerified) palette.verifiedBlue else palette.textMuted,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    if (user.verificationNote.isNotBlank()) {
-                                        Text(
-                                            text = user.verificationNote,
-                                            color = palette.verifiedBlue,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                                if (busyUid == user.uid) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp, color = palette.verifiedBlue)
-                                } else {
-                                    FilledTonalButton(
-                                        onClick = {
-                                            dialogTarget = user
-                                            dialogTargetVerify = !user.isVerified
-                                            noteInput = user.verificationNote
-                                        },
-                                        colors = ButtonDefaults.filledTonalButtonColors(
-                                            containerColor = if (user.isVerified) palette.error.copy(alpha = 0.14f) else palette.verifiedBlue.copy(alpha = 0.16f),
-                                            contentColor = if (user.isVerified) palette.error else palette.verifiedBlue
-                                        )
-                                    ) {
-                                        com.wesal.messenger.presentation.components.WesalVerifiedMark(androidx.compose.ui.unit.Dp(16f))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(
-                                            text = if (user.isVerified) strings.revokeVerifiedBadge else strings.grantVerifiedBadge,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
+                                Text(
+                                    text = "${section.number}. ${if (strings.isEnglish) section.titleEn else section.titleAr}",
+                                    color = if (selected) palette.onPrimary else palette.textPrimary,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                    maxLines = 1
+                                )
                             }
                         }
                     }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            }
+
+            HorizontalDivider(color = palette.border)
+
+            when (currentSection) {
+                AdminSection.OVERVIEW -> AdminOverviewSection(
+                    stats = stats,
+                    reports = reports,
+                    channels = channels,
+                    onJumpTo = { currentSection = it }
+                )
+
+                AdminSection.STATISTICS -> AdminStatisticsSection(stats = stats)
+
+                AdminSection.USERS -> AdminUsersListSection(
+                    title = "قائمة جميع الحسابات (${users.size})",
+                    users = users,
+                    onInspect = { viewModel.inspectUser(it.uid) },
+                    onVerify = { verifyTarget = it },
+                    onFrameNeon = { frameNeonTarget = it },
+                    onWarn = { warnTarget = it },
+                    onBanToggle = { u -> if (u.isBanned) viewModel.unbanUser(u) else banTarget = u },
+                    onHideToggle = { hideTarget = it },
+                    onOpenChat = { u -> viewModel.openDirectChatWithUser(u.uid, onOpenChat) }
+                )
+
+                AdminSection.SEARCH -> Column(modifier = Modifier.fillMaxSize()) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = viewModel::updateSearch,
+                        placeholder = { Text("ابحث بـ WESAL ID (مثل 10001) أو @username أو الاسم أو البريد أو UID") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.turquoise) },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { viewModel.updateSearch("") }) {
+                                    Icon(Icons.Default.Close, contentDescription = null, tint = palette.textSecondary)
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp)
+                    )
+                    AdminUsersListSection(
+                        title = "نتائج البحث الإداري الشامل (${searchResults.size})",
+                        users = searchResults,
+                        onInspect = { viewModel.inspectUser(it.uid) },
+                        onVerify = { verifyTarget = it },
+                        onFrameNeon = { frameNeonTarget = it },
+                        onWarn = { warnTarget = it },
+                        onBanToggle = { u -> if (u.isBanned) viewModel.unbanUser(u) else banTarget = u },
+                        onHideToggle = { hideTarget = it },
+                        onOpenChat = { u -> viewModel.openDirectChatWithUser(u.uid, onOpenChat) }
+                    )
+                }
+
+                AdminSection.REPORTS -> AdminReportsSection(
+                    reports = reports,
+                    onlyWithContentSnapshot = false,
+                    onReviewReport = { reviewReportTarget = it },
+                    onOpenChat = { r -> viewModel.inspectReportedChat(r, onOpenChat) },
+                    onOpenUser = onOpenUserProfile
+                )
+
+                AdminSection.BANS_WARNINGS -> AdminBansWarningsSection(
+                    users = users,
+                    onWarn = { warnTarget = it },
+                    onBan = { banTarget = it },
+                    onUnban = { viewModel.unbanUser(it) },
+                    onInspect = { viewModel.inspectUser(it.uid) }
+                )
+
+                AdminSection.CHANNELS -> AdminChannelsSection(
+                    channels = channels,
+                    onOpenChannel = onOpenChannel,
+                    onSuspendToggle = { ch -> viewModel.setChannelSuspended(ch, !ch.isSuspended) },
+                    onDeleteChannel = { viewModel.deleteChannel(it) }
+                )
+
+                AdminSection.CONTENT_MOD -> AdminReportsSection(
+                    reports = reports.filter {
+                        it.targetType != "USER" || it.targetContentSnapshot.isNotBlank() || it.targetChatId.isNotBlank()
+                    },
+                    onlyWithContentSnapshot = true,
+                    onReviewReport = { reviewReportTarget = it },
+                    onOpenChat = { r -> viewModel.inspectReportedChat(r, onOpenChat) },
+                    onOpenUser = onOpenUserProfile
+                )
+
+                AdminSection.VERIFICATION_APPEARANCE -> AdminVerificationAndAppearanceSection(
+                    users = users,
+                    logs = verificationLogs,
+                    globalFrameEnabled = globalFrameEnabled,
+                    onToggleGlobalFrame = viewModel::toggleGlobalCustomerFrame,
+                    onOpenVerifyDialog = { verifyTarget = it },
+                    onOpenFrameNeonDialog = { frameNeonTarget = it },
+                    onInspect = { viewModel.inspectUser(it.uid) }
+                )
+
+                AdminSection.WESAL_TEAM -> AdminWesalTeamSection(
+                    channel = officialTeamChannel,
+                    onOpenChannel = {
+                        val cid = officialTeamChannel?.channelId ?: Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID
+                        onOpenChannel(cid)
+                    },
+                    onPublishPost = viewModel::publishOfficialTeamPost
+                )
+
+                AdminSection.WELCOME_MSG -> AdminWelcomeConfigSection(
+                    config = welcomeConfig,
+                    onSave = viewModel::saveWelcomeConfig,
+                    onSendTest = viewModel::sendWelcomeTestToSelf
+                )
+
+                AdminSection.ANNOUNCEMENTS -> AdminAnnouncementsSection(
+                    announcements = announcements,
+                    onPublish = viewModel::publishOfficialAnnouncement
+                )
+
+                AdminSection.ACTION_LOGS -> AdminAuditLogsListSection(
+                    title = "سجل الإجراءات الإدارية الشامل (${adminActionLogs.size})",
+                    logs = adminActionLogs
+                )
+
+                AdminSection.ADMIN_SETTINGS -> AdminSettingsSection(
+                    globalFrameEnabled = globalFrameEnabled,
+                    onToggleGlobalFrame = viewModel::toggleGlobalCustomerFrame,
+                    onRefreshAll = viewModel::refreshAll
+                )
+
+                AdminSection.HIDDEN_ACCOUNTS -> AdminUsersListSection(
+                    title = "التحكم في إخفاء الحسابات من البحث (المخفية: ${users.count { it.hiddenFromSearch }})",
+                    users = users.sortedByDescending { it.hiddenFromSearch },
+                    onInspect = { viewModel.inspectUser(it.uid) },
+                    onVerify = { verifyTarget = it },
+                    onFrameNeon = { frameNeonTarget = it },
+                    onWarn = { warnTarget = it },
+                    onBanToggle = { u -> if (u.isBanned) viewModel.unbanUser(u) else banTarget = u },
+                    onHideToggle = { hideTarget = it },
+                    onOpenChat = { u -> viewModel.openDirectChatWithUser(u.uid, onOpenChat) }
+                )
+
+                AdminSection.HIDDEN_LOGS -> AdminAuditLogsListSection(
+                    title = "سجل تدقيق إخفاء الحسابات من البحث (${hiddenLogs.size})",
+                    logs = hiddenLogs
+                )
+
+                AdminSection.ONLINE_NOW -> {
+                    val now = System.currentTimeMillis()
+                    val onlineUsers = users.filter { u ->
+                        u.isOnline || (maxOf(u.lastHeartbeatAt, u.lastSeen) > 0L && now - maxOf(u.lastHeartbeatAt, u.lastSeen) <= Constants.PRESENCE_ONLINE_TTL_MS)
+                    }
+                    AdminOnlineUsersSection(
+                        onlineUsers = onlineUsers,
+                        now = now,
+                        onInspect = { viewModel.inspectUser(it.uid) },
+                        onOpenChat = { u -> viewModel.openDirectChatWithUser(u.uid, onOpenChat) }
+                    )
+                }
+
+                AdminSection.CHAT_ACTIVITY -> AdminChatActivityMetadataSection(
+                    users = users.filter { it.lastActivityAt > 0L || it.lastActivityType.isNotBlank() }
+                        .sortedByDescending { it.lastActivityAt },
+                    onInspect = { viewModel.inspectUser(it.uid) }
+                )
+
+                AdminSection.CONTENT_REVIEW -> AdminReportsSection(
+                    reports = reports,
+                    onlyWithContentSnapshot = false,
+                    onReviewReport = { reviewReportTarget = it },
+                    onOpenChat = { r -> viewModel.inspectReportedChat(r, onOpenChat) },
+                    onOpenUser = onOpenUserProfile
+                )
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Modals & Action Dialogs
+    // -----------------------------------------------------------------------
+
+    inspectedUser?.let { u ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissInspectedUser,
+            containerColor = palette.surface,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    WesalAvatar(
+                        imageUrl = u.photoUrl,
+                        name = u.displayName,
+                        size = 44.dp,
+                        isOnline = u.isOnline,
+                        frameId = u.frameId,
+                        frameExpiresAt = u.frameExpiresAt
+                    )
+                    Column {
+                        WesalNameWithBadge(
+                            name = u.displayName.ifBlank { "WESAL User" },
+                            isVerified = u.isVerified,
+                            verificationType = u.verificationType,
+                            neonColor = u.neonColor,
+                            neonGlowIntensity = u.neonGlowIntensity,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text("ID: ${u.numericId.ifBlank { "—" }} • @${u.publicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    items(logs, key = { it.logId }) { log ->
-                        val dateText = remember(log.timestamp) {
-                            SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(log.timestamp))
-                        }
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = palette.surface),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier.fillMaxWidth()
+                    AdminInfoLine("UID", u.uid)
+                    AdminInfoLine("البريد الإلكتروني", u.email.ifBlank { "—" })
+                    AdminInfoLine("رقم الهاتف الحقيقي", u.phoneNumber.ifBlank { "غير مسجل" })
+                    AdminInfoLine("تاريخ الميلاد", u.birthDate.ifBlank { "—" })
+                    AdminInfoLine("البايو", u.bio.ifBlank { "—" })
+                    AdminInfoLine("الحالة", if (u.isBanned) "محظور (${u.banType}: ${u.banReason})" else if (u.deletedAt > 0L) "محذوف" else "نشط")
+                    AdminInfoLine("الإنذارات", u.warningsCount.toString())
+                    AdminInfoLine("الإخفاء من البحث", if (u.hiddenFromSearch) "مخفي (${u.hideFromSearchReason})" else "ظاهر")
+                    AdminInfoLine("التوثيق", if (u.isVerified) "${u.verificationType} (${if (u.verificationExpiresAt == 0L) "دائم" else formatAdminTime(u.verificationExpiresAt)})" else "غير موثق")
+                    AdminInfoLine("الإطار", u.frameId.ifBlank { "بدون" })
+                    AdminInfoLine("النيون", "${u.neonColor.ifBlank { "بدون" }} (${(u.neonGlowIntensity * 100).toInt()}%)")
+                    AdminInfoLine("الجهاز / النسخة", "${u.lastDeviceName.ifBlank { "—" }} / ${u.lastAppVersion.ifBlank { "—" }}")
+                    AdminInfoLine("الجلسات النشطة", u.activeSessionsCount.toString())
+                    AdminInfoLine("تاريخ الإنشاء", formatAdminTime(u.createdAt))
+                    AdminInfoLine("آخر ظهور", formatAdminTime(u.lastSeen))
+
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        FilledTonalButton(
+                            onClick = { viewModel.dismissInspectedUser(); verifyTarget = u },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("التوثيق", maxLines = 1) }
+                        FilledTonalButton(
+                            onClick = { viewModel.dismissInspectedUser(); frameNeonTarget = u },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("إطار/نيون", maxLines = 1) }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        FilledTonalButton(
+                            onClick = { viewModel.dismissInspectedUser(); warnTarget = u },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("إنذار", maxLines = 1) }
+                        FilledTonalButton(
+                            onClick = {
+                                viewModel.dismissInspectedUser()
+                                if (u.isBanned) viewModel.unbanUser(u) else banTarget = u
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = if (u.isBanned) palette.emerald.copy(alpha = 0.16f) else palette.error.copy(alpha = 0.16f)
+                            )
+                        ) { Text(if (u.isBanned) "رفع الحظر" else "حظر", maxLines = 1) }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { viewModel.dismissInspectedUser(); hideTarget = u },
+                            modifier = Modifier.weight(1f)
+                        ) { Text(if (u.hiddenFromSearch) "إظهار" else "إخفاء", maxLines = 1) }
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.dismissInspectedUser()
+                                viewModel.openDirectChatWithUser(u.uid, onOpenChat)
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("محادثة", maxLines = 1) }
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.dismissInspectedUser()
+                                onOpenUserProfile(u.uid)
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) { Text("الملف", maxLines = 1) }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissInspectedUser) { Text(strings.close) }
+            }
+        )
+    }
+
+    verifyTarget?.let { target ->
+        AdminVerificationDialog(
+            user = target,
+            onDismiss = { verifyTarget = null },
+            onApply = { verified, seal, expiresAt, durationLabel, note ->
+                viewModel.applyVerification(target, verified, seal, expiresAt, durationLabel, note)
+                verifyTarget = null
+            }
+        )
+    }
+
+    frameNeonTarget?.let { target ->
+        AdminFrameAndNeonDialog(
+            user = target,
+            onDismiss = { frameNeonTarget = null },
+            onApplyFrame = { frameId, expiresAt, durationLabel ->
+                viewModel.applyFrame(target, frameId, expiresAt, durationLabel)
+                frameNeonTarget = null
+            },
+            onApplyNeon = { preset, glow ->
+                viewModel.applyNeon(target, preset, glow)
+                frameNeonTarget = null
+            }
+        )
+    }
+
+    warnTarget?.let { target ->
+        var reason by remember(target.uid) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { warnTarget = null },
+            containerColor = palette.surface,
+            title = { Text("إرسال إنذار إداري رسمي", color = palette.textPrimary) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${target.displayName} (ID: ${target.numericId})", color = palette.textSecondary)
+                    OutlinedTextField(
+                        value = reason,
+                        onValueChange = { reason = it },
+                        label = { Text("سبب الإنذار") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.warnUser(target, reason); warnTarget = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.warning)
+                ) { Text("إرسال الإنذار") }
+            },
+            dismissButton = {
+                TextButton(onClick = { warnTarget = null }) { Text(strings.cancel) }
+            }
+        )
+    }
+
+    banTarget?.let { target ->
+        AdminBanDialog(
+            user = target,
+            onDismiss = { banTarget = null },
+            onConfirmBan = { permanent, expiresAt, reason, blockIdentifiers ->
+                viewModel.banUser(target, permanent, expiresAt, reason, blockIdentifiers)
+                banTarget = null
+            }
+        )
+    }
+
+    hideTarget?.let { target ->
+        var reason by remember(target.uid) { mutableStateOf(target.hideFromSearchReason) }
+        val willHide = !target.hiddenFromSearch
+        AlertDialog(
+            onDismissRequest = { hideTarget = null },
+            containerColor = palette.surface,
+            title = { Text(if (willHide) "إخفاء الحساب من البحث" else "إعادة إظهار الحساب", color = palette.textPrimary) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("${target.displayName} (ID: ${target.numericId})", color = palette.textSecondary)
+                    OutlinedTextField(
+                        value = reason,
+                        onValueChange = { reason = it },
+                        label = { Text("السبب (يُسجل في سجل الإخفاء)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    viewModel.setHiddenFromSearch(target, willHide, reason)
+                    hideTarget = null
+                }) { Text(strings.confirm) }
+            },
+            dismissButton = { TextButton(onClick = { hideTarget = null }) { Text(strings.cancel) } }
+        )
+    }
+
+    reviewReportTarget?.let { report ->
+        AdminReportReviewDialog(
+            report = report,
+            onDismiss = { reviewReportTarget = null },
+            onSaveStatus = { status, note, resolution ->
+                viewModel.updateReport(report.reportId, status, note, resolution)
+                reviewReportTarget = null
+            },
+            onOpenReportedChat = {
+                reviewReportTarget = null
+                viewModel.inspectReportedChat(report, onOpenChat)
+            },
+            onInspectReportedUser = {
+                reviewReportTarget = null
+                if (report.reportedUid.isNotBlank()) viewModel.inspectUser(report.reportedUid)
+            }
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sections 1 - 19 Composables
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun AdminOverviewSection(
+    stats: AdminDashboardStats,
+    reports: List<AdminReportRecord>,
+    channels: List<WesalChannel>,
+    onJumpTo: (AdminSection) -> Unit
+) {
+    val palette = WesalColors.current
+    val openReports = reports.count { it.status == "NEW" || it.status == "IN_REVIEW" }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = palette.surfaceElevated),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, palette.emerald.copy(alpha = 0.45f), RoundedCornerShape(18.dp))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = palette.emerald)
+                        Text("مركز القيادة الإداري — WESAL Messenger", color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                    }
+                    Text("المالك الإداري المعتمد الوحيد: WESAL ID ${Constants.OWNER_ADMIN_NUMERIC_ID} • ${Constants.SUPER_ADMIN_EMAIL}", color = palette.emerald, style = MaterialTheme.typography.bodySmall)
+                    Text("جميع الصلاحيات مرتبطة بالتحقق الخادمي + Firebase UID", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                AdminKpiCard("إجمالي الحسابات", stats.totalAccounts.toString(), palette.turquoise, Modifier.weight(1f)) { onJumpTo(AdminSection.USERS) }
+                AdminKpiCard("متصلون الآن", stats.onlineNowCount.toString(), palette.emerald, Modifier.weight(1f)) { onJumpTo(AdminSection.ONLINE_NOW) }
+                AdminKpiCard("بلاغات مفتوحة", openReports.toString(), if (openReports > 0) palette.error else palette.textSecondary, Modifier.weight(1f)) { onJumpTo(AdminSection.REPORTS) }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                AdminKpiCard("حسابات موثقة", stats.verifiedCount.toString(), palette.verifiedBlue, Modifier.weight(1f)) { onJumpTo(AdminSection.VERIFICATION_APPEARANCE) }
+                AdminKpiCard("محظورة", stats.bannedCount.toString(), palette.warning, Modifier.weight(1f)) { onJumpTo(AdminSection.BANS_WARNINGS) }
+                AdminKpiCard("القنوات", channels.size.toString(), palette.turquoise, Modifier.weight(1f)) { onJumpTo(AdminSection.CHANNELS) }
+            }
+        }
+
+        item {
+            Text("الوصول السريع للأقسام الـ 19", color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+        }
+
+        items(AdminSection.entries.chunked(2)) { pair ->
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                pair.forEach { sec ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = palette.surface),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable { onJumpTo(sec) }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-                                    Text(
-                                        text = "${log.targetName.ifBlank { log.targetUid }} (@${log.targetPublicId})",
-                                        color = palette.textPrimary,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        text = log.action,
-                                        color = if (log.action == "GRANTED") palette.verifiedBlue else palette.error,
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.labelMedium
-                                    )
-                                }
-                                if (log.note.isNotBlank()) {
-                                    Text(log.note, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
-                                }
+                            Icon(sec.icon, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                            Text("${sec.number}. ${sec.titleAr}", color = palette.textPrimary, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminKpiCard(
+    label: String,
+    value: String,
+    accent: Color,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val palette = WesalColors.current
+    Card(
+        colors = CardDefaults.cardColors(containerColor = palette.surface),
+        shape = RoundedCornerShape(14.dp),
+        modifier = modifier.clickable(onClick = onClick)
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(value, color = accent, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(label, color = palette.textSecondary, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun AdminStatisticsSection(stats: AdminDashboardStats) {
+    val palette = WesalColors.current
+    val rows = listOf(
+        "إجمالي الحسابات المسجلة" to stats.totalAccounts,
+        "المتصلون الآن (Heartbeat حي)" to stats.onlineNowCount,
+        "غير متصلين حاليًا" to stats.offlineCount,
+        "المسجلون اليوم (24 ساعة)" to stats.newTodayCount,
+        "المسجلون خلال يومين" to stats.newTwoDaysCount,
+        "المسجلون خلال أسبوع" to stats.newWeekCount,
+        "المسجلون خلال شهر" to stats.newMonthCount,
+        "النشطون اليوم" to stats.activeTodayCount,
+        "النشطون خلال أسبوع" to stats.activeWeekCount,
+        "النشطون خلال شهر" to stats.activeMonthCount,
+        "الحسابات الموثقة" to stats.verifiedCount,
+        "الحسابات المحظورة" to stats.bannedCount,
+        "الحسابات المخفية من البحث" to stats.hiddenCount,
+        "الحسابات المحذوفة" to stats.deletedCount
+    )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(rows) { (label, count) ->
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(14.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(label, color = palette.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                    Text(count.toString(), color = palette.emerald, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminUsersListSection(
+    title: String,
+    users: List<WesalUser>,
+    onInspect: (WesalUser) -> Unit,
+    onVerify: (WesalUser) -> Unit,
+    onFrameNeon: (WesalUser) -> Unit,
+    onWarn: (WesalUser) -> Unit,
+    onBanToggle: (WesalUser) -> Unit,
+    onHideToggle: (WesalUser) -> Unit,
+    onOpenChat: (WesalUser) -> Unit
+) {
+    val palette = WesalColors.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text(title, color = palette.textSecondary, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp))
+        }
+        items(users, key = { it.uid }) { user ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = palette.surface),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onInspect(user) }
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        WesalAvatar(
+                            imageUrl = user.photoUrl,
+                            name = user.displayName.ifBlank { "@${user.publicId}" },
+                            size = 46.dp,
+                            isOnline = user.isOnline,
+                            frameId = user.frameId,
+                            frameExpiresAt = user.frameExpiresAt
+                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            WesalNameWithBadge(
+                                name = user.displayName.ifBlank { "WESAL User" },
+                                isVerified = user.isVerified,
+                                verificationType = user.verificationType,
+                                neonColor = user.neonColor,
+                                neonGlowIntensity = user.neonGlowIntensity,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "ID: ${user.numericId.ifBlank { "—" }} • @${user.publicId.ifBlank { "—" }}",
+                                color = palette.textSecondary,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            val tags = buildList {
+                                if (user.numericId == Constants.OWNER_ADMIN_NUMERIC_ID) add("المالك الرئيسي")
+                                if (user.isBanned) add("محظور")
+                                if (user.hiddenFromSearch) add("مخفي")
+                                if (user.warningsCount > 0) add("إنذارات: ${user.warningsCount}")
+                                if (user.frameId.isNotBlank()) add("إطار: ${user.frameId}")
+                                if (user.neonColor.isNotBlank()) add("نيون: ${user.neonColor}")
+                            }
+                            if (tags.isNotEmpty()) {
+                                Text(tags.joinToString(" • "), color = palette.turquoise, style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        SmallAdminChip("التفاصيل", Icons.Default.Info) { onInspect(user) }
+                        SmallAdminChip("توثيق", Icons.Default.Verified) { onVerify(user) }
+                        SmallAdminChip("إطار/نيون", Icons.Default.AutoAwesome) { onFrameNeon(user) }
+                        SmallAdminChip("إنذار", Icons.Default.Warning) { onWarn(user) }
+                        SmallAdminChip(if (user.isBanned) "فك حظر" else "حظر", Icons.Default.Block) { onBanToggle(user) }
+                        SmallAdminChip(if (user.hiddenFromSearch) "إظهار" else "إخفاء", Icons.Default.VisibilityOff) { onHideToggle(user) }
+                        SmallAdminChip("مراسلة", Icons.AutoMirrored.Filled.Chat) { onOpenChat(user) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmallAdminChip(text: String, icon: ImageVector, onClick: () -> Unit) {
+    val palette = WesalColors.current
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = palette.surfaceElevated,
+        modifier = Modifier
+            .border(1.dp, palette.border, RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(icon, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(14.dp))
+            Text(text, color = palette.textPrimary, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun AdminReportsSection(
+    reports: List<AdminReportRecord>,
+    onlyWithContentSnapshot: Boolean,
+    onReviewReport: (AdminReportRecord) -> Unit,
+    onOpenChat: (AdminReportRecord) -> Unit,
+    onOpenUser: (String) -> Unit
+) {
+    val palette = WesalColors.current
+    var statusFilter by remember { mutableStateOf("ALL") }
+    val filters = listOf("ALL", "NEW", "IN_REVIEW", "RESOLVED", "REJECTED", "CLOSED")
+
+    val filtered = remember(reports, statusFilter) {
+        if (statusFilter == "ALL") reports else reports.filter { it.status == statusFilter }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(filters) { f ->
+                FilterChip(
+                    selected = statusFilter == f,
+                    onClick = { statusFilter = f },
+                    label = { Text(f) }
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (filtered.isEmpty()) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (onlyWithContentSnapshot) "لا توجد بلاغات محتوى حالياً" else "لا توجد بلاغات مطابقة",
+                            color = palette.textMuted
+                        )
+                    }
+                }
+            }
+            items(filtered, key = { it.reportId }) { report ->
+                Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(14.dp)) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "${report.targetType} • ${report.reportedName.ifBlank { report.reportedUid }}",
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = report.status,
+                                color = if (report.status == "NEW") palette.error else palette.emerald,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text("المُبلِّغ: ${report.reporterName.ifBlank { report.reporterUid }}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                        Text("السبب: ${report.reason}", color = palette.textPrimary, style = MaterialTheme.typography.bodySmall)
+                        if (report.targetContentSnapshot.isNotBlank()) {
+                            Surface(color = palette.surfaceElevated, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
                                 Text(
-                                    text = "${log.adminEmail} • $dateText",
-                                    color = palette.textMuted,
-                                    style = MaterialTheme.typography.labelSmall
+                                    text = "لقطة المحتوى المحفوظة:\n${report.targetContentSnapshot}",
+                                    color = palette.textSecondary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(8.dp)
                                 )
+                            }
+                        }
+                        if (report.adminNote.isNotBlank()) {
+                            Text("ملاحظة الإدارة: ${report.adminNote}", color = palette.turquoise, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Text(formatAdminTime(report.createdAt), color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            FilledTonalButton(onClick = { onReviewReport(report) }, modifier = Modifier.weight(1f)) {
+                                Text("معالجة البلاغ", maxLines = 1)
+                            }
+                            if (report.targetChatId.isNotBlank()) {
+                                OutlinedButton(onClick = { onOpenChat(report) }) {
+                                    Text("فتح المحادثة", maxLines = 1)
+                                }
+                            }
+                            if (report.reportedUid.isNotBlank()) {
+                                OutlinedButton(onClick = { onOpenUser(report.reportedUid) }) {
+                                    Text("الحساب", maxLines = 1)
+                                }
                             }
                         }
                     }
@@ -398,59 +1523,1053 @@ fun AdminVerificationScreen(
             }
         }
     }
+}
 
-    dialogTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { dialogTarget = null },
-            containerColor = palette.surface,
-            title = {
-                Text(
-                    text = if (dialogTargetVerify) strings.grantVerifiedBadge else strings.revokeVerifiedBadge,
-                    color = palette.textPrimary
+@Composable
+private fun AdminBansWarningsSection(
+    users: List<WesalUser>,
+    onWarn: (WesalUser) -> Unit,
+    onBan: (WesalUser) -> Unit,
+    onUnban: (WesalUser) -> Unit,
+    onInspect: (WesalUser) -> Unit
+) {
+    val palette = WesalColors.current
+    val relevant = remember(users) {
+        users.sortedWith(
+            compareByDescending<WesalUser> { it.isBanned }
+                .thenByDescending { it.warningsCount }
+        )
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(relevant, key = { it.uid }) { user ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = palette.surface),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().clickable { onInspect(user) }
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            WesalNameWithBadge(
+                                name = user.displayName.ifBlank { "@${user.publicId}" },
+                                isVerified = user.isVerified,
+                                verificationType = user.verificationType
+                            )
+                            Text("ID: ${user.numericId} • إنذارات: ${user.warningsCount}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (user.isBanned) {
+                            Text("محظور (${user.banType})", color = palette.error, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    if (user.banReason.isNotBlank()) {
+                        Text("سبب الحظر: ${user.banReason}", color = palette.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(onClick = { onWarn(user) }) { Text("إرسال إنذار") }
+                        if (user.isBanned) {
+                            Button(
+                                onClick = { onUnban(user) },
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald)
+                            ) { Text("رفع الحظر") }
+                        } else if (user.numericId != Constants.OWNER_ADMIN_NUMERIC_ID) {
+                            Button(
+                                onClick = { onBan(user) },
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.error)
+                            ) { Text("حظر") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminChannelsSection(
+    channels: List<WesalChannel>,
+    onOpenChannel: (String) -> Unit,
+    onSuspendToggle: (WesalChannel) -> Unit,
+    onDeleteChannel: (WesalChannel) -> Unit
+) {
+    val palette = WesalColors.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text("جميع القنوات (${channels.size})", color = palette.textSecondary, style = MaterialTheme.typography.labelLarge)
+        }
+        items(channels, key = { it.channelId }) { ch ->
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(14.dp)) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        WesalAvatar(imageUrl = ch.avatarUrl, name = ch.title, size = 42.dp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            WesalNameWithBadge(
+                                name = ch.title,
+                                isVerified = ch.isVerified,
+                                verificationType = ch.verificationType,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "${if (ch.isPublic) "عامة" else "خاصة"} • مشتركين: ${ch.subscribersCount}" +
+                                    (if (ch.isOfficialTeamChannel) " • قناة رسمية" else "") +
+                                    (if (ch.isSuspended) " • موقوفة" else ""),
+                                color = if (ch.isSuspended) palette.error else palette.textSecondary,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilledTonalButton(onClick = { onOpenChannel(ch.channelId) }) {
+                            Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("فتح")
+                        }
+                        if (!ch.isOfficialTeamChannel) {
+                            OutlinedButton(onClick = { onSuspendToggle(ch) }) {
+                                Text(if (ch.isSuspended) "إعادة تفعيل" else "تعليق")
+                            }
+                            OutlinedButton(
+                                onClick = { onDeleteChannel(ch) },
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
+                            ) {
+                                Text("حذف")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminVerificationAndAppearanceSection(
+    users: List<WesalUser>,
+    logs: List<VerificationAuditLog>,
+    globalFrameEnabled: Boolean,
+    onToggleGlobalFrame: (Boolean) -> Unit,
+    onOpenVerifyDialog: (WesalUser) -> Unit,
+    onOpenFrameNeonDialog: (WesalUser) -> Unit,
+    onInspect: (WesalUser) -> Unit
+) {
+    val palette = WesalColors.current
+    var subTab by remember { mutableStateOf(0) }
+    val subTabs = listOf("الحسابات", "الحسابات الموثقة", "الحسابات المنتهي توثيقها", "سجل تدقيق التوثيق")
+    val now = System.currentTimeMillis()
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Global Customer Frame Banner ("إطار لكل العملاء البرنامج")
+        Card(
+            colors = CardDefaults.cardColors(containerColor = palette.surfaceElevated),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = WesalFrameCatalog.defaultCustomerFrame.resId),
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp).clip(CircleShape),
+                    contentScale = ContentScale.Fit
                 )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    WesalNameWithBadge(
-                        name = target.displayName.ifBlank { "@${target.publicId}" },
-                        isVerified = target.isVerified
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("إطار لكل العملاء البرنامج (تطبيق جماعي)", color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                    Text("منح/إزالة الإطار الافتراضي لعملاء WESAL دفعة واحدة", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                }
+                Switch(
+                    checked = globalFrameEnabled,
+                    onCheckedChange = onToggleGlobalFrame
+                )
+            }
+        }
+
+        ScrollableTabRow(
+            selectedTabIndex = subTab,
+            containerColor = palette.surface,
+            contentColor = palette.emerald,
+            edgePadding = 8.dp
+        ) {
+            subTabs.forEachIndexed { idx, label ->
+                Tab(
+                    selected = subTab == idx,
+                    onClick = { subTab = idx },
+                    text = { Text(label, maxLines = 1) }
+                )
+            }
+        }
+
+        if (subTab == 3) {
+            AdminAuditLogsListSection(title = "سجل تدقيق التوثيق والإطارات (${logs.size})", logs = logs)
+        } else {
+            val filtered = remember(users, subTab, now) {
+                when (subTab) {
+                    1 -> users.filter { it.isVerified }
+                    2 -> users.filter {
+                        (!it.isVerified && (it.verificationExpiresAt > 0L || it.verifiedAt > 0L)) ||
+                            (it.verificationExpiresAt > 0L && it.verificationExpiresAt <= now)
+                    }
+                    else -> users.sortedByDescending { it.isVerified }
+                }
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(filtered, key = { it.uid }) { user ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = palette.surface),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().clickable { onInspect(user) }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            WesalAvatar(
+                                imageUrl = user.photoUrl,
+                                name = user.displayName,
+                                size = 44.dp,
+                                frameId = user.frameId,
+                                frameExpiresAt = user.frameExpiresAt
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                WesalNameWithBadge(
+                                    name = user.displayName.ifBlank { "@${user.publicId}" },
+                                    isVerified = user.isVerified,
+                                    verificationType = user.verificationType,
+                                    neonColor = user.neonColor,
+                                    neonGlowIntensity = user.neonGlowIntensity,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text("ID: ${user.numericId} • @${user.publicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                                if (user.isVerified) {
+                                    Text(
+                                        "شارة ${user.verificationType} • ${if (user.verificationExpiresAt == 0L) "دائم" else "ينتهي: ${formatAdminTime(user.verificationExpiresAt)}"}",
+                                        color = palette.verifiedBlue,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FilledTonalButton(onClick = { onOpenVerifyDialog(user) }) {
+                                    Text(if (user.isVerified) "تعديل/سحب" else "توثيق", maxLines = 1)
+                                }
+                                OutlinedButton(onClick = { onOpenFrameNeonDialog(user) }) {
+                                    Text("إطار/نيون", maxLines = 1)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminWesalTeamSection(
+    channel: WesalChannel?,
+    onOpenChannel: () -> Unit,
+    onPublishPost: (String) -> Unit
+) {
+    val palette = WesalColors.current
+    var postText by remember { mutableStateOf("") }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                WesalNameWithBadge(
+                    name = channel?.title ?: "فريق وصال | WESAL Team",
+                    isVerified = true,
+                    verificationType = "BLUE",
+                    fontWeight = FontWeight.Bold
+                )
+                Text(channel?.description ?: "القناة الرسمية لأخبار وتحديثات WESAL Messenger", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+                Text("المشتركين: ${channel?.subscribersCount ?: 1} • المالك الحصري: 10001", color = palette.emerald, style = MaterialTheme.typography.labelSmall)
+                Button(onClick = onOpenChannel, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("فتح قناة فريق وصال الرسمية")
+                }
+            }
+        }
+
+        Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("نشر منشور سريع في قناة فريق وصال", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                OutlinedTextField(
+                    value = postText,
+                    onValueChange = { postText = it },
+                    label = { Text("نص المنشور الرسمي") },
+                    minLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = {
+                        onPublishPost(postText)
+                        postText = ""
+                    },
+                    enabled = postText.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("نشر في القناة")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminWelcomeConfigSection(
+    config: SystemWelcomeConfig,
+    onSave: (Boolean, String) -> Unit,
+    onSendTest: () -> Unit
+) {
+    val palette = WesalColors.current
+    var enabled by remember(config) { mutableStateOf(config.enabled) }
+    var template by remember(config) { mutableStateOf(config.messageTemplate) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text("تفعيل رسالة الترحيب التلقائية للمستخدمين الجدد", color = palette.textPrimary, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                        Switch(checked = enabled, onCheckedChange = { enabled = it })
+                    }
+                    OutlinedTextField(
+                        value = template,
+                        onValueChange = { template = it },
+                        label = { Text("نص رسالة الترحيب (استخدم [اسم المستخدم])") },
+                        minLines = 6,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AssistChip(
+                            onClick = { template = "$template [اسم المستخدم]" },
+                            label = { Text("+ [اسم المستخدم]") }
+                        )
+                        AssistChip(
+                            onClick = { template = SystemWelcomeConfig.DEFAULT_OFFICIAL_WELCOME_TEMPLATE },
+                            label = { Text("استعادة النص الافتراضي") }
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(onClick = { onSave(enabled, template) }, modifier = Modifier.weight(1f)) {
+                            Text("حفظ التعديل")
+                        }
+                        OutlinedButton(onClick = onSendTest, modifier = Modifier.weight(1f)) {
+                            Text("إرسال رسالة تجريبية لنفسي")
+                        }
+                    }
+                }
+            }
+        }
+
+        if (config.previousVersions.isNotEmpty()) {
+            item {
+                Text("النسخ السابقة (اضغط للاستعادة)", color = palette.textSecondary, style = MaterialTheme.typography.labelLarge)
+            }
+            items(config.previousVersions) { prev ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = palette.surface),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().clickable { template = prev }
+                ) {
+                    Text(
+                        text = prev,
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminAnnouncementsSection(
+    announcements: List<OfficialAnnouncement>,
+    onPublish: (String, String) -> Unit
+) {
+    val palette = WesalColors.current
+    var title by remember { mutableStateOf("WESAL Messenger") }
+    var body by remember { mutableStateOf("") }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("إرسال إعلان رسمي لجميع المستخدمين (محادثة WESAL Messenger)", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("عنوان الإعلان") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
-                        value = noteInput,
-                        onValueChange = { noteInput = it },
-                        label = { Text(strings.verificationNoteLabel) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = palette.textPrimary,
-                            unfocusedTextColor = palette.textPrimary,
-                            focusedLabelColor = palette.turquoise,
-                            unfocusedLabelColor = palette.textSecondary,
-                            focusedBorderColor = palette.turquoise,
-                            unfocusedBorderColor = palette.border,
-                            cursorColor = palette.turquoise
-                        ),
+                        value = body,
+                        onValueChange = { body = it },
+                        label = { Text("نص الإعلان الرسمي") },
+                        minLines = 4,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Button(
+                        onClick = {
+                            onPublish(title, body)
+                            body = ""
+                        },
+                        enabled = body.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Campaign, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("نشر الإعلان الرسمي للجميع")
+                    }
+                }
+            }
+        }
+
+        item {
+            Text("أرشيف الإعلانات الرسمية (${announcements.size})", color = palette.textSecondary, style = MaterialTheme.typography.labelLarge)
+        }
+
+        items(announcements, key = { it.announcementId }) { ann ->
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(14.dp)) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(ann.title, color = palette.emerald, fontWeight = FontWeight.Bold)
+                    Text(ann.body, color = palette.textPrimary, style = MaterialTheme.typography.bodySmall)
+                    Text(formatAdminTime(ann.createdAt), color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminAuditLogsListSection(
+    title: String,
+    logs: List<VerificationAuditLog>
+) {
+    val palette = WesalColors.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text(title, color = palette.textSecondary, style = MaterialTheme.typography.labelLarge)
+        }
+        items(logs, key = { it.operationId.ifBlank { it.logId } }) { log ->
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(14.dp)) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = log.targetName.ifBlank { log.targetNumericId.ifBlank { log.targetUid.ifBlank { "النظام" } } },
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(log.action, color = palette.emerald, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                    }
+                    if (log.details.isNotBlank()) {
+                        Text(log.details, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (log.note.isNotBlank()) {
+                        Text("ملاحظة: ${log.note}", color = palette.turquoise, style = MaterialTheme.typography.labelSmall)
+                    }
+                    Text("${log.adminEmail} • ${formatAdminTime(log.timestamp)}", color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminSettingsSection(
+    globalFrameEnabled: Boolean,
+    onToggleGlobalFrame: (Boolean) -> Unit,
+    onRefreshAll: () -> Unit
+) {
+    val palette = WesalColors.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("إعدادات الأمان والصلاحيات", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                    AdminInfoLine("حساب المالك الأعلى الوحيد", "WESAL ID: ${Constants.OWNER_ADMIN_NUMERIC_ID}")
+                    AdminInfoLine("البريد المعتمد", Constants.SUPER_ADMIN_EMAIL)
+                    AdminInfoLine("رابط الدعوة الرسمي", Constants.APK_DOWNLOAD_URL)
+                    AdminInfoLine("قاعدة بيانات Firestore", "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424")
+                    AdminInfoLine("حافظة Storage", "idyllic-axon-mw1rw.firebasestorage.app")
+                    AdminInfoLine("TTL حالة الاتصال", "${Constants.PRESENCE_ONLINE_TTL_MS / 1000} ثانية")
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Row(
+                    modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("الإطار الافتراضي التلقائي للعملاء الجدد", color = palette.textPrimary, modifier = Modifier.weight(1f))
+                    Switch(checked = globalFrameEnabled, onCheckedChange = onToggleGlobalFrame)
+                }
+            }
+        }
+        item {
+            Button(onClick = onRefreshAll, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Refresh, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("إعادة مزامنة كافة بيانات لوحة الإدارة")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminOnlineUsersSection(
+    onlineUsers: List<WesalUser>,
+    now: Long,
+    onInspect: (WesalUser) -> Unit,
+    onOpenChat: (WesalUser) -> Unit
+) {
+    val palette = WesalColors.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Text("المتصلون الآن (${onlineUsers.size})", color = palette.emerald, fontWeight = FontWeight.Bold)
+        }
+        items(onlineUsers, key = { it.uid }) { user ->
+            val hb = maxOf(user.lastHeartbeatAt, user.lastSeen)
+            val secAgo = if (hb > 0L) ((now - hb) / 1000L).coerceAtLeast(0L) else 0L
+            Card(
+                colors = CardDefaults.cardColors(containerColor = palette.surface),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().clickable { onInspect(user) }
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    WesalAvatar(imageUrl = user.photoUrl, name = user.displayName, size = 42.dp, isOnline = true)
+                    Column(modifier = Modifier.weight(1f)) {
+                        WesalNameWithBadge(
+                            name = user.displayName.ifBlank { "@${user.publicId}" },
+                            isVerified = user.isVerified,
+                            verificationType = user.verificationType
+                        )
+                        Text(
+                            text = "ID: ${user.numericId} • ${user.lastDeviceName.ifBlank { "Android" }} (${user.lastAppVersion.ifBlank { "1.0" }})",
+                            color = palette.textSecondary,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        Text("آخر نبض اتصال: منذ $secAgo ث • جلسات: ${user.activeSessionsCount.coerceAtLeast(1)}", color = palette.emerald, style = MaterialTheme.typography.labelSmall)
+                    }
+                    IconButton(onClick = { onOpenChat(user) }) {
+                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, tint = palette.turquoise)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminChatActivityMetadataSection(
+    users: List<WesalUser>,
+    onInspect: (WesalUser) -> Unit
+) {
+    val palette = WesalColors.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item {
+            Surface(color = palette.turquoise.copy(alpha = 0.12f), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "خصوصية البيانات: يعرض هذا القسم بيانات وصفية تشغيلية فقط (نوع النشاط، معرّف المحادثة، عدد المشاركين، التوقيت) دون عرض أي نصوص رسائل.",
+                    color = palette.turquoise,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(10.dp)
+                )
+            }
+        }
+        items(users, key = { it.uid }) { user ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = palette.surface),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().clickable { onInspect(user) }
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    WesalNameWithBadge(
+                        name = "${user.displayName.ifBlank { "@${user.publicId}" }} (ID: ${user.numericId})",
+                        isVerified = user.isVerified,
+                        verificationType = user.verificationType
+                    )
+                    Text(
+                        text = "نوع النشاط: ${user.lastActivityType.ifBlank { "NONE" }} • المعرف: ${user.lastActivityChatId.ifBlank { "—" }} • المشاركون: ${user.lastActivityParticipantsCount}",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text("التوقيت: ${formatAdminTime(user.lastActivityAt)}", color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AdminInfoLine(label: String, value: String) {
+    val palette = WesalColors.current
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, color = palette.textMuted, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(end = 8.dp))
+        Text(value, color = palette.textPrimary, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dialogs: Verification / Frames & Neon / Ban / Report Review
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun AdminVerificationDialog(
+    user: WesalUser,
+    onDismiss: () -> Unit,
+    onApply: (Boolean, VerificationSealType, Long, String, String) -> Unit
+) {
+    val palette = WesalColors.current
+    var selectedSeal by remember(user.uid) { mutableStateOf(VerificationSealType.fromKey(user.verificationType)) }
+    var selectedDuration by remember(user.uid) { mutableStateOf(VerificationDurationOption.PERMANENT) }
+    var customCountText by remember { mutableStateOf("3") }
+    var note by remember(user.uid) { mutableStateOf(user.verificationNote) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = { Text("توثيق الحساب (الشارات والمدد)", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(user.displayName.ifBlank { "@${user.publicId}" }, color = palette.textPrimary, fontWeight = FontWeight.SemiBold)
+                    WesalVerifiedBadge(size = 20.dp, verificationType = selectedSeal.key)
+                }
+
+                Text("اختر نوع الشارة:", color = palette.textSecondary, style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    VerificationSealType.entries.forEach { seal ->
+                        FilterChip(
+                            selected = selectedSeal == seal,
+                            onClick = { selectedSeal = seal },
+                            leadingIcon = { WesalVerifiedBadge(size = 16.dp, verificationType = seal.key) },
+                            label = { Text(seal.labelAr, maxLines = 1, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                Text("مدة التوثيق:", color = palette.textSecondary, style = MaterialTheme.typography.labelMedium)
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    VerificationDurationOption.entries.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            pair.forEach { opt ->
+                                FilterChip(
+                                    selected = selectedDuration == opt,
+                                    onClick = { selectedDuration = opt },
+                                    label = { Text(opt.labelAr, maxLines = 1) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                }
+
+                if (selectedDuration == VerificationDurationOption.CUSTOM_HOURS ||
+                    selectedDuration == VerificationDurationOption.CUSTOM_DAYS ||
+                    selectedDuration == VerificationDurationOption.CUSTOM_MONTHS
+                ) {
+                    OutlinedTextField(
+                        value = customCountText,
+                        onValueChange = { if (it.length <= 3) customCountText = it.filter(Char::isDigit) },
+                        label = {
+                            Text(
+                                when (selectedDuration) {
+                                    VerificationDurationOption.CUSTOM_HOURS -> "عدد الساعات"
+                                    VerificationDurationOption.CUSTOM_DAYS -> "عدد الأيام"
+                                    else -> "عدد الشهور"
+                                }
+                            )
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.toggleVerification(target, dialogTargetVerify, noteInput)
-                        dialogTarget = null
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (dialogTargetVerify) palette.verifiedBlue else palette.error
-                    )
-                ) {
-                    Text(strings.confirm)
+
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("ملاحظة التوثيق") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (user.isVerified) {
+                    OutlinedButton(
+                        onClick = { onApply(false, selectedSeal, 0L, "سحب التوثيق", note) },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
+                    ) { Text("سحب") }
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { dialogTarget = null }) {
-                    Text(strings.cancel)
+                Button(onClick = {
+                    val (exp, lbl) = calculateDurationExpiresAt(selectedDuration, customCountText.toIntOrNull() ?: 1)
+                    onApply(true, selectedSeal, exp, lbl, note)
+                }) {
+                    Text(if (user.isVerified) "تحديث" else "منح الشارة")
                 }
             }
-        )
-    }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
+}
+
+@Composable
+private fun AdminFrameAndNeonDialog(
+    user: WesalUser,
+    onDismiss: () -> Unit,
+    onApplyFrame: (String, Long, String) -> Unit,
+    onApplyNeon: (NeonColorPreset, Float) -> Unit
+) {
+    val palette = WesalColors.current
+    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Neon
+    var selectedFrameId by remember(user.uid) { mutableStateOf(user.frameId) }
+    var selectedDuration by remember { mutableStateOf(VerificationDurationOption.PERMANENT) }
+    var customCount by remember { mutableStateOf("7") }
+    var selectedNeon by remember(user.uid) { mutableStateOf(NeonColorPreset.fromKey(user.neonColor)) }
+    var neonGlow by remember(user.uid) { mutableStateOf(user.neonGlowIntensity.coerceIn(0.15f, 1.0f)) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = { Text("الإطارات والاسم النيون", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Live Avatar + Neon Name Preview
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    WesalAvatar(
+                        imageUrl = user.photoUrl,
+                        name = user.displayName,
+                        size = 52.dp,
+                        frameId = selectedFrameId,
+                        frameExpiresAt = 0L
+                    )
+                    WesalNameWithBadge(
+                        name = user.displayName.ifBlank { "@${user.publicId}" },
+                        isVerified = user.isVerified,
+                        verificationType = user.verificationType,
+                        neonColor = selectedNeon.key,
+                        neonGlowIntensity = neonGlow,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                TabRow(selectedTabIndex = modeTab, containerColor = palette.surfaceElevated) {
+                    Tab(selected = modeTab == 0, onClick = { modeTab = 0 }, text = { Text("إطارات العملاء (${WesalFrameCatalog.customerFrames.size})", maxLines = 1) })
+                    Tab(selected = modeTab == 1, onClick = { modeTab = 1 }, text = { Text("إطارات الإدارة (${WesalFrameCatalog.adminFrames.size})", maxLines = 1) })
+                    Tab(selected = modeTab == 2, onClick = { modeTab = 2 }, text = { Text("النيون", maxLines = 1) })
+                }
+
+                if (modeTab == 0 || modeTab == 1) {
+                    val framesList = if (modeTab == 0) WesalFrameCatalog.customerFrames else WesalFrameCatalog.adminFrames
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(4),
+                        modifier = Modifier.height(210.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        gridItems(framesList, key = { it.id }) { spec ->
+                            val isSel = selectedFrameId == spec.id
+                            Box(
+                                modifier = Modifier
+                                    .aspectRatio(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(palette.surfaceElevated)
+                                    .border(
+                                        width = if (isSel) 2.dp else 1.dp,
+                                        color = if (isSel) palette.emerald else palette.border,
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                                    .clickable { selectedFrameId = spec.id },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Image(
+                                    painter = painterResource(id = spec.resId),
+                                    contentDescription = spec.titleAr,
+                                    modifier = Modifier.fillMaxSize().padding(3.dp),
+                                    contentScale = ContentScale.Fit
+                                )
+                            }
+                        }
+                    }
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                        listOf(
+                            VerificationDurationOption.PERMANENT,
+                            VerificationDurationOption.DAY_1,
+                            VerificationDurationOption.CUSTOM_DAYS,
+                            VerificationDurationOption.MONTH_1
+                        ).forEach { opt ->
+                            FilterChip(
+                                selected = selectedDuration == opt,
+                                onClick = { selectedDuration = opt },
+                                label = { Text(opt.labelAr, maxLines = 1) }
+                            )
+                        }
+                    }
+                    if (selectedDuration == VerificationDurationOption.CUSTOM_DAYS) {
+                        OutlinedTextField(
+                            value = customCount,
+                            onValueChange = { customCount = it.filter(Char::isDigit).take(3) },
+                            label = { Text("عدد الأيام") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                } else {
+                    Text("اختر لون الاسم النيون:", color = palette.textSecondary, style = MaterialTheme.typography.labelMedium)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        NeonColorPreset.entries.forEach { preset ->
+                            FilterChip(
+                                selected = selectedNeon == preset,
+                                onClick = { selectedNeon = preset },
+                                label = { Text(preset.labelAr) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                    Text("شدة التوهج: ${(neonGlow * 100).toInt()}%", color = palette.textPrimary, style = MaterialTheme.typography.labelMedium)
+                    Slider(
+                        value = neonGlow,
+                        onValueChange = { neonGlow = it },
+                        valueRange = 0.15f..1.0f
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (modeTab == 2) {
+                Button(onClick = { onApplyNeon(selectedNeon, neonGlow) }) {
+                    Text("حفظ النيون")
+                }
+            } else {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { onApplyFrame("", 0L, "إزالة") }) {
+                        Text("إزالة")
+                    }
+                    Button(
+                        onClick = {
+                            val (exp, lbl) = calculateDurationExpiresAt(selectedDuration, customCount.toIntOrNull() ?: 7)
+                            onApplyFrame(selectedFrameId, exp, lbl)
+                        },
+                        enabled = selectedFrameId.isNotBlank()
+                    ) {
+                        Text("تطبيق الإطار")
+                    }
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إغلاق") } }
+    )
+}
+
+@Composable
+private fun AdminBanDialog(
+    user: WesalUser,
+    onDismiss: () -> Unit,
+    onConfirmBan: (Boolean, Long, String, Boolean) -> Unit
+) {
+    val palette = WesalColors.current
+    var permanent by remember { mutableStateOf(false) }
+    var durationOpt by remember { mutableStateOf(VerificationDurationOption.CUSTOM_DAYS) }
+    var customCount by remember { mutableStateOf("7") }
+    var reason by remember { mutableStateOf("") }
+    var blockIdentifiers by remember { mutableStateOf(true) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = { Text("حظر الحساب", color = palette.error, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${user.displayName} (ID: ${user.numericId})", color = palette.textSecondary)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = !permanent, onClick = { permanent = false }, label = { Text("حظر مؤقت") })
+                    FilterChip(selected = permanent, onClick = { permanent = true }, label = { Text("حظر نهائي") })
+                }
+                if (!permanent) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = durationOpt == VerificationDurationOption.CUSTOM_HOURS, onClick = { durationOpt = VerificationDurationOption.CUSTOM_HOURS }, label = { Text("ساعات") })
+                        FilterChip(selected = durationOpt == VerificationDurationOption.CUSTOM_DAYS, onClick = { durationOpt = VerificationDurationOption.CUSTOM_DAYS }, label = { Text("أيام") })
+                        FilterChip(selected = durationOpt == VerificationDurationOption.MONTH_1, onClick = { durationOpt = VerificationDurationOption.MONTH_1 }, label = { Text("شهر") })
+                    }
+                    if (durationOpt != VerificationDurationOption.MONTH_1) {
+                        OutlinedTextField(
+                            value = customCount,
+                            onValueChange = { customCount = it.filter(Char::isDigit).take(3) },
+                            label = { Text("المدة") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                    Text("منع البريد والهاتف الموثق من إعادة التسجيل", color = palette.textPrimary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    Switch(checked = blockIdentifiers, onCheckedChange = { blockIdentifiers = it })
+                }
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = { reason = it },
+                    label = { Text("سبب الحظر (إلزامي)") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val (exp, _) = if (permanent) 0L to "" else calculateDurationExpiresAt(durationOpt, customCount.toIntOrNull() ?: 7)
+                    onConfirmBan(permanent, exp, reason, blockIdentifiers)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = palette.error)
+            ) { Text("تأكيد الحظر") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إلغاء") } }
+    )
+}
+
+@Composable
+private fun AdminReportReviewDialog(
+    report: AdminReportRecord,
+    onDismiss: () -> Unit,
+    onSaveStatus: (String, String, String) -> Unit,
+    onOpenReportedChat: () -> Unit,
+    onInspectReportedUser: () -> Unit
+) {
+    val palette = WesalColors.current
+    var status by remember(report.reportId) { mutableStateOf(report.status) }
+    var note by remember(report.reportId) { mutableStateOf(report.adminNote) }
+    var resolution by remember(report.reportId) { mutableStateOf(report.resolutionAction) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = { Text("مراجعة البلاغ #${report.reportId.take(8)}", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("النوع: ${report.targetType}", color = palette.turquoise, style = MaterialTheme.typography.labelMedium)
+                Text("السبب: ${report.reason}", color = palette.textPrimary, style = MaterialTheme.typography.bodySmall)
+                if (report.targetContentSnapshot.isNotBlank()) {
+                    Surface(color = palette.surfaceElevated, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text(report.targetContentSnapshot, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                    listOf("IN_REVIEW", "RESOLVED", "REJECTED", "CLOSED").forEach { st ->
+                        FilterChip(selected = status == st, onClick = { status = st }, label = { Text(st) })
+                    }
+                }
+                OutlinedTextField(
+                    value = resolution,
+                    onValueChange = { resolution = it },
+                    label = { Text("الإجراء المتخذ") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("ملاحظة المشرف الأعلى") },
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (report.targetChatId.isNotBlank()) {
+                        OutlinedButton(onClick = onOpenReportedChat, modifier = Modifier.weight(1f)) {
+                            Text("فتح المحادثة", maxLines = 1)
+                        }
+                    }
+                    if (report.reportedUid.isNotBlank()) {
+                        OutlinedButton(onClick = onInspectReportedUser, modifier = Modifier.weight(1f)) {
+                            Text("فحص الحساب", maxLines = 1)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onSaveStatus(status, note, resolution) }) {
+                Text("حفظ")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("إغلاق") } }
+    )
 }

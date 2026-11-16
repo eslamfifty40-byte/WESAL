@@ -11,32 +11,56 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
+import com.wesal.messenger.core.util.VerificationSealType
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 @Composable
 fun WesalVerifiedMark(
     badgeSize: Dp,
     modifier: Modifier = Modifier,
-    badgeColor: Color = Color(0xFF1D9BF0)
+    badgeColor: Color = Color(0xFF1D9BF0),
+    verificationType: String = "BLUE"
 ) {
+    val sealType = VerificationSealType.fromKey(verificationType)
+    val resolvedFill = when (sealType) {
+        VerificationSealType.BLUE -> if (badgeColor == Color(0xFF1D9BF0)) Color(0xFF1D9BF0) else badgeColor
+        VerificationSealType.BLACK -> Color(0xFF0B0E11)
+        VerificationSealType.GREEN -> Color(0xFF00D66B)
+    }
+    val borderStrokeColor = when (sealType) {
+        VerificationSealType.BLACK -> Color(0xFFE2E8F0)
+        else -> resolvedFill
+    }
+
     Canvas(modifier.size(badgeSize)) {
         val s = this.size.minDimension
         val c = Offset(s / 2f, s / 2f)
         val star = Path()
         val n = 24
         for (i in 0 until n) {
-            val ang = Math.PI * 2 * i / n - Math.PI / 2
-            val r = if (i % 2 == 0) s * 0.47f else s * 0.39f
-            val x = c.x + (r * Math.cos(ang)).toFloat()
-            val y = c.y + (r * Math.sin(ang)).toFloat()
+            val ang = PI * 2 * i / n - PI / 2
+            val r = if (i % 2 == 0) s * 0.46f else s * 0.38f
+            val x = c.x + (r * cos(ang)).toFloat()
+            val y = c.y + (r * sin(ang)).toFloat()
             if (i == 0) star.moveTo(x, y) else star.lineTo(x, y)
         }
         star.close()
-        drawPath(star, badgeColor)
-        drawPath(star, badgeColor, style = Stroke(width = s * 0.06f, join = StrokeJoin.Round))
+        drawPath(star, resolvedFill)
+        drawPath(
+            path = star,
+            color = borderStrokeColor,
+            style = Stroke(width = if (sealType == VerificationSealType.BLACK) s * 0.065f else s * 0.05f, join = StrokeJoin.Round)
+        )
         val check = Path()
-        check.moveTo(s * 0.28f, s * 0.52f)
+        check.moveTo(s * 0.29f, s * 0.52f)
         check.lineTo(s * 0.44f, s * 0.67f)
-        check.lineTo(s * 0.73f, s * 0.36f)
-        drawPath(check, Color.White, style = Stroke(width = s * 0.1f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        check.lineTo(s * 0.72f, s * 0.36f)
+        drawPath(
+            path = check,
+            color = Color.White,
+            style = Stroke(width = s * 0.105f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
     }
 }

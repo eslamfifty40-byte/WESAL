@@ -1,11 +1,16 @@
 package com.wesal.messenger.calls
 
 import android.app.NotificationManager
+import android.media.AudioAttributes
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
@@ -30,6 +35,7 @@ import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.CallStatus
 import com.wesal.messenger.domain.repository.CallRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -40,6 +46,7 @@ class IncomingCallActivity : AppCompatActivity() {
     @Inject lateinit var callRepository: CallRepository
     @Inject lateinit var prefs: UserPreferencesDataStore
     private var ringtone: Ringtone? = null
+    private var vibrator: Vibrator? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,22 +54,30 @@ class IncomingCallActivity : AppCompatActivity() {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or WindowManager.LayoutParams.FLAG_SECURE)
 
         val callId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
+        val callerUid = intent.getStringExtra(EXTRA_CALLER_UID).orEmpty()
         val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "WESAL User"
         val callerAvatar = intent.getStringExtra(EXTRA_CALLER_AVATAR).orEmpty()
+        val callerVerified = intent.getBooleanExtra(EXTRA_CALLER_VERIFIED, false)
         val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
 
-        runCatching {
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            ringtone = RingtoneManager.getRingtone(this, uri)
-            ringtone?.play()
+        if (callId.isBlank()) {
+            finish()
+            return
+        }
+
+        startRingingAndVibration()
+        // Notify caller genuinely that this callee device is actively ringing now
+        lifecycleScope.launch {
+            callRepository.acknowledgeIncomingRing(callId)
         }
 
         lifecycleScope.launch {
             callRepository.observeCall(callId).collect { call ->
                 if (call != null && (call.status == CallStatus.ENDED || call.status == CallStatus.MISSED || call.status == CallStatus.REJECTED)) {
+                    stopRingingAndVibration()
                     cancelIncomingNotification(callId)
                     finish()
                 }
@@ -78,6 +93,9 @@ class IncomingCallActivity : AppCompatActivity() {
             ) {
                 val palette = WesalColors.current
                 val strings = LocalWesalStrings.current
+
+                // Keep user on incoming call screen until answered or rejected
+                BackHandler { }
 
                 Column(
                     modifier = Modifier
@@ -95,8 +113,9 @@ class IncomingCallActivity : AppCompatActivity() {
                         )
                         Spacer(Modifier.height(16.dp))
                         WesalAvatar(imageUrl = callerAvatar, name = callerName, size = 128.dp)
-                        Text(
-                            text = callerName,
+                        WesalNameWithBadge(
+                            name = callerName,
+                            isVerified = callerVerified,
                             style = MaterialTheme.typography.headlineLarge,
                             color = palette.textPrimary
                         )
@@ -106,49 +125,102 @@ class IncomingCallActivity : AppCompatActivity() {
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
-                        FloatingActionButton(
-                            onClick = {
-                                ringtone?.stop()
-                                cancelIncomingNotification(callId)
-                                lifecycleScope.launch {
-                                    callRepository.updateCallStatus(callId, CallStatus.REJECTED)
-                                    finish()
-                                }
-                            },
-                            containerColor = palette.error,
-                            contentColor = Color.White,
-                            shape = CircleShape,
-                            modifier = Modifier.size(72.dp)
-                        ) {
-                            Icon(Icons.Default.CallEnd, contentDescription = null, modifier = Modifier.size(32.dp))
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FloatingActionButton(
+                                onClick = {
+                                    stopRingingAndVibration()
+                                    cancelIncomingNotification(callId)
+                                    lifecycleScope.launch {
+                                        callRepository.updateCallStatus(callId, CallStatus.REJECTED)
+                                        finish()
+                                    }
+                                },
+                                containerColor = palette.error,
+                                contentColor = Color.White,
+                                shape = CircleShape,
+                                modifier = Modifier.size(72.dp)
+                            ) {
+                                Icon(Icons.Default.CallEnd, contentDescription = strings.rejectContactRequest, modifier = Modifier.size(32.dp))
+                            }
+                            Text(
+                                text = strings.rejectContactRequest,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = palette.textPrimary
+                            )
                         }
 
-                        FloatingActionButton(
-                            onClick = {
-                                ringtone?.stop()
-                                cancelIncomingNotification(callId)
-                                startActivity(
-                                    CallActivity.createIncomingAnswerIntent(
-                                        this@IncomingCallActivity,
-                                        callId = callId,
-                                        peerName = callerName,
-                                        peerAvatar = callerAvatar,
-                                        isVideo = isVideo
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FloatingActionButton(
+                                onClick = {
+                                    stopRingingAndVibration()
+                                    cancelIncomingNotification(callId)
+                                    startActivity(
+                                        CallActivity.createIncomingAnswerIntent(
+                                            this@IncomingCallActivity,
+                                            callId = callId,
+                                            peerName = callerName,
+                                            peerAvatar = callerAvatar,
+                                            isVideo = isVideo,
+                                            peerVerified = callerVerified,
+                                            peerUid = callerUid
+                                        )
                                     )
-                                )
-                                finish()
-                            },
-                            containerColor = palette.emerald,
-                            contentColor = palette.onPrimary,
-                            shape = CircleShape,
-                            modifier = Modifier.size(72.dp)
-                        ) {
-                            Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(32.dp))
+                                    finish()
+                                },
+                                containerColor = palette.emerald,
+                                contentColor = palette.onPrimary,
+                                shape = CircleShape,
+                                modifier = Modifier.size(72.dp)
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = strings.acceptContactRequest, modifier = Modifier.size(32.dp))
+                            }
+                            Text(
+                                text = strings.acceptContactRequest,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = palette.textPrimary
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    private fun startRingingAndVibration() {
+        runCatching {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            ringtone = RingtoneManager.getRingtone(this, uri)?.apply {
+                audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    isLooping = true
+                }
+                play()
+            }
+        }
+        runCatching {
+            val vib = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                getSystemService(VibratorManager::class.java)?.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(VIBRATOR_SERVICE) as? Vibrator
+            }
+            vibrator = vib
+            val pattern = longArrayOf(0L, 600L, 400L, 600L, 1000L)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vib?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            } else {
+                @Suppress("DEPRECATION")
+                vib?.vibrate(pattern, 0)
+            }
+        }
+    }
+
+    private fun stopRingingAndVibration() {
+        runCatching { ringtone?.stop() }
+        runCatching { vibrator?.cancel() }
     }
 
     private fun cancelIncomingNotification(callId: String) {
@@ -158,14 +230,16 @@ class IncomingCallActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        ringtone?.stop()
+        stopRingingAndVibration()
         super.onDestroy()
     }
 
     companion object {
         const val EXTRA_CALL_ID = "extra_call_id"
+        const val EXTRA_CALLER_UID = "extra_caller_uid"
         const val EXTRA_CALLER_NAME = "extra_caller_name"
         const val EXTRA_CALLER_AVATAR = "extra_caller_avatar"
+        const val EXTRA_CALLER_VERIFIED = "extra_caller_verified"
         const val EXTRA_IS_VIDEO = "extra_is_video"
     }
 }

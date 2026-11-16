@@ -3,6 +3,7 @@ package com.wesal.messenger.contacts
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
@@ -26,10 +27,9 @@ data class ContactsUiState(
     val isLoadingContacts: Boolean = false,
     val wesalContacts: List<MatchedWesalContact> = emptyList(),
     val nonWesalContacts: List<DeviceContact> = emptyList(),
-    val discoverableUsers: List<WesalUser> = emptyList(),
-    val isLoadingDiscoverable: Boolean = false,
     val searchResults: List<WesalUser> = emptyList(),
     val isSearching: Boolean = false,
+    val invitedPhonesCount: Int = 0,
     val error: String? = null,
     val feedback: String? = null
 )
@@ -53,31 +53,18 @@ class ContactsViewModel @Inject constructor(
     val contactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     private var searchJob: Job? = null
 
     init {
         viewModelScope.launch {
             authRepository.observeAuthState()
                 .distinctUntilChanged()
-                .collect { uid ->
+                .collect {
                     searchJob?.cancel()
                     _uiState.value = ContactsUiState()
-                    if (uid != null) {
-                        refreshDiscoverableUsers()
-                    }
-                }
-        }
-    }
-
-    fun refreshDiscoverableUsers() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingDiscoverable = true) }
-            runCatching { userRepository.listDiscoverableUsers(limit = 30) }
-                .onSuccess { list ->
-                    _uiState.update { it.copy(discoverableUsers = list, isLoadingDiscoverable = false) }
-                }
-                .onFailure {
-                    _uiState.update { it.copy(isLoadingDiscoverable = false) }
                 }
         }
     }
@@ -182,6 +169,18 @@ class ContactsViewModel @Inject constructor(
                 .onSuccess { chatId -> onChatReady(chatId) }
                 .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر فتح المحادثة") } }
         }
+    }
+
+    fun openSupportChat10001(onChatReady: (String) -> Unit) {
+        viewModelScope.launch {
+            chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
+                .onSuccess { chatId -> onChatReady(chatId) }
+                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر فتح محادثة الإدارة") } }
+        }
+    }
+
+    fun recordInviteDispatched() {
+        _uiState.update { it.copy(invitedPhonesCount = it.invitedPhonesCount + 1) }
     }
 
     fun clearFeedback() {

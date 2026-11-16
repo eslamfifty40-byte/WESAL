@@ -55,6 +55,7 @@ fun HomeScreen(
     onOpenChat: (String) -> Unit,
     onOpenNewChat: () -> Unit,
     onOpenProfile: () -> Unit,
+    onOpenAccountShare: () -> Unit = {},
     onOpenCameraHub: () -> Unit = {},
     onOpenChannel: (String) -> Unit = {},
     onOpenAdminVerification: () -> Unit = {},
@@ -180,6 +181,9 @@ fun HomeScreen(
                 )
                 HomeTab.SETTINGS -> SettingsScreen(
                     onOpenProfile = onOpenProfile,
+                    onOpenAccountShare = onOpenAccountShare,
+                    onOpenAdminPanel = onOpenAdminVerification,
+                    onOpenChat = onOpenChat,
                     onSignedOut = onSignedOut,
                     onOpenAddAccount = onOpenAddAccount,
                     onAccountSwitched = onAccountSwitched

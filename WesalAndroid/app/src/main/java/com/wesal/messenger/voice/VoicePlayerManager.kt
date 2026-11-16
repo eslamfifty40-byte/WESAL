@@ -13,7 +13,8 @@ data class VoicePlaybackState(
     val activeMessageId: String? = null,
     val isPlaying: Boolean = false,
     val positionMs: Int = 0,
-    val durationMs: Int = 0
+    val durationMs: Int = 0,
+    val volume: Float = 1.0f
 )
 
 @Singleton
@@ -39,11 +40,13 @@ class VoicePlayerManager @Inject constructor() {
             return
         }
 
+        val preservedVolume = current.volume
         stop()
         runCatching {
             val mp = MediaPlayer().apply {
                 setDataSource(audioFile.absolutePath)
                 prepare()
+                setVolume(preservedVolume, preservedVolume)
                 setOnCompletionListener {
                     stop()
                 }
@@ -54,17 +57,25 @@ class VoicePlayerManager @Inject constructor() {
                 activeMessageId = messageId,
                 isPlaying = true,
                 positionMs = 0,
-                durationMs = mp.duration.coerceAtLeast(1)
+                durationMs = mp.duration.coerceAtLeast(1),
+                volume = preservedVolume
             )
             startProgressLoop()
         }
     }
 
     fun seekTo(positionMs: Int) {
-        mediaPlayer?.let {
-            it.seekTo(positionMs)
-            _playbackState.value = _playbackState.value.copy(positionMs = positionMs)
+        mediaPlayer?.let { mp ->
+            val clamped = positionMs.coerceIn(0, mp.duration.coerceAtLeast(1))
+            mp.seekTo(clamped)
+            _playbackState.value = _playbackState.value.copy(positionMs = clamped)
         }
+    }
+
+    fun setVolume(volume: Float) {
+        val clamped = volume.coerceIn(0f, 1f)
+        runCatching { mediaPlayer?.setVolume(clamped, clamped) }
+        _playbackState.value = _playbackState.value.copy(volume = clamped)
     }
 
     private fun startProgressLoop() {
@@ -87,6 +98,6 @@ class VoicePlayerManager @Inject constructor() {
             mediaPlayer?.release()
         }
         mediaPlayer = null
-        _playbackState.value = VoicePlaybackState()
+        _playbackState.value = VoicePlaybackState(volume = _playbackState.value.volume)
     }
 }

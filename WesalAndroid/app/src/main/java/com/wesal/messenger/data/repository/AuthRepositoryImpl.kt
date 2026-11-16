@@ -1,23 +1,20 @@
 package com.wesal.messenger.data.repository
 
-import android.app.Activity
 import android.app.NotificationManager
 import android.content.Context
 import android.net.Uri
 import android.os.Build
-import com.google.firebase.FirebaseException
 import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.FirebaseTooManyRequestsException
+import com.google.firebase.auth.EmailAuthProvider
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseAuthException
 import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.auth.GoogleAuthProvider
-import com.google.firebase.auth.PhoneAuthCredential
-import com.google.firebase.auth.PhoneAuthOptions
-import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -26,23 +23,24 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.PhoneUtils
+import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.data.local.WesalDatabase
 import com.wesal.messenger.domain.model.SavedWesalAccount
+import com.wesal.messenger.domain.model.SystemWelcomeConfig
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
-import com.wesal.messenger.domain.repository.PhoneAuthEvent
 import com.wesal.messenger.security.E2EECryptoManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import java.util.concurrent.TimeUnit
+import java.time.LocalDate
+import java.time.Period
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -77,17 +75,84 @@ class AuthRepositoryImpl @Inject constructor(
         awaitClose { auth.removeAuthStateListener(listener) }
     }
 
+    private suspend fun isIdentifierBanned(rawEmail: String): Pair<Boolean, String> {
+        val clean = rawEmail.trim().lowercase()
+        if (clean.isBlank()) return false to ""
+        val emailHash = PhoneUtils.sha256Hash("email:$clean")
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
+                .document(emailHash)
+                .get()
+                .await()
+        }.getOrNull() ?: return false to ""
+        if (!snap.exists()) return false to ""
+        val expiresAt = snap.getLong("expiresAt") ?: 0L
+        val permanent = snap.getBoolean("permanent") ?: (expiresAt == 0L)
+        if (!permanent && expiresAt > 0L && System.currentTimeMillis() > expiresAt) {
+            return false to ""
+        }
+        val reason = snap.getString("reason").orEmpty()
+        return true to reason
+    }
+
+    private suspend fun assertUserNotBannedOrSignOut(uid: String) {
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
+        }.getOrNull() ?: return
+        val deletedAt = snap.getLong("deletedAt") ?: 0L
+        if (deletedAt > 0L) {
+            auth.signOut()
+            throw IllegalStateException("تم حذف هذا الحساب نهائياً")
+        }
+        val isBanned = snap.getBoolean("isBanned") ?: false
+        if (isBanned) {
+            val banType = snap.getString("banType").orEmpty()
+            val banExpiresAt = snap.getLong("banExpiresAt") ?: 0L
+            val reason = snap.getString("banReason").orEmpty()
+            val now = System.currentTimeMillis()
+            if (banType != "PERMANENT" && banExpiresAt > 0L && now > banExpiresAt) {
+                runCatching {
+                    firestore.collection(Constants.COLLECTION_USERS).document(uid).set(
+                        mapOf(
+                            "isBanned" to false,
+                            "banType" to "",
+                            "banExpiresAt" to 0L
+                        ),
+                        SetOptions.merge()
+                    ).await()
+                }
+            } else {
+                auth.signOut()
+                val msg = buildString {
+                    append("تم حظر هذا الحساب من استخدام WESAL")
+                    if (reason.isNotBlank()) append(": $reason")
+                }
+                throw IllegalStateException(msg)
+            }
+        }
+    }
+
     override suspend fun signInWithGoogleIdToken(idToken: String): Result<Boolean> {
         return try {
             val previousUid = auth.currentUser?.uid
             val credential = GoogleAuthProvider.getCredential(idToken, null)
             val authResult = auth.signInWithCredential(credential).await()
-            val firebaseUser = authResult.user ?: error("Unable to sign in with Google")
+            val firebaseUser = authResult.user ?: error("تعذر تسجيل الدخول عبر Google")
+
+            val (emailBanned, banReason) = isIdentifierBanned(firebaseUser.email.orEmpty())
+            if (emailBanned) {
+                auth.signOut()
+                error(
+                    if (banReason.isNotBlank()) "هذا البريد محظور من استخدام WESAL: $banReason"
+                    else "هذا البريد محظور من استخدام WESAL"
+                )
+            }
+            assertUserNotBannedOrSignOut(firebaseUser.uid)
+
             if (previousUid != null && previousUid != firebaseUser.uid) {
                 clearActiveSessionForSwitch(previousUid)
             }
-            prefs.clearPendingOtp()
-            val isNewProfile = ensureUserSkeletonExists(
+            val needsSetup = ensureUserSkeletonExists(
                 uid = firebaseUser.uid,
                 phone = firebaseUser.phoneNumber.orEmpty(),
                 email = firebaseUser.email.orEmpty(),
@@ -96,64 +161,98 @@ class AuthRepositoryImpl @Inject constructor(
                 phoneVerified = !firebaseUser.phoneNumber.isNullOrBlank(),
                 provider = "google"
             )
+            prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
             registerDeviceSession(firebaseUser.uid)
             syncFcmToken()
-            Result.success(isNewProfile)
+            if (!needsSetup) {
+                runCatching { sendSingleOfficialWelcomeIfNeeded(firebaseUser.uid, firebaseUser.displayName.orEmpty()) }
+            }
+            Result.success(needsSetup)
         } catch (e: Exception) {
-            Result.failure(Exception(mapSparkAuthMessage(e, "Unable to sign in with Google"), e))
+            Result.failure(Exception(mapSparkAuthMessage(e, "تعذر تسجيل الدخول عبر Google"), e))
         }
     }
 
     override suspend fun signInWithEmail(email: String, password: String): Result<Boolean> {
         return try {
+            val cleanEmail = email.trim()
+            val (emailBanned, banReason) = isIdentifierBanned(cleanEmail)
+            if (emailBanned) {
+                error(
+                    if (banReason.isNotBlank()) "هذا البريد محظور من استخدام WESAL: $banReason"
+                    else "هذا البريد محظور من استخدام WESAL"
+                )
+            }
             val previousUid = auth.currentUser?.uid
-            val authResult = auth.signInWithEmailAndPassword(email.trim(), password).await()
-            val firebaseUser = authResult.user ?: error("Unable to sign in with email")
+            val authResult = auth.signInWithEmailAndPassword(cleanEmail, password).await()
+            val firebaseUser = authResult.user ?: error("تعذر تسجيل الدخول بالبريد الإلكتروني")
+            assertUserNotBannedOrSignOut(firebaseUser.uid)
+
             if (previousUid != null && previousUid != firebaseUser.uid) {
                 clearActiveSessionForSwitch(previousUid)
             }
-            prefs.clearPendingOtp()
-            val isNewProfile = ensureUserSkeletonExists(
+            val needsSetup = ensureUserSkeletonExists(
                 uid = firebaseUser.uid,
                 phone = firebaseUser.phoneNumber.orEmpty(),
-                email = firebaseUser.email ?: email.trim(),
+                email = firebaseUser.email ?: cleanEmail,
                 suggestedName = firebaseUser.displayName.orEmpty(),
                 suggestedPhoto = firebaseUser.photoUrl?.toString().orEmpty(),
                 phoneVerified = !firebaseUser.phoneNumber.isNullOrBlank(),
                 provider = "email"
             )
+            prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
             registerDeviceSession(firebaseUser.uid)
             syncFcmToken()
-            Result.success(isNewProfile)
+            if (!needsSetup) {
+                runCatching { sendSingleOfficialWelcomeIfNeeded(firebaseUser.uid, firebaseUser.displayName.orEmpty()) }
+            }
+            Result.success(needsSetup)
         } catch (e: Exception) {
-            Result.failure(Exception(mapSparkAuthMessage(e, "Email sign-in failed"), e))
+            Result.failure(Exception(mapSparkAuthMessage(e, "فشل تسجيل الدخول بالبريد الإلكتروني"), e))
         }
     }
 
-    override suspend fun signUpWithEmail(email: String, password: String): Result<Boolean> {
+    override suspend fun signUpWithEmail(email: String, password: String, fullName: String): Result<Boolean> {
         return try {
+            val cleanEmail = email.trim()
+            val (emailBanned, banReason) = isIdentifierBanned(cleanEmail)
+            if (emailBanned) {
+                error(
+                    if (banReason.isNotBlank()) "هذا البريد محظور من التسجيل في WESAL: $banReason"
+                    else "هذا البريد محظور من التسجيل في WESAL"
+                )
+            }
+
             val previousUid = auth.currentUser?.uid
-            val authResult = auth.createUserWithEmailAndPassword(email.trim(), password).await()
-            val firebaseUser = authResult.user ?: error("Email registration failed")
+            val authResult = auth.createUserWithEmailAndPassword(cleanEmail, password).await()
+            val firebaseUser = authResult.user ?: error("فشل إنشاء الحساب بالبريد الإلكتروني")
             if (previousUid != null && previousUid != firebaseUser.uid) {
                 clearActiveSessionForSwitch(previousUid)
             }
             runCatching { firebaseUser.sendEmailVerification().await() }
-            prefs.clearPendingOtp()
-            val isNewProfile = ensureUserSkeletonExists(
+            if (fullName.isNotBlank()) {
+                runCatching {
+                    val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                        .setDisplayName(fullName.trim())
+                        .build()
+                    firebaseUser.updateProfile(profileUpdates).await()
+                }
+            }
+            val needsSetup = ensureUserSkeletonExists(
                 uid = firebaseUser.uid,
                 phone = "",
-                email = firebaseUser.email ?: email.trim(),
-                suggestedName = "",
+                email = firebaseUser.email ?: cleanEmail,
+                suggestedName = fullName.trim(),
                 suggestedPhoto = "",
                 phoneVerified = false,
                 provider = "email"
             )
+            prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
             registerDeviceSession(firebaseUser.uid)
             syncFcmToken()
-            Result.success(isNewProfile)
+            Result.success(needsSetup)
         } catch (e: Exception) {
-            Result.failure(Exception(mapSparkAuthMessage(e, "Email registration failed"), e))
+            Result.failure(Exception(mapSparkAuthMessage(e, "تعذر إنشاء الحساب"), e))
         }
     }
 
@@ -162,236 +261,53 @@ class AuthRepositoryImpl @Inject constructor(
             auth.sendPasswordResetEmail(email.trim()).await()
             Result.success(Unit)
         } catch (e: Exception) {
-            Result.failure(Exception(mapSparkAuthMessage(e, "Failed to send password reset email"), e))
+            Result.failure(Exception(mapSparkAuthMessage(e, "تعذر إرسال رابط استعادة كلمة المرور"), e))
         }
     }
 
-    override fun sendOtp(
-        phoneNumber: String,
-        activity: Activity,
-        resendingToken: PhoneAuthProvider.ForceResendingToken?
-    ): Flow<PhoneAuthEvent> = callbackFlow {
-        val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
-            override fun onVerificationCompleted(credential: PhoneAuthCredential) {
-                launch {
-                    try {
-                        val previousUid = auth.currentUser?.uid
-                        val result = auth.signInWithCredential(credential).await()
-                        val uid = result.user?.uid ?: return@launch
-                        if (previousUid != null && previousUid != uid) {
-                            clearActiveSessionForSwitch(previousUid)
-                        }
-                        prefs.clearPendingOtp()
-                        val isNew = ensureUserSkeletonExists(
-                            uid = uid,
-                            phone = result.user?.phoneNumber ?: phoneNumber,
-                            email = result.user?.email.orEmpty(),
-                            suggestedName = "",
-                            suggestedPhoto = "",
-                            phoneVerified = true,
-                            provider = "phone"
-                        )
-                        registerDeviceSession(uid)
-                        syncFcmToken()
-                        trySend(PhoneAuthEvent.Verified(uid, isNew))
-                        close()
-                    } catch (e: Exception) {
-                        trySend(mapAuthError(e))
-                    }
-                }
-            }
-
-            override fun onVerificationFailed(e: FirebaseException) {
-                trySend(mapAuthError(e))
-                close()
-            }
-
-            override fun onCodeSent(
-                verificationId: String,
-                token: PhoneAuthProvider.ForceResendingToken
-            ) {
-                launch {
-                    prefs.savePendingOtp(verificationId, phoneNumber)
-                }
-                trySend(PhoneAuthEvent.CodeSent(verificationId, token))
-            }
-        }
-
-        val builder = PhoneAuthOptions.newBuilder(auth)
-            .setPhoneNumber(phoneNumber)
-            .setTimeout(Constants.OTP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .setActivity(activity)
-            .setCallbacks(callbacks)
-
-        if (resendingToken != null) {
-            builder.setForceResendingToken(resendingToken)
-        }
-
-        PhoneAuthProvider.verifyPhoneNumber(builder.build())
-        awaitClose { }
-    }
-
-    override suspend fun verifyOtpCode(verificationId: String, smsCode: String): Result<Boolean> {
+    override suspend fun signInGuestForSupport(): Result<String> {
         return try {
-            val previousUid = auth.currentUser?.uid
-            val credential = PhoneAuthProvider.getCredential(verificationId, smsCode.trim())
-            val authResult = auth.signInWithCredential(credential).await()
-            val uid = authResult.user?.uid ?: error("User UID missing after verification")
-            if (previousUid != null && previousUid != uid) {
-                clearActiveSessionForSwitch(previousUid)
+            val currentUid = auth.currentUser?.uid
+            if (!currentUid.isNullOrBlank()) {
+                return Result.success(currentUid)
             }
-            val phone = authResult.user?.phoneNumber.orEmpty()
-            prefs.clearPendingOtp()
-            val isNewProfile = ensureUserSkeletonExists(
-                uid = uid,
-                phone = phone,
-                email = authResult.user?.email.orEmpty(),
-                suggestedName = "",
-                suggestedPhoto = "",
-                phoneVerified = true,
-                provider = "phone"
-            )
-            registerDeviceSession(uid)
-            syncFcmToken()
-            Result.success(isNewProfile)
-        } catch (e: Exception) {
-            val message = when (e) {
-                is FirebaseAuthInvalidCredentialsException -> "رمز التحقق غير صحيح أو منتهي الصلاحية"
-                is FirebaseAuthException -> mapSparkAuthMessage(e, "فشل التحقق من الرمز")
-                is FirebaseNetworkException -> "تعذر الاتصال بالشبكة، تحقق من الإنترنت"
-                else -> e.localizedMessage ?: "فشل التحقق من الرمز"
-            }
-            Result.failure(Exception(message, e))
-        }
-    }
-
-    override fun sendOtpForPhoneLink(
-        phoneNumber: String,
-        activity: Activity,
-        resendingToken: PhoneAuthProvider.ForceResendingToken?
-    ): Flow<PhoneAuthEvent> = callbackFlow {
-        val currentFirebaseUser = auth.currentUser
-        if (currentFirebaseUser == null) {
-            trySend(PhoneAuthEvent.Error("المستخدم غير مسجل الدخول", "User is not signed in"))
-            close()
-            return@callbackFlow
-        }
-
-        val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
-            override fun onVerificationCompleted(credential: PhoneAuthCredential) {
-                launch {
-                    try {
-                        applyPhoneCredentialLink(currentFirebaseUser.uid, credential, phoneNumber)
-                        trySend(PhoneAuthEvent.Verified(currentFirebaseUser.uid, false))
-                        close()
-                    } catch (e: Exception) {
-                        trySend(mapPhoneLinkException(e))
-                        close()
-                    }
-                }
-            }
-
-            override fun onVerificationFailed(e: FirebaseException) {
-                trySend(mapAuthError(e))
-                close()
-            }
-
-            override fun onCodeSent(
-                verificationId: String,
-                token: PhoneAuthProvider.ForceResendingToken
-            ) {
-                trySend(PhoneAuthEvent.CodeSent(verificationId, token))
-            }
-        }
-
-        val builder = PhoneAuthOptions.newBuilder(auth)
-            .setPhoneNumber(phoneNumber)
-            .setTimeout(Constants.OTP_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .setActivity(activity)
-            .setCallbacks(callbacks)
-
-        if (resendingToken != null) {
-            builder.setForceResendingToken(resendingToken)
-        }
-
-        PhoneAuthProvider.verifyPhoneNumber(builder.build())
-        awaitClose { }
-    }
-
-    override suspend fun verifyOtpAndLinkPhone(verificationId: String, smsCode: String): Result<Unit> {
-        return try {
-            val currentFirebaseUser = auth.currentUser ?: error("Not authenticated")
-            val credential = PhoneAuthProvider.getCredential(verificationId, smsCode.trim())
-            applyPhoneCredentialLink(currentFirebaseUser.uid, credential, currentFirebaseUser.phoneNumber.orEmpty())
-            Result.success(Unit)
-        } catch (e: Exception) {
-            val err = mapPhoneLinkException(e)
-            Result.failure(Exception(err.messageAr, e))
-        }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private suspend fun applyPhoneCredentialLink(
-        uid: String,
-        credential: PhoneAuthCredential,
-        fallbackPhone: String
-    ) {
-        val firebaseUser = auth.currentUser ?: error("Not authenticated")
-        firebaseUser.updatePhoneNumber(credential).await()
-        firebaseUser.reload().await()
-
-        val verifiedE164 = (firebaseUser.phoneNumber?.takeIf { it.isNotBlank() } ?: fallbackPhone)
-            .let { PhoneUtils.normalizeToE164(it) ?: it }
-        val hash = PhoneUtils.sha256Hash(verifiedE164)
-
-        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        val snap = userRef.get().await()
-        val privacyMap = snap.get("privacySettings") as? Map<String, Any?> ?: emptyMap()
-        val hidePhone = (privacyMap["hidePhoneNumber"] as? Boolean) ?: false
-
-        // Always persist verified private record
-        userRef.collection(Constants.SUBCOLLECTION_PRIVATE)
-            .document("info")
-            .set(
+            val anonResult = auth.signInAnonymously().await()
+            val uid = anonResult.user?.uid ?: error("تعذر فتح جلسة التواصل السريعة")
+            val pubKey = cryptoManager.getOrCreateIdentityPublicKeyBase64(uid)
+            firestore.collection(Constants.COLLECTION_USERS).document(uid).set(
                 mapOf(
-                    "phoneNumber" to verifiedE164,
-                    "isPhoneVerified" to true,
-                    "phoneVerifiedAt" to System.currentTimeMillis()
+                    "uid" to uid,
+                    "displayName" to "زائر دعم WESAL",
+                    "publicId" to "guest_${uid.take(6).lowercase()}",
+                    "bio" to "تواصل مع إدارة WESAL",
+                    "isGuestSupport" to true,
+                    "hiddenFromSearch" to true,
+                    "isOnline" to true,
+                    "publicKey" to pubKey,
+                    "createdAt" to System.currentTimeMillis(),
+                    "lastSeen" to FieldValue.serverTimestamp()
                 ),
                 SetOptions.merge()
             ).await()
-
-        val publicUpdates = hashMapOf<String, Any>(
-            "isPhoneVerified" to true,
-            "phoneNumber" to if (hidePhone) "" else verifiedE164,
-            "phoneHash" to if (hidePhone) "" else hash
-        )
-        userRef.set(publicUpdates, SetOptions.merge()).await()
+            Result.success(uid)
+        } catch (e: Exception) {
+            val msg = if (e is FirebaseAuthException && e.errorCode == "ERROR_OPERATION_NOT_ALLOWED") {
+                "يرجى تسجيل الدخول بحساب Google أو البريد الإلكتروني أولاً للتواصل المباشر مع حساب الإدارة 10001 داخل WESAL."
+            } else {
+                mapSparkAuthMessage(e, "سجّل الدخول بحسابك لبدء المحادثة المباشرة مع إدارة WESAL (10001)")
+            }
+            Result.failure(Exception(msg, e))
+        }
     }
 
-    private fun mapPhoneLinkException(e: Exception): PhoneAuthEvent.Error {
-        return when (e) {
-            is FirebaseAuthUserCollisionException -> PhoneAuthEvent.Error(
-                "هذا الرقم مرتبط بالفعل بحساب وصال آخر",
-                "This phone number is already linked to another WESAL account"
-            )
-            is FirebaseAuthInvalidCredentialsException -> PhoneAuthEvent.Error(
-                "رمز التحقق غير صحيح أو منتهي الصلاحية",
-                "Invalid or expired verification code"
-            )
-            is FirebaseTooManyRequestsException -> PhoneAuthEvent.Error(
-                "تم إرسال طلبات كثيرة، يرجى المحاولة لاحقاً",
-                "Too many verification requests, please try again later"
-            )
-            is FirebaseNetworkException -> PhoneAuthEvent.Error(
-                "لا يوجد اتصال بالإنترنت",
-                "No internet connection"
-            )
-            else -> PhoneAuthEvent.Error(
-                e.localizedMessage ?: "تعذر توثيق رقم الهاتف عبر SMS",
-                e.localizedMessage ?: "Failed to verify phone number via SMS"
-            )
-        }
+    private suspend fun isGlobalCustomerFrameEnabled(): Boolean {
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("admin_settings")
+                .get()
+                .await()
+        }.getOrNull()
+        return snap?.getBoolean("globalCustomerFrameEnabled") ?: true
     }
 
     private suspend fun allocateUniqueNumericId(uid: String): String {
@@ -462,6 +378,7 @@ class AuthRepositoryImpl @Inject constructor(
         return fallback
     }
 
+    @Suppress("UNCHECKED_CAST")
     private suspend fun ensureUserSkeletonExists(
         uid: String,
         phone: String,
@@ -483,6 +400,8 @@ class AuthRepositoryImpl @Inject constructor(
 
         if (!snapshot.exists()) {
             val uniquePublicId = WesalIdUtils.generateDefault(uid)
+            val applyGlobalFrame = isGlobalCustomerFrameEnabled()
+            val initialFrame = if (applyGlobalFrame) WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID else ""
             val newUserMap = hashMapOf(
                 "uid" to uid,
                 "email" to email.trim(),
@@ -490,12 +409,20 @@ class AuthRepositoryImpl @Inject constructor(
                 "phoneHash" to verifiedPhoneHash,
                 "isPhoneVerified" to phoneVerified,
                 "isVerified" to false,
+                "verificationType" to "BLUE",
                 "displayName" to suggestedName.trim(),
                 "publicId" to uniquePublicId,
                 "bio" to "أستخدم تطبيق WESAL",
                 "photoUrl" to suggestedPhoto,
+                "coverUrl" to "",
+                "birthDate" to "",
+                "frameId" to initialFrame,
+                "frameExpiresAt" to 0L,
+                "profileCompleted" to false,
+                "welcomeSent" to false,
                 "createdAt" to System.currentTimeMillis(),
                 "lastSeen" to FieldValue.serverTimestamp(),
+                "lastHeartbeatAt" to System.currentTimeMillis(),
                 "isOnline" to true,
                 "publicKey" to pubKey,
                 "blockedUsers" to emptyList<String>(),
@@ -505,7 +432,9 @@ class AuthRepositoryImpl @Inject constructor(
                     "profilePhotoVisibility" to "everyone",
                     "storiesVisibility" to "everyone",
                     "readReceiptsEnabled" to true,
-                    "hidePhoneNumber" to false
+                    "hidePhoneNumber" to false,
+                    "hideBirthDate" to false,
+                    "recordProfileVisits" to true
                 )
             )
             userRef.set(newUserMap, SetOptions.merge()).await()
@@ -523,7 +452,7 @@ class AuthRepositoryImpl @Inject constructor(
                     lastUsedAt = System.currentTimeMillis()
                 )
             )
-            return suggestedName.isBlank()
+            return true
         } else {
             val existingName = snapshot.getString("displayName").orEmpty()
             val existingPhoto = snapshot.getString("photoUrl").orEmpty()
@@ -531,17 +460,27 @@ class AuthRepositoryImpl @Inject constructor(
             val existingNumericId = snapshot.getString("numericId").orEmpty()
             val existingPhone = snapshot.getString("phoneNumber").orEmpty()
             val existingEmail = snapshot.getString("email").orEmpty()
+            val existingBirthDate = snapshot.getString("birthDate").orEmpty()
+            val existingCompleted = snapshot.getBoolean("profileCompleted")
             val existingVerified = snapshot.getBoolean("isPhoneVerified")
                 ?: (existingPhone.isNotBlank() && existingEmail.isBlank())
 
-            @Suppress("UNCHECKED_CAST")
+            val privSnap = runCatching {
+                userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").get().await()
+            }.getOrNull()
+            val privatePhone = privSnap?.getString("phoneNumber").orEmpty()
+            val privateBirthDate = privSnap?.getString("birthDate").orEmpty()
+            val effectivePhone = existingPhone.ifBlank { privatePhone }.ifBlank { normalizedPhone }
+            val effectiveDob = existingBirthDate.ifBlank { privateBirthDate }
+
             val privacyMap = snapshot.get("privacySettings") as? Map<String, Any?> ?: emptyMap()
             val hidePhone = (privacyMap["hidePhoneNumber"] as? Boolean) ?: false
 
             val updateMap = hashMapOf<String, Any>(
                 "publicKey" to pubKey,
                 "isOnline" to true,
-                "lastSeen" to FieldValue.serverTimestamp()
+                "lastSeen" to FieldValue.serverTimestamp(),
+                "lastHeartbeatAt" to System.currentTimeMillis()
             )
             val finalPublicId = existingPublicId.ifBlank { WesalIdUtils.generateDefault(uid) }
             if (existingPublicId.isBlank()) {
@@ -558,9 +497,8 @@ class AuthRepositoryImpl @Inject constructor(
             }
             if (phoneVerified || existingVerified) {
                 updateMap["isPhoneVerified"] = true
-                val finalPhone = existingPhone.ifBlank { normalizedPhone }
-                if (!hidePhone && finalPhone.isNotBlank()) {
-                    val norm = PhoneUtils.normalizeToE164(finalPhone) ?: finalPhone
+                if (!hidePhone && effectivePhone.isNotBlank()) {
+                    val norm = PhoneUtils.normalizeToE164(effectivePhone) ?: effectivePhone
                     updateMap["phoneHash"] = PhoneUtils.sha256Hash(norm)
                 }
             } else if (snapshot.getBoolean("isPhoneVerified") == null) {
@@ -578,7 +516,7 @@ class AuthRepositoryImpl @Inject constructor(
                     uid = uid,
                     displayName = existingName.ifBlank { suggestedName.trim() },
                     email = existingEmail.ifBlank { email.trim() },
-                    phoneNumber = existingPhone.ifBlank { normalizedPhone },
+                    phoneNumber = effectivePhone,
                     publicId = finalPublicId,
                     numericId = finalNumericId,
                     photoUrl = existingPhoto.ifBlank { suggestedPhoto },
@@ -586,27 +524,140 @@ class AuthRepositoryImpl @Inject constructor(
                     lastUsedAt = System.currentTimeMillis()
                 )
             )
-            return existingName.isBlank() && suggestedName.isBlank()
+            // Grandfathered existing completed accounts stay logged in if they already completed onboarding or have mandatory fields filled
+            val hasName = existingName.isNotBlank() || suggestedName.isNotBlank()
+            val hasPhone = effectivePhone.isNotBlank()
+            val hasDob = effectiveDob.isNotBlank()
+            val isComplete = when (existingCompleted) {
+                true -> hasName && hasPhone && hasDob
+                false -> false
+                null -> hasName && hasPhone && hasDob
+            }
+            return !isComplete
         }
     }
 
+    private suspend fun reserveUniquePhone(uid: String, e164Phone: String) {
+        val hash = PhoneUtils.sha256Hash(e164Phone)
+        // Check banned identifiers first if applicable
+        val banSnap = runCatching {
+            firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
+                .document("phone_$hash")
+                .get()
+                .await()
+        }.getOrNull()
+        if (banSnap != null && banSnap.exists()) {
+            val expiresAt = banSnap.getLong("expiresAt") ?: 0L
+            val permanent = banSnap.getBoolean("permanent") ?: (expiresAt == 0L)
+            if (permanent || (expiresAt > 0L && System.currentTimeMillis() <= expiresAt)) {
+                throw IllegalStateException("هذا الرقم مرتبط بحساب محظور من استخدام WESAL")
+            }
+        }
+
+        // Check public phoneHash conflicts
+        val dupPublic = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS)
+                .whereEqualTo("phoneHash", hash)
+                .limit(3)
+                .get()
+                .await()
+        }.getOrNull()
+        if (dupPublic != null && dupPublic.documents.any { it.id != uid }) {
+            throw IllegalArgumentException("رقم الهاتف هذا مستخدم بالفعل في حساب WESAL آخر")
+        }
+
+        // Check server-side phone uniqueness index (works even if phone is hidden)
+        val phoneIdxRef = firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS).document(hash)
+        val idxTx = runCatching {
+            firestore.runTransaction { tx ->
+                val idxSnap = tx.get(phoneIdxRef)
+                val ownerUid = idxSnap.getString("uid").orEmpty()
+                if (idxSnap.exists() && ownerUid.isNotBlank() && ownerUid != uid) {
+                    throw IllegalArgumentException("رقم الهاتف هذا مرتبط بالفعل بحساب آخر")
+                }
+                tx.set(
+                    phoneIdxRef,
+                    mapOf(
+                        "uid" to uid,
+                        "updatedAt" to System.currentTimeMillis()
+                    )
+                )
+            }.await()
+        }
+        val ex = idxTx.exceptionOrNull()
+        if (ex is IllegalArgumentException) throw ex
+    }
+
+    private fun validateBirthDate(birthDateIso: String): String {
+        val clean = birthDateIso.trim()
+        require(clean.matches(Regex("^\\d{4}-\\d{2}-\\d{2}$"))) {
+            "يرجى اختيار تاريخ ميلاد صحيح"
+        }
+        val parsed = runCatching { LocalDate.parse(clean) }.getOrNull()
+            ?: throw IllegalArgumentException("تاريخ الميلاد غير صالح")
+        val today = LocalDate.now()
+        require(!parsed.isAfter(today)) {
+            "لا يمكن أن يكون تاريخ الميلاد في المستقبل"
+        }
+        val years = Period.between(parsed, today).years
+        require(years >= Constants.MIN_AGE_YEARS) {
+            "يجب أن يكون العمر ${Constants.MIN_AGE_YEARS} سنة على الأقل لاستخدام WESAL"
+        }
+        return clean
+    }
+
+    @Suppress("UNCHECKED_CAST")
     override suspend fun completeUserProfile(
         displayName: String,
         bio: String,
         photoUri: Uri?,
-        wesalId: String?
+        wesalId: String?,
+        phoneE164: String?,
+        birthDate: String?,
+        hideBirthDate: Boolean,
+        locationGranted: Boolean,
+        locationGraceStartedAt: Long
     ): Result<WesalUser> {
         return try {
             val uid = currentUserId ?: error("المستخدم غير مسجل الدخول")
+            val cleanName = displayName.trim()
+            require(cleanName.length >= 2) { "الاسم الظاهر مطلوب (حرفان على الأقل)" }
+
+            val cleanPhone = phoneE164?.trim().orEmpty()
+            val normalizedPhone = PhoneUtils.normalizeToE164(cleanPhone)
+                ?: throw IllegalArgumentException("يرجى إدخال رقم هاتف دولي صحيح")
+            reserveUniquePhone(uid, normalizedPhone)
+
+            val validDob = validateBirthDate(birthDate.orEmpty())
+
             val docRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
             val existingSnap = docRef.get().await()
+            val existingPrivacy = (existingSnap.get("privacySettings") as? Map<String, Any?>)?.toMutableMap()
+                ?: mutableMapOf()
+            val hidePhone = (existingPrivacy["hidePhoneNumber"] as? Boolean) ?: false
+            existingPrivacy["hideBirthDate"] = hideBirthDate
 
             val updates = hashMapOf<String, Any>(
-                "displayName" to displayName.trim(),
+                "displayName" to cleanName,
                 "bio" to bio.trim().ifBlank { "أستخدم تطبيق WESAL" },
+                "privacySettings" to existingPrivacy,
+                "birthDate" to if (hideBirthDate) "" else validDob,
+                "phoneNumber" to if (hidePhone) "" else normalizedPhone,
+                "phoneHash" to if (hidePhone) "" else PhoneUtils.sha256Hash(normalizedPhone),
+                "locationGranted" to locationGranted,
+                "locationFallbackStartedAt" to locationGraceStartedAt,
+                "profileCompleted" to true,
                 "isOnline" to true,
-                "lastSeen" to FieldValue.serverTimestamp()
+                "lastSeen" to FieldValue.serverTimestamp(),
+                "lastHeartbeatAt" to System.currentTimeMillis()
             )
+
+            // Assign default global customer frame if user has none and global option enabled
+            val currentFrameId = existingSnap.getString("frameId").orEmpty()
+            if (currentFrameId.isBlank() && isGlobalCustomerFrameEnabled()) {
+                updates["frameId"] = WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID
+                updates["frameExpiresAt"] = 0L
+            }
 
             if (!wesalId.isNullOrBlank()) {
                 val normalizedId = WesalIdUtils.normalize(wesalId)
@@ -625,24 +676,53 @@ class AuthRepositoryImpl @Inject constructor(
                 updates["publicId"] = WesalIdUtils.generateDefault(uid)
             }
 
+            var uploadedPhotoUrl: String? = null
             if (photoUri != null) {
-                val encodedAvatar = withContext(Dispatchers.IO) {
-                    uriToBase64Jpeg(context, photoUri, maxSide = 512, quality = 78)
+                uploadedPhotoUrl = withContext(Dispatchers.IO) {
+                    uploadProfileMediaToStorageOrSmallFallback(
+                        context,
+                        "avatars/$uid/avatar_${System.currentTimeMillis()}",
+                        photoUri,
+                        maxSide = 512,
+                        quality = 82
+                    )
                 }
-                if (encodedAvatar.isNotBlank()) {
-                    updates["photoUrl"] = encodedAvatar
+                if (uploadedPhotoUrl.isNotBlank()) {
+                    updates["photoUrl"] = uploadedPhotoUrl
                 }
             }
+
+            // Always persist full private details for owner & Super Admin 10001 inspection (Sec 7, 9, 11)
+            val privateInfo = hashMapOf<String, Any>(
+                "phoneNumber" to normalizedPhone,
+                "birthDate" to validDob,
+                "updatedAt" to System.currentTimeMillis()
+            )
+            if (!uploadedPhotoUrl.isNullOrBlank()) {
+                privateInfo["hiddenPhotoUrl"] = uploadedPhotoUrl
+            }
+            docRef.collection(Constants.SUBCOLLECTION_PRIVATE)
+                .document("info")
+                .set(privateInfo, SetOptions.merge())
+                .await()
 
             docRef.set(updates, SetOptions.merge()).await()
             if (!WesalIdUtils.isValidNumericId(existingSnap.getString("numericId"))) {
                 allocateUniqueNumericId(uid)
             }
+            prefs.setCachedStartupProfileState(uid, true)
+            prefs.setLocationState(locationGranted, locationGraceStartedAt)
             syncFcmToken()
             registerDeviceSession(uid)
 
+            // Deliver single deterministic official WESAL Messenger welcome message (Sec 15 & Sec 26)
+            runCatching { sendSingleOfficialWelcomeIfNeeded(uid, cleanName) }
+
             val snap = docRef.get().await()
-            val savedUser = snap.toWesalUser()
+            val savedUser = snap.toWesalUser().copy(
+                phoneNumber = normalizedPhone,
+                birthDate = validDob
+            )
             val providerId = auth.currentUser?.providerData?.map { it.providerId }.orEmpty()
             val provider = when {
                 providerId.contains("google.com") -> "google"
@@ -654,7 +734,7 @@ class AuthRepositoryImpl @Inject constructor(
                     uid = savedUser.uid,
                     displayName = savedUser.displayName,
                     email = savedUser.email,
-                    phoneNumber = savedUser.phoneNumber,
+                    phoneNumber = normalizedPhone,
                     publicId = savedUser.publicId,
                     numericId = savedUser.numericId,
                     photoUrl = savedUser.photoUrl,
@@ -666,6 +746,76 @@ class AuthRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private suspend fun sendSingleOfficialWelcomeIfNeeded(uid: String, displayName: String) {
+        if (uid.isBlank()) return
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        val uSnap = userRef.get().await()
+        if (uSnap.getBoolean("welcomeSent") == true) return
+        val numericId = uSnap.getString("numericId").orEmpty()
+        if (numericId == Constants.OWNER_ADMIN_NUMERIC_ID) return
+
+        val welcomeCfgSnap = runCatching {
+            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("welcome_config")
+                .get()
+                .await()
+        }.getOrNull()
+        val enabled = welcomeCfgSnap?.getBoolean("enabled") ?: true
+        if (!enabled) return
+
+        val template = welcomeCfgSnap?.getString("messageTemplate")
+            ?.takeIf { it.isNotBlank() }
+            ?: SystemWelcomeConfig.DEFAULT_OFFICIAL_WELCOME_TEMPLATE
+        val nameForGreeting = displayName.trim().ifBlank { "صديق وصال" }
+        val welcomeText = template.replace("[اسم المستخدم]", nameForGreeting)
+
+        val officialChatId = "${Constants.OFFICIAL_CHAT_PREFIX}$uid"
+        val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(officialChatId)
+        val msgRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document("welcome_$uid")
+
+        val now = System.currentTimeMillis()
+        val existingMsg = runCatching { msgRef.get().await() }.getOrNull()
+        if (existingMsg != null && existingMsg.exists()) {
+            userRef.set(mapOf("welcomeSent" to true), SetOptions.merge()).await()
+            return
+        }
+
+        chatRef.set(
+            mapOf(
+                "chatId" to officialChatId,
+                "isGroup" to false,
+                "isOfficialWesalChat" to true,
+                "isSupportChat" to false,
+                "participantIds" to listOf(uid, Constants.OFFICIAL_WESAL_SENDER_ID),
+                "lastMessagePreview" to "مرحبًا بك يا $nameForGreeting 👋",
+                "lastMessageTime" to now,
+                "lastMessageSenderId" to Constants.OFFICIAL_WESAL_SENDER_ID,
+                "lastMessageStatus" to "SENT",
+                "pinnedBy" to listOf(uid),
+                "unreadCounts" to mapOf(uid to 1),
+                "createdAt" to now
+            ),
+            SetOptions.merge()
+        ).await()
+
+        msgRef.set(
+            mapOf(
+                "messageId" to "welcome_$uid",
+                "chatId" to officialChatId,
+                "senderId" to Constants.OFFICIAL_WESAL_SENDER_ID,
+                "senderName" to Constants.OFFICIAL_WESAL_SENDER_NAME,
+                "type" to "TEXT",
+                "text" to welcomeText,
+                "ciphertext" to "",
+                "isEncrypted" to false,
+                "status" to "SENT",
+                "timestamp" to now
+            )
+        ).await()
+
+        userRef.set(mapOf("welcomeSent" to true), SetOptions.merge()).await()
     }
 
     override suspend fun syncFcmToken() {
@@ -682,9 +832,10 @@ class AuthRepositoryImpl @Inject constructor(
     private suspend fun registerDeviceSession(uid: String) {
         runCatching {
             val sessionId = prefs.getOrCreateDeviceSessionId()
+            val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
             val sessionData = mapOf(
                 "sessionId" to sessionId,
-                "deviceName" to "${Build.MANUFACTURER} ${Build.MODEL}",
+                "deviceName" to deviceName,
                 "osVersion" to "Android ${Build.VERSION.RELEASE}",
                 "appVersion" to BuildConfig.VERSION_NAME,
                 "lastActiveAt" to System.currentTimeMillis()
@@ -695,6 +846,15 @@ class AuthRepositoryImpl @Inject constructor(
                 .document(sessionId)
                 .set(sessionData, SetOptions.merge())
                 .await()
+            firestore.collection(Constants.COLLECTION_USERS)
+                .document(uid)
+                .set(
+                    mapOf(
+                        "lastDeviceName" to deviceName,
+                        "lastAppVersion" to BuildConfig.VERSION_NAME
+                    ),
+                    SetOptions.merge()
+                ).await()
         }
     }
 
@@ -710,6 +870,7 @@ class AuthRepositoryImpl @Inject constructor(
                             mapOf(
                                 "isOnline" to false,
                                 "lastSeen" to FieldValue.serverTimestamp(),
+                                "lastHeartbeatAt" to 0L,
                                 "fcmToken" to ""
                             )
                         ).await()
@@ -740,7 +901,7 @@ class AuthRepositoryImpl @Inject constructor(
 
             auth.signOut()
             Result.success(Unit)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             runCatching { prefs.clearUserSessionState() }
             runCatching {
                 androidx.credentials.CredentialManager.create(context)
@@ -754,6 +915,112 @@ class AuthRepositoryImpl @Inject constructor(
             }
             auth.signOut()
             Result.success(Unit)
+        }
+    }
+
+    override suspend fun deleteAccountPermanently(
+        passwordForReauth: String?,
+        googleIdTokenForReauth: String?
+    ): Result<Unit> {
+        return try {
+            val firebaseUser = auth.currentUser ?: error("المستخدم غير مسجل الدخول")
+            val uid = firebaseUser.uid
+            val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+            val snap = userRef.get().await()
+            val numericId = snap.getString("numericId").orEmpty()
+            if (numericId == Constants.OWNER_ADMIN_NUMERIC_ID) {
+                return Result.failure(IllegalStateException("لا يمكن حذف حساب المالك الإداري الأساسي 10001 من التطبيق مباشرة"))
+            }
+
+            // Re-authenticate before deleting Firebase Auth account (Sec 42)
+            when {
+                !googleIdTokenForReauth.isNullOrBlank() -> {
+                    val cred = GoogleAuthProvider.getCredential(googleIdTokenForReauth, null)
+                    firebaseUser.reauthenticate(cred).await()
+                }
+                !passwordForReauth.isNullOrBlank() && !firebaseUser.email.isNullOrBlank() -> {
+                    val cred = EmailAuthProvider.getCredential(firebaseUser.email!!, passwordForReauth)
+                    firebaseUser.reauthenticate(cred).await()
+                }
+            }
+
+            val privSnap = runCatching {
+                userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").get().await()
+            }.getOrNull()
+            val rawPhone = snap.getString("phoneNumber").orEmpty().ifBlank { privSnap?.getString("phoneNumber").orEmpty() }
+            val normPhone = PhoneUtils.normalizeToE164(rawPhone).orEmpty()
+            if (normPhone.isNotBlank()) {
+                val pHash = PhoneUtils.sha256Hash(normPhone)
+                runCatching {
+                    firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS).document(pHash).delete().await()
+                }
+            }
+            if (numericId.isNotBlank()) {
+                runCatching {
+                    firestore.collection(Constants.COLLECTION_WESAL_ID_INDEX).document(numericId).delete().await()
+                }
+            }
+
+            // Delete active sessions
+            val sessions = runCatching {
+                userRef.collection(Constants.COLLECTION_SESSIONS).get().await()
+            }.getOrNull()
+            sessions?.documents?.forEach { doc ->
+                runCatching { doc.reference.delete().await() }
+            }
+
+            val now = System.currentTimeMillis()
+            // Scrub personal profile fields while honoring minimal tombstone record for deleted account stats (Sec 39 & Sec 42)
+            userRef.set(
+                mapOf(
+                    "displayName" to "حساب محذوف",
+                    "bio" to "",
+                    "photoUrl" to "",
+                    "coverUrl" to "",
+                    "phoneNumber" to "",
+                    "phoneHash" to "",
+                    "birthDate" to "",
+                    "email" to "",
+                    "fcmToken" to "",
+                    "publicKey" to "",
+                    "facebookUrl" to "",
+                    "instagramUrl" to "",
+                    "isOnline" to false,
+                    "hiddenFromSearch" to true,
+                    "deletedAt" to now,
+                    "lastSeen" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+
+            runCatching {
+                userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").delete().await()
+            }
+
+            // Delete Firebase Auth user (triggers FirebaseAuthRecentLoginRequiredException if session is old & no reauth supplied)
+            firebaseUser.delete().await()
+
+            runCatching { messaging.deleteToken().await() }
+            runCatching {
+                val nm = context.getSystemService(NotificationManager::class.java)
+                nm?.cancelAll()
+            }
+            prefs.removeSavedAccount(uid)
+            prefs.clearUserSessionState()
+            withContext(Dispatchers.IO) {
+                database.wesalDao().clearAllChats()
+                database.wesalDao().clearAllMessages()
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            val msg = when (e) {
+                is FirebaseAuthRecentLoginRequiredException ->
+                    "لأسباب أمنية، يرجى تأكيد هويتك (إدخال كلمة المرور أو اختيار حساب Google) لإتمام حذف الحساب نهائياً"
+                is FirebaseAuthInvalidCredentialsException ->
+                    "كلمة المرور غير صحيحة؛ تعذر تأكيد الهوية"
+                else -> e.localizedMessage ?: "تعذر حذف الحساب نهائياً"
+            }
+            Result.failure(Exception(msg, e))
         }
     }
 
@@ -783,10 +1050,10 @@ class AuthRepositoryImpl @Inject constructor(
                 database.wesalDao().clearAllMessages()
             }
         }
-        prefs.clearPendingOtp()
     }
 
     private fun mapSparkAuthMessage(e: Exception, fallback: String): String {
+        if (e is IllegalStateException && !e.message.isNullOrBlank()) return e.message!!
         if (e is FirebaseNetworkException) {
             return "لا يوجد اتصال بالإنترنت، تحقق من الشبكة"
         }
@@ -796,11 +1063,11 @@ class AuthRepositoryImpl @Inject constructor(
         if (e is FirebaseAuthException) {
             when (e.errorCode) {
                 "ERROR_OPERATION_NOT_ALLOWED" ->
-                    return "طريقة التسجيل هذه غير مفعّلة في Firebase Console (Authentication -> Sign-in method). قم بتفعيلها ثم أعد المحاولة."
+                    return "طريقة التسجيل هذه غير مفعّلة في Firebase Console. فعّلها ثم أعد المحاولة."
                 "ERROR_ACCOUNT_EXISTS_WITH_DIFFERENT_CREDENTIAL" ->
                     return "هذا البريد مسجل بالفعل بطريقة دخول مختلفة، سجّل الدخول بنفس الطريقة السابقة"
                 "ERROR_USER_DISABLED" ->
-                    return "تم تعطيل هذا الحساب، تواصل مع الدعم الفني"
+                    return "تم تعطيل هذا الحساب، تواصل مع إدارة WESAL"
                 "ERROR_CREDENTIAL_ALREADY_IN_USE" ->
                     return "بيانات الاعتماد هذه مرتبطة بالفعل بحساب وصال آخر"
                 "ERROR_INVALID_EMAIL" ->
@@ -813,33 +1080,6 @@ class AuthRepositoryImpl @Inject constructor(
             is FirebaseAuthUserCollisionException -> "هذا البريد الإلكتروني مسجل بالفعل في WESAL"
             is FirebaseAuthWeakPasswordException -> "كلمة المرور ضعيفة جداً — استخدم 6 أحرف على الأقل"
             else -> e.localizedMessage?.takeIf { it.isNotBlank() } ?: fallback
-        }
-    }
-
-    private fun mapAuthError(e: Exception): PhoneAuthEvent.Error {
-        if (e is FirebaseAuthException && e.errorCode == "ERROR_OPERATION_NOT_ALLOWED") {
-            return PhoneAuthEvent.Error(
-                "التحقق برقم الهاتف (Phone Auth) غير مفعّل في Firebase Console — فعّله من Sign-in method وأضف بصمة SHA-1/SHA-256",
-                "Phone authentication is not enabled in Firebase Console"
-            )
-        }
-        return when (e) {
-            is FirebaseNetworkException -> PhoneAuthEvent.Error(
-                "لا يوجد اتصال بالإنترنت، يرجى التحقق والمحاولة مجدداً",
-                "Network error, please check your connection"
-            )
-            is FirebaseTooManyRequestsException -> PhoneAuthEvent.Error(
-                "تم إرسال طلبات كثيرة، يرجى الانتظار قليلاً قبل المحاولة مجدداً",
-                "Too many requests, please wait before retrying"
-            )
-            is FirebaseAuthInvalidCredentialsException -> PhoneAuthEvent.Error(
-                "رقم الهاتف غير صالح، تأكد من رمز الدولة والرقم",
-                "Invalid phone number format"
-            )
-            else -> PhoneAuthEvent.Error(
-                e.localizedMessage ?: "حدث خطأ أثناء إرسال رمز التحقق",
-                e.localizedMessage ?: "Failed to send verification code"
-            )
         }
     }
 }

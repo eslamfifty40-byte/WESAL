@@ -13,7 +13,6 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.wesal.messenger.admin.AdminVerificationScreen
 import com.wesal.messenger.authentication.AuthViewModel
-import com.wesal.messenger.authentication.OtpVerificationScreen
 import com.wesal.messenger.authentication.PhoneLoginScreen
 import com.wesal.messenger.authentication.ProfileSetupScreen
 import com.wesal.messenger.channels.ChannelDetailScreen
@@ -22,13 +21,13 @@ import com.wesal.messenger.contacts.InviteLandingScreen
 import com.wesal.messenger.contacts.NewChatContactsScreen
 import com.wesal.messenger.groups.GroupInfoScreen
 import com.wesal.messenger.media.CameraHubScreen
+import com.wesal.messenger.profile.AccountShareScreen
 import com.wesal.messenger.profile.ProfileScreen
 import com.wesal.messenger.profile.UserProfileDetailScreen
 
 private object Routes {
     const val PHONE_LOGIN = "phone_login"
     const val ADD_ACCOUNT = "add_account?email={email}"
-    const val OTP = "otp_verification"
     const val PROFILE_SETUP = "profile_setup"
     const val HOME = "home"
     const val CAMERA_HUB = "camera_hub"
@@ -39,6 +38,7 @@ private object Routes {
     const val INVITE_LANDING = "invite_landing/{inviteId}"
     const val ADMIN_VERIFICATION = "admin_verification"
     const val PROFILE = "profile"
+    const val ACCOUNT_SHARE = "account_share"
     const val USER_PROFILE = "user_profile/{uid}"
 }
 
@@ -61,7 +61,6 @@ fun WesalNavHost(
 
     val startRoute = when (startDestination) {
         StartDestination.Home -> Routes.HOME
-        StartDestination.OtpPending -> Routes.OTP
         StartDestination.ProfileSetup -> Routes.PROFILE_SETUP
         else -> Routes.PHONE_LOGIN
     }
@@ -105,6 +104,7 @@ fun WesalNavHost(
             Routes.INVITE_LANDING,
             Routes.ADMIN_VERIFICATION,
             Routes.PROFILE,
+            Routes.ACCOUNT_SHARE,
             Routes.USER_PROFILE,
             Routes.PROFILE_SETUP
         )
@@ -124,7 +124,6 @@ fun WesalNavHost(
         composable(Routes.PHONE_LOGIN) {
             PhoneLoginScreen(
                 viewModel = authViewModel,
-                onNavigateToOtp = { navController.navigate(Routes.OTP) },
                 onNavigateToProfileSetup = {
                     navController.navigate(Routes.PROFILE_SETUP) {
                         popUpTo(Routes.PHONE_LOGIN) { inclusive = true }
@@ -133,6 +132,14 @@ fun WesalNavHost(
                 onNavigateToHome = {
                     navController.navigate(Routes.HOME) {
                         popUpTo(Routes.PHONE_LOGIN) { inclusive = true }
+                    }
+                },
+                onNavigateToSupportChat = { supportChatId ->
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.PHONE_LOGIN) { inclusive = true }
+                    }
+                    navController.navigate("chat/$supportChatId") {
+                        launchSingleTop = true
                     }
                 }
             )
@@ -151,7 +158,6 @@ fun WesalNavHost(
                 isAddAccountMode = true,
                 prefillEmail = prefillEmail,
                 onCancelAddAccount = { navController.popBackStack() },
-                onNavigateToOtp = { navController.navigate(Routes.OTP) },
                 onNavigateToProfileSetup = {
                     navController.navigate(Routes.PROFILE_SETUP) {
                         popUpTo(navController.graph.id) { inclusive = true }
@@ -160,27 +166,6 @@ fun WesalNavHost(
                 onNavigateToHome = {
                     navController.navigate(Routes.HOME) {
                         popUpTo(navController.graph.id) { inclusive = true }
-                    }
-                }
-            )
-        }
-
-        composable(Routes.OTP) {
-            OtpVerificationScreen(
-                viewModel = authViewModel,
-                onBackToPhone = {
-                    navController.navigate(Routes.PHONE_LOGIN) {
-                        popUpTo(Routes.OTP) { inclusive = true }
-                    }
-                },
-                onNavigateToProfileSetup = {
-                    navController.navigate(Routes.PROFILE_SETUP) {
-                        popUpTo(Routes.OTP) { inclusive = true }
-                    }
-                },
-                onNavigateToHome = {
-                    navController.navigate(Routes.HOME) {
-                        popUpTo(Routes.OTP) { inclusive = true }
                     }
                 }
             )
@@ -203,6 +188,7 @@ fun WesalNavHost(
                 onOpenChat = { chatId -> navController.navigate("chat/$chatId") },
                 onOpenNewChat = { navController.navigate(Routes.NEW_CHAT) },
                 onOpenProfile = { navController.navigate(Routes.PROFILE) },
+                onOpenAccountShare = { navController.navigate(Routes.ACCOUNT_SHARE) },
                 onOpenCameraHub = { navController.navigate(Routes.CAMERA_HUB) },
                 onOpenChannel = { channelId -> navController.navigate("channel_detail/$channelId") },
                 onOpenAdminVerification = { navController.navigate(Routes.ADMIN_VERIFICATION) },
@@ -321,7 +307,13 @@ fun WesalNavHost(
         composable(Routes.ADMIN_VERIFICATION) {
             AdminVerificationScreen(
                 onBack = { navController.popBackStack() },
-                onOpenUserProfile = { uid -> navController.navigate("user_profile/$uid") }
+                onOpenChat = { chatId ->
+                    navController.navigate("chat/$chatId") { launchSingleTop = true }
+                },
+                onOpenUserProfile = { uid -> navController.navigate("user_profile/$uid") },
+                onOpenChannel = { channelId ->
+                    navController.navigate("channel_detail/$channelId") { launchSingleTop = true }
+                }
             )
         }
 
@@ -333,6 +325,21 @@ fun WesalNavHost(
                             launchSingleTop = true
                         }
                     }
+                },
+                onOpenAccountShare = {
+                    navController.navigate(Routes.ACCOUNT_SHARE)
+                },
+                onOpenUserProfile = { uid ->
+                    navController.navigate("user_profile/$uid")
+                }
+            )
+        }
+
+        composable(Routes.ACCOUNT_SHARE) {
+            AccountShareScreen(
+                onBack = { navController.popBackStack() },
+                onOpenInviteId = { id ->
+                    navController.navigate("invite_landing/${Uri.encode(id)}")
                 }
             )
         }

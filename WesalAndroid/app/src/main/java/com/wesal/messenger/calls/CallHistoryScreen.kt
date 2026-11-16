@@ -165,6 +165,7 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
 
     var showNewCallSheet by remember { mutableStateOf(false) }
     var confirmClearAll by remember { mutableStateOf(false) }
+    var confirmDeleteSingleCall by remember { mutableStateOf<CallRecord?>(null) }
 
     Box(
         modifier = Modifier
@@ -300,10 +301,10 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
                                     )
                                 }
                             }
-                            IconButton(onClick = { viewModel.deleteSingleCall(call.callId) }) {
+                            IconButton(onClick = { confirmDeleteSingleCall = call }) {
                                 Icon(
                                     imageVector = Icons.Default.DeleteOutline,
-                                    contentDescription = strings.delete,
+                                    contentDescription = if (strings.isEnglish) "Delete for me" else "حذف لدي",
                                     tint = palette.textMuted
                                 )
                             }
@@ -346,6 +347,43 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
         }
     }
 
+    confirmDeleteSingleCall?.let { call ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteSingleCall = null },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Delete Call Entry" else "حذف لدي",
+                    color = palette.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    text = if (strings.isEnglish) {
+                        "Delete this call record from your history only?"
+                    } else {
+                        "سيتم حذف هذا السجل من جهازك وحسابك فقط دون التأثير على الطرف الآخر."
+                    },
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteSingleCall(call.callId)
+                        confirmDeleteSingleCall = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.error)
+                ) {
+                    Text(if (strings.isEnglish) "Delete for me" else "حذف لدي")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteSingleCall = null }) { Text(strings.cancel) }
+            }
+        )
+    }
+
     if (confirmClearAll) {
         AlertDialog(
             onDismissRequest = { confirmClearAll = false },
@@ -360,7 +398,7 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = palette.error)
                 ) {
-                    Text(strings.delete)
+                    Text(strings.clearAllCalls)
                 }
             },
             dismissButton = {

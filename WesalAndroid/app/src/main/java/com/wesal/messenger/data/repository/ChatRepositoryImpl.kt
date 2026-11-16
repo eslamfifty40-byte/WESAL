@@ -17,6 +17,8 @@ import com.wesal.messenger.data.local.entity.CachedMessageEntity
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.MessageStatus
 import com.wesal.messenger.domain.model.MessageType
+import com.wesal.messenger.domain.model.PrivacyVisibility
+import com.wesal.messenger.domain.model.SystemWelcomeConfig
 import com.wesal.messenger.domain.model.WesalMessage
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.ChatRepository
@@ -36,6 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.URL
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -61,6 +64,23 @@ class ChatRepositoryImpl @Inject constructor(
         awaitClose { auth.removeAuthStateListener(listener) }
     }
 
+    private suspend fun verifyIsOwnerSuperAdmin(uid: String): Boolean {
+        val currentUser = auth.currentUser ?: return false
+        if (currentUser.uid != uid) return false
+        val email = currentUser.email.orEmpty()
+        if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) || !currentUser.isEmailVerified) {
+            return false
+        }
+        val adminSnap = runCatching {
+            firestore.collection(Constants.COLLECTION_SUPER_ADMINS).document(uid).get().await()
+        }.getOrNull() ?: return false
+        val userSnap = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
+        }.getOrNull()
+        val numericId = userSnap?.getString("numericId").orEmpty()
+        return adminSnap.exists() && numericId == Constants.OWNER_ADMIN_NUMERIC_ID
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeChats(): Flow<List<ChatPreview>> = observeAuthUid().flatMapLatest { uid ->
         userCache.clear()
@@ -77,7 +97,7 @@ class ChatRepositoryImpl @Inject constructor(
                             val now = System.currentTimeMillis()
                             val missingPeerUids = snapshot.documents
                                 .asSequence()
-                                .filter { it.getBoolean("isGroup") != true }
+                                .filter { it.getBoolean("isGroup") != true && it.getBoolean("isOfficialWesalChat") != true }
                                 .mapNotNull { doc ->
                                     @Suppress("UNCHECKED_CAST")
                                     (doc.get("participantIds") as? List<String>)?.firstOrNull { it != uid }
@@ -100,7 +120,8 @@ class ChatRepositoryImpl @Inject constructor(
                             val previews = snapshot.documents.mapNotNull { doc ->
                                 mapChatPreview(doc, uid)
                             }.sortedWith(
-                                compareByDescending<ChatPreview> { it.isPinned }
+                                compareByDescending<ChatPreview> { it.isOfficialWesalChat }
+                                    .thenByDescending { it.isPinned }
                                     .thenByDescending { it.lastMessageTime }
                             )
                             wesalDao.upsertChats(previews.map {
@@ -114,7 +135,7 @@ class ChatRepositoryImpl @Inject constructor(
                                     lastMessageTime = it.lastMessageTime,
                                     unreadCount = it.unreadCount,
                                     isPinned = it.isPinned,
-                                    isArchived = it.isArchived,
+                                    isArchived = false,
                                     isMuted = it.isMuted
                                 )
                             })
@@ -134,9 +155,10 @@ class ChatRepositoryImpl @Inject constructor(
         if (deletedBy.contains(myUid)) return null
 
         val isGroup = doc.getBoolean("isGroup") ?: false
+        val isOfficialWesalChat = (doc.getBoolean("isOfficialWesalChat") ?: false) ||
+            doc.id.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
         val groupId = doc.getString("groupId")
         val pinnedMap = (doc.get("pinnedBy") as? Map<String, Boolean>) ?: emptyMap()
-        val archivedMap = (doc.get("archivedBy") as? Map<String, Boolean>) ?: emptyMap()
         val mutedMap = (doc.get("mutedBy") as? Map<String, Boolean>) ?: emptyMap()
         val unreadMap = (doc.get("unreadCounts") as? Map<String, Number>) ?: emptyMap()
         val typingMap = (doc.get("typingUsers") as? Map<String, Boolean>) ?: emptyMap()
@@ -148,31 +170,43 @@ class ChatRepositoryImpl @Inject constructor(
         var peerOnline = false
         var peerLastSeen = 0L
         var peerVerified = false
+        var peerVerificationType = "BLUE"
+        var peerFrameId = ""
+        var peerFrameExpiresAt = 0L
 
         val unreadCount = unreadMap[myUid]?.toInt() ?: 0
         val lastSenderId = doc.getString("lastMessageSenderId").orEmpty()
         val lastStatus = MessageStatus.fromRaw(doc.getString("lastMessageStatus"))
 
-        if (!isGroup) {
+        if (isOfficialWesalChat) {
+            title = title.ifBlank { "WESAL Messenger" }
+            peerVerified = true
+            peerVerificationType = "BLUE"
+        } else if (!isGroup) {
             peerUid = participantIds.firstOrNull { it != myUid }.orEmpty()
             if (peerUid.isNotBlank()) {
                 val peer = fetchUserCached(peerUid)
                 if (peer != null) {
                     val safeHandle = peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
                     title = peer.displayName.ifBlank { safeHandle }
-                    avatar = if (peer.privacySettings.profilePhotoVisibility == com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY) "" else peer.photoUrl
+                    avatar = if (peer.privacySettings.profilePhotoVisibility == PrivacyVisibility.NOBODY) "" else peer.photoUrl
                     peerPubKey = peer.publicKey
-                    peerOnline = peer.isOnline && peer.privacySettings.onlineVisibility != com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY
-                    peerLastSeen = if (peer.privacySettings.lastSeenVisibility == com.wesal.messenger.domain.model.PrivacyVisibility.NOBODY) 0L else peer.lastSeen
+                    peerOnline = peer.isOnline && peer.privacySettings.onlineVisibility != PrivacyVisibility.NOBODY
+                    peerLastSeen = if (peer.privacySettings.lastSeenVisibility == PrivacyVisibility.NOBODY) 0L else peer.lastSeen
                     peerVerified = peer.isVerified
+                    peerVerificationType = peer.verificationType
+                    peerFrameId = peer.frameId
+                    peerFrameExpiresAt = peer.frameExpiresAt
                 }
             }
         }
 
-        // Recipient device received the new message snapshot -> confirm real DELIVERED receipt
         if (lastSenderId.isNotBlank() && lastSenderId != myUid && lastStatus == MessageStatus.SENT) {
             markIncomingMessagesDelivered(doc.id, myUid)
         }
+
+        val rawPreview = doc.getString("lastMessagePreview").orEmpty()
+        val sanitizedPreview = if (rawPreview == "رسالة مشفرة") "رسالة سابقة" else rawPreview
 
         return ChatPreview(
             chatId = doc.id,
@@ -186,14 +220,20 @@ class ChatRepositoryImpl @Inject constructor(
             peerOnline = peerOnline,
             peerLastSeen = peerLastSeen,
             peerVerified = peerVerified,
-            lastMessagePreview = doc.getString("lastMessagePreview").orEmpty(),
+            peerVerificationType = peerVerificationType,
+            peerFrameId = peerFrameId,
+            peerFrameExpiresAt = peerFrameExpiresAt,
+            officialWallpaperUrl = doc.getString("officialWallpaperUrl").orEmpty(),
+            lastMessagePreview = sanitizedPreview,
             lastMessageTime = doc.getLong("lastMessageTime") ?: 0L,
             lastMessageSenderId = lastSenderId,
             lastMessageStatus = lastStatus,
             unreadCount = unreadCount,
-            isPinned = pinnedMap[myUid] ?: false,
-            isArchived = archivedMap[myUid] ?: false,
+            isPinned = isOfficialWesalChat || (pinnedMap[myUid] ?: false),
             isMuted = mutedMap[myUid] ?: false,
+            isSupportChat = doc.getBoolean("isSupportChat") ?: false,
+            isOfficialWesalChat = isOfficialWesalChat,
+            deletedForUsers = deletedBy,
             typingUsers = typingMap.filter { it.key != myUid && it.value }.keys.toList()
         )
     }
@@ -311,11 +351,14 @@ class ChatRepositoryImpl @Inject constructor(
         val isDeletedForEveryone = doc.getBoolean("isDeletedForEveryone") ?: false
         val ciphertext = doc.getString("ciphertext").orEmpty()
         val isEncrypted = doc.getBoolean("isEncrypted") ?: false
+        val isViewOnce = doc.getBoolean("isViewOnce") ?: false
+        val viewedBy = (doc.get("viewedBy") as? List<String>) ?: emptyList()
         val wrappedKeys = (doc.get("wrappedKeys") as? Map<String, String>) ?: emptyMap()
         val plainFallback = doc.getString("text").orEmpty()
 
         val resolvedText = when {
             isDeletedForEveryone -> "تم حذف هذه الرسالة"
+            plainFallback.isNotBlank() -> plainFallback
             isEncrypted && ciphertext.isNotBlank() -> {
                 val keyOwnerUid = if (senderId == myUid) {
                     peerPubKeyCache.keys.firstOrNull()
@@ -338,7 +381,7 @@ class ChatRepositoryImpl @Inject constructor(
                         )
                         String(bytes, Charsets.UTF_8)
                     } else {
-                        plainFallback.ifBlank { "رسالة مشفرة" }
+                        "رسالة سابقة غير متاحة"
                     }
                 }
                 val firstPub = keyOwnerUid?.let {
@@ -348,7 +391,6 @@ class ChatRepositoryImpl @Inject constructor(
                 }
                 val firstTry = if (!firstPub.isNullOrBlank()) runCatching { attemptDecrypt(firstPub) } else Result.failure(IllegalStateException("Missing key"))
                 firstTry.getOrElse {
-                    // Key might have rotated on peer reinstall/new login: force fresh server key fetch once
                     val freshPub = keyOwnerUid?.let { uid ->
                         userCache.remove(uid)
                         peerPubKeyCache.remove(uid)
@@ -357,23 +399,28 @@ class ChatRepositoryImpl @Inject constructor(
                         }
                     }
                     if (!freshPub.isNullOrBlank() && freshPub != firstPub) {
-                        runCatching { attemptDecrypt(freshPub) }.getOrElse { plainFallback.ifBlank { "تعذر فك تشفير الرسالة" } }
+                        runCatching { attemptDecrypt(freshPub) }.getOrElse { "رسالة سابقة غير متاحة" }
                     } else {
-                        plainFallback.ifBlank { "تعذر فك تشفير الرسالة" }
+                        "رسالة سابقة غير متاحة"
                     }
                 }
             }
             else -> plainFallback
         }
 
-        // Auto-mark delivered if received by peer
         val rawStatus = MessageStatus.fromRaw(doc.getString("status"))
-        if (senderId != myUid && rawStatus == MessageStatus.SENT) {
+        if (senderId != myUid && senderId != "wesal_system" && rawStatus == MessageStatus.SENT) {
             runCatching { doc.reference.update("status", MessageStatus.DELIVERED.raw) }
             runCatching {
                 firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
                     .update("lastMessageStatus", MessageStatus.DELIVERED.raw)
             }
+        }
+
+        val mediaUrl = if (isViewOnce && viewedBy.isNotEmpty() && senderId != myUid) {
+            ""
+        } else {
+            doc.getString("mediaUrl").orEmpty()
         }
 
         return WesalMessage(
@@ -385,7 +432,9 @@ class ChatRepositoryImpl @Inject constructor(
             ciphertext = ciphertext,
             text = resolvedText,
             isEncrypted = isEncrypted,
-            mediaUrl = doc.getString("mediaUrl").orEmpty(),
+            isViewOnce = isViewOnce,
+            viewedBy = viewedBy,
+            mediaUrl = mediaUrl,
             mediaMimeType = doc.getString("mediaMimeType").orEmpty(),
             mediaFileName = doc.getString("mediaFileName").orEmpty(),
             mediaSizeBytes = doc.getLong("mediaSizeBytes") ?: 0L,
@@ -409,23 +458,36 @@ class ChatRepositoryImpl @Inject constructor(
     override suspend fun getOrCreateDirectChat(peerUid: String): Result<String> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         require(peerUid.isNotBlank() && peerUid != myUid) { "Invalid peer user" }
+        val me = fetchUserCached(myUid, forceServer = true)
+        val peer = fetchUserCached(peerUid, forceServer = true)
+        require(me?.isBanned != true) { "الحساب محظور ولا يمكنه بدء محادثات جديدة" }
+        require(peer != null && peer.deletedAt == 0L && !peer.isBanned) { "هذا الحساب غير متاح حالياً" }
+        require(!me?.blockedUsers.orEmpty().contains(peerUid) && !peer.blockedUsers.contains(myUid)) {
+            "تعذر فتح المحادثة بسبب وجود حظر بين الطرفين"
+        }
+
         val sortedIds = listOf(myUid, peerUid).sorted()
         val deterministicChatId = "dm_${sortedIds[0]}_${sortedIds[1]}"
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(deterministicChatId)
         val snap = chatRef.get().await()
         if (!snap.exists()) {
-            val reqId = "${sortedIds[0]}_${sortedIds[1]}"
-            val reqSnap = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
-                .document(reqId)
-                .get()
-                .await()
-            val isAccepted = reqSnap.exists() && reqSnap.getString("status") == "ACCEPTED"
-            require(isAccepted) {
-                "لا يمكنك مراسلة هذا المستخدم قبل إرسال طلب تعارف وموافقته"
+            val isOwnerSupportTarget = peer.numericId == Constants.OWNER_ADMIN_NUMERIC_ID
+            val callerIsSuperAdmin = verifyIsOwnerSuperAdmin(myUid)
+            if (!isOwnerSupportTarget && !callerIsSuperAdmin) {
+                val reqId = "${sortedIds[0]}_${sortedIds[1]}"
+                val reqSnap = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
+                    .document(reqId)
+                    .get()
+                    .await()
+                val isAccepted = reqSnap.exists() && reqSnap.getString("status") == "ACCEPTED"
+                require(isAccepted) {
+                    "لا يمكنك مراسلة هذا المستخدم قبل إرسال طلب تعارف وموافقته"
+                }
             }
             val data = mapOf(
                 "chatId" to deterministicChatId,
                 "isGroup" to false,
+                "isSupportChat" to isOwnerSupportTarget,
                 "participantIds" to sortedIds,
                 "lastMessagePreview" to "",
                 "lastMessageTime" to System.currentTimeMillis(),
@@ -433,7 +495,6 @@ class ChatRepositoryImpl @Inject constructor(
                 "lastMessageStatus" to MessageStatus.SENT.raw,
                 "unreadCounts" to mapOf(myUid to 0, peerUid to 0),
                 "pinnedBy" to emptyMap<String, Boolean>(),
-                "archivedBy" to emptyMap<String, Boolean>(),
                 "mutedBy" to emptyMap<String, Boolean>(),
                 "deletedForUsers" to emptyList<String>(),
                 "typingUsers" to emptyMap<String, Boolean>()
@@ -445,6 +506,174 @@ class ChatRepositoryImpl @Inject constructor(
         deterministicChatId
     }
 
+    override suspend fun openSupportChatByNumericId(targetNumericId: String): Result<String> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanTarget = targetNumericId.trim().ifBlank { Constants.OWNER_ADMIN_NUMERIC_ID }
+        require(cleanTarget == Constants.OWNER_ADMIN_NUMERIC_ID || verifyIsOwnerSuperAdmin(myUid)) {
+            "حساب الدعم الرسمي المعتمد هو ${Constants.OWNER_ADMIN_NUMERIC_ID} فقط"
+        }
+
+        val colQuery = firestore.collection(Constants.COLLECTION_USERS)
+            .whereEqualTo("numericId", cleanTarget)
+            .limit(5)
+        val snap = runCatching { colQuery.get(Source.SERVER).await() }.getOrNull()
+            ?: colQuery.get().await()
+        val adminDoc = snap.documents.firstOrNull { it.getString("numericId")?.trim() == cleanTarget }
+            ?: error("تعذر العثور على حساب إدارة WESAL ($cleanTarget) في قاعدة البيانات")
+
+        val adminUid = adminDoc.getString("uid")?.takeIf { it.isNotBlank() } ?: adminDoc.id
+        require(adminUid != myUid) { "أنت مسجّل الدخول حالياً بحساب الإدارة ($cleanTarget)" }
+
+        val sortedIds = listOf(myUid, adminUid).sorted()
+        val deterministicChatId = "dm_${sortedIds[0]}_${sortedIds[1]}"
+        val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(deterministicChatId)
+        val existingChat = runCatching { chatRef.get(Source.SERVER).await() }.getOrNull()
+            ?: runCatching { chatRef.get().await() }.getOrNull()
+
+        if (existingChat == null || !existingChat.exists()) {
+            val data = mapOf(
+                "chatId" to deterministicChatId,
+                "isGroup" to false,
+                "isSupportChat" to true,
+                "supportTargetNumericId" to cleanTarget,
+                "participantIds" to sortedIds,
+                "lastMessagePreview" to "",
+                "lastMessageTime" to System.currentTimeMillis(),
+                "lastMessageSenderId" to "",
+                "lastMessageStatus" to MessageStatus.SENT.raw,
+                "unreadCounts" to mapOf(myUid to 0, adminUid to 0),
+                "pinnedBy" to emptyMap<String, Boolean>(),
+                "mutedBy" to emptyMap<String, Boolean>(),
+                "deletedForUsers" to emptyList<String>(),
+                "typingUsers" to emptyMap<String, Boolean>()
+            )
+            chatRef.set(data, SetOptions.merge()).await()
+        } else {
+            chatRef.set(
+                mapOf(
+                    "isSupportChat" to true,
+                    "supportTargetNumericId" to cleanTarget
+                ),
+                SetOptions.merge()
+            ).await()
+            chatRef.update("deletedForUsers", FieldValue.arrayRemove(myUid)).await()
+        }
+        deterministicChatId
+    }
+
+    override suspend fun ensureOfficialWelcomeChat(displayName: String, forceResend: Boolean): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: return@runCatching
+        val cfgSnap = runCatching {
+            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("welcome_message")
+                .get()
+                .await()
+        }.getOrNull()
+
+        val enabled = cfgSnap?.getBoolean("enabled") ?: true
+        if (!enabled && !forceResend) return@runCatching
+
+        val template = cfgSnap?.getString("messageTemplate")?.takeIf { it.isNotBlank() }
+            ?: SystemWelcomeConfig.DEFAULT_OFFICIAL_WELCOME_TEMPLATE
+        val userName = displayName.trim().ifBlank { "صديقي" }
+        val personalizedBody = template.replace("[اسم المستخدم]", userName)
+
+        val officialChatId = "${Constants.OFFICIAL_CHAT_PREFIX}$myUid"
+        val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(officialChatId)
+        val chatSnap = runCatching { chatRef.get().await() }.getOrNull()
+
+        val messageId = if (forceResend) "welcome_test_${System.currentTimeMillis()}" else "welcome_$myUid"
+        val msgRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId)
+        val existingMsg = runCatching { msgRef.get().await() }.getOrNull()
+        val now = System.currentTimeMillis()
+
+        if (chatSnap == null || !chatSnap.exists()) {
+            chatRef.set(
+                mapOf(
+                    "chatId" to officialChatId,
+                    "isGroup" to false,
+                    "isOfficialWesalChat" to true,
+                    "groupName" to "WESAL Messenger",
+                    "participantIds" to listOf(myUid),
+                    "pinnedBy" to mapOf(myUid to true),
+                    "mutedBy" to emptyMap<String, Boolean>(),
+                    "deletedForUsers" to emptyList<String>(),
+                    "typingUsers" to emptyMap<String, Boolean>(),
+                    "unreadCounts" to mapOf(myUid to 1),
+                    "lastMessagePreview" to personalizedBody.take(80),
+                    "lastMessageTime" to now,
+                    "lastMessageSenderId" to "wesal_system",
+                    "lastMessageStatus" to MessageStatus.DELIVERED.raw
+                ),
+                SetOptions.merge()
+            ).await()
+        }
+
+        if (existingMsg == null || !existingMsg.exists() || forceResend) {
+            msgRef.set(
+                mapOf(
+                    "messageId" to messageId,
+                    "chatId" to officialChatId,
+                    "senderId" to "wesal_system",
+                    "senderName" to "WESAL Messenger",
+                    "type" to MessageType.TEXT.raw,
+                    "text" to personalizedBody,
+                    "ciphertext" to "",
+                    "isEncrypted" to false,
+                    "isEdited" to false,
+                    "isDeletedForEveryone" to false,
+                    "deletedForUsers" to emptyList<String>(),
+                    "status" to MessageStatus.DELIVERED.raw,
+                    "timestamp" to now
+                )
+            ).await()
+
+            chatRef.set(
+                mapOf(
+                    "isOfficialWesalChat" to true,
+                    "groupName" to "WESAL Messenger",
+                    "pinnedBy.$myUid" to true,
+                    "lastMessagePreview" to personalizedBody.take(80),
+                    "lastMessageTime" to now,
+                    "lastMessageSenderId" to "wesal_system",
+                    "lastMessageStatus" to MessageStatus.DELIVERED.raw,
+                    "unreadCounts.$myUid" to FieldValue.increment(1),
+                    "deletedForUsers" to emptyList<String>()
+                ),
+                SetOptions.merge()
+            ).await()
+
+            firestore.collection(Constants.COLLECTION_USERS).document(myUid)
+                .set(mapOf("welcomeSent" to true), SetOptions.merge())
+                .await()
+        }
+    }
+
+    override suspend fun setChatOfficialWallpaper(chatId: String, wallpaperUrl: String?): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        require(verifyIsOwnerSuperAdmin(myUid)) { "تغيير الخلفية الرسمية المشتركة للطرفين متاح لحساب الإدارة 10001 فقط" }
+        val resolvedValue = if (wallpaperUrl.isNullOrBlank()) {
+            ""
+        } else if (wallpaperUrl.startsWith("http", ignoreCase = true) || wallpaperUrl.startsWith("data:", ignoreCase = true)) {
+            wallpaperUrl
+        } else {
+            val uri = Uri.parse(wallpaperUrl)
+            uploadProfileMediaToStorageOrSmallFallback(
+                ctx = context,
+                storagePath = "chat_wallpapers/$chatId.jpg",
+                uri = uri,
+                maxSide = 960,
+                quality = 78
+            ).also {
+                require(it.isNotBlank()) { "تعذر حفظ الخلفية المشتركة" }
+            }
+        }
+        firestore.collection(Constants.COLLECTION_CHATS)
+            .document(chatId)
+            .update("officialWallpaperUrl", resolvedValue)
+            .await()
+    }
+
     override suspend fun sendTextMessage(
         chatId: String,
         text: String,
@@ -453,37 +682,25 @@ class ChatRepositoryImpl @Inject constructor(
     ): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         val me = fetchUserCached(myUid)
+        require(me?.isBanned != true) { "حسابك محظور ولا يمكنك إرسال رسائل حالياً" }
+
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
         val chatSnap = chatRef.get().await()
-        val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
-        val isGroup = chatSnap.getBoolean("isGroup") ?: false
-
-        var ciphertext = ""
-        var isEncrypted = false
-        val wrappedKeys = mutableMapOf<String, String>()
-
-        if (!isGroup) {
-            val peerUid = participants.firstOrNull { it != myUid }
-            val peerPub = peerUid?.let { fetchUserCached(it)?.publicKey }
-            if (!peerPub.isNullOrBlank()) {
-                ciphertext = cryptoManager.encryptDirectMessage(text, peerPub, chatId).toWireString()
-                isEncrypted = true
+        val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
+            chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
+        if (isOfficial) {
+            require(verifyIsOwnerSuperAdmin(myUid)) {
+                "قناة إشعارات WESAL Messenger الرسمية مخصصة للقراءة فقط"
             }
-        } else {
-            val symKey = cryptoManager.generateSymmetricKeyBytes()
-            val payload = cryptoManager.encryptBytesWithKey(text.toByteArray(Charsets.UTF_8), symKey, chatId.toByteArray())
-            ciphertext = payload.toWireString()
-            participants.forEach { memberUid ->
-                val pub = fetchUserCached(memberUid)?.publicKey
-                if (!pub.isNullOrBlank()) {
-                    wrappedKeys[memberUid] = cryptoManager.wrapKeyForPeer(symKey, pub, chatId)
-                }
-            }
-            isEncrypted = wrappedKeys.isNotEmpty()
         }
 
+        @Suppress("UNCHECKED_CAST")
+        val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
         val now = System.currentTimeMillis()
         val messageId = UUID.randomUUID().toString()
+        val cleanText = text.trim()
+        require(cleanText.isNotEmpty()) { "الرسالة فارغة" }
+
         val messageData = hashMapOf<String, Any?>(
             "messageId" to messageId,
             "chatId" to chatId,
@@ -492,10 +709,12 @@ class ChatRepositoryImpl @Inject constructor(
                 me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
             } ?: "WESAL User"),
             "type" to MessageType.TEXT.raw,
-            "ciphertext" to ciphertext,
-            "text" to if (isEncrypted) "" else text,
-            "isEncrypted" to isEncrypted,
-            "wrappedKeys" to wrappedKeys,
+            "ciphertext" to "",
+            "text" to cleanText,
+            "isEncrypted" to false,
+            "isViewOnce" to false,
+            "viewedBy" to emptyList<String>(),
+            "wrappedKeys" to emptyMap<String, String>(),
             "replyToMessageId" to replyTo?.messageId,
             "replyToPreview" to replyTo?.text?.take(80),
             "forwardedFromName" to forwardedFromName,
@@ -508,7 +727,7 @@ class ChatRepositoryImpl @Inject constructor(
 
         chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(messageData).await()
 
-        val preview = if (isEncrypted) "رسالة مشفرة" else text.take(60)
+        val preview = cleanText.take(80)
         val chatUpdates = hashMapOf<String, Any>(
             "lastMessagePreview" to preview,
             "lastMessageTime" to now,
@@ -531,7 +750,8 @@ class ChatRepositoryImpl @Inject constructor(
         sizeBytes: Long,
         durationMs: Long,
         waveform: List<Int>,
-        caption: String
+        caption: String,
+        isViewOnce: Boolean
     ): Flow<Result<Float>> = callbackFlow {
         val myUid = auth.currentUser?.uid
         if (myUid == null) {
@@ -543,57 +763,74 @@ class ChatRepositoryImpl @Inject constructor(
         launch {
             try {
                 val me = fetchUserCached(myUid)
+                require(me?.isBanned != true) { "حسابك محظور ولا يمكنك إرسال الوسائط" }
                 val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
                 val chatSnap = chatRef.get().await()
-                val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
-
-                val symKey = cryptoManager.generateSymmetricKeyBytes()
-                val wrappedKeys = mutableMapOf<String, String>()
-                participants.forEach { memberUid ->
-                    val pub = fetchUserCached(memberUid)?.publicKey
-                    if (!pub.isNullOrBlank()) {
-                        wrappedKeys[memberUid] = cryptoManager.wrapKeyForPeer(symKey, pub, chatId)
+                val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
+                    chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
+                if (isOfficial) {
+                    require(verifyIsOwnerSuperAdmin(myUid)) {
+                        "محادثة WESAL Messenger الرسمية مخصصة للقراءة فقط"
                     }
                 }
 
-                val downloadUrl = when (type) {
-                    MessageType.IMAGE -> {
-                        trySend(Result.success(0.25f))
-                        val b64Jpeg = withContext(Dispatchers.IO) {
-                            uriToBase64Jpeg(context, uri, maxSide = 720, quality = 72)
+                @Suppress("UNCHECKED_CAST")
+                val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
+                val messageId = UUID.randomUUID().toString()
+                val safeName = fileName.replace(Regex("[^a-zA-Z0-9._\\-]"), "_").ifBlank { "media_${System.currentTimeMillis()}" }
+                val storagePath = "chats/$chatId/$messageId/$safeName"
+
+                trySend(Result.success(0.10f))
+                val uploadedStorageUrl = uploadFileToFirebaseStorage(storagePath, uri) { frac ->
+                    trySend(Result.success(frac.coerceIn(0.10f, 0.94f)))
+                }.getOrNull()
+
+                var resolvedSizeBytes = sizeBytes
+                val downloadUrl = if (!uploadedStorageUrl.isNullOrBlank()) {
+                    uploadedStorageUrl
+                } else {
+                    when (type) {
+                        MessageType.IMAGE -> {
+                            trySend(Result.success(0.35f))
+                            val b64Jpeg = withContext(Dispatchers.IO) {
+                                uriToBase64Jpeg(context, uri, maxSide = 720, quality = 72)
+                            }
+                            val rawJpegBytes = runCatching {
+                                Base64.decode(b64Jpeg.substringAfter("base64,"), Base64.NO_WRAP)
+                            }.getOrNull() ?: ByteArray(0)
+                            require(rawJpegBytes.isNotEmpty() && rawJpegBytes.size <= Constants.MAX_INLINE_IMAGE_BYTES) {
+                                "تعذر رفع الصورة: حجم الصورة يتجاوز الحد المباشر وبوابة Firebase Storage غير مفعلة حالياً"
+                            }
+                            resolvedSizeBytes = rawJpegBytes.size.toLong()
+                            trySend(Result.success(0.85f))
+                            "wesal-plain://" + Base64.encodeToString(rawJpegBytes, Base64.NO_WRAP)
                         }
-                        val rawJpegBytes = runCatching {
-                            Base64.decode(b64Jpeg.substringAfter("base64,"), Base64.NO_WRAP)
-                        }.getOrNull() ?: ByteArray(0)
-                        require(rawJpegBytes.isNotEmpty() && rawJpegBytes.size <= 380_000) {
-                            "تعذر ضغط الصورة لحفظها في Firestore"
+                        MessageType.VOICE, MessageType.AUDIO, MessageType.VIDEO, MessageType.DOCUMENT -> {
+                            trySend(Result.success(0.35f))
+                            val rawBytes = withContext(Dispatchers.IO) {
+                                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                    ?: error("تعذر قراءة الملف المحدد من الجهاز")
+                            }
+                            require(rawBytes.isNotEmpty()) { "الملف المحدد فارغ" }
+                            require(rawBytes.size <= Constants.MAX_INLINE_IMAGE_BYTES) {
+                                when (type) {
+                                    MessageType.AUDIO, MessageType.VOICE ->
+                                        "حجم الملف الصوتي يتجاوز الحد المباشر (${Constants.MAX_INLINE_IMAGE_BYTES / 1024} KB) لأن Firebase Storage غير مفعّل في هذا المشروع"
+                                    MessageType.VIDEO ->
+                                        "حجم الفيديو يتجاوز الحد المباشر (${Constants.MAX_INLINE_IMAGE_BYTES / 1024} KB) لأن Firebase Storage غير مفعّل في هذا المشروع"
+                                    else ->
+                                        "حجم المستند يتجاوز الحد المباشر (${Constants.MAX_INLINE_IMAGE_BYTES / 1024} KB) لأن Firebase Storage غير مفعّل في هذا المشروع"
+                                }
+                            }
+                            resolvedSizeBytes = rawBytes.size.toLong()
+                            trySend(Result.success(0.85f))
+                            "wesal-plain://" + Base64.encodeToString(rawBytes, Base64.NO_WRAP)
                         }
-                        val encSmall = withContext(Dispatchers.IO) {
-                            cryptoManager.encryptStreamToBytes(rawJpegBytes.inputStream(), symKey).first
-                        }
-                        trySend(Result.success(0.85f))
-                        "wesal-inline://" + Base64.encodeToString(encSmall, Base64.NO_WRAP)
-                    }
-                    MessageType.VOICE -> {
-                        trySend(Result.success(0.25f))
-                        val encryptedBytes = withContext(Dispatchers.IO) {
-                            context.contentResolver.openInputStream(uri)?.use { stream ->
-                                cryptoManager.encryptStreamToBytes(stream, symKey).first
-                            } ?: error("تعذر قراءة الملف الصوتي المحدد")
-                        }
-                        require(encryptedBytes.size <= 450_000) {
-                            "الرسالة الصوتية أطول من الحد المسموح به بدون Firebase Storage"
-                        }
-                        trySend(Result.success(0.85f))
-                        "wesal-inline://" + Base64.encodeToString(encryptedBytes, Base64.NO_WRAP)
-                    }
-                    else -> {
-                        throw IllegalStateException("إرسال الفيديو والملفات الكبيرة غير متاح لأن Firebase Storage غير مفعّل — يمكنك إرسال صور مضغوطة ورسائل صوتية")
+                        else -> throw IllegalStateException("نوع المرفق غير مدعوم للإرسال")
                     }
                 }
 
                 val now = System.currentTimeMillis()
-                val messageId = UUID.randomUUID().toString()
                 val msgData = hashMapOf<String, Any?>(
                     "messageId" to messageId,
                     "chatId" to chatId,
@@ -602,13 +839,15 @@ class ChatRepositoryImpl @Inject constructor(
                         me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
                     } ?: "WESAL User"),
                     "type" to type.raw,
-                    "text" to caption,
-                    "isEncrypted" to true,
-                    "wrappedKeys" to wrappedKeys,
+                    "text" to caption.trim(),
+                    "isEncrypted" to false,
+                    "isViewOnce" to isViewOnce,
+                    "viewedBy" to emptyList<String>(),
+                    "wrappedKeys" to emptyMap<String, String>(),
                     "mediaUrl" to downloadUrl,
                     "mediaMimeType" to mimeType,
                     "mediaFileName" to fileName,
-                    "mediaSizeBytes" to sizeBytes,
+                    "mediaSizeBytes" to resolvedSizeBytes,
                     "mediaDurationMs" to durationMs,
                     "waveform" to waveform,
                     "isEdited" to false,
@@ -619,11 +858,14 @@ class ChatRepositoryImpl @Inject constructor(
                 )
                 chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(msgData).await()
 
-                val previewLabel = when (type) {
-                    MessageType.IMAGE -> "صورة"
-                    MessageType.VIDEO -> "فيديو"
-                    MessageType.VOICE -> "رسالة صوتية"
-                    MessageType.DOCUMENT -> "ملف: $fileName"
+                val previewLabel = when {
+                    isViewOnce && type == MessageType.IMAGE -> "صورة للعرض مرة واحدة"
+                    isViewOnce && type == MessageType.VIDEO -> "فيديو للعرض مرة واحدة"
+                    type == MessageType.IMAGE -> if (caption.isNotBlank()) "صورة: ${caption.trim().take(40)}" else "صورة"
+                    type == MessageType.VIDEO -> if (caption.isNotBlank()) "فيديو: ${caption.trim().take(40)}" else "فيديو"
+                    type == MessageType.VOICE -> "رسالة صوتية"
+                    type == MessageType.AUDIO -> if (fileName.isNotBlank()) "ملف صوتي: $fileName" else "ملف صوتي"
+                    type == MessageType.DOCUMENT -> "ملف: $fileName"
                     else -> "مرفق"
                 }
                 val chatUpdates = hashMapOf<String, Any>(
@@ -647,15 +889,47 @@ class ChatRepositoryImpl @Inject constructor(
         awaitClose { }
     }
 
+    override suspend fun markViewOnceOpened(chatId: String, messageId: String): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val msgRef = firestore.collection(Constants.COLLECTION_CHATS)
+            .document(chatId)
+            .collection(Constants.COLLECTION_MESSAGES)
+            .document(messageId)
+        val snap = msgRef.get().await()
+        if (!snap.exists()) return@runCatching
+        val senderId = snap.getString("senderId").orEmpty()
+        if (senderId == myUid) return@runCatching
+
+        // Receiver opened view-once media -> permanently record viewer and scrub media payload
+        msgRef.update(
+            mapOf(
+                "viewedBy" to FieldValue.arrayUnion(myUid),
+                "mediaUrl" to "",
+                "ciphertext" to ""
+            )
+        ).await()
+
+        withContext(Dispatchers.IO) {
+            val cacheDir = File(context.cacheDir, "decrypted_media")
+            cacheDir.listFiles()?.filter { it.nameWithoutExtension == messageId }?.forEach {
+                runCatching { it.delete() }
+            }
+        }
+    }
+
     override suspend fun decryptMediaToCache(message: WesalMessage): Result<File> = withContext(Dispatchers.IO) {
         runCatching {
             val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+            if (message.isViewOnce && message.senderId != myUid && message.viewedBy.contains(myUid)) {
+                error("تمت مشاهدة هذه الرسالة لمرة واحدة ولا يمكن فتحها مجدداً")
+            }
             val cacheDir = File(context.cacheDir, "decrypted_media").apply { mkdirs() }
             val ext = message.mediaFileName.substringAfterLast('.', "").ifBlank {
                 when (message.type) {
                     MessageType.IMAGE -> "jpg"
                     MessageType.VIDEO -> "mp4"
                     MessageType.VOICE -> "m4a"
+                    MessageType.AUDIO -> "mp3"
                     else -> "bin"
                 }
             }
@@ -664,17 +938,33 @@ class ChatRepositoryImpl @Inject constructor(
                 return@runCatching targetFile
             }
 
+            if (message.mediaUrl.startsWith("http", ignoreCase = true)) {
+                URL(message.mediaUrl).openStream().use { input ->
+                    targetFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (targetFile.exists() && targetFile.length() > 0L) {
+                    return@runCatching targetFile
+                }
+            }
+
+            if (message.mediaUrl.startsWith("wesal-plain://")) {
+                val raw = Base64.decode(message.mediaUrl.removePrefix("wesal-plain://"), Base64.NO_WRAP)
+                targetFile.writeBytes(raw)
+                return@runCatching targetFile
+            }
+
+            if (message.mediaUrl.startsWith("data:")) {
+                val raw = Base64.decode(message.mediaUrl.substringAfter("base64,"), Base64.NO_WRAP)
+                targetFile.writeBytes(raw)
+                return@runCatching targetFile
+            }
+
             val encryptedBytes = when {
                 message.mediaUrl.startsWith("wesal-inline://") -> {
                     Base64.decode(message.mediaUrl.removePrefix("wesal-inline://"), Base64.NO_WRAP)
                 }
-                message.mediaUrl.startsWith("data:image") -> {
-                    val raw = Base64.decode(message.mediaUrl.substringAfter("base64,"), Base64.NO_WRAP)
-                    targetFile.writeBytes(raw)
-                    return@runCatching targetFile
-                }
                 else -> {
-                    error("تعذر فتح المرفق لأن Firebase Storage غير مفعّل")
+                    error("تعذر تحميل المرفق أو تم حذفه")
                 }
             }
 
@@ -682,7 +972,6 @@ class ChatRepositoryImpl @Inject constructor(
             val plainBytes = if (!wrappedKey.isNullOrBlank()) {
                 val senderPub = fetchUserCached(message.senderId)?.publicKey.orEmpty()
                 val peerPub = if (message.senderId == myUid) {
-                    // Self-sent media: unwrap using own key via any peer or senderPub
                     fetchUserCached(myUid)?.publicKey.orEmpty()
                 } else {
                     senderPub
@@ -710,7 +999,15 @@ class ChatRepositoryImpl @Inject constructor(
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         val me = fetchUserCached(myUid)
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-        val participants = (chatRef.get().await().get("participantIds") as? List<String>).orEmpty()
+        val chatSnap = chatRef.get().await()
+        val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
+            chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
+        if (isOfficial) {
+            require(verifyIsOwnerSuperAdmin(myUid)) { "قناة WESAL Messenger الرسمية للقراءة فقط" }
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
         val now = System.currentTimeMillis()
         val messageId = UUID.randomUUID().toString()
 
@@ -820,7 +1117,9 @@ class ChatRepositoryImpl @Inject constructor(
             .collection(Constants.COLLECTION_MESSAGES)
             .document(messageId)
         val snap = msgRef.get().await()
-        require(snap.getString("senderId") == myUid) { "لا يمكنك حذف رسالة مستخدم آخر للجميع" }
+        require(snap.getString("senderId") == myUid || verifyIsOwnerSuperAdmin(myUid)) {
+            "لا يمكنك حذف رسالة مستخدم آخر للجميع"
+        }
         msgRef.update(
             mapOf(
                 "isDeletedForEveryone" to true,
@@ -836,21 +1135,49 @@ class ChatRepositoryImpl @Inject constructor(
         firestore.collection(Constants.COLLECTION_CHATS).document(chatId).update("pinnedBy.$myUid", pinned).await()
     }
 
-    override suspend fun toggleArchiveChat(chatId: String, archived: Boolean): Result<Unit> = runCatching {
-        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
-        firestore.collection(Constants.COLLECTION_CHATS).document(chatId).update("archivedBy.$myUid", archived).await()
-    }
-
     override suspend fun toggleMuteChat(chatId: String, muted: Boolean): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         firestore.collection(Constants.COLLECTION_CHATS).document(chatId).update("mutedBy.$myUid", muted).await()
     }
 
-    override suspend fun deleteChat(chatId: String): Result<Unit> = runCatching {
+    @Suppress("UNCHECKED_CAST")
+    override suspend fun deleteChat(chatId: String, forEveryone: Boolean): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
-        firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-            .update("deletedForUsers", FieldValue.arrayUnion(myUid))
-            .await()
+        val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+        val chatSnap = chatRef.get().await()
+        val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
+            chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
+        val isGroup = chatSnap.getBoolean("isGroup") ?: false
+
+        if (forEveryone && !isOfficial && !isGroup) {
+            val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
+            require(myUid in participants) { "غير مصرح بحذف هذه المحادثة للطرفين" }
+            val msgsSnap = chatRef.collection(Constants.COLLECTION_MESSAGES).limit(350).get().await()
+            val batch = firestore.batch()
+            msgsSnap.documents.forEach { msgDoc ->
+                batch.update(
+                    msgDoc.reference,
+                    mapOf(
+                        "isDeletedForEveryone" to true,
+                        "text" to "",
+                        "ciphertext" to "",
+                        "mediaUrl" to "",
+                        "deletedForUsers" to participants
+                    )
+                )
+            }
+            batch.update(
+                chatRef,
+                mapOf(
+                    "deletedForUsers" to participants,
+                    "lastMessagePreview" to "",
+                    "lastMessageSenderId" to ""
+                )
+            )
+            batch.commit().await()
+        } else {
+            chatRef.update("deletedForUsers", FieldValue.arrayUnion(myUid)).await()
+        }
         wesalDao.deleteChat(chatId)
     }
 }

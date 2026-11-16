@@ -9,32 +9,23 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Comment
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.GroupAdd
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Public
-import androidx.compose.material.icons.filled.PushPin
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -42,6 +33,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.domain.model.ChannelPost
@@ -49,7 +41,9 @@ import com.wesal.messenger.domain.model.ChannelPostType
 import com.wesal.messenger.domain.model.ChannelRole
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalQrCodeBox
 import com.wesal.messenger.presentation.components.wesalImageModel
+import com.wesal.messenger.voice.VoicePlaybackState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -64,6 +58,7 @@ fun ChannelDetailScreen(
     viewModel: ChannelsViewModel = hiltViewModel()
 ) {
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
 
@@ -72,16 +67,32 @@ fun ChannelDetailScreen(
     val joinRequests by viewModel.activeJoinRequests.collectAsStateWithLifecycle()
     val comments by viewModel.activeComments.collectAsStateWithLifecycle()
     val uploadProgress by viewModel.uploadProgress.collectAsStateWithLifecycle()
+    val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
+    val moderators by viewModel.moderators.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
 
     var postText by remember { mutableStateOf("") }
     var showAttachMenu by remember { mutableStateOf(false) }
     var showRequestsDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
+    var showEditDialog by remember { mutableStateOf(false) }
+    var showModsDialog by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var editingPost by remember { mutableStateOf<ChannelPost?>(null) }
     var commentSheetPostId by remember { mutableStateOf<String?>(null) }
+    var copiedNotice by remember { mutableStateOf(false) }
 
     LaunchedEffect(channelId) {
         viewModel.loadChannel(channelId)
+    }
+
+    LaunchedEffect(channel?.moderatorIds) {
+        channel?.moderatorIds?.let { viewModel.loadModerators(it) }
+    }
+
+    DisposableEffect(channelId) {
+        onDispose { viewModel.stopAudioPlayback() }
     }
 
     fun resolveMeta(uri: Uri): Pair<String, Long> {
@@ -133,8 +144,14 @@ fun ChannelDetailScreen(
     val ch = channel
     val myUid = viewModel.myUid
     val role = ch?.roleFor(myUid) ?: ChannelRole.NONE
-    val canManage = role == ChannelRole.OWNER || role == ChannelRole.MODERATOR
-    val canReadPosts = ch != null && (ch.isPublic || role != ChannelRole.NONE)
+    // Official Team Channel can ONLY be managed/published by Super Admin 10001
+    val canManage = when {
+        ch == null -> false
+        ch.isSuspended -> false
+        ch.isOfficialTeamChannel -> isSuperAdmin
+        else -> role == ChannelRole.OWNER || role == ChannelRole.MODERATOR
+    }
+    val canReadPosts = ch != null && (ch.isPublic || role != ChannelRole.NONE || isSuperAdmin)
     val pinnedPost = posts.firstOrNull { it.isPinned }
 
     Scaffold(
@@ -152,6 +169,7 @@ fun ChannelDetailScreen(
                             WesalNameWithBadge(
                                 name = ch?.title ?: strings.loading,
                                 isVerified = ch?.isVerified == true,
+                                verificationType = ch?.verificationType ?: "BLUE",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
@@ -187,11 +205,8 @@ fun ChannelDetailScreen(
                         }
                     }
                     if (ch != null) {
-                        IconButton(onClick = {
-                            val msg = WesalShareUtils.buildChannelInviteMessage(ch.title, ch.inviteCode, strings.isEnglish)
-                            WesalShareUtils.shareGeneral(context, msg, ch.title)
-                        }) {
-                            Icon(Icons.Default.Share, contentDescription = strings.share, tint = palette.textPrimary)
+                        IconButton(onClick = { showInfoDialog = true }) {
+                            Icon(Icons.Default.QrCode2, contentDescription = strings.share, tint = palette.textPrimary)
                         }
                     }
                 },
@@ -220,34 +235,38 @@ fun ChannelDetailScreen(
                                 IconButton(onClick = { showAttachMenu = true }) {
                                     Icon(Icons.Default.AttachFile, contentDescription = null, tint = palette.textSecondary)
                                 }
-                                DropdownMenu(expanded = showAttachMenu, onDismissRequest = { showAttachMenu = false }) {
+                                DropdownMenu(
+                                    expanded = showAttachMenu,
+                                    onDismissRequest = { showAttachMenu = false },
+                                    containerColor = palette.surface
+                                ) {
                                     DropdownMenuItem(
-                                        text = { Text(if (strings.isEnglish) "Photo" else "صورة") },
-                                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
+                                        text = { Text(if (strings.isEnglish) "Photo" else "صورة", color = palette.textPrimary) },
+                                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = palette.emerald) },
                                         onClick = {
                                             showAttachMenu = false
                                             imagePicker.launch("image/*")
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text(if (strings.isEnglish) "Video" else "فيديو") },
-                                        leadingIcon = { Icon(Icons.Default.VideoFile, contentDescription = null) },
+                                        text = { Text(if (strings.isEnglish) "Video" else "فيديو", color = palette.textPrimary) },
+                                        leadingIcon = { Icon(Icons.Default.VideoFile, contentDescription = null, tint = palette.turquoise) },
                                         onClick = {
                                             showAttachMenu = false
                                             videoPicker.launch("video/*")
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text(if (strings.isEnglish) "Audio" else "صوتية") },
-                                        leadingIcon = { Icon(Icons.Default.AudioFile, contentDescription = null) },
+                                        text = { Text(if (strings.isEnglish) "Audio" else "صوتية", color = palette.textPrimary) },
+                                        leadingIcon = { Icon(Icons.Default.AudioFile, contentDescription = null, tint = palette.emerald) },
                                         onClick = {
                                             showAttachMenu = false
                                             audioPicker.launch("audio/*")
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text(if (strings.isEnglish) "File" else "ملف") },
-                                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
+                                        text = { Text(if (strings.isEnglish) "File" else "ملف", color = palette.textPrimary) },
+                                        leadingIcon = { Icon(Icons.Default.Description, contentDescription = null, tint = palette.textSecondary) },
                                         onClick = {
                                             showAttachMenu = false
                                             filePicker.launch(arrayOf("*/*"))
@@ -296,6 +315,32 @@ fun ChannelDetailScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            if (ch?.isSuspended == true) {
+                Surface(color = palette.error.copy(alpha = 0.14f), modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = if (strings.isEnglish) "This channel has been suspended by WESAL administration." else "تم إيقاف هذه القناة من قِبل إدارة WESAL.",
+                        color = palette.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+
+            if (ch?.isOfficialTeamChannel == true) {
+                Surface(color = palette.emerald.copy(alpha = 0.12f), modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Official WESAL Team Channel — Posts published exclusively by WESAL administration (ID: 10001)"
+                        } else {
+                            "قناة فريق وصال الرسمية — ينشر فيها الحساب الإداري المعتمد فقط (ID: 10001)"
+                        },
+                        color = palette.emerald,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
+            }
+
             message?.let { msg ->
                 Surface(
                     color = palette.emerald.copy(alpha = 0.14f),
@@ -307,7 +352,7 @@ fun ChannelDetailScreen(
                 }
             }
 
-            if (ch != null && role == ChannelRole.NONE) {
+            if (ch != null && role == ChannelRole.NONE && !ch.isSuspended) {
                 Surface(color = palette.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier.padding(12.dp),
@@ -334,7 +379,7 @@ fun ChannelDetailScreen(
                                 if (ch.isPublic) viewModel.subscribe(ch.channelId)
                                 else viewModel.requestJoin(ch.channelId)
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald)
+                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
                         ) {
                             Text(if (ch.isPublic) strings.subscribeChannel else strings.requestToJoin)
                         }
@@ -383,11 +428,16 @@ fun ChannelDetailScreen(
                             post = post,
                             myUid = myUid,
                             canManage = canManage,
+                            playbackState = playbackState,
+                            onToggleAudio = {
+                                viewModel.toggleChannelAudioPlayback(post.postId, post.mediaUrl)
+                            },
                             onReact = { emoji -> viewModel.toggleReaction(channelId, post.postId, emoji) },
                             onOpenComments = {
                                 viewModel.selectPostForComments(post.postId)
                                 commentSheetPostId = post.postId
                             },
+                            onEdit = { editingPost = post },
                             onTogglePin = { viewModel.togglePin(channelId, post.postId, !post.isPinned) },
                             onDelete = { viewModel.deletePost(channelId, post.postId) }
                         )
@@ -397,40 +447,314 @@ fun ChannelDetailScreen(
         }
     }
 
+    editingPost?.let { postToEdit ->
+        var editText by remember(postToEdit.postId) { mutableStateOf(postToEdit.text) }
+        AlertDialog(
+            onDismissRequest = { editingPost = null },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Edit Post" else "تعديل المنشور", color = palette.textPrimary) },
+            text = {
+                OutlinedTextField(
+                    value = editText,
+                    onValueChange = { editText = it },
+                    maxLines = 6,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.editPost(channelId, postToEdit.postId, editText)
+                        editingPost = null
+                    },
+                    enabled = editText.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                ) {
+                    Text(strings.save)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editingPost = null }) { Text(strings.cancel) }
+            }
+        )
+    }
+
     if (showInfoDialog && ch != null) {
+        val qrPayload = "wesal://channel?code=${ch.inviteCode}"
         AlertDialog(
             onDismissRequest = { showInfoDialog = false },
             containerColor = palette.surface,
-            title = { WesalNameWithBadge(name = ch.title, isVerified = ch.isVerified, fontWeight = FontWeight.Bold) },
+            title = {
+                WesalNameWithBadge(
+                    name = ch.title,
+                    isVerified = ch.isVerified,
+                    verificationType = ch.verificationType,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     if (ch.description.isNotBlank()) {
-                        Text(ch.description, color = palette.textSecondary)
+                        Text(ch.description, color = palette.textSecondary, modifier = Modifier.fillMaxWidth())
                     }
+                    Surface(
+                        color = palette.surfaceElevated,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (strings.isEnglish) {
+                                "${ch.subscribersCount} subscribers • Subscriber identities stay private"
+                            } else {
+                                "${ch.subscribersCount} مشترك • قائمة المشتركين خاصة ومخفية لحماية الخصوصية"
+                            },
+                            color = palette.textSecondary,
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                    WesalQrCodeBox(payload = qrPayload, size = 164.dp)
                     Text(
                         text = "${if (strings.isEnglish) "Invite Code" else "رمز الدعوة"}: ${ch.inviteCode}",
                         color = palette.emerald,
                         fontWeight = FontWeight.SemiBold
                     )
-                    if (canManage) {
-                        TextButton(onClick = { viewModel.regenerateInviteCode(ch.channelId) }) {
-                            Icon(Icons.Default.Refresh, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text(if (strings.isEnglish) "Regenerate Invite Code" else "تجديد رمز الدعوة")
+                    if (copiedNotice) {
+                        Text(
+                            text = if (strings.isEnglish) "Copied ✓" else "تم النسخ ✓",
+                            color = palette.turquoise,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(ch.inviteCode))
+                                copiedNotice = true
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp), tint = palette.turquoise)
+                            Spacer(Modifier.width(4.dp))
+                            Text(strings.copy, color = palette.turquoise, maxLines = 1)
+                        }
+                        Button(
+                            onClick = {
+                                val msg = WesalShareUtils.buildChannelInviteMessage(ch.title, ch.inviteCode, strings.isEnglish)
+                                WesalShareUtils.shareViaWhatsApp(context, msg)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(strings.share, maxLines = 1)
                         }
                     }
-                    if (role == ChannelRole.SUBSCRIBER || role == ChannelRole.MODERATOR) {
-                        TextButton(onClick = {
-                            viewModel.unsubscribe(ch.channelId)
-                            showInfoDialog = false
-                        }) {
+
+                    if (canManage) {
+                        HorizontalDivider(color = palette.border)
+                        TextButton(
+                            onClick = { viewModel.regenerateInviteCode(ch.channelId) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = palette.turquoise)
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (strings.isEnglish) "Regenerate Invite Code" else "تجديد رمز الدعوة", color = palette.turquoise)
+                        }
+                        TextButton(
+                            onClick = {
+                                showInfoDialog = false
+                                showEditDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null, tint = palette.textPrimary)
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (strings.isEnglish) "Edit Channel Info" else "تعديل بيانات القناة", color = palette.textPrimary)
+                        }
+                    }
+
+                    if (!ch.isOfficialTeamChannel && role == ChannelRole.OWNER) {
+                        TextButton(
+                            onClick = {
+                                showInfoDialog = false
+                                showModsDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = palette.emerald)
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (strings.isEnglish) "Manage Moderators" else "إدارة المشرفين", color = palette.emerald)
+                        }
+                        TextButton(
+                            onClick = {
+                                showInfoDialog = false
+                                showDeleteConfirm = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = palette.error)
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (strings.isEnglish) "Delete Channel" else "حذف القناة", color = palette.error)
+                        }
+                    }
+
+                    if (role == ChannelRole.SUBSCRIBER || (role == ChannelRole.MODERATOR && ch.ownerUid != myUid)) {
+                        TextButton(
+                            onClick = {
+                                viewModel.unsubscribe(ch.channelId)
+                                showInfoDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
                             Text(strings.unsubscribeChannel, color = palette.error)
                         }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showInfoDialog = false }) { Text(strings.close) }
+                TextButton(onClick = { showInfoDialog = false }) { Text(strings.close, color = palette.textSecondary) }
+            }
+        )
+    }
+
+    if (showEditDialog && ch != null) {
+        EditChannelDialog(
+            initialTitle = ch.title,
+            initialDesc = ch.description,
+            initialPublic = ch.isPublic,
+            onDismiss = { showEditDialog = false },
+            onSave = { t, d, pub, avatarUri ->
+                viewModel.updateChannel(ch.channelId, t, d, pub, avatarUri) {
+                    showEditDialog = false
+                }
+            }
+        )
+    }
+
+    if (showModsDialog && ch != null) {
+        var modQuery by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showModsDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Channel Moderators" else "مشرفو القناة",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = modQuery,
+                            onValueChange = { modQuery = it },
+                            label = { Text(if (strings.isEnglish) "@username or 5-digit ID" else "@username أو المعرّف الرقمي") },
+                            singleLine = true,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = palette.textPrimary,
+                                unfocusedTextColor = palette.textPrimary,
+                                focusedBorderColor = palette.emerald,
+                                unfocusedBorderColor = palette.border,
+                                focusedLabelColor = palette.emerald,
+                                unfocusedLabelColor = palette.textSecondary
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = {
+                                viewModel.addModeratorByIdentifier(ch.channelId, modQuery)
+                                modQuery = ""
+                            },
+                            enabled = modQuery.isNotBlank()
+                        ) {
+                            Icon(Icons.Default.PersonAdd, contentDescription = null, tint = palette.emerald)
+                        }
+                    }
+                    HorizontalDivider(color = palette.border)
+                    moderators.forEach { mod ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            WesalAvatar(imageUrl = mod.photoUrl, name = mod.displayName, size = 32.dp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                WesalNameWithBadge(
+                                    name = mod.displayName.ifBlank { "@${mod.publicId}" },
+                                    isVerified = mod.isVerified,
+                                    verificationType = mod.verificationType,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    badgeSize = 14.dp
+                                )
+                                if (mod.numericId.isNotBlank()) {
+                                    Text("ID: ${mod.numericId}", color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                            if (mod.uid != ch.ownerUid) {
+                                IconButton(onClick = { viewModel.toggleModerator(ch.channelId, mod.uid, false) }) {
+                                    Icon(Icons.Default.RemoveCircleOutline, contentDescription = strings.delete, tint = palette.error)
+                                }
+                            } else {
+                                Text(
+                                    text = if (strings.isEnglish) "Owner" else "المالك",
+                                    color = palette.emerald,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showModsDialog = false }) { Text(strings.close, color = palette.textSecondary) }
+            }
+        )
+    }
+
+    if (showDeleteConfirm && ch != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Delete Channel" else "حذف القناة نهائياً",
+                    color = palette.error,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (strings.isEnglish) {
+                        "Are you sure you want to delete \"${ch.title}\"? This removes all posts and subscribers."
+                    } else {
+                        "هل أنت متأكد من حذف قناة «${ch.title}»؟ سيتم حذف جميع المنشورات نهائياً."
+                    },
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirm = false
+                        viewModel.deleteChannel(ch.channelId) { onBack() }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.error, contentColor = palette.onPrimary)
+                ) {
+                    Text(strings.delete)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text(strings.cancel, color = palette.textSecondary) }
             }
         )
     }
@@ -470,7 +794,7 @@ fun ChannelDetailScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showRequestsDialog = false }) { Text(strings.close) }
+                TextButton(onClick = { showRequestsDialog = false }) { Text(strings.close, color = palette.textSecondary) }
             }
         )
     }
@@ -572,12 +896,117 @@ fun ChannelDetailScreen(
 }
 
 @Composable
+private fun EditChannelDialog(
+    initialTitle: String,
+    initialDesc: String,
+    initialPublic: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (title: String, description: String, isPublic: Boolean, avatarUri: Uri?) -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    var title by remember { mutableStateOf(initialTitle) }
+    var description by remember { mutableStateOf(initialDesc) }
+    var isPublic by remember { mutableStateOf(initialPublic) }
+    var avatarUri by remember { mutableStateOf<Uri?>(null) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) avatarUri = uri
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = {
+            Text(
+                text = if (strings.isEnglish) "Edit Channel" else "تعديل القناة",
+                color = palette.textPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val fieldColors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    cursorColor = palette.emerald,
+                    focusedBorderColor = palette.emerald,
+                    unfocusedBorderColor = palette.border,
+                    focusedLabelColor = palette.emerald,
+                    unfocusedLabelColor = palette.textSecondary,
+                    focusedContainerColor = palette.surfaceElevated,
+                    unfocusedContainerColor = palette.surfaceElevated
+                )
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text(if (strings.isEnglish) "Channel Title" else "اسم القناة") },
+                    singleLine = true,
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text(if (strings.isEnglish) "Description" else "وصف القناة") },
+                    maxLines = 3,
+                    colors = fieldColors,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = if (strings.isEnglish) {
+                            if (isPublic) "Public Channel" else "Private Channel"
+                        } else {
+                            if (isPublic) "قناة عامة" else "قناة خاصة"
+                        },
+                        color = palette.textPrimary,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(checked = isPublic, onCheckedChange = { isPublic = it })
+                }
+                TextButton(onClick = { picker.launch("image/*") }) {
+                    Text(
+                        text = if (avatarUri == null) {
+                            if (strings.isEnglish) "Change Channel Photo" else "تغيير صورة القناة"
+                        } else {
+                            if (strings.isEnglish) "New photo selected ✓" else "تم اختيار صورة جديدة ✓"
+                        },
+                        color = palette.turquoise
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(title, description, isPublic, avatarUri) },
+                enabled = title.trim().isNotEmpty(),
+                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+            ) {
+                Text(strings.save)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(strings.cancel, color = palette.textSecondary) }
+        }
+    )
+}
+
+@Composable
 private fun ChannelPostCard(
     post: ChannelPost,
     myUid: String,
     canManage: Boolean,
+    playbackState: VoicePlaybackState,
+    onToggleAudio: () -> Unit,
     onReact: (String) -> Unit,
     onOpenComments: () -> Unit,
+    onEdit: () -> Unit,
     onTogglePin: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -587,6 +1016,8 @@ private fun ChannelPostCard(
         SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(post.createdAt))
     }
     val myReaction = post.userReactions[myUid]
+    val playbackKey = "ch_${post.postId}"
+    val isThisAudio = playbackState.activeMessageId == playbackKey
 
     Card(
         colors = CardDefaults.cardColors(containerColor = palette.surface),
@@ -613,6 +1044,9 @@ private fun ChannelPostCard(
                     Icon(Icons.Default.PushPin, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(16.dp))
                 }
                 if (canManage) {
+                    IconButton(onClick = onEdit, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                    }
                     IconButton(onClick = onTogglePin, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Default.PushPin, contentDescription = null, tint = if (post.isPinned) palette.emerald else palette.textMuted, modifier = Modifier.size(18.dp))
                     }
@@ -632,6 +1066,45 @@ private fun ChannelPostCard(
                         .heightIn(max = 260.dp)
                         .clip(RoundedCornerShape(14.dp))
                 )
+            } else if (post.type == ChannelPostType.AUDIO && post.mediaUrl.isNotBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(palette.surfaceElevated)
+                        .clickable { onToggleAudio() }
+                        .padding(10.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isThisAudio && playbackState.isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle,
+                        contentDescription = null,
+                        tint = palette.emerald,
+                        modifier = Modifier.size(34.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = post.mediaFileName.ifBlank { if (strings.isEnglish) "Audio post" else "منشور صوتي" },
+                            color = palette.textPrimary,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (isThisAudio && playbackState.durationMs > 0) {
+                            LinearProgressIndicator(
+                                progress = { (playbackState.positionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f) },
+                                color = palette.emerald,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                text = "${DateTimeUtils.formatDurationMillis(playbackState.positionMs.toLong())} / ${DateTimeUtils.formatDurationMillis(playbackState.durationMs.toLong())}",
+                                color = palette.textMuted,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
             } else if (post.type != ChannelPostType.TEXT && post.mediaUrl.isNotBlank()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -645,7 +1118,6 @@ private fun ChannelPostCard(
                     Icon(
                         imageVector = when (post.type) {
                             ChannelPostType.VIDEO -> Icons.Default.VideoFile
-                            ChannelPostType.AUDIO -> Icons.Default.AudioFile
                             else -> Icons.Default.Description
                         },
                         contentDescription = null,

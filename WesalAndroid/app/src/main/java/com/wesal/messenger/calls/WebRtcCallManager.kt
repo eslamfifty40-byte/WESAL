@@ -1,7 +1,11 @@
 package com.wesal.messenger.calls
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import com.wesal.messenger.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +14,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import org.webrtc.*
 import javax.inject.Inject
 import javax.inject.Singleton
+
+enum class CallAudioRoute {
+    EARPIECE,
+    SPEAKER,
+    BLUETOOTH
+}
 
 @Singleton
 class WebRtcCallManager @Inject constructor(
@@ -27,6 +37,7 @@ class WebRtcCallManager @Inject constructor(
     private var localAudioTrack: AudioTrack? = null
     private var remoteDescriptionSet = false
     private val pendingRemoteCandidates = mutableListOf<IceCandidate>()
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     private val _connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     val connectionState: StateFlow<PeerConnection.PeerConnectionState> = _connectionState.asStateFlow()
@@ -36,6 +47,12 @@ class WebRtcCallManager @Inject constructor(
 
     private val _localVideoTrackFlow = MutableStateFlow<VideoTrack?>(null)
     val localVideoTrackFlow: StateFlow<VideoTrack?> = _localVideoTrackFlow.asStateFlow()
+
+    private val _audioRoute = MutableStateFlow(CallAudioRoute.EARPIECE)
+    val audioRoute: StateFlow<CallAudioRoute> = _audioRoute.asStateFlow()
+
+    private val _bluetoothAvailable = MutableStateFlow(false)
+    val bluetoothAvailable: StateFlow<Boolean> = _bluetoothAvailable.asStateFlow()
 
     private fun ensureFactory() {
         if (peerConnectionFactory != null) return
@@ -75,6 +92,7 @@ class WebRtcCallManager @Inject constructor(
         ensureFactory()
         val factory = peerConnectionFactory ?: return
 
+        _connectionState.value = PeerConnection.PeerConnectionState.NEW
         val rtcConfig = PeerConnection.RTCConfiguration(buildIceServers()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
@@ -130,7 +148,13 @@ class WebRtcCallManager @Inject constructor(
                 }
             }
         }
-        setSpeakerphone(isVideo)
+        refreshAudioDevices()
+        val initialRoute = when {
+            _bluetoothAvailable.value -> CallAudioRoute.BLUETOOTH
+            isVideo -> CallAudioRoute.SPEAKER
+            else -> CallAudioRoute.EARPIECE
+        }
+        setAudioRoute(initialRoute)
     }
 
     fun createOffer(onSdpCreated: (String) -> Unit) {
@@ -211,11 +235,128 @@ class WebRtcCallManager @Inject constructor(
         videoCapturer?.switchCamera(null)
     }
 
-    fun setSpeakerphone(enabled: Boolean) {
+    fun refreshAudioDevices() {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val hasBt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                audioManager.availableCommunicationDevices.any { dev ->
+                    dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        dev.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                        dev.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+                }
+            }.getOrDefault(false)
+        } else {
+            runCatching {
+                audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { dev ->
+                    dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                }
+            }.getOrDefault(false)
+        }
+        _bluetoothAvailable.value = hasBt
+    }
+
+    fun cycleAudioRoute() {
+        refreshAudioDevices()
+        val next = when (_audioRoute.value) {
+            CallAudioRoute.EARPIECE -> CallAudioRoute.SPEAKER
+            CallAudioRoute.SPEAKER -> if (_bluetoothAvailable.value) CallAudioRoute.BLUETOOTH else CallAudioRoute.EARPIECE
+            CallAudioRoute.BLUETOOTH -> CallAudioRoute.EARPIECE
+        }
+        setAudioRoute(next)
+    }
+
+    fun setSpeakerphone(enabled: Boolean) {
+        setAudioRoute(if (enabled) CallAudioRoute.SPEAKER else CallAudioRoute.EARPIECE)
+    }
+
+    fun setAudioRoute(route: CallAudioRoute) {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        requestCallAudioFocus(audioManager)
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        @Suppress("DEPRECATION")
-        audioManager.isSpeakerphoneOn = enabled
+        refreshAudioDevices()
+
+        val effectiveRoute = if (route == CallAudioRoute.BLUETOOTH && !_bluetoothAvailable.value) {
+            CallAudioRoute.EARPIECE
+        } else {
+            route
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val devices = runCatching { audioManager.availableCommunicationDevices }.getOrDefault(emptyList())
+            val targetDevice = when (effectiveRoute) {
+                CallAudioRoute.BLUETOOTH -> devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
+                }
+                CallAudioRoute.SPEAKER -> devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                }
+                CallAudioRoute.EARPIECE -> devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                }
+            }
+            val applied = targetDevice != null && runCatching { audioManager.setCommunicationDevice(targetDevice) }.getOrDefault(false)
+            if (!applied) {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = (effectiveRoute == CallAudioRoute.SPEAKER)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            when (effectiveRoute) {
+                CallAudioRoute.BLUETOOTH -> {
+                    audioManager.isSpeakerphoneOn = false
+                    runCatching {
+                        audioManager.startBluetoothSco()
+                        audioManager.isBluetoothScoOn = true
+                    }
+                }
+                CallAudioRoute.SPEAKER -> {
+                    runCatching {
+                        audioManager.isBluetoothScoOn = false
+                        audioManager.stopBluetoothSco()
+                    }
+                    audioManager.isSpeakerphoneOn = true
+                }
+                CallAudioRoute.EARPIECE -> {
+                    runCatching {
+                        audioManager.isBluetoothScoOn = false
+                        audioManager.stopBluetoothSco()
+                    }
+                    audioManager.isSpeakerphoneOn = false
+                }
+            }
+        }
+        _audioRoute.value = effectiveRoute
+    }
+
+    private fun requestCallAudioFocus(audioManager: AudioManager) {
+        if (audioFocusRequest != null) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(attrs)
+                .setAcceptsDelayedFocusGain(false)
+                .build()
+            audioFocusRequest = req
+            runCatching { audioManager.requestAudioFocus(req) }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching {
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_VOICE_CALL,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+            }
+        }
     }
 
     fun endSession() {
@@ -240,7 +381,25 @@ class WebRtcCallManager @Inject constructor(
         _remoteVideoTrack.value = null
         _localVideoTrackFlow.value = null
         _connectionState.value = PeerConnection.PeerConnectionState.CLOSED
+        _audioRoute.value = CallAudioRoute.EARPIECE
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { audioManager.clearCommunicationDevice() }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching {
+                audioManager.isBluetoothScoOn = false
+                audioManager.stopBluetoothSco()
+                audioManager.isSpeakerphoneOn = false
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { runCatching { audioManager.abandonAudioFocusRequest(it) } }
+            audioFocusRequest = null
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching { audioManager.abandonAudioFocus(null) }
+        }
         audioManager.mode = AudioManager.MODE_NORMAL
     }
 

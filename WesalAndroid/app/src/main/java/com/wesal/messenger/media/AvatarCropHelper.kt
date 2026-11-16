@@ -2,12 +2,12 @@ package com.wesal.messenger.media
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -19,43 +19,25 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
-import com.wesal.messenger.R
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
-import com.yalantis.ucrop.UCrop
+import com.wesal.messenger.crop.CropActivity
 import java.io.File
 
 object AvatarCropHelper {
 
-    fun createCropIntent(context: Context, sourceUri: Uri): Intent {
-        val cacheDir = File(context.cacheDir, "media").apply { mkdirs() }
-        val destinationFile = File(cacheDir, "avatar_crop_${System.currentTimeMillis()}.jpg")
-        val destinationUri = Uri.fromFile(destinationFile)
-
-        val options = UCrop.Options().apply {
-            setCircleDimmedLayer(true)
-            setShowCropGrid(false)
-            setShowCropFrame(false)
-            setCompressionFormat(Bitmap.CompressFormat.JPEG)
-            setCompressionQuality(90)
-            setToolbarTitle("تعديل الصورة الشخصية")
-            setToolbarColor(ContextCompat.getColor(context, R.color.wesal_black))
-            setStatusBarColor(ContextCompat.getColor(context, R.color.wesal_black))
-            setToolbarWidgetColor(0xFFFFFFFF.toInt())
-            setActiveControlsWidgetColor(ContextCompat.getColor(context, R.color.wesal_turquoise))
-            setRootViewBackgroundColor(0xFF0B1115.toInt())
-            setFreeStyleCropEnabled(false)
-        }
-
-        return UCrop.of(sourceUri, destinationUri)
-            .withAspectRatio(1f, 1f)
-            .withMaxResultSize(800, 800)
-            .withOptions(options)
-            .getIntent(context)
+    fun createCropIntent(
+        context: Context,
+        sourceUri: Uri,
+        mode: String = CropActivity.MODE_CIRCLE_AVATAR,
+        title: String? = null
+    ): Intent {
+        return CropActivity.createIntent(context, sourceUri, mode, title)
     }
+
+    fun getCropOutput(resultData: Intent?): Uri? = resultData?.data
 
     fun createCameraPhotoUri(context: Context): Uri {
         val camDir = File(context.cacheDir, "camera").apply { mkdirs() }
@@ -71,6 +53,7 @@ object AvatarCropHelper {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AvatarSourceBottomSheet(
+    title: String? = null,
     onPickGallery: () -> Unit,
     onTakePhoto: () -> Unit,
     onDismiss: () -> Unit
@@ -89,7 +72,7 @@ fun AvatarSourceBottomSheet(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = if (strings.isEnglish) "Choose Profile Photo" else "اختيار الصورة الشخصية",
+                text = title ?: if (strings.isEnglish) "Choose Photo" else "اختيار الصورة",
                 style = MaterialTheme.typography.titleLarge,
                 color = palette.textPrimary,
                 fontWeight = FontWeight.Bold
@@ -141,6 +124,7 @@ fun AvatarSourceBottomSheet(
 @Composable
 fun AvatarPreviewConfirmDialog(
     imageUri: Uri,
+    isCircular: Boolean = true,
     onConfirm: () -> Unit,
     onRecrop: () -> Unit,
     onCancel: () -> Unit
@@ -152,7 +136,7 @@ fun AvatarPreviewConfirmDialog(
         containerColor = palette.surface,
         title = {
             Text(
-                text = if (strings.isEnglish) "Preview Profile Photo" else "معاينة الصورة الشخصية",
+                text = if (strings.isEnglish) "Preview Cropped Photo" else "معاينة الصورة المقصوصة",
                 color = palette.textPrimary,
                 fontWeight = FontWeight.Bold
             )
@@ -163,20 +147,41 @@ fun AvatarPreviewConfirmDialog(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                AsyncImage(
-                    model = imageUri,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(180.dp)
-                        .clip(CircleShape)
-                        .border(2.5.dp, palette.turquoise, CircleShape),
-                    contentScale = ContentScale.Crop
-                )
+                if (isCircular) {
+                    AsyncImage(
+                        model = imageUri,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .size(180.dp)
+                            .clip(CircleShape)
+                            .border(2.5.dp, palette.turquoise, CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    AsyncImage(
+                        model = imageUri,
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(2.dp, palette.turquoise, RoundedCornerShape(14.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                }
                 Text(
                     text = if (strings.isEnglish) {
-                        "Your avatar will appear in a circular frame across contacts and chats."
+                        if (isCircular) {
+                            "Your avatar will appear inside this circle across chats and contacts."
+                        } else {
+                            "Your cover banner will appear in 16:9 behind your avatar."
+                        }
                     } else {
-                        "ستظهر صورتك بهذا الشكل الدائري لدى جهات الاتصال والمحادثات."
+                        if (isCircular) {
+                            "ستظهر صورتك بهذا الشكل الدائري لدى جهات الاتصال والمحادثات."
+                        } else {
+                            "ستظهر صورة الغلاف بهذا الشكل خلف صورتك الشخصية."
+                        }
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = palette.textSecondary

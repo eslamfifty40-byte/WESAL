@@ -3,28 +3,28 @@ package com.wesal.messenger.core.theme
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-// Backward-compatible WESAL Brand Constants
-val WesalDeepBlack = Color(0xFF06090B)
-val WesalSurfaceDark = Color(0xFF0E1418)
-val WesalSurfaceElevated = Color(0xFF151E24)
+// WESAL Official Brand Reference Palette (Sec 2 & Sec 8)
+val WesalDeepBlack = Color(0xFF05090B)
+val WesalSurfaceDark = Color(0xFF0B1115)
+val WesalSurfaceElevated = Color(0xFF131C22)
 val WesalSurfaceBorder = Color(0xFF1E2B33)
 
-val WesalEmerald = Color(0xFF00C853)
-val WesalEmeraldDark = Color(0xFF007A33)
-val WesalTurquoise = Color(0xFF00E5FF)
-val WesalTurquoiseSoft = Color(0xFF14F1D9)
+val WesalEmerald = Color(0xFF00D66B)
+val WesalEmeraldDark = Color(0xFF008744)
+val WesalTurquoise = Color(0xFF00D5E8)
+val WesalTurquoiseSoft = Color(0xFF00D9E8)
 
-val WesalTextPrimary = Color(0xFFF8FAFC)
-val WesalTextSecondary = Color(0xFF94A3B8)
-val WesalTextMuted = Color(0xFF64748B)
+val WesalTextPrimary = Color(0xFFFFFFFF)
+val WesalTextSecondary = Color(0xFFB6C2CF)
+val WesalTextMuted = Color(0xFF7D8B99)
 
 val WesalBubbleOutgoing = Color(0xFF064E3B)
 val WesalBubbleOutgoingAccent = Color(0xFF0A684D)
-val WesalBubbleIncoming = Color(0xFF172128)
+val WesalBubbleIncoming = Color(0xFF141E24)
 
 val WesalError = Color(0xFFEF4444)
 val WesalWarning = Color(0xFFF59E0B)
-val WesalReadTick = Color(0xFF00E5FF)
+val WesalReadTick = Color(0xFF00D9E8)
 val WesalVerifiedBlue = Color(0xFF1D9BF0)
 
 data class WesalPalette(

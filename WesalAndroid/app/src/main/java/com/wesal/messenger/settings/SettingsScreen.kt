@@ -2,8 +2,7 @@ package com.wesal.messenger.settings
 
 import android.app.Activity
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -19,8 +18,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.credentials.ClearCredentialStateRequest
@@ -35,6 +37,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.LocaleManager
@@ -46,6 +49,7 @@ import com.wesal.messenger.domain.model.PrivacyVisibility
 import com.wesal.messenger.domain.model.SavedWesalAccount
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
+import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
@@ -56,18 +60,20 @@ import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
 
-private const val DEVELOPER_WHATSAPP_URL = "https://wa.me/message/EPAFTW53B7WLA1"
-
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val authRepository: AuthRepository,
     private val userRepository: UserRepository,
+    private val chatRepository: ChatRepository,
     private val prefs: UserPreferencesDataStore
 ) : ViewModel() {
 
     val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val appSettings: StateFlow<AppUserSettings> = prefs.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUserSettings())
@@ -79,7 +85,62 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val isSwitchingAccount = MutableStateFlow(false)
+    val isDeletingAccount = MutableStateFlow(false)
     val statusMessage = MutableStateFlow<String?>(null)
+    val sessionLinkToken = MutableStateFlow<String?>(null)
+
+    fun hasHiddenChatsPassword(): Boolean {
+        val uid = authRepository.currentUserId.orEmpty()
+        return prefs.hasHiddenChatsPassword(uid)
+    }
+
+    fun getHiddenChatsRecoveryQuestion(): String {
+        val uid = authRepository.currentUserId.orEmpty()
+        return prefs.getHiddenChatsRecoveryQuestion(uid)
+    }
+
+    fun setupHiddenChatsPassword(
+        currentPassword: String,
+        newPassword: String,
+        recoveryQuestion: String,
+        recoveryAnswer: String,
+        isEn: Boolean
+    ): Boolean {
+        val uid = authRepository.currentUserId.orEmpty()
+        if (uid.isBlank()) return false
+        if (prefs.hasHiddenChatsPassword(uid) && !prefs.verifyHiddenChatsPassword(uid, currentPassword)) {
+            statusMessage.value = if (isEn) "Current password is incorrect" else "كلمة المرور الحالية غير صحيحة"
+            return false
+        }
+        if (newPassword.length < 4 || !newPassword.any { it.isLetterOrDigit() }) {
+            statusMessage.value = if (isEn) "Use at least 4 letters or numbers" else "استخدم 4 حروف أو أرقام على الأقل"
+            return false
+        }
+        prefs.setHiddenChatsPassword(uid, newPassword, recoveryQuestion, recoveryAnswer)
+        statusMessage.value = if (isEn) "Hidden chats password saved" else "تم حفظ كلمة مرور المحادثات المخفية"
+        return true
+    }
+
+    fun resetHiddenChatsWithRecovery(answer: String, isEn: Boolean): Boolean {
+        val uid = authRepository.currentUserId.orEmpty()
+        if (!prefs.verifyHiddenChatsRecoveryAnswer(uid, answer)) {
+            statusMessage.value = if (isEn) "Recovery answer does not match" else "إجابة سؤال الاستعادة غير صحيحة"
+            return false
+        }
+        viewModelScope.launch {
+            prefs.clearHiddenChatsProtectionAndUnhideAll(uid)
+            statusMessage.value = if (isEn) "Hidden chats unlocked and reset" else "تمت إعادة تعيين القفل وإظهار المحادثات المخفية"
+        }
+        return true
+    }
+
+    fun forceResetHiddenChats(isEn: Boolean) {
+        val uid = authRepository.currentUserId.orEmpty()
+        viewModelScope.launch {
+            prefs.clearHiddenChatsProtectionAndUnhideAll(uid)
+            statusMessage.value = if (isEn) "Lock cleared and hidden chats restored" else "تم حذف كلمة المرور وإظهار جميع المحادثات"
+        }
+    }
 
     fun removeSavedAccount(uid: String) {
         viewModelScope.launch { authRepository.removeSavedAccount(uid) }
@@ -97,6 +158,16 @@ class SettingsViewModel @Inject constructor(
                 .onFailure { err ->
                     isSwitchingAccount.value = false
                     statusMessage.value = err.localizedMessage ?: if (isEn) "Failed to switch Google account" else "تعذر تبديل حساب Google"
+                }
+        }
+    }
+
+    fun openSupportChatWith10001(isEn: Boolean, onOpenChat: (String) -> Unit) {
+        viewModelScope.launch {
+            chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
+                .onSuccess(onOpenChat)
+                .onFailure { err ->
+                    statusMessage.value = err.localizedMessage ?: if (isEn) "Unable to reach WESAL Support" else "تعذر فتح محادثة إدارة WESAL"
                 }
         }
     }
@@ -128,6 +199,28 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { userRepository.revokeSession(sessionId) }
     }
 
+    fun revokeAllOtherSessions(isEn: Boolean) {
+        viewModelScope.launch {
+            userRepository.revokeAllOtherSessions()
+                .onSuccess {
+                    statusMessage.value = if (isEn) "All other sessions ended" else "تم إنهاء جميع الجلسات الأخرى"
+                }
+                .onFailure { err -> statusMessage.value = err.localizedMessage }
+        }
+    }
+
+    fun createSessionLinkToken() {
+        viewModelScope.launch {
+            userRepository.createSessionLinkToken()
+                .onSuccess { sessionLinkToken.value = it }
+                .onFailure { err -> statusMessage.value = err.localizedMessage }
+        }
+    }
+
+    fun clearSessionLinkToken() {
+        sessionLinkToken.value = null
+    }
+
     fun unblockUser(uid: String) {
         viewModelScope.launch { userRepository.unblockUser(uid) }
     }
@@ -153,6 +246,22 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun deleteAccountPermanently(password: String?, googleIdToken: String?, isEn: Boolean, onDeleted: () -> Unit) {
+        viewModelScope.launch {
+            isDeletingAccount.value = true
+            authRepository.deleteAccountPermanently(
+                passwordForReauth = password?.takeIf { it.isNotBlank() },
+                googleIdTokenForReauth = googleIdToken?.takeIf { it.isNotBlank() }
+            ).onSuccess {
+                isDeletingAccount.value = false
+                onDeleted()
+            }.onFailure { err ->
+                isDeletingAccount.value = false
+                statusMessage.value = err.localizedMessage ?: if (isEn) "Unable to delete account" else "تعذر حذف الحساب؛ تأكد من إعادة التحقق من الهوية"
+            }
+        }
+    }
+
     private fun folderSize(dir: File): Long {
         if (!dir.exists()) return 0L
         return dir.listFiles()?.sumOf { if (it.isDirectory) folderSize(it) else it.length() } ?: 0L
@@ -162,6 +271,9 @@ class SettingsViewModel @Inject constructor(
 @Composable
 fun SettingsScreen(
     onOpenProfile: () -> Unit,
+    onOpenAccountShare: () -> Unit = {},
+    onOpenAdminPanel: () -> Unit = {},
+    onOpenChat: (String) -> Unit = {},
     onSignedOut: () -> Unit,
     onOpenAddAccount: (prefillEmail: String?) -> Unit = {},
     onAccountSwitched: (isNewProfile: Boolean) -> Unit = {},
@@ -170,32 +282,35 @@ fun SettingsScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val activity = context as? Activity
     val scope = rememberCoroutineScope()
+
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
+    val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
     val isSwitchingAccount by viewModel.isSwitchingAccount.collectAsStateWithLifecycle()
+    val isDeletingAccount by viewModel.isDeletingAccount.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
+    val sessionLinkToken by viewModel.sessionLinkToken.collectAsStateWithLifecycle()
 
     var showPrivacyDialog by remember { mutableStateOf(false) }
+    var showHiddenLockDialog by remember { mutableStateOf(false) }
     var showNotifDialog by remember { mutableStateOf(false) }
     var showSessionsDialog by remember { mutableStateOf(false) }
     var showBlockedDialog by remember { mutableStateOf(false) }
     var showAccountsDialog by remember { mutableStateOf(false) }
     var showSignOutConfirm by remember { mutableStateOf(false) }
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
     var cacheText by remember { mutableStateOf(viewModel.getCacheSizeMb()) }
 
-    fun switchToAuthorizedGoogleAccount() {
-        if (activity == null || isSwitchingAccount) return
+    fun fetchGoogleTokenAndRun(onToken: (String) -> Unit, onNoCredential: () -> Unit = {}) {
+        if (activity == null) return
         scope.launch {
             try {
-                val webClientResId = activity.resources.getIdentifier(
-                    "default_web_client_id",
-                    "string",
-                    activity.packageName
-                )
+                val webClientResId = activity.resources.getIdentifier("default_web_client_id", "string", activity.packageName)
                 val serverClientId = if (webClientResId != 0) activity.getString(webClientResId) else ""
                 if (serverClientId.isBlank()) {
                     viewModel.showMessage(if (strings.isEnglish) "Google OAuth Client ID missing" else "معرّف Google OAuth غير متوفر")
@@ -203,32 +318,28 @@ fun SettingsScreen(
                 }
                 val credentialManager = CredentialManager.create(activity)
                 runCatching { credentialManager.clearCredentialState(ClearCredentialStateRequest()) }
-                suspend fun fetchGoogleCredential(onlyAuthorized: Boolean): GoogleIdTokenCredential {
+                suspend fun fetch(onlyAuthorized: Boolean): GoogleIdTokenCredential {
                     val option = GetGoogleIdOption.Builder()
                         .setFilterByAuthorizedAccounts(onlyAuthorized)
                         .setAutoSelectEnabled(false)
                         .setServerClientId(serverClientId)
                         .build()
-                    val request = GetCredentialRequest.Builder()
-                        .addCredentialOption(option)
-                        .build()
-                    val res = credentialManager.getCredential(activity, request)
+                    val req = GetCredentialRequest.Builder().addCredentialOption(option).build()
+                    val res = credentialManager.getCredential(activity, req)
                     return GoogleIdTokenCredential.createFrom(res.credential.data)
                 }
-                val googleCred = try {
-                    fetchGoogleCredential(onlyAuthorized = true)
+                val cred = try {
+                    fetch(true)
                 } catch (_: NoCredentialException) {
-                    fetchGoogleCredential(onlyAuthorized = false)
+                    fetch(false)
                 }
-                showAccountsDialog = false
-                viewModel.switchToGoogleIdToken(googleCred.idToken, strings.isEnglish, onAccountSwitched)
+                onToken(cred.idToken)
             } catch (_: GetCredentialCancellationException) {
-                viewModel.showMessage(if (strings.isEnglish) "Google switch cancelled" else "تم إلغاء تبديل الحساب")
+                viewModel.showMessage(if (strings.isEnglish) "Cancelled" else "تم الإلغاء")
             } catch (_: NoCredentialException) {
-                showAccountsDialog = false
-                onOpenAddAccount(null)
+                onNoCredential()
             } catch (e: Exception) {
-                viewModel.showMessage(e.localizedMessage ?: if (strings.isEnglish) "Unable to switch account" else "تعذر تبديل الحساب")
+                viewModel.showMessage(e.localizedMessage ?: "Error")
             }
         }
     }
@@ -266,7 +377,9 @@ fun SettingsScreen(
                     WesalAvatar(
                         imageUrl = user?.photoUrl.orEmpty(),
                         name = user?.displayName ?: "WESAL",
-                        size = 64.dp
+                        size = 64.dp,
+                        frameId = user?.frameId.orEmpty(),
+                        frameExpiresAt = user?.frameExpiresAt ?: 0L
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         WesalNameWithBadge(
@@ -274,7 +387,10 @@ fun SettingsScreen(
                                 ?: strings.loading,
                             isVerified = user?.isVerified == true,
                             style = MaterialTheme.typography.titleLarge,
-                            color = palette.textPrimary
+                            color = palette.textPrimary,
+                            verificationType = user?.verificationType ?: "BLUE",
+                            neonColor = user?.neonColor.orEmpty(),
+                            neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
                         )
                         val hiddenPhone = user?.privacySettings?.hidePhoneNumber == true
                         val contactLine = if (hiddenPhone) {
@@ -286,11 +402,7 @@ fun SettingsScreen(
                         val numericLabel = user?.numericId?.takeIf { it.isNotBlank() }?.let { "ID: $it" }
                         val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }
                         Text(
-                            text = listOfNotNull(
-                                numericLabel,
-                                idLabel,
-                                contactLine
-                            ).joinToString(" • "),
+                            text = listOfNotNull(numericLabel, idLabel, contactLine).joinToString(" • "),
                             style = MaterialTheme.typography.labelMedium,
                             color = palette.turquoise
                         )
@@ -298,7 +410,8 @@ fun SettingsScreen(
                             text = user?.bio.orEmpty(),
                             style = MaterialTheme.typography.bodyMedium,
                             color = palette.textSecondary,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                     Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise)
@@ -323,16 +436,34 @@ fun SettingsScreen(
             SettingsRow(
                 Icons.Default.AccountCircle,
                 if (strings.isEnglish) "Account & Profile" else "الحساب والملف الشخصي",
-                if (strings.isEnglish) "Name, @wesal_id, phone OTP & avatar" else "الاسم، المعرف الفريد، توثيق الهاتف، وصورة الحساب"
+                if (strings.isEnglish) "Name, @username, cover photo & business hours" else "الاسم، المعرف، الغلاف، الهاتف، وساعات العمل"
             ) {
                 onOpenProfile()
             }
             SettingsRow(
+                Icons.Default.QrCode2,
+                strings.shareAccountQr,
+                if (strings.isEnglish) "Share WESAL QR card and official link" else "بطاقة التعريف الشخصية ورمز QR"
+            ) {
+                onOpenAccountShare()
+            }
+            SettingsRow(
                 Icons.Default.Lock,
                 if (strings.isEnglish) "Privacy & Security" else "الخصوصية والأمان",
-                if (strings.isEnglish) "Hide phone, last seen, online status & read receipts" else "إخفاء الهاتف، آخر ظهور، الحالة، وإيصالات القراءة"
+                if (strings.isEnglish) "Phone, birth date, visits, last seen & receipts" else "إخفاء الهاتف، الميلاد، الزيارات، وآخر ظهور"
             ) {
                 showPrivacyDialog = true
+            }
+            SettingsRow(
+                Icons.Default.EnhancedEncryption,
+                if (strings.isEnglish) "Hidden Chats Password" else "كلمة مرور المحادثات المخفية",
+                if (viewModel.hasHiddenChatsPassword()) {
+                    if (strings.isEnglish) "Protected (${appSettings.hiddenChatIds.size} hidden)" else "مفعّلة (${appSettings.hiddenChatIds.size} محادثة مخفية)"
+                } else {
+                    if (strings.isEnglish) "Set password lock for hidden chats" else "تعيين قفل كلمة مرور للمحادثات المخفية"
+                }
+            ) {
+                showHiddenLockDialog = true
             }
             SettingsRow(
                 Icons.Default.Notifications,
@@ -394,27 +525,67 @@ fun SettingsScreen(
             ) {
                 showBlockedDialog = true
             }
+
+            // Sec 24/25 & User Binding Admin Rule: 10001 Support In-App Chat (replaces external WhatsApp developer link)
             SettingsRow(
                 icon = Icons.Default.SupportAgent,
-                title = if (strings.isEnglish) "Contact Developer" else "التواصل مع مطور التطبيق",
-                subtitle = if (strings.isEnglish) "Direct WhatsApp support" else "تواصل مباشر عبر واتساب",
+                title = strings.contactWesalAdmin,
+                subtitle = strings.contactWesalAdminSubtitle,
                 tint = palette.emerald
             ) {
-                runCatching {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(DEVELOPER_WHATSAPP_URL)).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                viewModel.openSupportChatWith10001(strings.isEnglish, onOpenChat)
+            }
+
+            // Sec 12 & Sec 51 & User Binding Admin Rule: "إدارة WESAL" ONLY visible for 10001 Super Admin, directly above Sign Out
+            if (isSuperAdmin) {
+                Surface(
+                    color = palette.verifiedBlue.copy(alpha = 0.10f),
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, palette.verifiedBlue.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .clickable(onClick = onOpenAdminPanel)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = palette.verifiedBlue)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = strings.adminVerificationTitle,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = palette.verifiedBlue,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = if (strings.isEnglish) "WESAL Owner Console (ID: 10001)" else "لوحة تحكم المالك والإدارة الشاملة (ID: 10001)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.textSecondary
+                            )
+                        }
+                        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = palette.verifiedBlue)
                     }
-                    context.startActivity(intent)
-                }.onFailure {
-                    viewModel.showMessage(if (strings.isEnglish) "Unable to open WhatsApp" else "تعذر فتح واتساب على هذا الجهاز")
                 }
             }
+
             SettingsRow(
                 icon = Icons.AutoMirrored.Filled.ExitToApp,
                 title = strings.signOut,
                 subtitle = if (strings.isEnglish) "End current device session" else "إنهاء الجلسة على هذا الجهاز",
                 tint = palette.error,
                 onClick = { showSignOutConfirm = true }
+            )
+
+            // Sec 40: Permanent Account Deletion directly below Sign Out
+            SettingsRow(
+                icon = Icons.Default.DeleteForever,
+                title = if (strings.isEnglish) "Permanently Delete Account" else "إزالة الحساب نهائيًا",
+                subtitle = if (strings.isEnglish) "Permanently erase account & unlink WESAL data" else "حذف الحساب نهائيًا من WESAL (يتطلب إعادة تأكيد)",
+                tint = palette.error,
+                onClick = { showDeleteAccountDialog = true }
             )
         }
     }
@@ -440,13 +611,207 @@ fun SettingsScreen(
         )
     }
 
+    if (showDeleteAccountDialog) {
+        var passwordForReauth by remember { mutableStateOf("") }
+        var confirmedUnderstanding by remember { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingAccount) showDeleteAccountDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Permanently Delete Account" else "إزالة الحساب نهائيًا",
+                    color = palette.error,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Warning: This action permanently deletes your account, releases your @username, and cannot be undone."
+                        } else {
+                            "تنبيه هام: حذف الحساب نهائي ولا يمكن التراجع عنه، وسيتم إخفاء حسابك وإلغاء جميع الجلسات النشطة وتحرير معرفك."
+                        },
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = passwordForReauth,
+                        onValueChange = { passwordForReauth = it },
+                        label = { Text(if (strings.isEnglish) "Password (if email login)" else "كلمة المرور (لحسابات البريد)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = confirmedUnderstanding, onCheckedChange = { confirmedUnderstanding = it })
+                        Text(
+                            text = if (strings.isEnglish) "I understand this is permanent" else "أؤكد رغبتي في حذف الحساب نهائيًا",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textPrimary
+                        )
+                    }
+                    if (isDeletingAccount) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = palette.error)
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        enabled = confirmedUnderstanding && !isDeletingAccount,
+                        onClick = {
+                            fetchGoogleTokenAndRun(
+                                onToken = { idToken ->
+                                    viewModel.deleteAccountPermanently(null, idToken, strings.isEnglish) {
+                                        showDeleteAccountDialog = false
+                                        onSignedOut()
+                                    }
+                                },
+                                onNoCredential = {
+                                    viewModel.showMessage(if (strings.isEnglish) "Use password or try Google re-auth" else "أدخل كلمة المرور أو أعد المصادقة بـ Google")
+                                }
+                            )
+                        }
+                    ) {
+                        Text("Google", color = palette.turquoise)
+                    }
+                    Button(
+                        enabled = confirmedUnderstanding && !isDeletingAccount,
+                        onClick = {
+                            viewModel.deleteAccountPermanently(passwordForReauth, null, strings.isEnglish) {
+                                showDeleteAccountDialog = false
+                                onSignedOut()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.error)
+                    ) { Text(if (strings.isEnglish) "Delete Forever" else "حذف نهائي") }
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !isDeletingAccount, onClick = { showDeleteAccountDialog = false }) {
+                    Text(strings.cancel)
+                }
+            }
+        )
+    }
+
+    if (showHiddenLockDialog) {
+        val hasExisting = remember(showHiddenLockDialog) { viewModel.hasHiddenChatsPassword() }
+        val existingQ = remember(showHiddenLockDialog) { viewModel.getHiddenChatsRecoveryQuestion() }
+        var currentPass by remember { mutableStateOf("") }
+        var newPass by remember { mutableStateOf("") }
+        var recoveryQ by remember { mutableStateOf(existingQ.ifBlank { if (strings.isEnglish) "Your favorite city?" else "ما اسم مدينتك المفضلة؟" }) }
+        var recoveryA by remember { mutableStateOf("") }
+        var recoveryMode by remember { mutableStateOf(false) }
+        var resetAnswer by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showHiddenLockDialog = false },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Hidden Chats Security" else "أمان المحادثات المخفية", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Stored locally using salted PBKDF2 + Android Keystore. Forgetting the password without recovery will require unhiding all hidden chats."
+                        } else {
+                            "يُحفظ التشفير محليًا عبر Android Keystore. إذا نسيت كلمة المرور بدون سؤال الاستعادة ستحتاج لإلغاء إخفاء جميع المحادثات عند إعادة الضبط."
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
+                    if (!recoveryMode) {
+                        if (hasExisting) {
+                            OutlinedTextField(
+                                value = currentPass,
+                                onValueChange = { currentPass = it },
+                                label = { Text(if (strings.isEnglish) "Current Password" else "كلمة المرور الحالية") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        OutlinedTextField(
+                            value = newPass,
+                            onValueChange = { newPass = it },
+                            label = { Text(if (strings.isEnglish) "New Password (letters/numbers)" else "كلمة المرور الجديدة (حروف وأرقام)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = recoveryQ,
+                            onValueChange = { recoveryQ = it },
+                            label = { Text(if (strings.isEnglish) "Recovery Question" else "سؤال الاستعادة") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = recoveryA,
+                            onValueChange = { recoveryA = it },
+                            label = { Text(if (strings.isEnglish) "Recovery Answer" else "إجابة سؤال الاستعادة") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (hasExisting) {
+                            TextButton(onClick = { recoveryMode = true }) {
+                                Text(if (strings.isEnglish) "Forgot password? Recover or Reset" else "نسيت كلمة المرور؟ استعادة / مسح القفل", color = palette.warning)
+                            }
+                        }
+                    } else {
+                        if (existingQ.isNotBlank()) {
+                            Text(existingQ, color = palette.turquoise, fontWeight = FontWeight.SemiBold)
+                            OutlinedTextField(
+                                value = resetAnswer,
+                                onValueChange = { resetAnswer = it },
+                                label = { Text(if (strings.isEnglish) "Answer" else "إجابتك") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Button(
+                                onClick = {
+                                    if (viewModel.resetHiddenChatsWithRecovery(resetAnswer, strings.isEnglish)) {
+                                        showHiddenLockDialog = false
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text(if (strings.isEnglish) "Verify & Unlock" else "تحقق وفك القفل") }
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.forceResetHiddenChats(strings.isEnglish)
+                                showHiddenLockDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (strings.isEnglish) "Clear Lock & Unhide All" else "مسح القفل وإظهار جميع المحادثات", color = palette.error)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (!recoveryMode) {
+                    Button(
+                        onClick = {
+                            if (viewModel.setupHiddenChatsPassword(currentPass, newPass, recoveryQ, recoveryA, strings.isEnglish)) {
+                                showHiddenLockDialog = false
+                            }
+                        }
+                    ) { Text(strings.save) }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHiddenLockDialog = false }) { Text(strings.close) }
+            }
+        )
+    }
+
     if (showAccountsDialog) {
         AlertDialog(
             onDismissRequest = { if (!isSwitchingAccount) showAccountsDialog = false },
             containerColor = palette.surface,
-            title = {
-                Text(strings.switchAccount, color = palette.textPrimary, fontWeight = FontWeight.Bold)
-            },
+            title = { Text(strings.switchAccount, color = palette.textPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (isSwitchingAccount) {
@@ -458,24 +823,27 @@ fun SettingsScreen(
                             color = palette.textSecondary
                         )
                     } else {
-                        LazyColumn(
-                            modifier = Modifier.heightIn(max = 260.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        LazyColumn(modifier = Modifier.heightIn(max = 260.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(savedAccounts, key = { it.uid }) { acc ->
                                 val isActive = acc.uid == user?.uid
                                 Surface(
                                     color = if (isActive) palette.emerald.copy(alpha = 0.12f) else palette.background,
                                     shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(
-                                        1.dp,
-                                        if (isActive) palette.emerald.copy(alpha = 0.5f) else palette.border
-                                    ),
+                                    border = BorderStroke(1.dp, if (isActive) palette.emerald.copy(alpha = 0.5f) else palette.border),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable(enabled = !isActive && !isSwitchingAccount) {
                                             if (acc.provider == "google") {
-                                                switchToAuthorizedGoogleAccount()
+                                                fetchGoogleTokenAndRun(
+                                                    onToken = { token ->
+                                                        showAccountsDialog = false
+                                                        viewModel.switchToGoogleIdToken(token, strings.isEnglish, onAccountSwitched)
+                                                    },
+                                                    onNoCredential = {
+                                                        showAccountsDialog = false
+                                                        onOpenAddAccount(null)
+                                                    }
+                                                )
                                             } else {
                                                 showAccountsDialog = false
                                                 onOpenAddAccount(acc.email.takeIf { it.isNotBlank() })
@@ -493,10 +861,7 @@ fun SettingsScreen(
                                             size = 40.dp
                                         )
                                         Column(modifier = Modifier.weight(1f)) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                                 Text(
                                                     text = acc.displayName.ifBlank { acc.email.ifBlank { "WESAL" } },
                                                     color = palette.textPrimary,
@@ -523,20 +888,11 @@ fun SettingsScreen(
                                                 acc.email.takeIf { it.isNotBlank() }
                                             ).joinToString(" • ")
                                             if (meta.isNotBlank()) {
-                                                Text(
-                                                    text = meta,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = palette.textSecondary,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
+                                                Text(meta, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                             }
                                         }
                                         if (!isActive) {
-                                            IconButton(
-                                                onClick = { viewModel.removeSavedAccount(acc.uid) },
-                                                modifier = Modifier.size(32.dp)
-                                            ) {
+                                            IconButton(onClick = { viewModel.removeSavedAccount(acc.uid) }, modifier = Modifier.size(32.dp)) {
                                                 Icon(Icons.Default.Close, contentDescription = strings.delete, tint = palette.textMuted, modifier = Modifier.size(18.dp))
                                             }
                                         }
@@ -562,11 +918,7 @@ fun SettingsScreen(
                     }
                 }
             },
-            confirmButton = {
-                TextButton(enabled = !isSwitchingAccount, onClick = { showAccountsDialog = false }) {
-                    Text(strings.close, color = palette.turquoise)
-                }
-            }
+            confirmButton = { TextButton(enabled = !isSwitchingAccount, onClick = { showAccountsDialog = false }) { Text(strings.close, color = palette.turquoise) } }
         )
     }
 
@@ -589,6 +941,14 @@ fun SettingsScreen(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text(strings.hidePhoneNumberTitle, color = palette.textPrimary)
                         Switch(checked = ps.hidePhoneNumber, onCheckedChange = { ps = ps.copy(hidePhoneNumber = it) })
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (strings.isEnglish) "Hide Birth Date" else "إخفاء تاريخ الميلاد", color = palette.textPrimary)
+                        Switch(checked = ps.hideBirthDate, onCheckedChange = { ps = ps.copy(hideBirthDate = it) })
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (strings.isEnglish) "Record Profile Visits" else "تسجيل زوار الحساب", color = palette.textPrimary)
+                        Switch(checked = ps.recordProfileVisits, onCheckedChange = { ps = ps.copy(recordProfileVisits = it) })
                     }
                 }
             },
@@ -622,47 +982,87 @@ fun SettingsScreen(
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showNotifDialog = false }) { Text(strings.close) }
-            }
+            confirmButton = { TextButton(onClick = { showNotifDialog = false }) { Text(strings.close) } }
         )
     }
 
     if (showSessionsDialog) {
         AlertDialog(
-            onDismissRequest = { showSessionsDialog = false },
+            onDismissRequest = { showSessionsDialog = false; viewModel.clearSessionLinkToken() },
             containerColor = palette.surface,
             title = { Text(if (strings.isEnglish) "Active Sessions" else "الأجهزة والجلسات النشطة", color = palette.textPrimary) },
             text = {
-                LazyColumn(modifier = Modifier.heightIn(max = 280.dp)) {
-                    items(sessions, key = { it.sessionId }) { session ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
+                        items(sessions, key = { it.sessionId }) { session ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = session.deviceName + if (session.isCurrent) (if (strings.isEnglish) " (This Device)" else " (هذا الجهاز)") else "",
+                                        color = palette.textPrimary,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "${session.osVersion} • ${DateTimeUtils.formatChatListTime(session.lastActiveAt)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textSecondary
+                                    )
+                                }
+                                if (!session.isCurrent) {
+                                    TextButton(onClick = { viewModel.revokeSession(session.sessionId) }) {
+                                        Text(if (strings.isEnglish) "Revoke" else "إنهاء", color = palette.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (sessions.size > 1) {
+                        OutlinedButton(
+                            onClick = { viewModel.revokeAllOtherSessions(strings.isEnglish) },
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                            Text(if (strings.isEnglish) "End All Other Sessions" else "إنهاء جميع الجلسات الأخرى", color = palette.error)
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.createSessionLinkToken() },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.QrCode2, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (strings.isEnglish) "Generate 5-Min Link Token" else "رمز ربط جهاز جديد (صالح 5 دقائق)", color = palette.turquoise)
+                    }
+                    sessionLinkToken?.let { tok ->
+                        Surface(
+                            color = palette.background,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    clipboard.setText(AnnotatedString(tok))
+                                    Toast.makeText(context, tok, Toast.LENGTH_SHORT).show()
+                                }
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(tok, color = palette.turquoise, fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = session.deviceName + if (session.isCurrent) (if (strings.isEnglish) " (This Device)" else " (هذا الجهاز)") else "",
-                                    color = palette.textPrimary,
-                                    fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    text = "${session.osVersion} • ${DateTimeUtils.formatChatListTime(session.lastActiveAt)}",
+                                    text = if (strings.isEnglish) "Single-use • Tap to copy" else "استخدام لمرة واحدة • اضغط للنسخ",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = palette.textSecondary
                                 )
-                            }
-                            if (!session.isCurrent) {
-                                TextButton(onClick = { viewModel.revokeSession(session.sessionId) }) {
-                                    Text(if (strings.isEnglish) "Revoke" else "إنهاء", color = palette.error)
-                                }
                             }
                         }
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { showSessionsDialog = false }) { Text(strings.close) } }
+            confirmButton = {
+                TextButton(onClick = { showSessionsDialog = false; viewModel.clearSessionLinkToken() }) { Text(strings.close) }
+            }
         )
     }
 

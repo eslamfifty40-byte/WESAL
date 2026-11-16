@@ -70,8 +70,10 @@ class MainActivity : AppCompatActivity() {
                     lastHandledCallId = call.callId
                     val intent = Intent(this@MainActivity, IncomingCallActivity::class.java).apply {
                         putExtra(IncomingCallActivity.EXTRA_CALL_ID, call.callId)
+                        putExtra(IncomingCallActivity.EXTRA_CALLER_UID, call.callerId)
                         putExtra(IncomingCallActivity.EXTRA_CALLER_NAME, call.callerName)
                         putExtra(IncomingCallActivity.EXTRA_CALLER_AVATAR, call.callerAvatarUrl)
+                        putExtra(IncomingCallActivity.EXTRA_CALLER_VERIFIED, call.callerVerified)
                         putExtra(IncomingCallActivity.EXTRA_IS_VIDEO, call.isVideo)
                     }
                     startActivity(intent)
@@ -109,6 +111,16 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        mainViewModel.setAppForeground(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        mainViewModel.setAppForeground(false)
     }
 
     override fun onNewIntent(intent: Intent) {

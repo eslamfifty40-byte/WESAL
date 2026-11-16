@@ -2,7 +2,6 @@ package com.wesal.messenger.data.repository
 
 import android.content.Context
 import android.net.Uri
-import android.util.Base64
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
@@ -54,21 +53,45 @@ class ChannelRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun mapChannel(doc: DocumentSnapshot): WesalChannel? {
+    private suspend fun isCurrentUserOwnerSuperAdmin(): Boolean {
+        val user = auth.currentUser ?: return false
+        val emailMatches = user.email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true)
+        if (!emailMatches) return false
+        return runCatching { userRepository.isSuperAdmin() }.getOrDefault(false)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun mapChannel(doc: DocumentSnapshot, currentUid: String?): WesalChannel? {
         if (!doc.exists()) return null
-        val subscribers = (doc.get("subscriberIds") as? List<String>).orEmpty()
+        val ownerUid = doc.getString("ownerUid").orEmpty()
+        val moderators = (doc.get("moderatorIds") as? List<String>).orEmpty()
+        val rawSubscribers = (doc.get("subscriberIds") as? List<String>).orEmpty()
+        val isOfficial = doc.getBoolean("isOfficialTeamChannel") ?: (doc.id == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+        val isManager = currentUid != null && (ownerUid == currentUid || moderators.contains(currentUid))
+
+        // Privacy guarantee (Sec 28 / 38): Never expose full subscriberIds list to ordinary subscribers or non-members
+        val scopedSubscriberIds = when {
+            isManager -> rawSubscribers
+            currentUid != null && rawSubscribers.contains(currentUid) -> listOf(currentUid)
+            else -> emptyList()
+        }
+
         return WesalChannel(
             channelId = doc.getString("channelId") ?: doc.id,
             title = doc.getString("title").orEmpty(),
             description = doc.getString("description").orEmpty(),
             avatarUrl = doc.getString("avatarUrl").orEmpty(),
+            officialWallpaperUrl = doc.getString("officialWallpaperUrl").orEmpty(),
             isPublic = doc.getBoolean("isPublic") ?: true,
+            isOfficialTeamChannel = isOfficial,
+            isSuspended = doc.getBoolean("isSuspended") ?: false,
             inviteCode = doc.getString("inviteCode").orEmpty(),
-            ownerUid = doc.getString("ownerUid").orEmpty(),
-            moderatorIds = (doc.get("moderatorIds") as? List<String>).orEmpty(),
-            subscriberIds = subscribers,
-            subscribersCount = (doc.getLong("subscribersCount") ?: subscribers.size.toLong()).toInt(),
-            isVerified = doc.getBoolean("isVerified") ?: false,
+            ownerUid = ownerUid,
+            moderatorIds = moderators,
+            subscriberIds = scopedSubscriberIds,
+            subscribersCount = (doc.getLong("subscribersCount") ?: rawSubscribers.size.toLong()).toInt(),
+            isVerified = (doc.getBoolean("isVerified") ?: false) || isOfficial,
+            verificationType = doc.getString("verificationType") ?: "BLUE",
             createdAt = doc.getLong("createdAt") ?: 0L
         )
     }
@@ -131,6 +154,75 @@ class ChannelRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun ensureOfficialTeamChannel(): WesalChannel? {
+        val currentUid = auth.currentUser?.uid ?: return null
+        val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS)
+            .document(Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+
+        val existing = runCatching { channelRef.get().await() }.getOrNull()
+        val isSuperAdmin = isCurrentUserOwnerSuperAdmin()
+
+        if (existing != null && existing.exists()) {
+            val mapped = mapChannel(existing, currentUid)
+            if (isSuperAdmin && existing.getString("ownerUid") != currentUid) {
+                runCatching {
+                    channelRef.update(
+                        mapOf(
+                            "ownerUid" to currentUid,
+                            "moderatorIds" to listOf(currentUid),
+                            "subscriberIds" to FieldValue.arrayUnion(currentUid),
+                            "isOfficialTeamChannel" to true,
+                            "isVerified" to true,
+                            "verificationType" to "BLUE"
+                        )
+                    ).await()
+                }
+            }
+            return mapped
+        }
+
+        if (!isSuperAdmin) {
+            return null
+        }
+
+        val ownerUid = currentUid
+        val now = System.currentTimeMillis()
+        val officialData = mapOf(
+            "channelId" to Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID,
+            "title" to "فريق وصال | WESAL Team",
+            "description" to "القناة الرسمية لأخبار وتحديثات WESAL Messenger",
+            "avatarUrl" to "",
+            "officialWallpaperUrl" to "",
+            "isPublic" to true,
+            "isOfficialTeamChannel" to true,
+            "isSuspended" to false,
+            "inviteCode" to "WESALTEAM",
+            "ownerUid" to ownerUid,
+            "moderatorIds" to listOf(ownerUid),
+            "subscriberIds" to listOf(ownerUid),
+            "subscribersCount" to 1,
+            "isVerified" to true,
+            "verificationType" to "BLUE",
+            "createdAt" to now
+        )
+        runCatching { channelRef.set(officialData).await() }
+        return WesalChannel(
+            channelId = Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID,
+            title = "فريق وصال | WESAL Team",
+            description = "القناة الرسمية لأخبار وتحديثات WESAL Messenger",
+            isPublic = true,
+            isOfficialTeamChannel = true,
+            inviteCode = "WESALTEAM",
+            ownerUid = ownerUid,
+            moderatorIds = listOf(ownerUid),
+            subscriberIds = listOf(ownerUid),
+            subscribersCount = 1,
+            isVerified = true,
+            verificationType = "BLUE",
+            createdAt = now
+        )
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observePublicChannels(): Flow<List<WesalChannel>> = observeAuthUid().flatMapLatest { uid ->
         if (uid == null) {
@@ -139,11 +231,16 @@ class ChannelRepositoryImpl @Inject constructor(
             callbackFlow {
                 val reg = firestore.collection(Constants.COLLECTION_CHANNELS)
                     .whereEqualTo("isPublic", true)
-                    .limit(100)
+                    .limit(120)
                     .addSnapshotListener { snap, err ->
                         if (err != null || snap == null) return@addSnapshotListener
-                        val list = snap.documents.mapNotNull(::mapChannel)
-                            .sortedByDescending { it.subscribersCount }
+                        val list = snap.documents
+                            .mapNotNull { mapChannel(it, uid) }
+                            .filter { it.isPublic && !it.isSuspended }
+                            .sortedWith(
+                                compareByDescending<WesalChannel> { it.isOfficialTeamChannel }
+                                    .thenByDescending { it.subscribersCount }
+                            )
                         trySend(list)
                     }
                 awaitClose { reg.remove() }
@@ -161,8 +258,12 @@ class ChannelRepositoryImpl @Inject constructor(
                     .whereArrayContains("subscriberIds", uid)
                     .addSnapshotListener { snap, err ->
                         if (err != null || snap == null) return@addSnapshotListener
-                        val list = snap.documents.mapNotNull(::mapChannel)
-                            .sortedByDescending { it.createdAt }
+                        val list = snap.documents
+                            .mapNotNull { mapChannel(it, uid) }
+                            .sortedWith(
+                                compareByDescending<WesalChannel> { it.isOfficialTeamChannel }
+                                    .thenByDescending { it.createdAt }
+                            )
                         trySend(list)
                     }
                 awaitClose { reg.remove() }
@@ -175,20 +276,24 @@ class ChannelRepositoryImpl @Inject constructor(
             .document(channelId)
             .addSnapshotListener { doc, err ->
                 if (err != null) return@addSnapshotListener
-                trySend(doc?.let(::mapChannel))
+                trySend(doc?.let { mapChannel(it, auth.currentUser?.uid) })
             }
         awaitClose { reg.remove() }
     }
 
     override suspend fun findChannelByInviteCode(code: String): WesalChannel? {
-        val clean = code.trim().uppercase()
+        val clean = code.trim()
+            .removePrefix("wesal://channel?code=")
+            .substringAfter("code=", code.trim())
+            .trim()
+            .uppercase()
         if (clean.isBlank()) return null
         val snap = firestore.collection(Constants.COLLECTION_CHANNELS)
             .whereEqualTo("inviteCode", clean)
             .limit(1)
             .get()
             .await()
-        return snap.documents.firstOrNull()?.let(::mapChannel)
+        return snap.documents.firstOrNull()?.let { mapChannel(it, auth.currentUser?.uid) }
     }
 
     override suspend fun createChannel(
@@ -219,6 +324,7 @@ class ChannelRepositoryImpl @Inject constructor(
             subscriberIds = listOf(uid),
             subscribersCount = 1,
             isVerified = me?.isVerified == true,
+            verificationType = me?.verificationType ?: "BLUE",
             createdAt = now
         )
 
@@ -227,13 +333,17 @@ class ChannelRepositoryImpl @Inject constructor(
             "title" to channel.title,
             "description" to channel.description,
             "avatarUrl" to channel.avatarUrl,
+            "officialWallpaperUrl" to "",
             "isPublic" to channel.isPublic,
+            "isOfficialTeamChannel" to false,
+            "isSuspended" to false,
             "inviteCode" to channel.inviteCode,
             "ownerUid" to channel.ownerUid,
             "moderatorIds" to channel.moderatorIds,
             "subscriberIds" to channel.subscriberIds,
             "subscribersCount" to channel.subscribersCount,
             "isVerified" to channel.isVerified,
+            "verificationType" to channel.verificationType,
             "createdAt" to channel.createdAt
         )
         firestore.collection(Constants.COLLECTION_CHANNELS)
@@ -254,9 +364,15 @@ class ChannelRepositoryImpl @Inject constructor(
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val ref = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
         val snap = ref.get().await()
-        val owner = snap.getString("ownerUid")
-        val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
-        require(uid == owner || mods.contains(uid)) { "ليس لديك صلاحية تعديل القناة" }
+        val isOfficial = snap.getBoolean("isOfficialTeamChannel") ?: (channelId == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+        if (isOfficial) {
+            require(isCurrentUserOwnerSuperAdmin()) { "فقط الحساب الإداري الرسمي يمكنه تعديل قناة فريق وصال" }
+        } else {
+            val owner = snap.getString("ownerUid")
+            @Suppress("UNCHECKED_CAST")
+            val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
+            require(uid == owner || mods.contains(uid)) { "ليس لديك صلاحية تعديل القناة" }
+        }
 
         val updates = mutableMapOf<String, Any>(
             "title" to title.trim(),
@@ -269,11 +385,47 @@ class ChannelRepositoryImpl @Inject constructor(
         ref.update(updates).await()
     }
 
+    override suspend fun deleteChannel(channelId: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val ref = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
+        val snap = ref.get().await()
+        val isOfficial = snap.getBoolean("isOfficialTeamChannel") ?: (channelId == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+        require(!isOfficial) { "لا يمكن حذف قناة فريق وصال الرسمية" }
+
+        val isSuper = isCurrentUserOwnerSuperAdmin()
+        require(snap.getString("ownerUid") == uid || isSuper) { "فقط مالك القناة يمكنه حذفها" }
+
+        runCatching {
+            val postsSnap = ref.collection(Constants.SUBCOLLECTION_POSTS).limit(200).get().await()
+            postsSnap.documents.forEach { postDoc ->
+                runCatching {
+                    val commentsSnap = postDoc.reference.collection(Constants.SUBCOLLECTION_COMMENTS).limit(100).get().await()
+                    commentsSnap.documents.forEach { it.reference.delete().await() }
+                }
+                postDoc.reference.delete().await()
+            }
+        }
+        runCatching {
+            val reqSnap = ref.collection(Constants.SUBCOLLECTION_JOIN_REQUESTS).limit(100).get().await()
+            reqSnap.documents.forEach { it.reference.delete().await() }
+        }
+        ref.delete().await()
+    }
+
+    override suspend fun adminSetChannelSuspended(channelId: String, suspended: Boolean): Result<Unit> = runCatching {
+        require(isCurrentUserOwnerSuperAdmin()) { "هذا الإجراء متاح لحساب الإدارة الرئيسي 10001 فقط" }
+        firestore.collection(Constants.COLLECTION_CHANNELS)
+            .document(channelId)
+            .update("isSuspended", suspended)
+            .await()
+    }
+
     override suspend fun regenerateInviteCode(channelId: String): Result<String> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val ref = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
         val snap = ref.get().await()
         val owner = snap.getString("ownerUid")
+        @Suppress("UNCHECKED_CAST")
         val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
         require(uid == owner || mods.contains(uid)) { "ليس لديك صلاحية تجديد رابط الدعوة" }
 
@@ -287,6 +439,8 @@ class ChannelRepositoryImpl @Inject constructor(
         val ref = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
         firestore.runTransaction { tx ->
             val snap = tx.get(ref)
+            require(snap.getBoolean("isSuspended") != true) { "القناة موقوفة حالياً من قِبل الإدارة" }
+            @Suppress("UNCHECKED_CAST")
             val current = (snap.get("subscriberIds") as? List<String>).orEmpty()
             if (!current.contains(uid)) {
                 val updated = current + uid
@@ -307,9 +461,11 @@ class ChannelRepositoryImpl @Inject constructor(
         firestore.runTransaction { tx ->
             val snap = tx.get(ref)
             require(snap.getString("ownerUid") != uid) { "لا يمكن لمالك القناة مغادرتها" }
+            @Suppress("UNCHECKED_CAST")
             val current = (snap.get("subscriberIds") as? List<String>).orEmpty()
             if (current.contains(uid)) {
                 val updated = current.filterNot { it == uid }
+                @Suppress("UNCHECKED_CAST")
                 val mods = (snap.get("moderatorIds") as? List<String>).orEmpty().filterNot { it == uid }
                 tx.update(
                     ref,
@@ -367,6 +523,7 @@ class ChannelRepositoryImpl @Inject constructor(
         val reqRef = channelRef.collection(Constants.SUBCOLLECTION_JOIN_REQUESTS).document(requestId)
         firestore.runTransaction { tx ->
             val snap = tx.get(channelRef)
+            @Suppress("UNCHECKED_CAST")
             val subs = (snap.get("subscriberIds") as? List<String>).orEmpty()
             val updated = if (subs.contains(requesterUid)) subs else subs + requesterUid
             tx.update(
@@ -403,6 +560,7 @@ class ChannelRepositoryImpl @Inject constructor(
     }
 
     override fun observePosts(channelId: String): Flow<List<ChannelPost>> = callbackFlow {
+        // Chronological history accessible on join without joinedAt filtering
         val reg = firestore.collection(Constants.COLLECTION_CHANNELS)
             .document(channelId)
             .collection(Constants.SUBCOLLECTION_POSTS)
@@ -437,49 +595,73 @@ class ChannelRepositoryImpl @Inject constructor(
             try {
                 val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
                 val channelSnap = channelRef.get().await()
-                val ownerUid = channelSnap.getString("ownerUid")
-                val moderators = (channelSnap.get("moderatorIds") as? List<String>).orEmpty()
-                require(uid == ownerUid || moderators.contains(uid)) {
-                    "فقط المالك والمشرفون يمكنهم النشر في القناة"
+                require(channelSnap.getBoolean("isSuspended") != true) {
+                    "القناة موقوفة حالياً ولا يمكن النشر فيها"
                 }
 
+                val isOfficial = channelSnap.getBoolean("isOfficialTeamChannel")
+                    ?: (channelId == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+                if (isOfficial) {
+                    require(isCurrentUserOwnerSuperAdmin()) {
+                        "فقط الحساب الإداري الرسمي (10001) يمكنه النشر في قناة فريق وصال"
+                    }
+                } else {
+                    val ownerUid = channelSnap.getString("ownerUid")
+                    @Suppress("UNCHECKED_CAST")
+                    val moderators = (channelSnap.get("moderatorIds") as? List<String>).orEmpty()
+                    require(uid == ownerUid || moderators.contains(uid)) {
+                        "فقط المالك والمشرفون يمكنهم النشر في القناة"
+                    }
+                }
+
+                val postId = UUID.randomUUID().toString()
                 val me = userRepository.getUserOnce(uid)
                 var mediaUrl = ""
                 if (mediaUri != null) {
-                    trySend(Result.success(0.25f))
-                    mediaUrl = when (type) {
-                        ChannelPostType.IMAGE -> {
-                            val b64 = withContext(Dispatchers.IO) {
-                                uriToBase64Jpeg(context, mediaUri, maxSide = 720, quality = 72)
+                    trySend(Result.success(0.12f))
+                    val safeName = fileName.ifBlank { "media" }.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                    val storageResult = withContext(Dispatchers.IO) {
+                        uploadFileToFirebaseStorage(
+                            storagePath = "channels/$channelId/posts/${postId}_$safeName",
+                            uri = mediaUri,
+                            onProgress = { fraction -> trySend(Result.success(fraction)) }
+                        )
+                    }
+                    mediaUrl = storageResult.getOrElse { storageErr ->
+                        when (type) {
+                            ChannelPostType.IMAGE -> {
+                                val b64 = withContext(Dispatchers.IO) {
+                                    uriToBase64Smart(context, mediaUri, maxSide = 720, quality = 72)
+                                }
+                                require(b64.isNotBlank()) { "تعذر رفع أو ضغط الصورة المحددة" }
+                                b64
                             }
-                            require(b64.isNotBlank()) { "تعذر ضغط الصورة المحددة" }
-                            trySend(Result.success(0.85f))
-                            b64
-                        }
-                        ChannelPostType.AUDIO -> {
-                            val audioB64 = withContext(Dispatchers.IO) {
-                                uriToBase64Audio(context, mediaUri, maxBytes = 420_000)
-                            } ?: throw IllegalStateException("المقطع الصوتي أكبر من الحد المسموح به (420 كيلوبايت) بدون Firebase Storage")
-                            trySend(Result.success(0.85f))
-                            audioB64
-                        }
-                        else -> {
-                            throw IllegalStateException("نشر الفيديو والملفات الكبيرة غير متاح لأن Firebase Storage غير مفعّل — يمكنك نشر نصوص أو صور مضغوطة أو مقاطع صوتية قصيرة")
+                            ChannelPostType.AUDIO -> {
+                                withContext(Dispatchers.IO) {
+                                    uriToBase64Audio(context, mediaUri, maxBytes = 420_000)
+                                } ?: throw IllegalStateException(
+                                    storageErr.message ?: "تعذر رفع المقطع الصوتي الكبير عبر Firebase Storage"
+                                )
+                            }
+                            else -> {
+                                throw IllegalStateException(
+                                    storageErr.message ?: "تعذر رفع الملف عبر Firebase Storage"
+                                )
+                            }
                         }
                     }
                 } else {
                     trySend(Result.success(0.5f))
                 }
 
-                val postId = UUID.randomUUID().toString()
                 val now = System.currentTimeMillis()
                 val postData = mapOf(
                     "postId" to postId,
                     "channelId" to channelId,
                     "authorUid" to uid,
-                    "authorName" to (me?.displayName?.ifBlank { "@${me.publicId}" } ?: "WESAL Channel"),
+                    "authorName" to if (isOfficial) "فريق وصال | WESAL Team" else (me?.displayName?.ifBlank { "@${me.publicId}" } ?: "WESAL Channel"),
                     "authorAvatarUrl" to (me?.photoUrl ?: ""),
-                    "authorVerified" to (me?.isVerified == true),
+                    "authorVerified" to (isOfficial || me?.isVerified == true),
                     "type" to type.raw,
                     "text" to text.trim(),
                     "mediaUrl" to mediaUrl,
@@ -508,19 +690,65 @@ class ChannelRepositoryImpl @Inject constructor(
         awaitClose { }
     }
 
+    override suspend fun editPost(channelId: String, postId: String, newText: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val trimmed = newText.trim()
+        require(trimmed.isNotBlank()) { "نص المنشور مطلوب" }
+        val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
+        val snap = channelRef.get().await()
+        val isOfficial = snap.getBoolean("isOfficialTeamChannel")
+            ?: (channelId == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+        if (isOfficial) {
+            require(isCurrentUserOwnerSuperAdmin()) { "فقط الإدارة الرسمية يمكنها تعديل منشورات فريق وصال" }
+        } else {
+            val owner = snap.getString("ownerUid")
+            @Suppress("UNCHECKED_CAST")
+            val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
+            require(uid == owner || mods.contains(uid)) { "ليس لديك صلاحية تعديل هذا المنشور" }
+        }
+        channelRef.collection(Constants.SUBCOLLECTION_POSTS)
+            .document(postId)
+            .update("text", trimmed)
+            .await()
+    }
+
     override suspend fun deletePost(channelId: String, postId: String): Result<Unit> = runCatching {
-        firestore.collection(Constants.COLLECTION_CHANNELS)
-            .document(channelId)
-            .collection(Constants.SUBCOLLECTION_POSTS)
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
+        val snap = channelRef.get().await()
+        val isOfficial = snap.getBoolean("isOfficialTeamChannel")
+            ?: (channelId == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+        if (isOfficial) {
+            require(isCurrentUserOwnerSuperAdmin()) { "فقط الإدارة الرسمية يمكنها حذف منشورات فريق وصال" }
+        } else {
+            val owner = snap.getString("ownerUid")
+            @Suppress("UNCHECKED_CAST")
+            val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
+            require(uid == owner || mods.contains(uid) || isCurrentUserOwnerSuperAdmin()) {
+                "ليس لديك صلاحية حذف هذا المنشور"
+            }
+        }
+        channelRef.collection(Constants.SUBCOLLECTION_POSTS)
             .document(postId)
             .delete()
             .await()
     }
 
     override suspend fun pinPost(channelId: String, postId: String, pinned: Boolean): Result<Unit> = runCatching {
-        firestore.collection(Constants.COLLECTION_CHANNELS)
-            .document(channelId)
-            .collection(Constants.SUBCOLLECTION_POSTS)
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
+        val snap = channelRef.get().await()
+        val isOfficial = snap.getBoolean("isOfficialTeamChannel")
+            ?: (channelId == Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+        if (isOfficial) {
+            require(isCurrentUserOwnerSuperAdmin()) { "فقط الإدارة الرسمية يمكنها تثبيت منشورات فريق وصال" }
+        } else {
+            val owner = snap.getString("ownerUid")
+            @Suppress("UNCHECKED_CAST")
+            val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
+            require(uid == owner || mods.contains(uid)) { "ليس لديك صلاحية التثبيت" }
+        }
+        channelRef.collection(Constants.SUBCOLLECTION_POSTS)
             .document(postId)
             .update("isPinned", pinned)
             .await()
@@ -621,6 +849,12 @@ class ChannelRepositoryImpl @Inject constructor(
 
     private suspend fun uploadChannelAvatar(channelId: String, uri: Uri): String =
         withContext(Dispatchers.IO) {
-            runCatching { uriToBase64Jpeg(context, uri, maxSide = 360, quality = 78) }.getOrDefault("")
+            uploadProfileMediaToStorageOrSmallFallback(
+                ctx = context,
+                storagePath = "channels/$channelId/avatar_${System.currentTimeMillis()}.jpg",
+                uri = uri,
+                maxSide = 360,
+                quality = 78
+            )
         }
 }

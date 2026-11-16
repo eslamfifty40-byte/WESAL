@@ -14,12 +14,16 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalVerifiedBadge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import java.util.UUID
 
 private const val ADMIN_DB = "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424"
 
@@ -32,16 +36,23 @@ suspend fun checkIsAdmin(): Boolean {
         if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) || !user.isEmailVerified) {
             return false
         }
-        if (Constants.CONFIRMED_SUPER_ADMIN_UID.isNotBlank() && user.uid != Constants.CONFIRMED_SUPER_ADMIN_UID) {
-            return false
-        }
-        val doc = adminDb()
+        val db = adminDb()
+        val doc = db
             .collection(Constants.COLLECTION_SUPER_ADMINS)
             .document(user.uid)
             .get(Source.SERVER)
             .await()
-        doc.exists() && doc.getBoolean("active") != false
-    } catch (e: Exception) {
+        if (!doc.exists() || doc.getBoolean("active") == false) return false
+
+        val saNumId = doc.getString("numericId").orEmpty()
+        if (saNumId.isNotBlank() && saNumId != Constants.OWNER_ADMIN_NUMERIC_ID) return false
+
+        val userDoc = db.collection(Constants.COLLECTION_USERS).document(user.uid).get(Source.SERVER).await()
+        val userNumId = userDoc.getString("numericId").orEmpty()
+        if (userNumId.isNotBlank() && userNumId != Constants.OWNER_ADMIN_NUMERIC_ID) return false
+
+        true
+    } catch (_: Exception) {
         false
     }
 }
@@ -63,6 +74,7 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
     LaunchedEffect(Unit) { allowed = checkIsAdmin() }
     var query by remember { mutableStateOf("") }
     var foundDoc by remember { mutableStateOf<DocumentSnapshot?>(null) }
+    var selectedSeal by remember { mutableStateOf(VerificationSealType.BLUE) }
     var msg by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -105,6 +117,8 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                 foundDoc = doc
                 if (doc == null) {
                     msg = "لم يتم العثور على حساب بهذا المعرّف"
+                } else {
+                    selectedSeal = VerificationSealType.fromKey(doc.getString("verificationType"))
                 }
             } catch (e: Exception) {
                 msg = "حصل خطأ: " + (e.message ?: "")
@@ -118,20 +132,46 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
             val targetDoc = foundDoc ?: return@launch
             busy = true
             msg = try {
-                val adminUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
+                val adminUser = FirebaseAuth.getInstance().currentUser
+                val adminUid = adminUser?.uid.orEmpty()
                 if (!checkIsAdmin() || adminUid.isBlank()) {
                     allowed = false
                     "غير مصرح لك بهذا الإجراء"
                 } else {
-                    targetDoc.reference.update(
+                    val now = System.currentTimeMillis()
+                    targetDoc.reference.set(
                         mapOf(
                             "isVerified" to value,
+                            "verificationType" to selectedSeal.key,
+                            "verificationExpiresAt" to 0L,
                             "verifiedByUid" to adminUid,
-                            "verifiedAt" to System.currentTimeMillis()
+                            "verifiedAt" to now
+                        ),
+                        SetOptions.merge()
+                    ).await()
+
+                    val opId = UUID.randomUUID().toString()
+                    adminDb().collection(Constants.COLLECTION_VERIFICATION_LOGS).document(opId).set(
+                        mapOf(
+                            "logId" to opId,
+                            "operationId" to opId,
+                            "targetUid" to targetDoc.id,
+                            "targetNumericId" to targetDoc.getString("numericId").orEmpty(),
+                            "targetPublicId" to targetDoc.getString("publicId").orEmpty(),
+                            "targetName" to targetDoc.getString("displayName").orEmpty(),
+                            "action" to if (value) "GRANTED" else "REVOKED",
+                            "verificationType" to selectedSeal.key,
+                            "durationLabel" to if (value) "دائم" else "سحب",
+                            "expiresAt" to 0L,
+                            "adminUid" to adminUid,
+                            "adminEmail" to (adminUser?.email ?: Constants.SUPER_ADMIN_EMAIL),
+                            "note" to "توثيق من الأداة الإدارية المباشرة",
+                            "timestamp" to now
                         )
                     ).await()
+
                     foundDoc = targetDoc.reference.get().await()
-                    if (value) "تم منح التوثيق بنجاح" else "تم سحب التوثيق بنجاح"
+                    if (value) "تم منح ${selectedSeal.labelAr} بنجاح" else "تم سحب التوثيق بنجاح"
                 }
             } catch (e: Exception) {
                 "حصل خطأ: " + (e.message ?: "")
@@ -146,17 +186,17 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("لوحة المطور: توثيق الحسابات", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("لوحة المطور (${Constants.OWNER_ADMIN_NUMERIC_ID}): توثيق الحسابات", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 TextButton(onClick = onClose) { Text("رجوع") }
             }
             when (allowed) {
                 null -> CircularProgressIndicator()
-                false -> Text("غير مصرح لك بدخول هذه الصفحة")
+                false -> Text("غير مصرح لك بدخول هذه الصفحة (المالك ${Constants.OWNER_ADMIN_NUMERIC_ID} فقط)")
                 true -> {
                     OutlinedTextField(
                         value = query,
                         onValueChange = { query = it },
-                        label = { Text("معرّف WESAL الرقمي (5 أرقام) أو @username") },
+                        label = { Text("معرّف WESAL الرقمي أو @username") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -172,22 +212,36 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                         val numericId = doc.getString("numericId").orEmpty()
                         val publicId = doc.getString("publicId").orEmpty()
                         val verified = doc.getBoolean("isVerified") == true
+                        val verType = doc.getString("verificationType") ?: "BLUE"
                         Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 WesalNameWithBadge(
                                     name = name,
                                     isVerified = verified,
+                                    verificationType = verType,
                                     fontWeight = FontWeight.Bold
                                 )
                                 if (numericId.isNotBlank()) Text("ID: $numericId")
                                 if (publicId.isNotBlank()) Text("@$publicId")
-                                Text(if (verified) "الحالة: حساب موثّق" else "الحالة: غير موثّق")
+                                Text(if (verified) "الحالة: موثّق ($verType)" else "الحالة: غير موثّق")
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    VerificationSealType.entries.forEach { seal ->
+                                        FilterChip(
+                                            selected = selectedSeal == seal,
+                                            onClick = { selectedSeal = seal },
+                                            leadingIcon = { WesalVerifiedBadge(size = 16.dp, verificationType = seal.key) },
+                                            label = { Text(seal.labelAr) }
+                                        )
+                                    }
+                                }
+
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                     Button(
                                         onClick = { apply(true) },
-                                        enabled = !busy && !verified,
+                                        enabled = !busy,
                                         modifier = Modifier.weight(1f)
-                                    ) { Text("منح التوثيق") }
+                                    ) { Text(if (verified) "تحديث الشارة" else "منح التوثيق") }
                                     OutlinedButton(
                                         onClick = { apply(false) },
                                         enabled = !busy && verified,

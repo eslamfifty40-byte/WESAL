@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -55,6 +56,7 @@ fun ChannelsScreen(
     val myIds = remember(myChannels) { myChannels.map { it.channelId }.toSet() }
     val filteredPublic = remember(publicChannels, searchQuery, myIds) {
         publicChannels
+            .filter { it.isPublic && !it.isSuspended }
             .filterNot { it.channelId in myIds }
             .filter {
                 searchQuery.isBlank() ||
@@ -69,119 +71,19 @@ fun ChannelsScreen(
             contentPadding = PaddingValues(bottom = 88.dp, start = 12.dp, end = 12.dp, top = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = viewModel::updateSearch,
-                        placeholder = { Text(if (strings.isEnglish) "Search channels..." else "ابحث في القنوات...", color = palette.textMuted) },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.textSecondary) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(16.dp),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = palette.textPrimary,
-                            unfocusedTextColor = palette.textPrimary,
-                            cursorColor = palette.emerald,
-                            focusedBorderColor = palette.emerald,
-                            unfocusedBorderColor = palette.border,
-                            focusedPlaceholderColor = palette.textMuted,
-                            unfocusedPlaceholderColor = palette.textMuted,
-                            focusedContainerColor = palette.surface,
-                            unfocusedContainerColor = palette.surface
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilledTonalIconButton(onClick = { showInviteCodeDialog = true }) {
-                        Icon(Icons.Default.QrCode2, contentDescription = strings.requestToJoin)
-                    }
-                }
-            }
-
-            message?.let { msg ->
-                item {
-                    Surface(
-                        color = palette.emerald.copy(alpha = 0.14f),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.clearMessage() }
-                    ) {
-                        Text(
-                            text = msg,
-                            color = palette.emerald,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(12.dp)
-                        )
-                    }
-                }
-            }
-
-            if (filteredMy.isNotEmpty()) {
-                item {
-                    Text(
-                        text = if (strings.isEnglish) "My Channels" else "قنواتي المشترك بها",
-                        color = palette.emerald,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                    )
-                }
-                items(filteredMy, key = { "my_${it.channelId}" }) { channel ->
-                    ChannelDirectoryCard(
-                        channel = channel,
-                        myUid = viewModel.myUid,
-                        onOpen = { onOpenChannel(channel.channelId) },
-                        onSubscribe = { viewModel.subscribe(channel.channelId) }
-                    )
-                }
-            }
-
-            item {
-                Text(
-                    text = if (strings.isEnglish) "Discover Public Channels" else "استكشاف القنوات العامة",
-                    color = palette.textSecondary,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                )
-            }
-
-            if (filteredPublic.isEmpty()) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = palette.surface),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(20.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(Icons.Default.Campaign, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(36.dp))
-                            Text(
-                                text = if (strings.isEnglish) "No additional public channels yet" else "لا توجد قنوات عامة أخرى حالياً",
-                                color = palette.textSecondary
-                            )
-                        }
-                    }
-                }
-            } else {
-                items(filteredPublic, key = { "pub_${it.channelId}" }) { channel ->
-                    ChannelDirectoryCard(
-                        channel = channel,
-                        myUid = viewModel.myUid,
-                        onOpen = { onOpenChannel(channel.channelId) },
-                        onSubscribe = { viewModel.subscribe(channel.channelId) }
-                    )
-                }
-            }
+            channelsDirectorySection(
+                myUid = viewModel.myUid,
+                searchQuery = searchQuery,
+                message = message,
+                filteredMy = filteredMy,
+                filteredPublic = filteredPublic,
+                onSearchChange = viewModel::updateSearch,
+                onClearMessage = viewModel::clearMessage,
+                onOpenCreate = { showCreateDialog = true },
+                onOpenJoinByCode = { showInviteCodeDialog = true },
+                onOpenChannel = onOpenChannel,
+                onSubscribe = viewModel::subscribe
+            )
         }
 
         FloatingActionButton(
@@ -209,58 +111,243 @@ fun ChannelsScreen(
     }
 
     if (showInviteCodeDialog) {
-        var code by remember { mutableStateOf("") }
-        AlertDialog(
-            onDismissRequest = { showInviteCodeDialog = false },
-            containerColor = palette.surface,
-            title = {
-                Text(
-                    text = if (strings.isEnglish) "Join Channel by Code" else "الانضمام برمز قناة",
-                    color = palette.textPrimary
-                )
-            },
-            text = {
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it },
-                    label = { Text(if (strings.isEnglish) "Invite Code" else "رمز الدعوة") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = palette.textPrimary,
-                        unfocusedTextColor = palette.textPrimary,
-                        cursorColor = palette.emerald,
-                        focusedBorderColor = palette.emerald,
-                        unfocusedBorderColor = palette.border,
-                        focusedLabelColor = palette.emerald,
-                        unfocusedLabelColor = palette.textSecondary,
-                        focusedContainerColor = palette.surfaceElevated,
-                        unfocusedContainerColor = palette.surfaceElevated
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.joinByInviteCode(code) { chId ->
-                            showInviteCodeDialog = false
-                            onOpenChannel(chId)
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald)
-                ) {
-                    Text(strings.confirm)
+        JoinChannelCodeDialog(
+            onDismiss = { showInviteCodeDialog = false },
+            onJoin = { code ->
+                viewModel.joinByInviteCode(code) { chId ->
+                    showInviteCodeDialog = false
+                    onOpenChannel(chId)
                 }
-            },
-            dismissButton = {
-                TextButton(onClick = { showInviteCodeDialog = false }) { Text(strings.cancel) }
             }
         )
     }
 }
 
+fun LazyListScope.channelsDirectorySection(
+    myUid: String,
+    searchQuery: String,
+    message: String?,
+    filteredMy: List<WesalChannel>,
+    filteredPublic: List<WesalChannel>,
+    onSearchChange: (String) -> Unit,
+    onClearMessage: () -> Unit,
+    onOpenCreate: () -> Unit,
+    onOpenJoinByCode: () -> Unit,
+    onOpenChannel: (String) -> Unit,
+    onSubscribe: (String) -> Unit,
+    showSectionTitle: Boolean = false
+) {
+    if (showSectionTitle) {
+        item(key = "channels_header_row") {
+            val palette = WesalColors.current
+            val strings = LocalWesalStrings.current
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = strings.channelsDirectoryTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = palette.turquoise,
+                    fontWeight = FontWeight.Bold
+                )
+                FilledTonalButton(
+                    onClick = onOpenCreate,
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = palette.emerald.copy(alpha = 0.16f),
+                        contentColor = palette.emerald
+                    ),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(strings.createChannel, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
+    }
+
+    item(key = "channels_search_row") {
+        val palette = WesalColors.current
+        val strings = LocalWesalStrings.current
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = onSearchChange,
+                placeholder = { Text(if (strings.isEnglish) "Search channels..." else "ابحث في القنوات...", color = palette.textMuted) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.textSecondary) },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    cursorColor = palette.emerald,
+                    focusedBorderColor = palette.emerald,
+                    unfocusedBorderColor = palette.border,
+                    focusedPlaceholderColor = palette.textMuted,
+                    unfocusedPlaceholderColor = palette.textMuted,
+                    focusedContainerColor = palette.surface,
+                    unfocusedContainerColor = palette.surface
+                ),
+                modifier = Modifier.weight(1f)
+            )
+            FilledTonalIconButton(onClick = onOpenJoinByCode) {
+                Icon(Icons.Default.QrCode2, contentDescription = strings.requestToJoin, tint = palette.emerald)
+            }
+        }
+    }
+
+    message?.let { msg ->
+        item(key = "channels_status_banner") {
+            val palette = WesalColors.current
+            Surface(
+                color = palette.emerald.copy(alpha = 0.14f),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onClearMessage)
+            ) {
+                Text(
+                    text = msg,
+                    color = palette.emerald,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(12.dp)
+                )
+            }
+        }
+    }
+
+    if (filteredMy.isNotEmpty()) {
+        item(key = "channels_my_label") {
+            val palette = WesalColors.current
+            val strings = LocalWesalStrings.current
+            Text(
+                text = if (strings.isEnglish) "My Channels" else "قنواتي المشترك بها",
+                color = palette.emerald,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+            )
+        }
+        items(filteredMy, key = { "my_${it.channelId}" }) { channel ->
+            ChannelDirectoryCard(
+                channel = channel,
+                myUid = myUid,
+                onOpen = { onOpenChannel(channel.channelId) },
+                onSubscribe = { onSubscribe(channel.channelId) }
+            )
+        }
+    }
+
+    item(key = "channels_discover_label") {
+        val palette = WesalColors.current
+        val strings = LocalWesalStrings.current
+        Text(
+            text = if (strings.isEnglish) "Discover Public Channels" else "استكشاف القنوات العامة",
+            color = palette.textSecondary,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+        )
+    }
+
+    if (filteredPublic.isEmpty()) {
+        item(key = "channels_empty_public") {
+            val palette = WesalColors.current
+            val strings = LocalWesalStrings.current
+            Card(
+                colors = CardDefaults.cardColors(containerColor = palette.surface),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(Icons.Default.Campaign, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(36.dp))
+                    Text(
+                        text = if (strings.isEnglish) "No additional public channels yet" else "لا توجد قنوات عامة أخرى حالياً",
+                        color = palette.textSecondary
+                    )
+                }
+            }
+        }
+    } else {
+        items(filteredPublic, key = { "pub_${it.channelId}" }) { channel ->
+            ChannelDirectoryCard(
+                channel = channel,
+                myUid = myUid,
+                onOpen = { onOpenChannel(channel.channelId) },
+                onSubscribe = { onSubscribe(channel.channelId) }
+            )
+        }
+    }
+}
+
 @Composable
-private fun ChannelDirectoryCard(
+fun JoinChannelCodeDialog(
+    onDismiss: () -> Unit,
+    onJoin: (String) -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    var code by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = {
+            Text(
+                text = if (strings.isEnglish) "Join Channel by Code" else "الانضمام برمز قناة",
+                color = palette.textPrimary
+            )
+        },
+        text = {
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it },
+                label = { Text(if (strings.isEnglish) "Invite Code or QR Link" else "رمز الدعوة أو رابط QR") },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = palette.textPrimary,
+                    unfocusedTextColor = palette.textPrimary,
+                    cursorColor = palette.emerald,
+                    focusedBorderColor = palette.emerald,
+                    unfocusedBorderColor = palette.border,
+                    focusedLabelColor = palette.emerald,
+                    unfocusedLabelColor = palette.textSecondary,
+                    focusedContainerColor = palette.surfaceElevated,
+                    unfocusedContainerColor = palette.surfaceElevated
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { onJoin(code) },
+                enabled = code.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+            ) {
+                Text(strings.confirm)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(strings.cancel, color = palette.textSecondary) }
+        }
+    )
+}
+
+@Composable
+fun ChannelDirectoryCard(
     channel: WesalChannel,
     myUid: String,
     onOpen: () -> Unit,
@@ -292,6 +379,7 @@ private fun ChannelDirectoryCard(
                     WesalNameWithBadge(
                         name = channel.title,
                         isVerified = channel.isVerified,
+                        verificationType = channel.verificationType,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier.weight(1f, fill = false)
                     )
@@ -321,7 +409,7 @@ private fun ChannelDirectoryCard(
                     style = MaterialTheme.typography.labelSmall
                 )
             }
-            if (role == ChannelRole.NONE && channel.isPublic) {
+            if (role == ChannelRole.NONE && channel.isPublic && !channel.isSuspended) {
                 FilledTonalButton(
                     onClick = onSubscribe,
                     colors = ButtonDefaults.filledTonalButtonColors(
@@ -337,7 +425,7 @@ private fun ChannelDirectoryCard(
 }
 
 @Composable
-private fun CreateChannelDialog(
+fun CreateChannelDialog(
     onDismiss: () -> Unit,
     onCreate: (title: String, description: String, isPublic: Boolean, avatarUri: Uri?) -> Unit
 ) {
@@ -418,13 +506,13 @@ private fun CreateChannelDialog(
             Button(
                 onClick = { onCreate(title, description, isPublic, avatarUri) },
                 enabled = title.trim().isNotEmpty(),
-                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald)
+                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
             ) {
                 Text(strings.createChannel)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(strings.cancel) }
+            TextButton(onClick = onDismiss) { Text(strings.cancel, color = palette.textSecondary) }
         }
     )
 }
