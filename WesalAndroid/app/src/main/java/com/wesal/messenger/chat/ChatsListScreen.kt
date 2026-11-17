@@ -104,7 +104,7 @@ fun ChatsListScreen(
                 )
             )
 
-            if (hiddenCount > 0 || showHiddenChats) {
+            if (hiddenCount > 0 || showHiddenChats || viewModel.hasHiddenPassword()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

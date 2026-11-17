@@ -66,20 +66,24 @@ class UserPreferencesDataStore @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     private val encryptedPrefs: SharedPreferences by lazy {
-        runCatching {
+        fun create(): SharedPreferences {
             val masterKey = MasterKey.Builder(context)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
                 .build()
-            EncryptedSharedPreferences.create(
+            return EncryptedSharedPreferences.create(
                 context,
                 "wesal_secure_vault",
                 masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-        }.getOrElse {
-            context.getSharedPreferences("wesal_secure_vault_fallback", Context.MODE_PRIVATE)
         }
+        // Retry once before falling back, so the password is not split between two different files.
+        runCatching { create() }
+            .recoverCatching { Thread.sleep(150); create() }
+            .getOrElse {
+                context.getSharedPreferences("wesal_secure_vault_fallback", Context.MODE_PRIVATE)
+            }
     }
 
     private object Keys {
