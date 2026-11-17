@@ -53,6 +53,7 @@ import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalFrameLibrary
+import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
 import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.crop.CropActivity
