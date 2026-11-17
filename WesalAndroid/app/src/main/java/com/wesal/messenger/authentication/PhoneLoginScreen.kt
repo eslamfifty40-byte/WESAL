@@ -224,8 +224,9 @@ fun PhoneLoginScreen(
 
             // App Brand Header
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally)
             ) {
                 Box(
                     modifier = Modifier
@@ -248,7 +249,7 @@ fun PhoneLoginScreen(
                 }
                 Column {
                     Text(
-                        text = "WESAL | وِصال",
+                        text = "WESAL Messenger",
                         style = MaterialTheme.typography.labelLarge,
                         color = LoginCyan,
                         fontWeight = FontWeight.Bold

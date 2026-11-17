@@ -44,7 +44,7 @@ class MainActivity : AppCompatActivity() {
             // Keep the WESAL logo visible until the start destination is resolved,
             // and for at least ~900ms so it never flashes past or jumps straight to a screen.
             mainViewModel.startDestination.value is StartDestination.Loading ||
-                (android.os.SystemClock.elapsedRealtime() - splashStartedAt) < 900L
+                (android.os.SystemClock.elapsedRealtime() - splashStartedAt) < 0L
         }
         enableEdgeToEdge()
 
