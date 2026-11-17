@@ -1106,7 +1106,7 @@ class UserRepositoryImpl @Inject constructor(
         if (
             uid == null ||
             user == null ||
-            !email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) ||
+            !Constants.isSuperAdminEmail(email) ||
             !user.isEmailVerified
         ) {
             flowOf(false)
@@ -1121,7 +1121,7 @@ class UserRepositoryImpl @Inject constructor(
                         }
                         val docNumId = snap.getString("numericId").orEmpty()
                         val active = snap.getBoolean("active") != false &&
-                            (docNumId.isBlank() || docNumId == Constants.OWNER_ADMIN_NUMERIC_ID)
+                            (docNumId.isBlank() || docNumId in Constants.ADMIN_NUMERIC_IDS)
                         trySend(active)
                     }
                 awaitClose { reg.remove() }

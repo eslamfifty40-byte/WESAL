@@ -68,7 +68,7 @@ class ChatRepositoryImpl @Inject constructor(
         val currentUser = auth.currentUser ?: return false
         if (currentUser.uid != uid) return false
         val email = currentUser.email.orEmpty()
-        if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) || !currentUser.isEmailVerified) {
+        if (!Constants.isSuperAdminEmail(email) || !currentUser.isEmailVerified) {
             return false
         }
         val adminSnap = runCatching {
@@ -78,7 +78,7 @@ class ChatRepositoryImpl @Inject constructor(
             firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
         }.getOrNull()
         val numericId = userSnap?.getString("numericId").orEmpty()
-        return adminSnap.exists() && numericId == Constants.OWNER_ADMIN_NUMERIC_ID
+        return adminSnap.exists() && numericId in Constants.ADMIN_NUMERIC_IDS
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)

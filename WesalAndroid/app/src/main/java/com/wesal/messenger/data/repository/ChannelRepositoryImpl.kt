@@ -55,7 +55,7 @@ class ChannelRepositoryImpl @Inject constructor(
 
     private suspend fun isCurrentUserOwnerSuperAdmin(): Boolean {
         val user = auth.currentUser ?: return false
-        val emailMatches = user.email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true)
+        val emailMatches = Constants.isSuperAdminEmail(user.email)
         if (!emailMatches) return false
         return runCatching { userRepository.isSuperAdmin() }.getOrDefault(false)
     }
