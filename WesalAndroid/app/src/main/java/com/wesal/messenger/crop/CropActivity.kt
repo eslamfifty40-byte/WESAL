@@ -48,7 +48,6 @@ class CropActivity : ComponentActivity() {
     companion object {
         const val EXTRA_CROP_MODE = "wesal_crop_mode"
         const val EXTRA_TITLE = "wesal_crop_title"
-        const val EXTRA_BG_REMOVED = "wesal_crop_bg_removed"
         const val MODE_CIRCLE_AVATAR = "CIRCLE_AVATAR"
         const val MODE_COVER_16_9 = "COVER_16_9"
         const val MODE_SQUARE = "SQUARE"
@@ -96,10 +95,7 @@ class CropActivity : ComponentActivity() {
                             out.compress(Bitmap.CompressFormat.JPEG, 92, stream)
                         }
                     }
-                    val resultIntent = Intent()
-                        .setData(Uri.fromFile(f))
-                        .putExtra(EXTRA_BG_REMOVED, hasAlpha)
-                    setResult(RESULT_OK, resultIntent)
+                    setResult(RESULT_OK, Intent().setData(Uri.fromFile(f)))
                     finish()
                 }
             )

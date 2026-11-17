@@ -30,9 +30,6 @@ object Constants {
     const val COLLECTION_OFFICIAL_ANNOUNCEMENTS = "official_announcements"
     const val COLLECTION_SYSTEM_CONFIG = "system_config"
     const val COLLECTION_PRESENCE = "presence"
-    const val COLLECTION_PHONE_UNIQUENESS = "phone_uniqueness"
-    const val COLLECTION_MODERATORS = "moderators"
-    const val COLLECTION_FRAME_LIBRARY = "frame_library"
 
     const val CHANNEL_MESSAGES = "wesal_messages"
     const val CHANNEL_CALLS = "wesal_calls"
@@ -40,19 +37,19 @@ object Constants {
     const val CHANNEL_CHANNELS = "wesal_channels"
     const val CHANNEL_SYSTEM = "wesal_system"
 
-    // Approved Super Admin & Support identities
+    // Sole approved Owner Super Admin & Support identity (NEVER use old deleted IDs)
     const val SUPER_ADMIN_EMAIL = "eslamfifty40@gmail.com"
-    const val SECONDARY_ADMIN_EMAIL = "tbtbttbbt7@gmail.com"
     const val APK_INVITE_URL = "https://tinyurl.com/wesal-Messenger"
+    const val COLLECTION_PHONE_UNIQUENESS = "phone_uniqueness"
+    const val OFFICIAL_WESAL_SENDER_ID = "wesal_official"
+    const val OFFICIAL_WESAL_SENDER_NAME = "WESAL"
     val SUPER_ADMIN_EMAILS = listOf("eslamfifty40@gmail.com", "tbtbttbbt7@gmail.com")
     val CONFIRMED_SUPER_ADMIN_UIDS = listOf("fxKvKnbnksPqZy07rQjTzxIKzzP2", "D6Z812za9ZNUW0kAt7SaFD3a9UN2")
     const val CONFIRMED_SUPER_ADMIN_UID = "" // Optional hard lock once deployed
     const val OWNER_ADMIN_NUMERIC_ID = "10001"
-    const val SECONDARY_ADMIN_NUMERIC_ID = "10002"
+    val ADMIN_NUMERIC_IDS = listOf("10001", "10002")
     const val OFFICIAL_WESAL_TEAM_CHANNEL_ID = "wesal_official_team_channel"
     const val OFFICIAL_CHAT_PREFIX = "wesal_official_"
-    const val OFFICIAL_WESAL_SENDER_ID = "WESAL_SYSTEM"
-    const val OFFICIAL_WESAL_SENDER_NAME = "WESAL Messenger"
 
     // Official approved invite URL
     const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-Messenger"
@@ -70,21 +67,4 @@ object Constants {
 
     const val DEFAULT_COUNTRY_ISO = "EG"
     const val DEFAULT_COUNTRY_DIAL = "+20"
-
-    fun isSuperAdminEmail(email: String?): Boolean {
-        val clean = email?.trim().orEmpty()
-        if (clean.isBlank()) return false
-        return SUPER_ADMIN_EMAILS.any { it.equals(clean, ignoreCase = true) }
-    }
-
-    fun isSuperAdminUid(uid: String?): Boolean {
-        val clean = uid?.trim().orEmpty()
-        if (clean.isBlank()) return false
-        return CONFIRMED_SUPER_ADMIN_UIDS.contains(clean)
-    }
-
-    fun isProtectedAdminNumericId(numericId: String?): Boolean {
-        val clean = numericId?.trim().orEmpty()
-        return clean == OWNER_ADMIN_NUMERIC_ID || clean == SECONDARY_ADMIN_NUMERIC_ID
-    }
 }

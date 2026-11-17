@@ -91,66 +91,6 @@ data class PrivacySettings(
     val recordProfileVisits: Boolean = true
 )
 
-@Serializable
-data class AdminPermissions(
-    val canManageVerification: Boolean = false,
-    val canManageFramesAndNeon: Boolean = false,
-    val canManageLibrary: Boolean = false,
-    val canManageUsersModeration: Boolean = false,
-    val canInspectPrivateData: Boolean = false,
-    val canManageReports: Boolean = false,
-    val canBroadcastAnnouncements: Boolean = false,
-    val canManageAdmins: Boolean = false,
-    val isFullSuperAdmin: Boolean = false,
-    val active: Boolean = true,
-    val grantedByUid: String = "",
-    val updatedAt: Long = 0L
-) {
-    fun hasAnyAccess(): Boolean = active && (
-        isFullSuperAdmin ||
-            canManageVerification ||
-            canManageFramesAndNeon ||
-            canManageLibrary ||
-            canManageUsersModeration ||
-            canInspectPrivateData ||
-            canManageReports ||
-            canBroadcastAnnouncements ||
-            canManageAdmins
-        )
-
-    companion object {
-        fun fullSuperAdmin(grantedByUid: String = ""): AdminPermissions = AdminPermissions(
-            canManageVerification = true,
-            canManageFramesAndNeon = true,
-            canManageLibrary = true,
-            canManageUsersModeration = true,
-            canInspectPrivateData = true,
-            canManageReports = true,
-            canBroadcastAnnouncements = true,
-            canManageAdmins = true,
-            isFullSuperAdmin = true,
-            active = true,
-            grantedByUid = grantedByUid,
-            updatedAt = System.currentTimeMillis()
-        )
-    }
-}
-
-data class DynamicLibraryItem(
-    val id: String = "",
-    val kind: String = "FRAME", // "FRAME" or "ICON"
-    val titleAr: String = "",
-    val titleEn: String = "",
-    val category: String = "ADMIN", // "CUSTOMER" or "ADMIN"
-    val imageUrl: String = "",
-    val accentColorHex: Long = 0xFF00D9E8L,
-    val isHidden: Boolean = false,
-    val sortOrder: Int = 0,
-    val createdByUid: String = "",
-    val createdAt: Long = 0L,
-    val updatedAt: Long = 0L
-)
-
 data class WesalUser(
     val uid: String = "",
     val email: String = "",
@@ -170,15 +110,9 @@ data class WesalUser(
     val coverUrl: String = "",
     val birthDate: String = "", // ISO YYYY-MM-DD (timezone-independent)
     val frameId: String = "",
-    val frameUrl: String = "",
     val frameExpiresAt: Long = 0L, // 0 = permanent
-    val iconId: String = "",
-    val iconUrl: String = "",
-    val photoRemovedBg: Boolean = false,
-    val neonEnabled: Boolean = false,
     val neonColor: String = "", // "", RED, GREEN, BLACK, BLUE
     val neonGlowIntensity: Float = 0.7f,
-    val adminPermissions: AdminPermissions? = null,
     val facebookUrl: String = "",
     val instagramUrl: String = "",
     val businessHours: BusinessHoursSchedule = BusinessHoursSchedule(),
@@ -411,13 +345,7 @@ data class ChatPreview(
     val peerVerified: Boolean = false,
     val peerVerificationType: String = "BLUE",
     val peerFrameId: String = "",
-    val peerFrameUrl: String = "",
     val peerFrameExpiresAt: Long = 0L,
-    val peerIconUrl: String = "",
-    val peerPhotoRemovedBg: Boolean = false,
-    val peerNeonColor: String = "",
-    val peerNeonGlowIntensity: Float = 0.7f,
-    val peerNeonEnabled: Boolean = false,
     val officialWallpaperUrl: String = "",
     val lastMessagePreview: String = "",
     val lastMessageTime: Long = 0L,
