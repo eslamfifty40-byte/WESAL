@@ -39,6 +39,9 @@ object AvatarCropHelper {
 
     fun getCropOutput(resultData: Intent?): Uri? = resultData?.data
 
+    fun isBackgroundRemoved(resultData: Intent?): Boolean =
+        resultData?.getBooleanExtra(CropActivity.EXTRA_BG_REMOVED, false) == true
+
     fun createCameraPhotoUri(context: Context): Uri {
         val camDir = File(context.cacheDir, "camera").apply { mkdirs() }
         val photoFile = File(camDir, "avatar_cam_${System.currentTimeMillis()}.jpg")

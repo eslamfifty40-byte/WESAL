@@ -9,6 +9,7 @@ import android.net.Uri
 import android.util.Base64
 import com.google.firebase.FirebaseApp
 import com.google.firebase.storage.FirebaseStorage
+import com.google.firebase.storage.StorageMetadata
 import kotlinx.coroutines.tasks.await
 import java.io.ByteArrayOutputStream
 
@@ -21,20 +22,17 @@ fun uriToBase64Jpeg(ctx: Context, uri: Uri, maxSide: Int = 720, quality: Int = 7
     return uriToBase64Smart(ctx, uri, maxSide, quality, preserveAlphaIfPng = true)
 }
 
-fun uriToBase64Smart(
-    ctx: Context,
-    uri: Uri,
-    maxSide: Int = 720,
-    quality: Int = 78,
-    preserveAlphaIfPng: Boolean = true
-): String {
+private fun decodeArgbBitmap(ctx: Context, uri: Uri, maxSide: Int): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return ""
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
     var sample = 1
     while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide * 2) sample *= 2
-    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-    var bmp = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return ""
+    val opts = BitmapFactory.Options().apply {
+        inSampleSize = sample
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    var bmp = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
     val rot = try {
         ctx.contentResolver.openInputStream(uri)?.use {
             when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)) {
@@ -52,7 +50,7 @@ fun uriToBase64Smart(
         bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
     }
     val sc = maxSide.toFloat() / maxOf(bmp.width, bmp.height).coerceAtLeast(1)
-    val small = if (sc < 1f) {
+    return if (sc < 1f) {
         Bitmap.createScaledBitmap(
             bmp,
             (bmp.width * sc).toInt().coerceAtLeast(1),
@@ -62,35 +60,71 @@ fun uriToBase64Smart(
     } else {
         bmp
     }
+}
 
-    val isPngWithAlpha = preserveAlphaIfPng &&
-        (uri.toString().lowercase().endsWith(".png") || hasTransparency(small))
+fun uriToBase64Smart(
+    ctx: Context,
+    uri: Uri,
+    maxSide: Int = 720,
+    quality: Int = 78,
+    preserveAlphaIfPng: Boolean = true
+): String {
+    val small = decodeArgbBitmap(ctx, uri, maxSide) ?: return ""
+    val mimeHint = runCatching { ctx.contentResolver.getType(uri).orEmpty().lowercase() }.getOrDefault("")
+    val uriLower = uri.toString().lowercase()
+    val hasAlpha = hasTransparency(small)
+    val isAlphaCandidate = preserveAlphaIfPng &&
+        (hasAlpha || uriLower.endsWith(".png") || uriLower.endsWith(".webp") || mimeHint.contains("png") || mimeHint.contains("webp"))
 
-    if (isPngWithAlpha) {
+    if (isAlphaCandidate) {
+        // First try lossless PNG if compact enough
         val bos = ByteArrayOutputStream()
         small.compress(Bitmap.CompressFormat.PNG, 100, bos)
         val pngBytes = bos.toByteArray()
-        if (pngBytes.size <= 380_000) {
+        if (pngBytes.size <= 260_000) {
             return "data:image/png;base64," + Base64.encodeToString(pngBytes, Base64.NO_WRAP)
         }
-        val smallerSide = (maxSide * 0.65f).toInt().coerceAtLeast(240)
-        val sc2 = smallerSide.toFloat() / maxOf(small.width, small.height).coerceAtLeast(1)
-        val resized = if (sc2 < 1f) {
+
+        // Compress with WEBP (supports full ARGB transparency cleanly on API 26+) so alpha is NEVER lost to opaque JPEG
+        var targetBmp = small
+        repeat(3) { step ->
+            if (step > 0) {
+                val nextSide = (maxOf(targetBmp.width, targetBmp.height) * 0.72f).toInt().coerceAtLeast(192)
+                val sc2 = nextSide.toFloat() / maxOf(targetBmp.width, targetBmp.height).coerceAtLeast(1)
+                if (sc2 < 1f) {
+                    targetBmp = Bitmap.createScaledBitmap(
+                        targetBmp,
+                        (targetBmp.width * sc2).toInt().coerceAtLeast(1),
+                        (targetBmp.height * sc2).toInt().coerceAtLeast(1),
+                        true
+                    )
+                }
+            }
+            var wq = quality.coerceIn(55, 92)
+            while (wq >= 40) {
+                val webpBos = ByteArrayOutputStream()
+                @Suppress("DEPRECATION")
+                targetBmp.compress(Bitmap.CompressFormat.WEBP, wq, webpBos)
+                val webpBytes = webpBos.toByteArray()
+                if (webpBytes.size <= 280_000) {
+                    return "data:image/webp;base64," + Base64.encodeToString(webpBytes, Base64.NO_WRAP)
+                }
+                wq -= 12
+            }
+        }
+        // Final guaranteed compact PNG preserving transparency
+        val safeScale = 240f / maxOf(small.width, small.height).coerceAtLeast(1)
+        val tiny = if (safeScale < 1f) {
             Bitmap.createScaledBitmap(
                 small,
-                (small.width * sc2).toInt().coerceAtLeast(1),
-                (small.height * sc2).toInt().coerceAtLeast(1),
+                (small.width * safeScale).toInt().coerceAtLeast(1),
+                (small.height * safeScale).toInt().coerceAtLeast(1),
                 true
             )
-        } else {
-            small
-        }
-        val bos2 = ByteArrayOutputStream()
-        resized.compress(Bitmap.CompressFormat.PNG, 100, bos2)
-        val bytes2 = bos2.toByteArray()
-        if (bytes2.size <= 450_000) {
-            return "data:image/png;base64," + Base64.encodeToString(bytes2, Base64.NO_WRAP)
-        }
+        } else small
+        val finalBos = ByteArrayOutputStream()
+        tiny.compress(Bitmap.CompressFormat.PNG, 100, finalBos)
+        return "data:image/png;base64," + Base64.encodeToString(finalBos.toByteArray(), Base64.NO_WRAP)
     }
 
     var q = quality.coerceIn(35, 92)
@@ -100,105 +134,81 @@ fun uriToBase64Smart(
         small.compress(Bitmap.CompressFormat.JPEG, q, bos)
         bytes = bos.toByteArray()
         q -= 12
-    } while (bytes.size > 380_000 && q >= 40)
+    } while (bytes.size > 320_000 && q >= 40)
 
     return "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
 }
 
 private fun hasTransparency(bmp: Bitmap): Boolean {
     if (!bmp.hasAlpha()) return false
-    val stepX = maxOf(1, bmp.width / 16)
-    val stepY = maxOf(1, bmp.height / 16)
+    val stepX = maxOf(1, bmp.width / 20)
+    val stepY = maxOf(1, bmp.height / 20)
     for (y in 0 until bmp.height step stepY) {
         for (x in 0 until bmp.width step stepX) {
-            if (((bmp.getPixel(x, y) ushr 24) and 0xFF) < 250) return true
+            if (((bmp.getPixel(x, y) ushr 24) and 0xFF) < 248) return true
         }
     }
     return false
 }
 
-/**
- * Prepares a profile/cover image: fixes EXIF rotation, scales, keeps real transparency as PNG
- * (so cut-out portraits keep their alpha) and everything else as JPEG.
- * Returns the encoded bytes and their MIME type, or null if the image can't be read.
- */
-fun encodeProfileImage(ctx: Context, uri: Uri, maxSide: Int, quality: Int): Pair<ByteArray, String>? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide * 2) sample *= 2
-    val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
-    var bmp = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
-    val rot = try {
-        ctx.contentResolver.openInputStream(uri)?.use {
-            when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)) {
-                6 -> 90f; 3 -> 180f; 8 -> 270f; else -> 0f
-            }
-        } ?: 0f
-    } catch (_: Exception) { 0f }
-    if (rot != 0f) {
-        bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rot) }, true)
-    }
-    val sc = maxSide.toFloat() / maxOf(bmp.width, bmp.height).coerceAtLeast(1)
-    if (sc < 1f) {
-        bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * sc).toInt().coerceAtLeast(1), (bmp.height * sc).toInt().coerceAtLeast(1), true)
-    }
-    if (hasTransparency(bmp)) {
-        val bos = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
-        return bos.toByteArray() to "image/png"
-    }
-    val bos = ByteArrayOutputStream()
-    bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(40, 95), bos)
-    return bos.toByteArray() to "image/jpeg"
-}
-
-/**
- * Uploads a profile/cover image to Firebase Storage (explicit content-type, correct extension) and returns
- * the download URL. If Storage is unavailable the image is stored as a compact data: URI instead, so the
- * picture is ALWAYS persisted in Firebase and never silently lost.
- * Throws if the image cannot be read, so callers can show a real error.
- */
 suspend fun uploadProfileMediaToStorageOrSmallFallback(
     ctx: Context,
     storagePath: String,
     uri: Uri,
     maxSide: Int = 512,
-    quality: Int = 82
+    quality: Int = 84
 ): String {
-    val (bytes, mime) = encodeProfileImage(ctx, uri, maxSide, quality)
-        ?: throw IllegalStateException("تعذر قراءة الصورة المختارة")
-    val ext = if (mime == "image/png") "png" else "jpg"
-    val path = storagePath.substringBeforeLast('.', storagePath).let { base ->
-        // drop any old extension only when one was present
-        if (storagePath.endsWith(".jpg") || storagePath.endsWith(".png")) base else storagePath
-    } + "." + ext
-    val storageUrl = runCatching {
-        val ref = FirebaseStorage.getInstance().reference.child(path)
-        val meta = com.google.firebase.storage.StorageMetadata.Builder().setContentType(mime).build()
-        ref.putBytes(bytes, meta).await()
-        ref.downloadUrl.await().toString()
-    }.getOrNull()
-    if (!storageUrl.isNullOrBlank()) return storageUrl
+    val bmp = decodeArgbBitmap(ctx, uri, maxSide = maxSide)
+    val isAlpha = bmp != null && (
+        hasTransparency(bmp) ||
+            uri.toString().lowercase().endsWith(".png") ||
+            uri.toString().lowercase().endsWith(".webp") ||
+            ctx.contentResolver.getType(uri).orEmpty().lowercase().let { it.contains("png") || it.contains("webp") }
+        )
 
-    // Fallback: compact data URI kept in Firestore (must stay well below the 1 MB document limit)
-    var side = maxSide
-    var out = bytes
-    var m = mime
-    while (out.size > 380_000 && side > 200) {
-        side = (side * 0.8f).toInt()
-        val again = encodeProfileImage(ctx, uri, side, 78) ?: break
-        out = again.first; m = again.second
-    }
-    if (out.size > 420_000) {
-        // last resort for huge transparent PNGs: flatten to JPEG
-        val bmp = BitmapFactory.decodeByteArray(out, 0, out.size)
+    val ext = if (isAlpha) "png" else "jpg"
+    val mime = if (isAlpha) "image/png" else "image/jpeg"
+    val normalizedPath = storagePath.replace(Regex("\\.(jpg|jpeg|png|webp)$", RegexOption.IGNORE_CASE), "") + ".$ext"
+
+    val uploadBytes: ByteArray? = bmp?.let { target ->
         val bos = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, 70, bos)
-        out = bos.toByteArray(); m = "image/jpeg"
+        if (isAlpha) {
+            target.compress(Bitmap.CompressFormat.PNG, 100, bos)
+        } else {
+            target.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(60, 92), bos)
+        }
+        bos.toByteArray()
     }
-    return "data:$m;base64," + Base64.encodeToString(out, Base64.NO_WRAP)
+
+    val storageResult = runCatching {
+        val ref = FirebaseStorage.getInstance().reference.child(normalizedPath)
+        val metadata = StorageMetadata.Builder().setContentType(mime).build()
+        if (uploadBytes != null && uploadBytes.isNotEmpty()) {
+            ref.putBytes(uploadBytes, metadata).await()
+        } else {
+            ref.putFile(uri, metadata).await()
+        }
+        ref.downloadUrl.await().toString()
+    }
+    storageResult.getOrNull()?.let { if (it.isNotBlank()) return it }
+
+    // Safe compact fallback preserving transparency if Storage is unavailable/unconfigured
+    return uriToBase64Smart(ctx, uri, maxSide = maxSide, quality = quality, preserveAlphaIfPng = true)
+}
+
+suspend fun uploadLibraryImageOrDataUrl(
+    ctx: Context,
+    storagePath: String,
+    uri: Uri,
+    maxSide: Int = 512
+): String {
+    return uploadProfileMediaToStorageOrSmallFallback(
+        ctx = ctx,
+        storagePath = storagePath,
+        uri = uri,
+        maxSide = maxSide,
+        quality = 88
+    )
 }
 
 suspend fun uploadFileToFirebaseStorage(
