@@ -647,74 +647,6 @@ class UserRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun updateProfileImages(photoUri: Uri?, coverUri: Uri?): Result<Unit> = runCatching {
-        val uid = auth.currentUser?.uid ?: error("Not authenticated")
-        require(photoUri != null || coverUri != null) { "لا توجد صورة للحفظ" }
-        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        val updates = hashMapOf<String, Any>()
-        val privateUpdates = hashMapOf<String, Any>()
-        var newPhoto: String? = null
-        var newCover: String? = null
-
-        if (photoUri != null) {
-            newPhoto = withContext(Dispatchers.IO) {
-                uploadProfileMediaToStorageOrSmallFallback(
-                    ctx = context,
-                    storagePath = "avatars/$uid/avatar_${System.currentTimeMillis()}",
-                    uri = photoUri,
-                    maxSide = 640,
-                    quality = 86
-                )
-            }
-            check(newPhoto.isNotBlank()) { "فشل تجهيز الصورة الشخصية" }
-            updates["photoUrl"] = newPhoto
-            privateUpdates["hiddenPhotoUrl"] = newPhoto
-        }
-        if (coverUri != null) {
-            newCover = withContext(Dispatchers.IO) {
-                uploadProfileMediaToStorageOrSmallFallback(
-                    ctx = context,
-                    storagePath = "avatars/$uid/cover_${System.currentTimeMillis()}",
-                    uri = coverUri,
-                    maxSide = 1080,
-                    quality = 86
-                )
-            }
-            check(newCover.isNotBlank()) { "فشل تجهيز صورة الغلاف" }
-            updates["coverUrl"] = newCover
-            privateUpdates["hiddenCoverUrl"] = newCover
-        }
-
-        // 1) public profile document of THIS account (uid comes from FirebaseAuth, never from the UI)
-        userRef.set(updates, SetOptions.merge()).await()
-
-        // 2) read it back from the SERVER: a silently-dropped write must be reported as an error
-        val saved = userRef.get(com.google.firebase.firestore.Source.SERVER).await()
-        if (newPhoto != null) check(saved.getString("photoUrl") == newPhoto) { "لم يتم حفظ الصورة الشخصية على Firebase" }
-        if (newCover != null) check(saved.getString("coverUrl") == newCover) { "لم يتم حفظ صورة الغلاف على Firebase" }
-
-        // 3) private mirror (best effort, must not fail the save)
-        runCatching {
-            userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
-                .set(privateUpdates, SetOptions.merge()).await()
-        }
-        // 4) keep the local saved-accounts list in sync
-        runCatching {
-            saved.toWesalUser(includePrivateUnredacted = true).let { u ->
-                val providerIds = auth.currentUser?.providerData?.map { it.providerId }.orEmpty()
-                prefs.upsertSavedAccount(
-                    SavedWesalAccount(
-                        uid = u.uid, displayName = u.displayName, email = u.email, phoneNumber = u.phoneNumber,
-                        publicId = u.publicId, numericId = u.numericId, photoUrl = u.photoUrl,
-                        provider = if (providerIds.contains("google.com")) "google" else "email",
-                        lastUsedAt = System.currentTimeMillis()
-                    )
-                )
-            }
-        }
-        Unit
-    }
-
     private fun normalizeSocialUrl(raw: String): String {
         val clean = raw.trim()
         if (clean.isBlank()) return ""
@@ -1156,7 +1088,7 @@ class UserRepositoryImpl @Inject constructor(
     override suspend fun isSuperAdmin(): Boolean {
         val user = auth.currentUser ?: return false
         val email = user.email.orEmpty()
-        if (Constants.SUPER_ADMIN_EMAILS.none { it.equals(email, ignoreCase = true) }) return false
+        if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true)) return false
         if (!user.isEmailVerified) return false
 
         val saDoc = runCatching {
