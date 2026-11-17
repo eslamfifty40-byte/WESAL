@@ -143,11 +143,7 @@ class ChatRepositoryImpl @Inject constructor(
                         }
                     }
 
-                awaitClose {
-                    registration.remove()
-                    snapshots.close()
-                    worker.cancel()
-                }
+                awaitClose { registration.remove() }
             }
         }
     }
@@ -291,9 +287,7 @@ class ChatRepositoryImpl @Inject constructor(
         } else {
             callbackFlow {
                 val chatDoc = runCatching {
-                    kotlinx.coroutines.withTimeoutOrNull(4000L) {
-                        firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
-                    }
+                    firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
                 }.getOrNull()
                 val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
                 val isGroup = chatDoc?.getBoolean("isGroup") ?: false
@@ -303,20 +297,16 @@ class ChatRepositoryImpl @Inject constructor(
                     fetchUserCached(uid)?.publicKey?.let { if (it.isNotBlank()) peerPubKeyCache[uid] = it }
                 }
 
-                // Process snapshots one at a time (latest wins) so an older snapshot can never overwrite a newer one.
-                val snapshots = kotlinx.coroutines.channels.Channel<com.google.firebase.firestore.QuerySnapshot>(
-                    kotlinx.coroutines.channels.Channel.CONFLATED
-                )
-                val worker = launch(Dispatchers.Default) {
-                    for (snapshot in snapshots) {
-                        val messages = snapshot.documents.mapNotNull { doc ->
-                            runCatching {
+                val registration = firestore.collection(Constants.COLLECTION_CHATS)
+                    .document(chatId)
+                    .collection(Constants.COLLECTION_MESSAGES)
+                    .orderBy("timestamp", Query.Direction.ASCENDING)
+                    .addSnapshotListener { snapshot, error ->
+                        if (error != null || snapshot == null) return@addSnapshotListener
+                        launch(Dispatchers.Default) {
+                            val messages = snapshot.documents.mapNotNull { doc ->
                                 mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
-                            }.getOrNull()
-                        }
-                        // Show messages first; cache failures must never block the UI.
-                        trySend(messages)
-                        runCatching {
+                            }
                             withContext(Dispatchers.IO) {
                                 wesalDao.upsertMessages(messages.map {
                                     CachedMessageEntity(
@@ -337,17 +327,8 @@ class ChatRepositoryImpl @Inject constructor(
                                     )
                                 })
                             }
+                            trySend(messages)
                         }
-                    }
-                }
-
-                val registration = firestore.collection(Constants.COLLECTION_CHATS)
-                    .document(chatId)
-                    .collection(Constants.COLLECTION_MESSAGES)
-                    .orderBy("timestamp", Query.Direction.ASCENDING)
-                    .addSnapshotListener { snapshot, error ->
-                        if (error != null || snapshot == null) return@addSnapshotListener
-                        snapshots.trySend(snapshot)
                     }
 
                 awaitClose { registration.remove() }
