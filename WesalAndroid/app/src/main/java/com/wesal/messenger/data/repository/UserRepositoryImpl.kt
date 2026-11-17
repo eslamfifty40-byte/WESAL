@@ -1141,13 +1141,13 @@ class UserRepositoryImpl @Inject constructor(
         if (!saDoc.exists() || saDoc.getBoolean("active") == false) return false
 
         val saNumeric = saDoc.getString("numericId").orEmpty()
-        if (saNumeric.isNotBlank() && saNumeric != Constants.OWNER_ADMIN_NUMERIC_ID) return false
+        if (saNumeric.isNotBlank() && saNumeric !in Constants.ADMIN_NUMERIC_IDS) return false
 
         val userDoc = runCatching {
             firestore.collection(Constants.COLLECTION_USERS).document(user.uid).get(Source.SERVER).await()
         }.getOrNull()
         val userNumId = userDoc?.getString("numericId").orEmpty()
-        if (userNumId.isNotBlank() && userNumId != Constants.OWNER_ADMIN_NUMERIC_ID) return false
+        if (userNumId.isNotBlank() && userNumId !in Constants.ADMIN_NUMERIC_IDS) return false
 
         return true
     }
