@@ -52,6 +52,8 @@ import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalFrameCatalog
+import com.wesal.messenger.core.util.WesalFrameLibrary
+import androidx.compose.ui.graphics.Color
 import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.crop.CropActivity
 import com.wesal.messenger.domain.model.BusinessDayHours
@@ -158,6 +160,32 @@ class ProfileViewModel @Inject constructor(
                     navigateBackOnSuccess = false
                 )
             }
+        }
+    }
+
+    fun saveImages(photoUri: Uri?, coverUri: Uri?, isEn: Boolean) {
+        if (!networkMonitor.isCurrentlyConnected()) {
+            _uiStatus.value = ProfileUiStatus(
+                message = if (isEn) "No internet to upload photo" else "لا يوجد اتصال بالإنترنت لرفع الصورة",
+                isError = true
+            )
+            return
+        }
+        viewModelScope.launch {
+            _uiStatus.value = ProfileUiStatus(isSaving = true)
+            userRepository.updateProfileImages(photoUri, coverUri)
+                .onSuccess {
+                    _uiStatus.value = ProfileUiStatus(
+                        message = if (isEn) "Photo saved" else "تم حفظ الصورة على حسابك",
+                        isError = false
+                    )
+                }
+                .onFailure { err ->
+                    _uiStatus.value = ProfileUiStatus(
+                        message = (if (isEn) "Photo not saved: " else "لم يتم حفظ الصورة: ") + (err.localizedMessage ?: ""),
+                        isError = true
+                    )
+                }
         }
     }
 
@@ -354,6 +382,13 @@ fun ProfileScreen(
 
     var selectedAvatarUri by remember { mutableStateOf<Uri?>(null) }
     var selectedCoverUri by remember { mutableStateOf<Uri?>(null) }
+    // If a save failed, drop the local preview so the screen never shows a photo that was not really saved.
+    LaunchedEffect(uiStatus.message, uiStatus.isError) {
+        if (uiStatus.isError && uiStatus.message != null) {
+            selectedAvatarUri = null
+            selectedCoverUri = null
+        }
+    }
     var activeCropKind by remember { mutableStateOf(PendingCropKind.AVATAR) }
     var pendingRawUri by remember { mutableStateOf<Uri?>(null) }
     var pendingPreviewUri by remember { mutableStateOf<Uri?>(null) }
@@ -508,8 +543,15 @@ fun ProfileScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(16f / 9f)
-                            .clip(RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(20.dp))
                             .background(palette.surfaceElevated)
+                            .border(
+                                1.dp,
+                                androidx.compose.ui.graphics.Brush.horizontalGradient(
+                                    listOf(palette.turquoise.copy(alpha = 0.75f), palette.emerald.copy(alpha = 0.75f))
+                                ),
+                                RoundedCornerShape(20.dp)
+                            )
                             .clickable(enabled = !uiStatus.isSaving) {
                                 activeCropKind = PendingCropKind.COVER
                                 showSourceSheetFor = PendingCropKind.COVER
@@ -539,6 +581,16 @@ fun ProfileScreen(
                             }
                         }
 
+                        // dark fade at the bottom of the cover so the avatar / name blend into the page
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                                        colors = listOf(Color.Transparent, palette.background.copy(alpha = 0.10f), palette.background.copy(alpha = 0.80f))
+                                    )
+                                )
+                        )
                         Row(
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
@@ -578,7 +630,7 @@ fun ProfileScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(52.dp))
+                    Spacer(Modifier.height(74.dp))
                 }
 
                 Box(
@@ -593,7 +645,7 @@ fun ProfileScreen(
                     WesalAvatar(
                         imageUrl = selectedAvatarUri?.toString() ?: user?.photoUrl.orEmpty(),
                         name = name.ifBlank { "WESAL" },
-                        size = 108.dp,
+                        size = 132.dp,
                         frameId = user?.frameId.orEmpty(),
                         frameExpiresAt = user?.frameExpiresAt ?: 0L
                     )
@@ -614,7 +666,8 @@ fun ProfileScreen(
                     fontWeight = FontWeight.Bold,
                     verificationType = user!!.verificationType,
                     neonColor = activeNeon,
-                    neonGlowIntensity = activeGlow
+                    neonGlowIntensity = activeGlow,
+                    glowColor = WesalFrameLibrary.resolve(user?.frameId, user?.frameExpiresAt ?: 0L)?.glow
                 )
                 val immutableNumericId = user?.numericId.orEmpty()
                 if (immutableNumericId.isNotBlank()) {
@@ -643,7 +696,9 @@ fun ProfileScreen(
                 }
 
                 // Frame / Neon / Seal active summary badge if any customization is granted
-                val activeFrame = WesalFrameCatalog.findActiveFrame(user?.frameId, user?.frameExpiresAt ?: 0L)
+                val activeFrame = WesalFrameLibrary.resolve(user?.frameId, user?.frameExpiresAt ?: 0L)
+                val activeFrameTitleAr = activeFrame?.id?.let { WesalFrameLibrary.docs[it] }?.titleAr?.takeIf { it.isNotBlank() }
+                    ?: WesalFrameCatalog.allFrames.firstOrNull { it.id == activeFrame?.id }?.titleAr ?: activeFrame?.id.orEmpty()
                 val activeNeonPreset = NeonColorPreset.fromKey(user?.neonColor)
                 if (user?.isVerified == true || activeFrame != null || activeNeonPreset != NeonColorPreset.NONE) {
                     Surface(
@@ -667,7 +722,7 @@ fun ProfileScreen(
                             }
                             if (activeFrame != null) {
                                 Text(
-                                    text = if (strings.isEnglish) "Active Frame: ${activeFrame.titleEn}" else "الإطار المفعّل: ${activeFrame.titleAr}",
+                                    text = if (strings.isEnglish) "Active Frame: $activeFrameTitleAr" else "الإطار المفعّل: $activeFrameTitleAr",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = palette.turquoise
                                 )
@@ -1167,37 +1222,11 @@ fun ProfileScreen(
                 if (activeCropKind == PendingCropKind.COVER) {
                     selectedCoverUri = previewUri
                     pendingPreviewUri = null
-                    viewModel.saveFullProfile(
-                        displayName = name.ifBlank { user?.displayName.orEmpty() },
-                        bio = bio,
-                        publicId = publicId,
-                        photoUri = selectedAvatarUri,
-                        coverUri = previewUri,
-                        birthDate = birthDateIso,
-                        hideBirthDate = hideBirthDate,
-                        facebookUrl = facebookUrl,
-                        instagramUrl = instagramUrl,
-                        businessHours = businessHours,
-                        isEn = strings.isEnglish,
-                        navigateBackAfterSave = false
-                    )
+                    viewModel.saveImages(photoUri = null, coverUri = previewUri, isEn = strings.isEnglish)
                 } else {
                     selectedAvatarUri = previewUri
                     pendingPreviewUri = null
-                    viewModel.saveFullProfile(
-                        displayName = name.ifBlank { user?.displayName.orEmpty() },
-                        bio = bio,
-                        publicId = publicId,
-                        photoUri = previewUri,
-                        coverUri = selectedCoverUri,
-                        birthDate = birthDateIso,
-                        hideBirthDate = hideBirthDate,
-                        facebookUrl = facebookUrl,
-                        instagramUrl = instagramUrl,
-                        businessHours = businessHours,
-                        isEn = strings.isEnglish,
-                        navigateBackAfterSave = false
-                    )
+                    viewModel.saveImages(photoUri = previewUri, coverUri = null, isEn = strings.isEnglish)
                 }
             },
             onRecrop = {

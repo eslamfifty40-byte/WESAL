@@ -66,6 +66,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Frame / icon library managed from the admin panel (read: everyone signed in, write: super admin only)
+    match /frame_library/{frameId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
     // Verification Audit Logs
     match /verification_audit_logs/{logId} {
       allow read: if isSuperAdmin();

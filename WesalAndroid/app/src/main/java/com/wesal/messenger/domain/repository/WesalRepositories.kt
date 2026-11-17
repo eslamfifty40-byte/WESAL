@@ -66,6 +66,8 @@ interface UserRepository {
         instagramUrl: String? = null,
         businessHours: BusinessHoursSchedule? = null
     ): Result<Unit>
+    /** Saves ONLY the profile photo and/or cover (independent of name / ID / birth-date validation) and verifies it on the server. */
+    suspend fun updateProfileImages(photoUri: Uri?, coverUri: Uri?): Result<Unit>
     suspend fun ensureNumericIdAssigned(): String
     suspend fun updateOptionalPhone(rawPhone: String): Result<Unit>
     suspend fun updatePhoneValidated(e164Phone: String): Result<Unit>

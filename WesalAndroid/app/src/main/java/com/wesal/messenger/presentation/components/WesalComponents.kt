@@ -24,6 +24,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import com.wesal.messenger.core.util.ResolvedFrame
+import com.wesal.messenger.core.util.WesalFrameLibrary
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
@@ -79,79 +83,125 @@ fun WesalAvatar(
     size: Dp = 50.dp,
     isOnline: Boolean = false,
     frameId: String = "",
-    frameExpiresAt: Long = 0L
+    frameExpiresAt: Long = 0L,
+    glowEnabled: Boolean = true
 ) {
     val context = LocalContext.current
     val palette = WesalColors.current
     var loadFailed by remember(imageUrl) { mutableStateOf(false) }
+    var isCutout by remember(imageUrl) { mutableStateOf(false) }
     val imageModel = remember(imageUrl) { wesalImageModel(imageUrl) }
-    val activeFrame = remember(frameId, frameExpiresAt) {
-        WesalFrameCatalog.findActiveFrame(frameId, frameExpiresAt)
-    }
+    // Reads WesalFrameLibrary.docs (Compose state) so uploaded / replaced frames show up live.
+    val activeFrame = WesalFrameLibrary.resolve(frameId, frameExpiresAt)
 
     val containerSize = if (activeFrame != null) size * 1.20f else size
-    val innerAvatarSize = when {
-        activeFrame == null -> size
-        activeFrame.overlayOnTop -> size * 0.90f
-        else -> size * 0.80f
-    }
+    val innerAvatarSize = if (activeFrame == null) size else size * 0.90f
 
-    Box(modifier = Modifier.size(containerSize), contentAlignment = Alignment.Center) {
-        // Opaque JPG royal frames render UNDER the centered circular avatar so the face is never covered
-        if (activeFrame != null && !activeFrame.overlayOnTop) {
-            Image(
-                painter = painterResource(id = activeFrame.resId),
-                contentDescription = null,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(CircleShape),
-                contentScale = ContentScale.Crop
-            )
-        }
-
-        Box(modifier = Modifier.size(innerAvatarSize), contentAlignment = Alignment.Center) {
-            if (imageUrl.isNotBlank() && !loadFailed) {
-                AsyncImage(
-                    model = ImageRequest.Builder(context)
-                        .data(imageModel)
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = name,
-                    onError = { loadFailed = true },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .border(1.dp, palette.border, CircleShape),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "W"
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(CircleShape)
-                        .background(palette.emeraldDark.copy(alpha = 0.35f))
-                        .border(1.dp, palette.emerald.copy(alpha = 0.45f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = initial,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = palette.textPrimary
-                    )
-                }
-            }
-        }
-
-        // Transparent PNG frames overlay cleanly around the avatar border
-        if (activeFrame != null && activeFrame.overlayOnTop) {
-            Image(
-                painter = painterResource(id = activeFrame.resId),
+    @Composable
+    fun FrameLayer(frame: ResolvedFrame) {
+        if (frame.imageUrl.isNotBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(context).data(wesalImageModel(frame.imageUrl)).crossfade(false).build(),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
             )
+        } else {
+            Image(
+                painter = painterResource(id = frame.resId),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit
+            )
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(containerSize)
+            .then(
+                if (activeFrame != null && glowEnabled) {
+                    Modifier.drawBehind {
+                        // soft glow in the colour of the frame, behind everything
+                        drawCircle(
+                            brush = Brush.radialGradient(
+                                colors = listOf(
+                                    activeFrame.glow.copy(alpha = 0.55f),
+                                    activeFrame.glow.copy(alpha = 0.22f),
+                                    Color.Transparent
+                                ),
+                                center = center,
+                                radius = this.size.minDimension * 0.62f
+                            ),
+                            radius = this.size.minDimension * 0.62f,
+                            center = center
+                        )
+                    }
+                } else Modifier
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (activeFrame != null && isCutout) {
+            // Background-removed portrait: frame behind, person in front and slightly larger than the frame
+            FrameLayer(activeFrame)
+            if (imageUrl.isNotBlank() && !loadFailed) {
+                AsyncImage(
+                    model = ImageRequest.Builder(context).data(imageModel).build(),
+                    contentDescription = name,
+                    onError = { loadFailed = true },
+                    modifier = Modifier
+                        .fillMaxSize(0.98f)
+                        .align(Alignment.BottomCenter),
+                    contentScale = ContentScale.Fit,
+                    alignment = Alignment.BottomCenter
+                )
+            }
+        } else {
+            Box(modifier = Modifier.size(innerAvatarSize), contentAlignment = Alignment.Center) {
+                if (imageUrl.isNotBlank() && !loadFailed) {
+                    AsyncImage(
+                        model = ImageRequest.Builder(context)
+                            .data(imageModel)
+                            .crossfade(true)
+                            .build(),
+                        contentDescription = name,
+                        onError = { loadFailed = true },
+                        onSuccess = { st ->
+                            val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                            if (bmp != null && bmp.hasAlpha() && bmp.width > 8 && bmp.height > 8) {
+                                // transparent corners => this is a background-removed cut-out
+                                val c1 = (bmp.getPixel(1, 1) ushr 24) < 20
+                                val c2 = (bmp.getPixel(bmp.width - 2, 1) ushr 24) < 20
+                                isCutout = c1 && c2
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                            .border(1.dp, palette.border, CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "W"
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(CircleShape)
+                            .background(palette.emeraldDark.copy(alpha = 0.35f))
+                            .border(1.dp, palette.emerald.copy(alpha = 0.45f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = initial,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.textPrimary
+                        )
+                    }
+                }
+            }
+            // Transparent frame ring drawn OVER the circular avatar so the person is never hidden
+            if (activeFrame != null) FrameLayer(activeFrame)
         }
 
         if (isOnline) {
@@ -172,13 +222,15 @@ fun WesalVerifiedBadge(
     modifier: Modifier = Modifier,
     size: Dp = 17.dp,
     badgeColor: Color = WesalColors.current.verifiedBlue,
-    verificationType: String = "BLUE"
+    verificationType: String = "BLUE",
+    glowColor: Color? = null
 ) {
     WesalVerifiedMark(
         badgeSize = size,
         modifier = modifier,
         badgeColor = badgeColor,
-        verificationType = verificationType
+        verificationType = verificationType,
+        glowColor = glowColor
     )
 }
 
@@ -193,29 +245,76 @@ fun WesalNameWithBadge(
     badgeSize: Dp = 17.dp,
     verificationType: String = "BLUE",
     neonColor: String = "",
-    neonGlowIntensity: Float = 0.7f
+    neonGlowIntensity: Float = 0.7f,
+    glowColor: Color? = null
 ) {
+    val preset = NeonColorPreset.fromKey(neonColor)
+    val neonOn = preset != NeonColorPreset.NONE
+    val glow = neonGlowIntensity.coerceIn(0.15f, 1.0f)
     val resolvedStyle = wesalNeonTextStyle(
         baseStyle = style,
         neonColorKey = neonColor,
         glowIntensity = neonGlowIntensity,
         fallbackColor = color
     )
+    val badgeGlow = if (neonOn) preset.glowColor else glowColor
+    val capsuleShape = RoundedCornerShape(50)
+
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        Text(
-            text = name,
-            style = resolvedStyle,
-            fontWeight = fontWeight,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false)
-        )
+        if (neonOn) {
+            // Glowing "button-like" capsule around the name: soft outer glow + thin neon border, text stays crisp.
+            Box(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .drawBehind {
+                        drawRoundRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(preset.glowColor.copy(alpha = 0.28f * glow), Color.Transparent),
+                                center = center,
+                                radius = this.size.maxDimension * 0.75f
+                            ),
+                            topLeft = Offset(-6.dp.toPx(), -4.dp.toPx()),
+                            size = androidx.compose.ui.geometry.Size(this.size.width + 12.dp.toPx(), this.size.height + 8.dp.toPx()),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(100f, 100f)
+                        )
+                    }
+                    .clip(capsuleShape)
+                    .background(
+                        Brush.horizontalGradient(
+                            listOf(
+                                preset.glowColor.copy(alpha = 0.10f + 0.10f * glow),
+                                preset.glowColor.copy(alpha = 0.04f),
+                                preset.glowColor.copy(alpha = 0.10f + 0.10f * glow)
+                            )
+                        )
+                    )
+                    .border(1.dp, preset.glowColor.copy(alpha = 0.45f + 0.4f * glow), capsuleShape)
+                    .padding(horizontal = 12.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = name,
+                    style = resolvedStyle,
+                    fontWeight = fontWeight,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        } else {
+            Text(
+                text = name,
+                style = resolvedStyle,
+                fontWeight = fontWeight,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+        }
         if (isVerified) {
-            WesalVerifiedBadge(size = badgeSize, verificationType = verificationType)
+            WesalVerifiedBadge(size = badgeSize, verificationType = verificationType, glowColor = badgeGlow)
         }
     }
 }

@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -21,7 +22,8 @@ fun WesalVerifiedMark(
     badgeSize: Dp,
     modifier: Modifier = Modifier,
     badgeColor: Color = Color(0xFF1D9BF0),
-    verificationType: String = "BLUE"
+    verificationType: String = "BLUE",
+    glowColor: Color? = null
 ) {
     val sealType = VerificationSealType.fromKey(verificationType)
     val resolvedFill = when (sealType) {
@@ -34,9 +36,24 @@ fun WesalVerifiedMark(
         else -> resolvedFill
     }
 
+    // Same badge shape + check mark as before; only a neon halo is added behind it.
+    val halo = glowColor ?: when (sealType) {
+        VerificationSealType.BLACK -> Color(0xFF9FB4C7)
+        else -> resolvedFill
+    }
+
     Canvas(modifier.size(badgeSize)) {
         val s = this.size.minDimension
         val c = Offset(s / 2f, s / 2f)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(halo.copy(alpha = 0.75f), halo.copy(alpha = 0.30f), Color.Transparent),
+                center = c,
+                radius = s * 0.98f
+            ),
+            radius = s * 0.98f,
+            center = c
+        )
         val star = Path()
         val n = 24
         for (i in 0 until n) {

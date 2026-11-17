@@ -19,6 +19,16 @@ service firebase.storage {
       allow delete: if isSignedIn() && request.auth.uid == userId;
     }
 
+    match /frame_library/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() &&
+        request.auth.token.email == 'eslamfifty40@gmail.com' &&
+        request.resource != null &&
+        request.resource.size <= 5 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if isSignedIn() && request.auth.token.email == 'eslamfifty40@gmail.com';
+    }
+
     match /group_avatars/{groupId}/{fileName} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn() &&

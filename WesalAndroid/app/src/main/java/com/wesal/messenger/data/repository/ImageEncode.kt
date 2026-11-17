@@ -117,6 +117,49 @@ private fun hasTransparency(bmp: Bitmap): Boolean {
     return false
 }
 
+/**
+ * Prepares a profile/cover image: fixes EXIF rotation, scales, keeps real transparency as PNG
+ * (so cut-out portraits keep their alpha) and everything else as JPEG.
+ * Returns the encoded bytes and their MIME type, or null if the image can't be read.
+ */
+fun encodeProfileImage(ctx: Context, uri: Uri, maxSide: Int, quality: Int): Pair<ByteArray, String>? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / sample > maxSide * 2) sample *= 2
+    val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
+    var bmp = ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
+    val rot = try {
+        ctx.contentResolver.openInputStream(uri)?.use {
+            when (ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)) {
+                6 -> 90f; 3 -> 180f; 8 -> 270f; else -> 0f
+            }
+        } ?: 0f
+    } catch (_: Exception) { 0f }
+    if (rot != 0f) {
+        bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rot) }, true)
+    }
+    val sc = maxSide.toFloat() / maxOf(bmp.width, bmp.height).coerceAtLeast(1)
+    if (sc < 1f) {
+        bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * sc).toInt().coerceAtLeast(1), (bmp.height * sc).toInt().coerceAtLeast(1), true)
+    }
+    if (hasTransparency(bmp)) {
+        val bos = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, bos)
+        return bos.toByteArray() to "image/png"
+    }
+    val bos = ByteArrayOutputStream()
+    bmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(40, 95), bos)
+    return bos.toByteArray() to "image/jpeg"
+}
+
+/**
+ * Uploads a profile/cover image to Firebase Storage (explicit content-type, correct extension) and returns
+ * the download URL. If Storage is unavailable the image is stored as a compact data: URI instead, so the
+ * picture is ALWAYS persisted in Firebase and never silently lost.
+ * Throws if the image cannot be read, so callers can show a real error.
+ */
 suspend fun uploadProfileMediaToStorageOrSmallFallback(
     ctx: Context,
     storagePath: String,
@@ -124,14 +167,38 @@ suspend fun uploadProfileMediaToStorageOrSmallFallback(
     maxSide: Int = 512,
     quality: Int = 82
 ): String {
-    val storageResult = runCatching {
-        val ref = FirebaseStorage.getInstance().reference.child(storagePath)
-        ref.putFile(uri).await()
+    val (bytes, mime) = encodeProfileImage(ctx, uri, maxSide, quality)
+        ?: throw IllegalStateException("تعذر قراءة الصورة المختارة")
+    val ext = if (mime == "image/png") "png" else "jpg"
+    val path = storagePath.substringBeforeLast('.', storagePath).let { base ->
+        // drop any old extension only when one was present
+        if (storagePath.endsWith(".jpg") || storagePath.endsWith(".png")) base else storagePath
+    } + "." + ext
+    val storageUrl = runCatching {
+        val ref = FirebaseStorage.getInstance().reference.child(path)
+        val meta = com.google.firebase.storage.StorageMetadata.Builder().setContentType(mime).build()
+        ref.putBytes(bytes, meta).await()
         ref.downloadUrl.await().toString()
+    }.getOrNull()
+    if (!storageUrl.isNullOrBlank()) return storageUrl
+
+    // Fallback: compact data URI kept in Firestore (must stay well below the 1 MB document limit)
+    var side = maxSide
+    var out = bytes
+    var m = mime
+    while (out.size > 380_000 && side > 200) {
+        side = (side * 0.8f).toInt()
+        val again = encodeProfileImage(ctx, uri, side, 78) ?: break
+        out = again.first; m = again.second
     }
-    storageResult.getOrNull()?.let { if (it.isNotBlank()) return it }
-    // Safe compact avatar/cover fallback only (<= 380KB, never used for large attachments/videos)
-    return uriToBase64Smart(ctx, uri, maxSide = maxSide, quality = quality, preserveAlphaIfPng = true)
+    if (out.size > 420_000) {
+        // last resort for huge transparent PNGs: flatten to JPEG
+        val bmp = BitmapFactory.decodeByteArray(out, 0, out.size)
+        val bos = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.JPEG, 70, bos)
+        out = bos.toByteArray(); m = "image/jpeg"
+    }
+    return "data:$m;base64," + Base64.encodeToString(out, Base64.NO_WRAP)
 }
 
 suspend fun uploadFileToFirebaseStorage(

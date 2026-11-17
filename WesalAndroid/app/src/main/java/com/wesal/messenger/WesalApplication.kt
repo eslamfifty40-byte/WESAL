@@ -39,6 +39,7 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         configureFirestoreOfflinePersistence()
         configureAppCheck()
         createNotificationChannels()
+        com.wesal.messenger.core.util.WesalFrameLibrary.startWithAuth()
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
     }
 

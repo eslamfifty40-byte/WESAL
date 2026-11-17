@@ -48,6 +48,10 @@ import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.VerificationDurationOption
 import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFrameCatalog
+import androidx.compose.ui.draw.alpha
+import com.wesal.messenger.presentation.components.wesalImageModel
+import com.wesal.messenger.core.util.FramePickerItem
+import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.domain.model.AdminDashboardStats
 import com.wesal.messenger.domain.model.AdminReportRecord
 import com.wesal.messenger.domain.model.ChannelPostType
@@ -2299,6 +2303,83 @@ private fun AdminFrameAndNeonDialog(
     var customCount by remember { mutableStateOf("7") }
     var selectedNeon by remember(user.uid) { mutableStateOf(NeonColorPreset.fromKey(user.neonColor)) }
     var neonGlow by remember(user.uid) { mutableStateOf(user.neonGlowIntensity.coerceIn(0.15f, 1.0f)) }
+    var lastNeon by remember(user.uid) { mutableStateOf(NeonColorPreset.fromKey(user.neonColor).takeIf { it != NeonColorPreset.NONE } ?: NeonColorPreset.BLUE) }
+
+    // ---- frame library management (all changes are written to Firebase) ----
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var manageMode by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var statusMsg by remember { mutableStateOf<String?>(null) }
+    var menuFor by remember { mutableStateOf<FramePickerItem?>(null) }
+    var pickAction by remember { mutableStateOf("NEW") } // NEW | REPLACE
+    var replaceId by remember { mutableStateOf("") }
+    val imagePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                busy = true
+                val res = if (pickAction == "REPLACE") {
+                    WesalFrameLibrary.replaceFrameImage(ctx, replaceId, uri).map { replaceId }
+                } else {
+                    WesalFrameLibrary.uploadNewFrame(ctx, uri, "", if (modeTab == 1) "ADMIN" else "CUSTOMER")
+                }
+                busy = false
+                statusMsg = res.fold(
+                    onSuccess = { id -> if (pickAction == "NEW") selectedFrameId = id; "تم الحفظ على Firebase ✓" },
+                    onFailure = { "فشل الحفظ: ${it.localizedMessage ?: "خطأ غير معروف"}" }
+                )
+            }
+        }
+    }
+    fun runOp(block: suspend () -> Result<Unit>, ok: String) {
+        scope.launch {
+            busy = true
+            val r = block()
+            busy = false
+            statusMsg = r.fold({ ok }, { "فشلت العملية: ${it.localizedMessage ?: "خطأ"}" })
+        }
+    }
+
+    menuFor?.let { item ->
+        AlertDialog(
+            onDismissRequest = { menuFor = null },
+            containerColor = palette.surface,
+            title = { Text(item.title, color = palette.textPrimary, maxLines = 1) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                        selectedFrameId = item.id; menuFor = null
+                    }) { Text("تعيين هذا الإطار للمستخدم") }
+                    OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                        runOp({ WesalFrameLibrary.setHidden(item.id, !item.hidden) }, if (item.hidden) "تم إظهار الإطار" else "تم إخفاء الإطار")
+                        menuFor = null
+                    }) { Text(if (item.hidden) "إظهار الإطار" else "إخفاء الإطار") }
+                    OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                        pickAction = "REPLACE"; replaceId = item.id; menuFor = null
+                        imagePicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    }) { Text("استبدال صورة الإطار") }
+                    if (item.builtin && item.imageUrl.isNotBlank()) {
+                        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                            runOp({ WesalFrameLibrary.restoreOriginalImage(item.id) }, "تمت استعادة الصورة الأصلية")
+                            menuFor = null
+                        }) { Text("استعادة الصورة الأصلية") }
+                    }
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            runOp({ WesalFrameLibrary.setDeleted(item.id, !item.deleted) }, if (item.deleted) "تمت إعادة الإطار للمكتبة" else "تم حذف الإطار من المكتبة (المستخدمون الحاليون يحتفظون به)")
+                            menuFor = null
+                        },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
+                    ) { Text(if (item.deleted) "إعادة الإطار للمكتبة" else "حذف من المكتبة") }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { menuFor = null }) { Text("إغلاق") } }
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2330,21 +2411,43 @@ private fun AdminFrameAndNeonDialog(
                 }
 
                 TabRow(selectedTabIndex = modeTab, containerColor = palette.surfaceElevated) {
-                    Tab(selected = modeTab == 0, onClick = { modeTab = 0 }, text = { Text("إطارات العملاء (${WesalFrameCatalog.customerFrames.size})", maxLines = 1) })
-                    Tab(selected = modeTab == 1, onClick = { modeTab = 1 }, text = { Text("إطارات الإدارة (${WesalFrameCatalog.adminFrames.size})", maxLines = 1) })
+                    Tab(selected = modeTab == 0, onClick = { modeTab = 0 }, text = { Text("إطارات العملاء (${WesalFrameLibrary.pickerItems("CUSTOMER", false).size})", maxLines = 1) })
+                    Tab(selected = modeTab == 1, onClick = { modeTab = 1 }, text = { Text("إطارات الإدارة (${WesalFrameLibrary.pickerItems("ADMIN", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 2, onClick = { modeTab = 2 }, text = { Text("النيون", maxLines = 1) })
                 }
 
                 if (modeTab == 0 || modeTab == 1) {
-                    val framesList = if (modeTab == 0) WesalFrameCatalog.customerFrames else WesalFrameCatalog.adminFrames
+                    val framesList = WesalFrameLibrary.pickerItems(if (modeTab == 0) "CUSTOMER" else "ADMIN", manageMode)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = manageMode,
+                            onClick = { manageMode = !manageMode },
+                            label = { Text(if (manageMode) "وضع الإدارة: مفعّل" else "إدارة المكتبة", maxLines = 1) }
+                        )
+                        OutlinedButton(
+                            enabled = !busy,
+                            onClick = {
+                                pickAction = "NEW"
+                                imagePicker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            }
+                        ) { Text("+ رفع إطار", maxLines = 1) }
+                        if (busy) androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
+                    statusMsg?.let {
+                        Text(it, color = if (it.startsWith("فشل")) palette.error else palette.emerald, style = MaterialTheme.typography.labelMedium)
+                    }
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(4),
                         modifier = Modifier.height(210.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        gridItems(framesList, key = { it.id }) { spec ->
-                            val isSel = selectedFrameId == spec.id
+                        gridItems(framesList, key = { it.id }) { item ->
+                            val isSel = selectedFrameId == item.id
                             Box(
                                 modifier = Modifier
                                     .aspectRatio(1f)
@@ -2355,15 +2458,32 @@ private fun AdminFrameAndNeonDialog(
                                         color = if (isSel) palette.emerald else palette.border,
                                         shape = RoundedCornerShape(10.dp)
                                     )
-                                    .clickable { selectedFrameId = spec.id },
+                                    .clickable {
+                                        if (manageMode) menuFor = item else selectedFrameId = item.id
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Image(
-                                    painter = painterResource(id = spec.resId),
-                                    contentDescription = spec.titleAr,
-                                    modifier = Modifier.fillMaxSize().padding(3.dp),
-                                    contentScale = ContentScale.Fit
-                                )
+                                val dim = if (item.hidden || item.deleted) 0.35f else 1f
+                                if (item.imageUrl.isNotBlank()) {
+                                    coil.compose.AsyncImage(
+                                        model = wesalImageModel(item.imageUrl),
+                                        contentDescription = item.title,
+                                        modifier = Modifier.fillMaxSize().padding(3.dp).alpha(dim),
+                                        contentScale = ContentScale.Fit
+                                    )
+                                } else {
+                                    Image(
+                                        painter = painterResource(id = item.resId),
+                                        contentDescription = item.title,
+                                        modifier = Modifier.fillMaxSize().padding(3.dp).alpha(dim),
+                                        contentScale = ContentScale.Fit
+                                    )
+                                }
+                                if (item.deleted) {
+                                    Text("محذوف", color = palette.error, style = MaterialTheme.typography.labelSmall)
+                                } else if (item.hidden) {
+                                    Text("مخفي", color = palette.warning, style = MaterialTheme.typography.labelSmall)
+                                }
                             }
                         }
                     }
@@ -2393,7 +2513,17 @@ private fun AdminFrameAndNeonDialog(
                         )
                     }
                 } else {
-                    Text("اختر لون الاسم النيون:", color = palette.textSecondary, style = MaterialTheme.typography.labelMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Switch(
+                            checked = selectedNeon != NeonColorPreset.NONE,
+                            onCheckedChange = { on ->
+                                if (selectedNeon != NeonColorPreset.NONE) lastNeon = selectedNeon
+                                selectedNeon = if (on) lastNeon else NeonColorPreset.NONE
+                            }
+                        )
+                        Text(if (selectedNeon != NeonColorPreset.NONE) "الإضاءة النيون: تعمل" else "الإضاءة النيون: متوقفة", color = palette.textPrimary, style = MaterialTheme.typography.labelLarge)
+                    }
+                    Text("اختر لون الإضاءة:", color = palette.textSecondary, style = MaterialTheme.typography.labelMedium)
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         NeonColorPreset.entries.forEach { preset ->
                             FilterChip(

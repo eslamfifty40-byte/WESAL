@@ -39,8 +39,12 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+        val splashStartedAt = android.os.SystemClock.elapsedRealtime()
         splashScreen.setKeepOnScreenCondition {
-            mainViewModel.startDestination.value is StartDestination.Loading
+            // Keep the WESAL logo visible until the start destination is resolved,
+            // and for at least ~900ms so it never flashes past or jumps straight to a screen.
+            mainViewModel.startDestination.value is StartDestination.Loading ||
+                (android.os.SystemClock.elapsedRealtime() - splashStartedAt) < 900L
         }
         enableEdgeToEdge()
 
