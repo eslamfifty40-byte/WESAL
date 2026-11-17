@@ -498,6 +498,50 @@ class UserRepositoryImpl @Inject constructor(
         return matched
     }
 
+        override suspend fun updateProfileImages(photoUri: Uri?, coverUri: Uri?): Result<Unit> {
+        return try {
+            val uid = auth.currentUser?.uid ?: error("Not authenticated")
+            val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+            val updates = hashMapOf<String, Any?>()
+            if (photoUri != null) {
+                val url = withContext(Dispatchers.IO) {
+                    uploadProfileMediaToStorageOrSmallFallback(
+                        ctx = context,
+                        storagePath = "avatars/$uid/avatar_${System.currentTimeMillis()}.jpg",
+                        uri = photoUri,
+                        maxSide = 512,
+                        quality = 84
+                    )
+                }
+                if (url.isNotBlank()) {
+                    updates["photoUrl"] = url
+                    userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                        .set(mapOf("hiddenPhotoUrl" to url), SetOptions.merge()).await()
+                }
+            }
+            if (coverUri != null) {
+                val url = withContext(Dispatchers.IO) {
+                    uploadProfileMediaToStorageOrSmallFallback(
+                        ctx = context,
+                        storagePath = "avatars/$uid/cover_${System.currentTimeMillis()}.jpg",
+                        uri = coverUri,
+                        maxSide = 1080,
+                        quality = 84
+                    )
+                }
+                if (url.isNotBlank()) {
+                    updates["coverUrl"] = url
+                    userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                        .set(mapOf("hiddenCoverUrl" to url), SetOptions.merge()).await()
+                }
+            }
+            if (updates.isNotEmpty()) userRef.set(updates, SetOptions.merge()).await()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     override suspend fun updateProfile(
         displayName: String,
         bio: String,
