@@ -66,6 +66,7 @@ data class WesalFrameSpec(
 )
 
 object WesalFrameCatalog {
+    val builtinGlow: Map<String, Long> = emptyMap()
     const val DEFAULT_ALL_CUSTOMERS_FRAME_ID = "all_customers"
 
     val defaultCustomerFrame = WesalFrameSpec(
