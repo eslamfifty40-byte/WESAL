@@ -367,6 +367,23 @@ class AdminVerificationViewModel @Inject constructor(
         }
     }
 
+    fun deleteAccountPermanently(target: WesalUser, reason: String) {
+        if (target.numericId == Constants.OWNER_ADMIN_NUMERIC_ID) {
+            _statusMessage.value = "لا يمكن حذف حساب الأدمن الأساسي 10001"
+            return
+        }
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.deleteAccountPermanently(target.uid, reason)
+                .onSuccess {
+                    _statusMessage.value = "تم حذف الحساب نهائيًا"
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر حذف الحساب" }
+            _busy.value = false
+        }
+    }
+
     fun banUser(
         target: WesalUser,
         permanent: Boolean,

@@ -129,6 +129,7 @@ interface UserRepository {
         reason: String,
         blockEmailAndVerifiedPhone: Boolean = true
     ): Result<Unit>
+    suspend fun deleteAccountPermanently(targetUid: String, reason: String): Result<Unit>
     suspend fun unbanUser(targetUid: String, note: String = ""): Result<Unit>
     suspend fun warnUser(targetUid: String, reason: String): Result<Unit>
     fun observeAdminReports(): Flow<List<AdminReportRecord>>

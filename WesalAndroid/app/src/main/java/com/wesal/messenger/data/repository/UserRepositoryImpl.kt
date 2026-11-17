@@ -1530,6 +1530,29 @@ class UserRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun deleteAccountPermanently(targetUid: String, reason: String): Result<Unit> = runCatching {
+        require(isSuperAdmin()) { "هذه العملية للأدمن فقط" }
+        require(targetUid != auth.currentUser?.uid) { "لا يمكن حذف حسابك الحالي" }
+        val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
+        val snap = ref.get().await()
+        require(snap.exists()) { "الحساب غير موجود" }
+        val user = snap.toWesalUser(includePrivateUnredacted = true)
+        require(user.numericId != Constants.OWNER_ADMIN_NUMERIC_ID) { "لا يمكن حذف حساب الأدمن الأساسي" }
+        val now = System.currentTimeMillis()
+        ref.set(
+            mapOf(
+                "isBanned" to true,
+                "banType" to "PERMANENT",
+                "banReason" to reason.trim().ifBlank { "حذف الحساب نهائيًا" },
+                "banExpiresAt" to 0L,
+                "hiddenFromSearch" to true,
+                "deletedAt" to now,
+                "deletedPermanently" to true
+            ),
+            SetOptions.merge()
+        ).await()
+    }
+
     override suspend fun banUser(
         targetUid: String,
         permanent: Boolean,
