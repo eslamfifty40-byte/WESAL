@@ -150,7 +150,8 @@ fun WesalAvatar(
                     contentDescription = name,
                     onError = { loadFailed = true },
                     modifier = Modifier
-                        .fillMaxSize(0.98f)
+                        .requiredSize(containerSize * 1.14f)
+                    .offset(y = containerSize * 0.07f)
                         .align(Alignment.BottomCenter),
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.BottomCenter
@@ -163,6 +164,7 @@ fun WesalAvatar(
                         model = ImageRequest.Builder(context)
                             .data(imageModel)
                             .crossfade(true)
+                        .allowHardware(false)
                             .build(),
                         contentDescription = name,
                         onError = { loadFailed = true },

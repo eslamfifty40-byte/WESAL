@@ -13,7 +13,7 @@ service cloud.firestore {
     function isSuperAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/super_admins/$(request.auth.uid)) ||
-        request.auth.token.email == 'eslamfifty40@gmail.com'
+        request.auth.token.email in ['eslamfifty40@gmail.com', 'tbtbttbbt7@gmail.com']
       );
     }
 
@@ -130,7 +130,7 @@ service cloud.firestore {
       allow read: if isSignedIn() && request.auth.uid in resource.data.participantIds;
       allow create: if isSignedIn() &&
         request.auth.uid in request.resource.data.participantIds && (
-          request.resource.data.isGroup == true ||
+          request.resource.data.isGroup == true || isSuperAdmin() || chatId == 'wesal_official_' + request.auth.uid || (request.resource.data.isSupportChat == true && request.resource.data.participantIds.size() == 2 && (get(/databases/$(database)/documents/users/$(request.resource.data.participantIds[0])).data.numericId == '10001' || get(/databases/$(database)/documents/users/$(request.resource.data.participantIds[1])).data.numericId == '10001')) ||
           (
             request.resource.data.participantIds.size() == 2 &&
             areContactsAccepted(

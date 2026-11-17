@@ -1,0 +1,8 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424",
+      "rules": "firestore.rules"
+    }
+  ]
+}
