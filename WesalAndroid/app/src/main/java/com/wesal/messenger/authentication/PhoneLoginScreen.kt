@@ -1,6 +1,5 @@
 package com.wesal.messenger.authentication
 
-import androidx.compose.ui.res.painterResource
 import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
@@ -225,9 +224,8 @@ fun PhoneLoginScreen(
 
             // App Brand Header
             Row(
-                modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally)
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Box(
                     modifier = Modifier
@@ -242,15 +240,15 @@ fun PhoneLoginScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        painter = painterResource(id = com.wesal.messenger.R.mipmap.ic_launcher),
-                    contentDescription = "WESAL",
-                    tint = Color.Unspecified,
-                    modifier = Modifier.size(40.dp)
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = "WESAL",
+                        tint = LoginCyan,
+                        modifier = Modifier.size(30.dp)
                     )
                 }
                 Column {
                     Text(
-                        text = "WESAL Messenger",
+                        text = "WESAL | وِصال",
                         style = MaterialTheme.typography.labelLarge,
                         color = LoginCyan,
                         fontWeight = FontWeight.Bold
