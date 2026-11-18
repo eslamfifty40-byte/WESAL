@@ -22,11 +22,27 @@ service firebase.storage {
     match /frame_library/{fileName} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn() &&
-        request.auth.token.email in ['eslamfifty40@gmail.com', 'tbtbttbbt7@gmail.com'] &&
+        (request.auth.token.email == 'eslamfifty40@gmail.com' ||
+         request.auth.token.email == 'tbtbttbbt7@gmail.com') &&
         request.resource != null &&
         request.resource.size <= 5 * 1024 * 1024 &&
         request.resource.contentType.matches('image/.*');
-      allow delete: if isSignedIn() && request.auth.token.email in ['eslamfifty40@gmail.com', 'tbtbttbbt7@gmail.com'];
+      allow delete: if isSignedIn() &&
+        (request.auth.token.email == 'eslamfifty40@gmail.com' ||
+         request.auth.token.email == 'tbtbttbbt7@gmail.com');
+    }
+
+    match /subscription_ids/{userId}/{fileName} {
+      allow read: if isSignedIn() && (
+        request.auth.uid == userId ||
+        request.auth.token.email == 'eslamfifty40@gmail.com' ||
+         request.auth.token.email == 'tbtbttbbt7@gmail.com'
+      );
+      allow create, update: if isSignedIn() && request.auth.uid == userId &&
+        request.resource != null &&
+        request.resource.size <= 10 * 1024 * 1024 &&
+        request.resource.contentType.matches('image/.*');
+      allow delete: if isSignedIn() && request.auth.uid == userId;
     }
 
     match /group_avatars/{groupId}/{fileName} {

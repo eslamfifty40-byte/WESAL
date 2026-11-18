@@ -13,8 +13,20 @@ service cloud.firestore {
     function isSuperAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/super_admins/$(request.auth.uid)) ||
-        request.auth.token.email in ['eslamfifty40@gmail.com', 'tbtbttbbt7@gmail.com']
+        request.auth.uid in ['fxKvKnbnksPqZy07rQjTzxIKzzP2', 'D6Z812za9ZNUW0kAt7SaFD3a9UN2'] ||
+        request.auth.token.email == 'eslamfifty40@gmail.com' ||
+        request.auth.token.email == 'tbtbttbbt7@gmail.com'
       );
+    }
+
+    function isActiveModerator() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/moderators/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/moderators/$(request.auth.uid)).data.active == true;
+    }
+
+    function isAdminOrMod() {
+      return isSuperAdmin() || isActiveModerator();
     }
 
     function areContactsAccepted(uidA, uidB) {
@@ -60,23 +72,75 @@ service cloud.firestore {
       );
     }
 
-    // Super Admin registry (managed only by Admin SDK / Console)
+    // Super Admin registry
     match /super_admins/{adminUid} {
       allow read: if isSignedIn();
       allow write: if false;
     }
 
-    // Frame / icon library managed from the admin panel (read: everyone signed in, write: super admin only)
-    match /frame_library/{frameId} {
+    // Delegated Moderators
+    match /moderators/{modUid} {
       allow read: if isSignedIn();
       allow create, update, delete: if isSuperAdmin();
     }
 
-    // Verification Audit Logs
+    // Global Appearance & Welcome Configuration
+    match /system_config/{docId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdminOrMod();
+    }
+
+    // Frame / icon library managed from the admin panel (read: everyone signed in, write: admins/mods)
+    match /frame_library/{frameId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdminOrMod();
+    }
+
+    // Verification & Subscription Requests
+    match /subscription_requests/{reqId} {
+      allow read: if isAdminOrMod() || (isSignedIn() && resource.data.userUid == request.auth.uid);
+      allow create: if isSignedIn() && request.resource.data.userUid == request.auth.uid;
+      allow update, delete: if isAdminOrMod();
+    }
+
+    // Verification & Admin & Hidden Audit Logs
     match /verification_audit_logs/{logId} {
-      allow read: if isSuperAdmin();
-      allow create: if isSuperAdmin() && request.resource.data.adminUid == request.auth.uid;
+      allow read: if isAdminOrMod();
+      allow create: if isAdminOrMod() && request.resource.data.adminUid == request.auth.uid;
       allow update, delete: if false;
+    }
+
+    match /admin_audit_logs/{logId} {
+      allow read: if isAdminOrMod();
+      allow create: if isAdminOrMod() && request.resource.data.adminUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /hidden_audit_logs/{logId} {
+      allow read: if isAdminOrMod();
+      allow create: if isAdminOrMod() && request.resource.data.adminUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /official_announcements/{annId} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdminOrMod();
+    }
+
+    match /banned_identifiers/{idHash} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdminOrMod();
+    }
+
+    match /wesal_id_index/{numId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if isAdminOrMod();
+    }
+
+    match /phone_uniqueness/{pHash} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSignedIn();
     }
 
     // Users collection
@@ -93,15 +157,15 @@ service cloud.firestore {
           'verifiedAt',
           'verificationNote'
         ])
-      ) || isSuperAdmin();
-      allow delete: if false;
+      ) || isAdminOrMod();
+      allow delete: if isSuperAdmin();
 
       match /sessions/{sessionId} {
         allow read, write, delete: if isOwner(userId);
       }
 
       match /private/{docId} {
-        allow read, write, delete: if isOwner(userId);
+        allow read, write, delete: if isOwner(userId) || isAdminOrMod();
       }
     }
 
@@ -130,7 +194,7 @@ service cloud.firestore {
       allow read: if isSignedIn() && request.auth.uid in resource.data.participantIds;
       allow create: if isSignedIn() &&
         request.auth.uid in request.resource.data.participantIds && (
-          request.resource.data.isGroup == true || isSuperAdmin() || chatId == 'wesal_official_' + request.auth.uid || (request.resource.data.isSupportChat == true && request.resource.data.participantIds.size() == 2 && (get(/databases/$(database)/documents/users/$(request.resource.data.participantIds[0])).data.numericId == '10001' || get(/databases/$(database)/documents/users/$(request.resource.data.participantIds[1])).data.numericId == '10001')) ||
+          request.resource.data.isGroup == true ||
           (
             request.resource.data.participantIds.size() == 2 &&
             areContactsAccepted(
@@ -260,10 +324,11 @@ service cloud.firestore {
       }
     }
 
-    // Abuse Reports (Write-only by reporter)
+    // Abuse Reports
     match /reports/{reportId} {
       allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
-      allow read, update, delete: if false;
+      allow read, update: if isAdminOrMod();
+      allow delete: if false;
     }
   }
 }

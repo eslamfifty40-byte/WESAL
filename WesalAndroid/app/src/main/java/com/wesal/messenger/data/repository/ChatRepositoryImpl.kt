@@ -173,6 +173,11 @@ class ChatRepositoryImpl @Inject constructor(
         var peerVerificationType = "BLUE"
         var peerFrameId = ""
         var peerFrameExpiresAt = 0L
+        var peerIconUrl = ""
+        var peerPhotoRemovedBg = false
+        var peerNeonColor = ""
+        var peerNeonGlowIntensity = 0.7f
+        var peerNeonEnabled = false
 
         val unreadCount = unreadMap[myUid]?.toInt() ?: 0
         val lastSenderId = doc.getString("lastMessageSenderId").orEmpty()
@@ -197,6 +202,11 @@ class ChatRepositoryImpl @Inject constructor(
                     peerVerificationType = peer.verificationType
                     peerFrameId = peer.frameId
                     peerFrameExpiresAt = peer.frameExpiresAt
+                    peerIconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(peer.iconId, peer.iconUrl)
+                    peerPhotoRemovedBg = peer.photoRemovedBg
+                    peerNeonColor = peer.neonColor
+                    peerNeonGlowIntensity = peer.neonGlowIntensity
+                    peerNeonEnabled = peer.neonEnabled
                 }
             }
         }
@@ -223,6 +233,11 @@ class ChatRepositoryImpl @Inject constructor(
             peerVerificationType = peerVerificationType,
             peerFrameId = peerFrameId,
             peerFrameExpiresAt = peerFrameExpiresAt,
+            peerIconUrl = peerIconUrl,
+            peerPhotoRemovedBg = peerPhotoRemovedBg,
+            peerNeonColor = peerNeonColor,
+            peerNeonGlowIntensity = peerNeonGlowIntensity,
+            peerNeonEnabled = peerNeonEnabled,
             officialWallpaperUrl = doc.getString("officialWallpaperUrl").orEmpty(),
             lastMessagePreview = sanitizedPreview,
             lastMessageTime = doc.getLong("lastMessageTime") ?: 0L,

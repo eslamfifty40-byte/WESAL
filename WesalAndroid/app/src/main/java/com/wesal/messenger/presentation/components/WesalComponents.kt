@@ -84,15 +84,29 @@ fun WesalAvatar(
     isOnline: Boolean = false,
     frameId: String = "",
     frameExpiresAt: Long = 0L,
-    glowEnabled: Boolean = true
+    glowEnabled: Boolean = true,
+    isCutout: Boolean = false,
+    iconUrl: String = "",
+    neonColor: String = "",
+    neonGlowIntensity: Float = 0.7f
 ) {
     val context = LocalContext.current
     val palette = WesalColors.current
     var loadFailed by remember(imageUrl) { mutableStateOf(false) }
-    var isCutout by remember(imageUrl) { mutableStateOf(false) }
+    var detectedCutout by remember(imageUrl, isCutout) { mutableStateOf(isCutout) }
     val imageModel = remember(imageUrl) { wesalImageModel(imageUrl) }
-    // Reads WesalFrameLibrary.docs (Compose state) so uploaded / replaced frames show up live.
     val activeFrame = WesalFrameLibrary.resolve(frameId, frameExpiresAt)
+    val neonPreset = NeonColorPreset.fromKey(neonColor)
+    val avatarGlowColor = when {
+        activeFrame != null && glowEnabled -> activeFrame.glow
+        neonPreset != NeonColorPreset.NONE && glowEnabled -> neonPreset.glowColor
+        else -> null
+    }
+    val avatarGlowAlpha = if (neonPreset != NeonColorPreset.NONE) {
+        0.35f + 0.35f * neonGlowIntensity.coerceIn(0.15f, 1.0f)
+    } else {
+        0.55f
+    }
 
     val containerSize = if (activeFrame != null) size * 1.20f else size
     val innerAvatarSize = if (activeFrame == null) size else size * 0.90f
@@ -120,14 +134,13 @@ fun WesalAvatar(
         modifier = Modifier
             .size(containerSize)
             .then(
-                if (activeFrame != null && glowEnabled) {
+                if (avatarGlowColor != null) {
                     Modifier.drawBehind {
-                        // soft glow in the colour of the frame, behind everything
                         drawCircle(
                             brush = Brush.radialGradient(
                                 colors = listOf(
-                                    activeFrame.glow.copy(alpha = 0.55f),
-                                    activeFrame.glow.copy(alpha = 0.22f),
+                                    avatarGlowColor.copy(alpha = avatarGlowAlpha),
+                                    avatarGlowColor.copy(alpha = avatarGlowAlpha * 0.4f),
                                     Color.Transparent
                                 ),
                                 center = center,
@@ -141,8 +154,7 @@ fun WesalAvatar(
             ),
         contentAlignment = Alignment.Center
     ) {
-        if (activeFrame != null && isCutout) {
-            // Background-removed portrait: frame behind, person in front and slightly larger than the frame
+        if (activeFrame != null && detectedCutout) {
             FrameLayer(activeFrame)
             if (imageUrl.isNotBlank() && !loadFailed) {
                 AsyncImage(
@@ -159,6 +171,8 @@ fun WesalAvatar(
             }
         } else {
             Box(modifier = Modifier.size(innerAvatarSize), contentAlignment = Alignment.Center) {
+                val borderColor = if (neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else palette.border
+                val borderWidth = if (neonPreset != NeonColorPreset.NONE) 1.8.dp else 1.dp
                 if (imageUrl.isNotBlank() && !loadFailed) {
                     AsyncImage(
                         model = ImageRequest.Builder(context)
@@ -171,16 +185,15 @@ fun WesalAvatar(
                         onSuccess = { st ->
                             val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
                             if (bmp != null && bmp.hasAlpha() && bmp.width > 8 && bmp.height > 8) {
-                                // transparent corners => this is a background-removed cut-out
                                 val c1 = (bmp.getPixel(1, 1) ushr 24) < 20
                                 val c2 = (bmp.getPixel(bmp.width - 2, 1) ushr 24) < 20
-                                isCutout = c1 && c2
+                                detectedCutout = c1 && c2
                             }
                         },
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(CircleShape)
-                            .border(1.dp, palette.border, CircleShape),
+                            .border(borderWidth, borderColor, CircleShape),
                         contentScale = ContentScale.Crop
                     )
                 } else {
@@ -190,7 +203,7 @@ fun WesalAvatar(
                             .fillMaxSize()
                             .clip(CircleShape)
                             .background(palette.emeraldDark.copy(alpha = 0.35f))
-                            .border(1.dp, palette.emerald.copy(alpha = 0.45f), CircleShape),
+                            .border(borderWidth, if (neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else palette.emerald.copy(alpha = 0.45f), CircleShape),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -202,8 +215,21 @@ fun WesalAvatar(
                     }
                 }
             }
-            // Transparent frame ring drawn OVER the circular avatar so the person is never hidden
             if (activeFrame != null) FrameLayer(activeFrame)
+        }
+
+        if (iconUrl.isNotBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(context).data(wesalImageModel(iconUrl)).crossfade(false).build(),
+                contentDescription = null,
+                modifier = Modifier
+                    .size((innerAvatarSize * 0.36f).coerceIn(16.dp, 26.dp))
+                    .align(Alignment.BottomStart)
+                    .clip(CircleShape)
+                    .background(palette.surface)
+                    .border(1.2.dp, palette.surface, CircleShape),
+                contentScale = ContentScale.Fit
+            )
         }
 
         if (isOnline) {
@@ -248,14 +274,16 @@ fun WesalNameWithBadge(
     verificationType: String = "BLUE",
     neonColor: String = "",
     neonGlowIntensity: Float = 0.7f,
+    neonEnabled: Boolean = true,
     glowColor: Color? = null
 ) {
     val preset = NeonColorPreset.fromKey(neonColor)
-    val neonOn = preset != NeonColorPreset.NONE
+    val neonOn = neonEnabled && preset != NeonColorPreset.NONE
     val glow = neonGlowIntensity.coerceIn(0.15f, 1.0f)
+    val effectiveNeonKey = if (neonOn) neonColor else ""
     val resolvedStyle = wesalNeonTextStyle(
         baseStyle = style,
-        neonColorKey = neonColor,
+        neonColorKey = effectiveNeonKey,
         glowIntensity = neonGlowIntensity,
         fallbackColor = color
     )

@@ -100,6 +100,7 @@ data class AdminPermissions(
     val canInspectPrivateData: Boolean = false,
     val canManageReports: Boolean = false,
     val canBroadcastAnnouncements: Boolean = false,
+    val canCustomizeGlobalTheme: Boolean = false,
     val canManageAdmins: Boolean = false,
     val isFullSuperAdmin: Boolean = false,
     val active: Boolean = true,
@@ -115,6 +116,7 @@ data class AdminPermissions(
             canInspectPrivateData ||
             canManageReports ||
             canBroadcastAnnouncements ||
+            canCustomizeGlobalTheme ||
             canManageAdmins
         )
 
@@ -127,6 +129,7 @@ data class AdminPermissions(
             canInspectPrivateData = true,
             canManageReports = true,
             canBroadcastAnnouncements = true,
+            canCustomizeGlobalTheme = true,
             canManageAdmins = true,
             isFullSuperAdmin = true,
             active = true,
@@ -135,6 +138,35 @@ data class AdminPermissions(
         )
     }
 }
+
+data class GlobalAppearanceConfig(
+    val enabled: Boolean = false,
+    val emeraldHex: Long = 0xFF10B981L,
+    val turquoiseHex: Long = 0xFF00D9E8L,
+    val backgroundHex: Long = 0L,
+    val surfaceHex: Long = 0L,
+    val textPrimaryHex: Long = 0L,
+    val iconTintHex: Long = 0L,
+    val updatedAt: Long = 0L,
+    val updatedByUid: String = ""
+)
+
+data class SubscriptionRequest(
+    val requestId: String = "",
+    val userUid: String = "",
+    val userName: String = "",
+    val userNumericId: String = "",
+    val userPublicId: String = "",
+    val requestType: String = "VERIFICATION_BLUE",
+    val desiredSeal: String = "BLUE",
+    val idDocumentUrl: String = "",
+    val note: String = "",
+    val status: String = "PENDING", // PENDING, APPROVED, REJECTED
+    val adminResponse: String = "",
+    val reviewedByUid: String = "",
+    val reviewedAt: Long = 0L,
+    val createdAt: Long = System.currentTimeMillis()
+)
 
 data class DynamicLibraryItem(
     val id: String = "",

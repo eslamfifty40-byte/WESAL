@@ -310,8 +310,23 @@ class AuthRepositoryImpl @Inject constructor(
         return snap?.getBoolean("globalCustomerFrameEnabled") ?: true
     }
 
-    private suspend fun allocateUniqueNumericId(uid: String): String {
+    private suspend fun allocateUniqueNumericId(uid: String, email: String = auth.currentUser?.email.orEmpty()): String {
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        val cleanEmail = email.trim()
+        if (Constants.SUPER_ADMIN_EMAIL.equals(cleanEmail, ignoreCase = true)) {
+            userRef.set(mapOf("numericId" to Constants.OWNER_ADMIN_NUMERIC_ID), SetOptions.merge()).await()
+            return Constants.OWNER_ADMIN_NUMERIC_ID
+        }
+        if (Constants.SECONDARY_ADMIN_EMAIL.equals(cleanEmail, ignoreCase = true)) {
+            userRef.set(
+                mapOf(
+                    "numericId" to Constants.SECONDARY_ADMIN_NUMERIC_ID,
+                    "hiddenFromSearch" to true
+                ),
+                SetOptions.merge()
+            ).await()
+            return Constants.SECONDARY_ADMIN_NUMERIC_ID
+        }
         val existingSnap = runCatching { userRef.get().await() }.getOrNull()
         val existing = existingSnap?.getString("numericId").orEmpty()
         if (WesalIdUtils.isValidNumericId(existing)) {
@@ -402,6 +417,7 @@ class AuthRepositoryImpl @Inject constructor(
             val uniquePublicId = WesalIdUtils.generateDefault(uid)
             val applyGlobalFrame = isGlobalCustomerFrameEnabled()
             val initialFrame = if (applyGlobalFrame) WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID else ""
+            val isSecondaryAdmin = Constants.SECONDARY_ADMIN_EMAIL.equals(email.trim(), ignoreCase = true)
             val newUserMap = hashMapOf(
                 "uid" to uid,
                 "email" to email.trim(),
@@ -418,6 +434,7 @@ class AuthRepositoryImpl @Inject constructor(
                 "birthDate" to "",
                 "frameId" to initialFrame,
                 "frameExpiresAt" to 0L,
+                "hiddenFromSearch" to isSecondaryAdmin,
                 "profileCompleted" to false,
                 "welcomeSent" to false,
                 "createdAt" to System.currentTimeMillis(),
@@ -438,7 +455,7 @@ class AuthRepositoryImpl @Inject constructor(
                 )
             )
             userRef.set(newUserMap, SetOptions.merge()).await()
-            val assignedNumericId = allocateUniqueNumericId(uid)
+            val assignedNumericId = allocateUniqueNumericId(uid, email)
             prefs.upsertSavedAccount(
                 SavedWesalAccount(
                     uid = uid,
@@ -505,11 +522,23 @@ class AuthRepositoryImpl @Inject constructor(
                 updateMap["isPhoneVerified"] = false
             }
 
+            val resolvedEmail = existingEmail.ifBlank { email.trim() }
+            if (Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true)) {
+                updateMap["hiddenFromSearch"] = true
+                if (existingNumericId != Constants.SECONDARY_ADMIN_NUMERIC_ID) {
+                    updateMap["numericId"] = Constants.SECONDARY_ADMIN_NUMERIC_ID
+                }
+            } else if (Constants.SUPER_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true)) {
+                if (existingNumericId != Constants.OWNER_ADMIN_NUMERIC_ID) {
+                    updateMap["numericId"] = Constants.OWNER_ADMIN_NUMERIC_ID
+                }
+            }
             userRef.set(updateMap, SetOptions.merge()).await()
-            val finalNumericId = if (WesalIdUtils.isValidNumericId(existingNumericId)) {
-                existingNumericId
-            } else {
-                allocateUniqueNumericId(uid)
+            val finalNumericId = when {
+                Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.SECONDARY_ADMIN_NUMERIC_ID
+                Constants.SUPER_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.OWNER_ADMIN_NUMERIC_ID
+                WesalIdUtils.isValidNumericId(existingNumericId) -> existingNumericId
+                else -> allocateUniqueNumericId(uid, resolvedEmail)
             }
             prefs.upsertSavedAccount(
                 SavedWesalAccount(
@@ -754,7 +783,7 @@ class AuthRepositoryImpl @Inject constructor(
         val uSnap = userRef.get().await()
         if (uSnap.getBoolean("welcomeSent") == true) return
         val numericId = uSnap.getString("numericId").orEmpty()
-        if (numericId == Constants.OWNER_ADMIN_NUMERIC_ID) return
+        if (Constants.isProtectedAdminNumericId(numericId)) return
 
         val welcomeCfgSnap = runCatching {
             firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
@@ -928,8 +957,8 @@ class AuthRepositoryImpl @Inject constructor(
             val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
             val snap = userRef.get().await()
             val numericId = snap.getString("numericId").orEmpty()
-            if (numericId == Constants.OWNER_ADMIN_NUMERIC_ID) {
-                return Result.failure(IllegalStateException("لا يمكن حذف حساب المالك الإداري الأساسي 10001 من التطبيق مباشرة"))
+            if (Constants.isProtectedAdminNumericId(numericId) || Constants.isSuperAdminEmail(firebaseUser.email) || Constants.isSuperAdminUid(uid)) {
+                return Result.failure(IllegalStateException("لا يمكن حذف حساب الإدارة الأساسي من التطبيق مباشرة"))
             }
 
             // Re-authenticate before deleting Firebase Auth account (Sec 42)

@@ -3,7 +3,9 @@ package com.wesal.messenger.admin
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -186,12 +188,12 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("لوحة المطور (${Constants.OWNER_ADMIN_NUMERIC_ID}): توثيق الحسابات", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                Text("لوحة المطور (${Constants.OWNER_ADMIN_NUMERIC_ID} / ${Constants.SECONDARY_ADMIN_NUMERIC_ID}): توثيق الحسابات", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                 TextButton(onClick = onClose) { Text("رجوع") }
             }
             when (allowed) {
                 null -> CircularProgressIndicator()
-                false -> Text("غير مصرح لك بدخول هذه الصفحة (المالك ${Constants.OWNER_ADMIN_NUMERIC_ID} فقط)")
+                false -> Text("غير مصرح لك بدخول هذه الصفحة (حسابات الإدارة المعتمدة فقط)")
                 true -> {
                     OutlinedTextField(
                         value = query,
@@ -225,7 +227,13 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                                 if (publicId.isNotBlank()) Text("@$publicId")
                                 Text(if (verified) "الحالة: موثّق ($verType)" else "الحالة: غير موثّق")
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                val isProtected = Constants.isProtectedAdminNumericId(numericId)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
                                     VerificationSealType.entries.forEach { seal ->
                                         FilterChip(
                                             selected = selectedSeal == seal,
@@ -244,7 +252,7 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                                     ) { Text(if (verified) "تحديث الشارة" else "منح التوثيق") }
                                     OutlinedButton(
                                         onClick = { apply(false) },
-                                        enabled = !busy && verified,
+                                        enabled = !busy && verified && !isProtected,
                                         modifier = Modifier.weight(1f)
                                     ) { Text("سحب التوثيق") }
                                 }

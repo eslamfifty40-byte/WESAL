@@ -97,9 +97,27 @@ interface UserRepository {
     fun observeProfileVisitors(): Flow<List<ProfileVisitor>>
     suspend fun clearProfileVisitors(): Result<Unit>
 
-    // Super Admin & Comprehensive 19-Section Management (10001 only)
+    // Super Admin, Delegated Moderators & Comprehensive 22-Section Management (10001 & 10002)
     fun observeIsSuperAdmin(): Flow<Boolean>
     suspend fun isSuperAdmin(): Boolean
+    fun observeMyAdminPermissions(): Flow<AdminPermissions>
+    fun observeModerators(): Flow<List<Pair<WesalUser, AdminPermissions>>>
+    suspend fun setModeratorPermissions(targetUid: String, permissions: AdminPermissions?): Result<Unit>
+    fun observeGlobalAppearance(): Flow<GlobalAppearanceConfig>
+    suspend fun updateGlobalAppearance(config: GlobalAppearanceConfig): Result<Unit>
+    fun observeSubscriptionRequests(): Flow<List<SubscriptionRequest>>
+    fun observeMySubscriptionRequests(): Flow<List<SubscriptionRequest>>
+    suspend fun submitSubscriptionRequest(
+        requestType: String,
+        desiredSeal: String,
+        idUri: Uri,
+        note: String
+    ): Result<Unit>
+    suspend fun reviewSubscriptionRequest(
+        requestId: String,
+        approved: Boolean,
+        adminNote: String
+    ): Result<Unit>
     suspend fun getAdminUsersList(limit: Int = 200): List<WesalUser>
     suspend fun adminSearchUsers(query: String): List<WesalUser>
     suspend fun adminGetUserFullDetails(targetUid: String, reason: String = "Admin inspection"): Result<WesalUser>
@@ -118,9 +136,15 @@ interface UserRepository {
         expiresAt: Long = 0L,
         durationLabel: String = ""
     ): Result<Unit>
+    suspend fun setAccountIcon(targetUid: String, iconId: String, iconUrl: String): Result<Unit>
     suspend fun setGlobalCustomerFrameEnabled(enabled: Boolean): Result<Int>
     suspend fun getGlobalCustomerFrameEnabled(): Boolean
-    suspend fun setAccountNeonStyle(targetUid: String, neonColor: String, glowIntensity: Float): Result<Unit>
+    suspend fun setAccountNeonStyle(
+        targetUid: String,
+        neonColor: String,
+        glowIntensity: Float,
+        enabled: Boolean = true
+    ): Result<Unit>
     suspend fun setAccountHiddenFromSearch(targetUid: String, hidden: Boolean, reason: String = ""): Result<Unit>
     suspend fun banUser(
         targetUid: String,
@@ -131,6 +155,7 @@ interface UserRepository {
     ): Result<Unit>
     suspend fun deleteAccountPermanently(targetUid: String, reason: String): Result<Unit>
     suspend fun unbanUser(targetUid: String, note: String = ""): Result<Unit>
+    suspend fun adminDeleteUser(targetUid: String, permanent: Boolean): Result<Unit>
     suspend fun warnUser(targetUid: String, reason: String): Result<Unit>
     fun observeAdminReports(): Flow<List<AdminReportRecord>>
     suspend fun updateReportStatus(reportId: String, status: String, adminNote: String = "", resolutionAction: String = ""): Result<Unit>

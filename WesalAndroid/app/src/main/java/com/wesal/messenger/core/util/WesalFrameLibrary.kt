@@ -29,7 +29,8 @@ import java.util.ArrayDeque
 data class FrameDoc(
     val id: String,
     val titleAr: String = "",
-    val category: String = "CUSTOMER", // CUSTOMER | ADMIN
+    val category: String = "CUSTOMER", // CUSTOMER | ADMIN | ICON
+    val kind: String = "FRAME", // FRAME | ICON
     val imageUrl: String = "",
     val glowColor: Long = 0L,
     val hidden: Boolean = false,
@@ -56,7 +57,8 @@ data class FramePickerItem(
     val glow: Color,
     val hidden: Boolean,
     val deleted: Boolean,
-    val builtin: Boolean
+    val builtin: Boolean,
+    val kind: String = "FRAME"
 )
 
 object WesalFrameLibrary {
@@ -87,10 +89,13 @@ object WesalFrameLibrary {
                 if (error != null || snap == null) return@addSnapshotListener
                 val map = HashMap<String, FrameDoc>()
                 for (d in snap.documents) {
+                    val cat = d.getString("category") ?: "CUSTOMER"
+                    val kind = d.getString("kind") ?: if (cat == "ICON") "ICON" else "FRAME"
                     map[d.id] = FrameDoc(
                         id = d.id,
                         titleAr = d.getString("titleAr").orEmpty(),
-                        category = d.getString("category") ?: "CUSTOMER",
+                        category = cat,
+                        kind = kind,
                         imageUrl = d.getString("imageUrl").orEmpty(),
                         glowColor = d.getLong("glowColor") ?: 0L,
                         hidden = d.getBoolean("hidden") ?: false,
@@ -115,6 +120,19 @@ object WesalFrameLibrary {
     }
 
     /**
+     * Resolves an icon URL. Even if an icon is deleted/hidden from the library, users who already
+     * have it keep displaying either the doc's imageUrl or the snapshot [fallbackUrl] on their user doc.
+     */
+    fun resolveIconUrl(iconId: String?, fallbackUrl: String = ""): String {
+        val id = iconId?.trim().orEmpty()
+        if (id.isNotBlank()) {
+            val fromLib = docs[id]?.imageUrl?.takeIf { it.isNotBlank() }
+            if (!fromLib.isNullOrBlank()) return fromLib
+        }
+        return fallbackUrl.trim()
+    }
+
+    /**
      * Resolves the frame a user is wearing. Deleted/hidden frames STILL resolve, so removing a frame
      * from the library never removes it from users who already have it.
      */
@@ -132,9 +150,30 @@ object WesalFrameLibrary {
         return null
     }
 
-    /** Frames offered in a picker for the given category (CUSTOMER or ADMIN). */
+    /** Frames or icons offered in a picker for the given category (CUSTOMER, ADMIN, or ICON). */
     fun pickerItems(category: String, includeHiddenAndDeleted: Boolean): List<FramePickerItem> {
         val out = ArrayList<FramePickerItem>()
+        if (category == "ICON") {
+            docs.values
+                .filter { (it.kind == "ICON" || it.category == "ICON") && it.imageUrl.isNotBlank() }
+                .sortedBy { it.createdAt }
+                .forEach { d ->
+                    if (!includeHiddenAndDeleted && (d.hidden || d.deleted)) return@forEach
+                    out += FramePickerItem(
+                        id = d.id,
+                        title = d.titleAr.ifBlank { "أيقونة" },
+                        resId = 0,
+                        imageUrl = d.imageUrl,
+                        glow = glowOf(d.id, d),
+                        hidden = d.hidden,
+                        deleted = d.deleted,
+                        builtin = false,
+                        kind = "ICON"
+                    )
+                }
+            return out
+        }
+
         val builtinList = if (category == "ADMIN") WesalFrameCatalog.adminFrames else WesalFrameCatalog.customerFrames
         for (spec in builtinList) {
             val doc = docs[spec.id]
@@ -149,16 +188,32 @@ object WesalFrameLibrary {
                 glow = glowOf(spec.id, doc),
                 hidden = hidden,
                 deleted = deleted,
-                builtin = true
+                builtin = true,
+                kind = "FRAME"
             )
         }
         val builtinIds = WesalFrameCatalog.allFrames.map { it.id }.toSet()
         docs.values
-            .filter { it.id !in builtinIds && it.category == category && it.imageUrl.isNotBlank() }
+            .filter {
+                it.id !in builtinIds &&
+                    it.kind != "ICON" &&
+                    it.category == category &&
+                    it.imageUrl.isNotBlank()
+            }
             .sortedBy { it.createdAt }
             .forEach { d ->
                 if (!includeHiddenAndDeleted && (d.hidden || d.deleted)) return@forEach
-                out += FramePickerItem(d.id, d.titleAr.ifBlank { d.id }, 0, d.imageUrl, glowOf(d.id, d), d.hidden, d.deleted, false)
+                out += FramePickerItem(
+                    id = d.id,
+                    title = d.titleAr.ifBlank { d.id },
+                    resId = 0,
+                    imageUrl = d.imageUrl,
+                    glow = glowOf(d.id, d),
+                    hidden = d.hidden,
+                    deleted = d.deleted,
+                    builtin = false,
+                    kind = "FRAME"
+                )
             }
         return out
     }
@@ -169,14 +224,27 @@ object WesalFrameLibrary {
 
     private fun col() = FirebaseFirestore.getInstance().collection(COLLECTION)
 
-    /** Uploads a NEW frame to the library. Returns the new frame id. */
-    suspend fun uploadNewFrame(ctx: Context, uri: Uri, titleAr: String, category: String): Result<String> = runCatching {
-        val id = (if (category == "ADMIN") "admin_x_" else "cust_x_") + System.currentTimeMillis()
+    /** Uploads a NEW frame or icon to the library. Returns the new item id. */
+    suspend fun uploadNewFrame(
+        ctx: Context,
+        uri: Uri,
+        titleAr: String,
+        category: String,
+        kind: String = if (category == "ICON") "ICON" else "FRAME"
+    ): Result<String> = runCatching {
+        val isIcon = kind == "ICON" || category == "ICON"
+        val prefix = when {
+            isIcon -> "icon_x_"
+            category == "ADMIN" -> "admin_x_"
+            else -> "cust_x_"
+        }
+        val id = prefix + System.currentTimeMillis()
         val (url, glow) = processAndStore(ctx, uri, id)
         col().document(id).set(
             mapOf(
-                "titleAr" to titleAr.ifBlank { "إطار جديد" },
-                "category" to category,
+                "titleAr" to titleAr.ifBlank { if (isIcon) "أيقونة جديدة" else "إطار جديد" },
+                "category" to if (isIcon) "ICON" else category,
+                "kind" to if (isIcon) "ICON" else "FRAME",
                 "imageUrl" to url,
                 "glowColor" to glow,
                 "hidden" to false,
@@ -190,10 +258,11 @@ object WesalFrameLibrary {
         id
     }
 
-    /** Replaces the image of an existing frame (built-in or custom). Users wearing it see the new image. */
+    /** Replaces the image of an existing frame or icon. Users wearing it see the new image. */
     suspend fun replaceFrameImage(ctx: Context, frameId: String, uri: Uri): Result<Unit> = runCatching {
         val (url, glow) = processAndStore(ctx, uri, frameId + "_" + System.currentTimeMillis())
         val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
+        val existingDoc = docs[frameId]
         val data = hashMapOf<String, Any>(
             "imageUrl" to url,
             "glowColor" to glow,
@@ -202,6 +271,10 @@ object WesalFrameLibrary {
         if (builtin != null) {
             data["builtin"] = true
             data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["kind"] = "FRAME"
+        } else if (existingDoc != null) {
+            data["kind"] = existingDoc.kind
+            data["category"] = existingDoc.category
         }
         col().document(frameId).set(data, SetOptions.merge()).await()
         verifyExists(frameId)
@@ -211,9 +284,16 @@ object WesalFrameLibrary {
         writeFlag(frameId, "hidden", hidden)
     }
 
-    /** Removes the frame from the library/pickers only. Users who already use it keep it. */
+    /** Removes the frame/icon from the library/pickers only. Users who already use it keep it via their saved URL snapshot. */
     suspend fun setDeleted(frameId: String, deleted: Boolean): Result<Unit> = runCatching {
         writeFlag(frameId, "deleted", deleted)
+    }
+
+    /** Permanently deletes a custom uploaded frame/icon document from the library collection without touching users' own user docs. */
+    suspend fun permanentlyDelete(frameId: String): Result<Unit> = runCatching {
+        val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
+        check(builtin == null) { "لا يمكن حذف الإطارات المدمجة نهائيًا؛ استخدم الإزالة من المكتبة" }
+        col().document(frameId).delete().await()
     }
 
     suspend fun rename(frameId: String, titleAr: String): Result<Unit> = runCatching {
@@ -227,10 +307,15 @@ object WesalFrameLibrary {
 
     private suspend fun writeFlag(frameId: String, key: String, value: Any) {
         val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
+        val existingDoc = docs[frameId]
         val data = hashMapOf<String, Any>(key to value, "updatedAt" to System.currentTimeMillis())
         if (builtin != null) {
             data["builtin"] = true
             data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["kind"] = "FRAME"
+        } else if (existingDoc != null) {
+            data["kind"] = existingDoc.kind
+            data["category"] = existingDoc.category
         }
         col().document(frameId).set(data, SetOptions.merge()).await()
     }

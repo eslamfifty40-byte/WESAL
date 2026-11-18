@@ -2,14 +2,21 @@ package com.wesal.messenger.settings
 
 import android.app.Activity
 import android.content.Context
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.*
@@ -17,7 +24,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -34,6 +43,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import coil.compose.AsyncImage
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.wesal.messenger.core.theme.WesalColors
@@ -41,18 +51,24 @@ import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.LocaleManager
+import com.wesal.messenger.core.util.VerificationSealType
+import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
+import com.wesal.messenger.domain.model.AdminPermissions
 import com.wesal.messenger.domain.model.DeviceSession
 import com.wesal.messenger.domain.model.PrivacySettings
 import com.wesal.messenger.domain.model.PrivacyVisibility
 import com.wesal.messenger.domain.model.SavedWesalAccount
+import com.wesal.messenger.domain.model.SubscriptionRequest
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalVerifiedBadge
+import com.wesal.messenger.presentation.components.wesalImageModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
@@ -75,6 +91,12 @@ class SettingsViewModel @Inject constructor(
     val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val adminPermissions: StateFlow<AdminPermissions> = userRepository.observeMyAdminPermissions()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AdminPermissions(active = false))
+
+    val mySubscriptionRequests: StateFlow<List<SubscriptionRequest>> = userRepository.observeMySubscriptionRequests()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val appSettings: StateFlow<AppUserSettings> = prefs.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUserSettings())
 
@@ -86,8 +108,37 @@ class SettingsViewModel @Inject constructor(
 
     val isSwitchingAccount = MutableStateFlow(false)
     val isDeletingAccount = MutableStateFlow(false)
+    val isSubmittingSubscription = MutableStateFlow(false)
     val statusMessage = MutableStateFlow<String?>(null)
     val sessionLinkToken = MutableStateFlow<String?>(null)
+
+    fun submitSubscriptionRequest(
+        requestType: String,
+        desiredSeal: String,
+        idUri: Uri,
+        note: String,
+        isEn: Boolean,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            isSubmittingSubscription.value = true
+            userRepository.submitSubscriptionRequest(requestType, desiredSeal, idUri, note)
+                .onSuccess {
+                    isSubmittingSubscription.value = false
+                    statusMessage.value = if (isEn) {
+                        "Request submitted! WESAL Admin will review your ID."
+                    } else {
+                        "تم إرسال طلب الاشتراك والتوثيق بنجاح للمراجعة الإدارية"
+                    }
+                    onSuccess()
+                }
+                .onFailure { err ->
+                    isSubmittingSubscription.value = false
+                    statusMessage.value = err.localizedMessage
+                        ?: if (isEn) "Failed to submit request" else "تعذر إرسال الطلب؛ حاول مجددًا"
+                }
+        }
+    }
 
     fun hasHiddenChatsPassword(): Boolean {
         val uid = authRepository.currentUserId.orEmpty()
@@ -288,11 +339,14 @@ fun SettingsScreen(
 
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
+    val adminPermissions by viewModel.adminPermissions.collectAsStateWithLifecycle()
+    val mySubscriptionRequests by viewModel.mySubscriptionRequests.collectAsStateWithLifecycle()
     val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
     val isSwitchingAccount by viewModel.isSwitchingAccount.collectAsStateWithLifecycle()
     val isDeletingAccount by viewModel.isDeletingAccount.collectAsStateWithLifecycle()
+    val isSubmittingSubscription by viewModel.isSubmittingSubscription.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
     val sessionLinkToken by viewModel.sessionLinkToken.collectAsStateWithLifecycle()
 
@@ -302,6 +356,7 @@ fun SettingsScreen(
     var showSessionsDialog by remember { mutableStateOf(false) }
     var showBlockedDialog by remember { mutableStateOf(false) }
     var showAccountsDialog by remember { mutableStateOf(false) }
+    var showSubscriptionsDialog by remember { mutableStateOf(false) }
     var showSignOutConfirm by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
     var cacheText by remember { mutableStateOf(viewModel.getCacheSizeMb()) }
@@ -379,7 +434,11 @@ fun SettingsScreen(
                         name = user?.displayName ?: "WESAL",
                         size = 64.dp,
                         frameId = user?.frameId.orEmpty(),
-                        frameExpiresAt = user?.frameExpiresAt ?: 0L
+                        frameExpiresAt = user?.frameExpiresAt ?: 0L,
+                        isCutout = user?.photoRemovedBg == true,
+                        iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
+                        neonColor = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
+                        neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
                     )
                     Column(modifier = Modifier.weight(1f)) {
                         WesalNameWithBadge(
@@ -390,7 +449,8 @@ fun SettingsScreen(
                             color = palette.textPrimary,
                             verificationType = user?.verificationType ?: "BLUE",
                             neonColor = user?.neonColor.orEmpty(),
-                            neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
+                            neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f,
+                            neonEnabled = user?.neonEnabled != false
                         )
                         val hiddenPhone = user?.privacySettings?.hidePhoneNumber == true
                         val contactLine = if (hiddenPhone) {
@@ -526,6 +586,19 @@ fun SettingsScreen(
                 showBlockedDialog = true
             }
 
+            SettingsRow(
+                icon = Icons.Default.VerifiedUser,
+                title = if (strings.isEnglish) "Subscriptions & Verification Requests" else "الاشتراكات وطلبات التوثيق",
+                subtitle = if (mySubscriptionRequests.any { it.status == "PENDING" }) {
+                    if (strings.isEnglish) "Pending review — tap to view status" else "لديك طلب قيد المراجعة — اضغط للمتابعة"
+                } else {
+                    if (strings.isEnglish) "Request verified badge with official ID" else "اطلب توثيق حسابك والشارات عبر صورة الهوية الرسمية"
+                },
+                tint = palette.verifiedBlue
+            ) {
+                showSubscriptionsDialog = true
+            }
+
             // Sec 24/25 & User Binding Admin Rule: 10001 Support In-App Chat (replaces external WhatsApp developer link)
             SettingsRow(
                 icon = Icons.Default.SupportAgent,
@@ -536,8 +609,18 @@ fun SettingsScreen(
                 viewModel.openSupportChatWith10001(strings.isEnglish, onOpenChat)
             }
 
-            // Sec 12 & Sec 51 & User Binding Admin Rule: "إدارة WESAL" ONLY visible for 10001 Super Admin, directly above Sign Out
-            if (isSuperAdmin) {
+            // Sec 12 & Sec 51 & User Binding Admin Rule: "إدارة WESAL" for Super Admins (10001 / 10002) & delegated moderators
+            if (isSuperAdmin || adminPermissions.hasAnyAccess()) {
+                val adminBadgeLabel = when {
+                    user?.numericId == Constants.OWNER_ADMIN_NUMERIC_ID ->
+                        if (strings.isEnglish) "WESAL Owner Console (ID: 10001)" else "لوحة تحكم المالك والإدارة الشاملة (ID: 10001)"
+                    user?.numericId == Constants.SECONDARY_ADMIN_NUMERIC_ID ->
+                        if (strings.isEnglish) "WESAL Super Admin Console (ID: 10002)" else "لوحة تحكم الإدارة الكاملة (ID: 10002)"
+                    adminPermissions.isFullSuperAdmin ->
+                        if (strings.isEnglish) "WESAL Super Admin Console" else "لوحة تحكم الإدارة الشاملة"
+                    else ->
+                        if (strings.isEnglish) "WESAL Assistant Moderator Console" else "لوحة تحكم المشرف المساعد"
+                }
                 Surface(
                     color = palette.verifiedBlue.copy(alpha = 0.10f),
                     shape = RoundedCornerShape(14.dp),
@@ -561,7 +644,7 @@ fun SettingsScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = if (strings.isEnglish) "WESAL Owner Console (ID: 10001)" else "لوحة تحكم المالك والإدارة الشاملة (ID: 10001)",
+                                text = adminBadgeLabel,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = palette.textSecondary
                             )
@@ -1093,6 +1176,190 @@ fun SettingsScreen(
                 }
             },
             confirmButton = { TextButton(onClick = { showBlockedDialog = false }) { Text(strings.close) } }
+        )
+    }
+
+    if (showSubscriptionsDialog) {
+        var selectedSeal by remember { mutableStateOf(VerificationSealType.BLUE) }
+        var idPhotoUri by remember { mutableStateOf<Uri?>(null) }
+        var requestNote by remember { mutableStateOf("") }
+        val idPicker = rememberLauncherForActivityResult(
+            ActivityResultContracts.PickVisualMedia()
+        ) { uri ->
+            if (uri != null) idPhotoUri = uri
+        }
+
+        AlertDialog(
+            onDismissRequest = { if (!isSubmittingSubscription) showSubscriptionsDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Subscriptions & Verification Requests" else "الاشتراكات وطلبات التوثيق",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Choose your desired verification seal and attach a clear personal ID photo for admin verification."
+                        } else {
+                            "اختر شارة التوثيق المطلوبة وأرفق صورة واضحة للهوية الرسمية لإرسال الطلب لإدارة WESAL."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary
+                    )
+                    Text(
+                        text = if (strings.isEnglish) "Desired Badge:" else "الشارة المطلوبة:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        VerificationSealType.entries.forEach { seal ->
+                            FilterChip(
+                                selected = selectedSeal == seal,
+                                onClick = { selectedSeal = seal },
+                                leadingIcon = { WesalVerifiedBadge(size = 16.dp, verificationType = seal.key) },
+                                label = { Text(if (strings.isEnglish) seal.labelEn else seal.labelAr, maxLines = 1) }
+                            )
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            idPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        enabled = !isSubmittingSubscription,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Badge, contentDescription = null, tint = palette.turquoise)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (idPhotoUri == null) {
+                                if (strings.isEnglish) "Attach Official ID Photo (Required)" else "إرفاق صورة الهوية الرسمية (إلزامي)"
+                            } else {
+                                if (strings.isEnglish) "Change Attached ID Photo" else "تغيير صورة الهوية المرفقة ✓"
+                            },
+                            color = palette.turquoise
+                        )
+                    }
+
+                    if (idPhotoUri != null) {
+                        AsyncImage(
+                            model = wesalImageModel(idPhotoUri.toString()),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(130.dp)
+                                .clip(RoundedCornerShape(10.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = requestNote,
+                        onValueChange = { requestNote = it },
+                        label = { Text(if (strings.isEnglish) "Reason / Notes (Optional)" else "ملاحظة أو سبب الطلب (اختياري)") },
+                        minLines = 2,
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (isSubmittingSubscription) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = palette.emerald)
+                    }
+
+                    if (mySubscriptionRequests.isNotEmpty()) {
+                        HorizontalDivider(color = palette.border)
+                        Text(
+                            text = if (strings.isEnglish) "Your Previous Requests (${mySubscriptionRequests.size})" else "طلباتك السابقة (${mySubscriptionRequests.size})",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        mySubscriptionRequests.take(5).forEach { req ->
+                            val statusColor = when (req.status) {
+                                "APPROVED" -> palette.emerald
+                                "REJECTED" -> palette.error
+                                else -> palette.warning
+                            }
+                            val statusLabel = when (req.status) {
+                                "APPROVED" -> if (strings.isEnglish) "Approved" else "تمت الموافقة"
+                                "REJECTED" -> if (strings.isEnglish) "Rejected" else "مرفوض"
+                                else -> if (strings.isEnglish) "Pending Review" else "قيد المراجعة"
+                            }
+                            Surface(
+                                color = palette.surfaceElevated,
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            WesalVerifiedBadge(size = 15.dp, verificationType = req.desiredSeal)
+                                            Text(req.desiredSeal, color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                        }
+                                        Text(statusLabel, color = statusColor, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    }
+                                    if (req.adminResponse.isNotBlank()) {
+                                        Text(
+                                            text = if (strings.isEnglish) "Admin: ${req.adminResponse}" else "رد الإدارة: ${req.adminResponse}",
+                                            color = palette.turquoise,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                    Text(
+                                        text = DateTimeUtils.formatChatListTime(req.createdAt),
+                                        color = palette.textMuted,
+                                        style = MaterialTheme.typography.labelSmall
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = idPhotoUri != null && !isSubmittingSubscription,
+                    onClick = {
+                        val uri = idPhotoUri ?: return@Button
+                        viewModel.submitSubscriptionRequest(
+                            requestType = "VERIFICATION_${selectedSeal.key}",
+                            desiredSeal = selectedSeal.key,
+                            idUri = uri,
+                            note = requestNote,
+                            isEn = strings.isEnglish
+                        ) {
+                            idPhotoUri = null
+                            requestNote = ""
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald)
+                ) {
+                    Text(if (strings.isEnglish) "Submit Request" else "إرسال الطلب")
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !isSubmittingSubscription, onClick = { showSubscriptionsDialog = false }) {
+                    Text(strings.close)
+                }
+            }
         )
     }
 }

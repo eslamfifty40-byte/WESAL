@@ -16,7 +16,7 @@ export default function App() {
       <div className="max-w-2xl w-full rounded-2xl bg-[#0E1418] border border-[#1E2B33] p-6 sm:p-8 space-y-6 shadow-2xl">
         <div className="flex items-center gap-4">
           <img
-            src="/assets/aistudio/file_00000000d0848210834307a6b050f559_b55a5899.png"
+            src="/wesal-icon.webp"
             alt="أيقونة وصال الرسمية"
             className="w-16 h-16 rounded-2xl border border-[#1E2B33] object-cover"
           />
@@ -32,7 +32,7 @@ export default function App() {
               <FolderArchive className="w-4 h-4 text-[#00E5FF]" />
               اسم الملف: <strong className="text-white">WesalAndroid.zip</strong>
             </span>
-            <span className="text-[#00C853] font-semibold">107 ملفاً مصدرياً</span>
+            <span className="text-[#00C853] font-semibold">187 ملفاً مصدرياً</span>
           </div>
 
           <a

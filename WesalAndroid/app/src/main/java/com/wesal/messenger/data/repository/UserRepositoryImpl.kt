@@ -16,7 +16,9 @@ import com.google.firebase.firestore.Source
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.PhoneUtils
+import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFrameCatalog
+import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.*
@@ -27,6 +29,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -119,6 +122,12 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
     val email = getString("email").orEmpty()
     val isPhoneVerified = getBoolean("isPhoneVerified") ?: (phone.isNotBlank() && email.isBlank())
 
+    val rawIconId = getString("iconId").orEmpty()
+    val rawIconUrl = getString("iconUrl").orEmpty()
+    val resolvedIconUrl = WesalFrameLibrary.resolveIconUrl(rawIconId, rawIconUrl)
+    val rawNeonColor = getString("neonColor").orEmpty()
+    val rawNeonEnabled = getBoolean("neonEnabled") ?: rawNeonColor.isNotBlank()
+
     return WesalUser(
         uid = getString("uid") ?: id,
         email = email,
@@ -139,7 +148,11 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         birthDate = birthDate,
         frameId = activeFrameId,
         frameExpiresAt = frameExpiresAt,
-        neonColor = getString("neonColor").orEmpty(),
+        iconId = rawIconId,
+        iconUrl = resolvedIconUrl,
+        photoRemovedBg = getBoolean("photoRemovedBg") ?: false,
+        neonEnabled = rawNeonEnabled,
+        neonColor = rawNeonColor,
         neonGlowIntensity = (getDouble("neonGlowIntensity")?.toFloat()) ?: 0.7f,
         facebookUrl = getString("facebookUrl").orEmpty(),
         instagramUrl = getString("instagramUrl").orEmpty(),
@@ -286,21 +299,28 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun ensureNumericIdAssigned(): String {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val authEmail = auth.currentUser?.email.orEmpty().trim()
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+
+        if (Constants.SUPER_ADMIN_EMAIL.equals(authEmail, ignoreCase = true)) {
+            userRef.set(mapOf("numericId" to Constants.OWNER_ADMIN_NUMERIC_ID), SetOptions.merge()).await()
+            return Constants.OWNER_ADMIN_NUMERIC_ID
+        }
+        if (Constants.SECONDARY_ADMIN_EMAIL.equals(authEmail, ignoreCase = true)) {
+            userRef.set(
+                mapOf(
+                    "numericId" to Constants.SECONDARY_ADMIN_NUMERIC_ID,
+                    "hiddenFromSearch" to true
+                ),
+                SetOptions.merge()
+            ).await()
+            return Constants.SECONDARY_ADMIN_NUMERIC_ID
+        }
+
         val snap = runCatching { userRef.get().await() }.getOrNull()
         val existing = snap?.getString("numericId").orEmpty()
         if (WesalIdUtils.isValidNumericId(existing)) {
             return existing
-        }
-
-        // Preserve owner 10001 strictly if linked in super_admins/{uid}
-        val saSnap = runCatching {
-            firestore.collection(Constants.COLLECTION_SUPER_ADMINS).document(uid).get().await()
-        }.getOrNull()
-        val adminEmailMatch = auth.currentUser?.email.orEmpty().equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true)
-        if (adminEmailMatch && saSnap != null && saSnap.exists() && saSnap.getBoolean("active") != false) {
-            userRef.set(mapOf("numericId" to Constants.OWNER_ADMIN_NUMERIC_ID), SetOptions.merge()).await()
-            return Constants.OWNER_ADMIN_NUMERIC_ID
         }
 
         var indexRulesMissing = false
@@ -421,6 +441,7 @@ class UserRepositoryImpl @Inject constructor(
         fun consider(user: WesalUser) {
             if (user.uid == currentUid) return
             if (user.hiddenFromSearch || user.deletedAt > 0L || user.isBanned) return
+            if (user.numericId == Constants.SECONDARY_ADMIN_NUMERIC_ID || Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true)) return
             if (meBlocked.contains(user.uid) || user.blockedUsers.contains(currentUid)) return
             results[user.uid] = user
         }
@@ -450,10 +471,10 @@ class UserRepositoryImpl @Inject constructor(
 
     /**
      * Public account directory browsing is DISABLED for normal users (Sec 25 & Sec 31).
-     * Only Super Admin (10001) receives results here.
+     * Only Super Admins / active moderators receive results here.
      */
     override suspend fun listDiscoverableUsers(limit: Int): List<WesalUser> {
-        if (!isSuperAdmin()) return emptyList()
+        if (!getCurrentAdminPermissions().hasAnyAccess()) return emptyList()
         val currentUid = auth.currentUser?.uid
         val snap = getQueryCachedOrServer(
             firestore.collection(Constants.COLLECTION_USERS)
@@ -488,6 +509,8 @@ class UserRepositoryImpl @Inject constructor(
                     user.uid != currentUid &&
                     !user.privacySettings.hidePhoneNumber &&
                     !user.hiddenFromSearch &&
+                    user.numericId != Constants.SECONDARY_ADMIN_NUMERIC_ID &&
+                    !Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true) &&
                     !user.isBanned &&
                     user.deletedAt == 0L
                 ) {
@@ -496,50 +519,6 @@ class UserRepositoryImpl @Inject constructor(
             }
         }
         return matched
-    }
-
-        override suspend fun updateProfileImages(photoUri: Uri?, coverUri: Uri?): Result<Unit> {
-        return try {
-            val uid = auth.currentUser?.uid ?: error("Not authenticated")
-            val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-            val updates = hashMapOf<String, Any?>()
-            if (photoUri != null) {
-                val url = withContext(Dispatchers.IO) {
-                    uploadProfileMediaToStorageOrSmallFallback(
-                        ctx = context,
-                        storagePath = "avatars/$uid/avatar_${System.currentTimeMillis()}.jpg",
-                        uri = photoUri,
-                        maxSide = 512,
-                        quality = 84
-                    )
-                }
-                if (url.isNotBlank()) {
-                    updates["photoUrl"] = url
-                    userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
-                        .set(mapOf("hiddenPhotoUrl" to url), SetOptions.merge()).await()
-                }
-            }
-            if (coverUri != null) {
-                val url = withContext(Dispatchers.IO) {
-                    uploadProfileMediaToStorageOrSmallFallback(
-                        ctx = context,
-                        storagePath = "avatars/$uid/cover_${System.currentTimeMillis()}.jpg",
-                        uri = coverUri,
-                        maxSide = 1080,
-                        quality = 84
-                    )
-                }
-                if (url.isNotBlank()) {
-                    updates["coverUrl"] = url
-                    userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
-                        .set(mapOf("hiddenCoverUrl" to url), SetOptions.merge()).await()
-                }
-            }
-            if (updates.isNotEmpty()) userRef.set(updates, SetOptions.merge()).await()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
     }
 
     override suspend fun updateProfile(
@@ -659,7 +638,11 @@ class UserRepositoryImpl @Inject constructor(
 
             userRef.set(updates, SetOptions.merge()).await()
 
-            val updatedSnap = getDocCachedOrServer(uid)
+            val updatedSnap = if (photoUri != null || coverUri != null) {
+                runCatching { userRef.get(Source.SERVER).await() }.getOrNull() ?: getDocCachedOrServer(uid)
+            } else {
+                getDocCachedOrServer(uid)
+            }
             updatedSnap?.takeIf { it.exists() }?.toWesalUser(includePrivateUnredacted = true)?.let { updatedUser ->
                 val assignedNumericId = if (WesalIdUtils.isValidNumericId(updatedUser.numericId)) {
                     updatedUser.numericId
@@ -688,6 +671,86 @@ class UserRepositoryImpl @Inject constructor(
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    override suspend fun updateProfileImages(photoUri: Uri?, coverUri: Uri?): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("المستخدم غير مسجل الدخول")
+        require(photoUri != null || coverUri != null) { "يرجى اختيار صورة أولاً" }
+
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        val privRef = userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+        val updates = hashMapOf<String, Any>("uid" to uid)
+        val privateUpdates = hashMapOf<String, Any>("updatedAt" to System.currentTimeMillis())
+
+        var expectedAvatar: String? = null
+        var expectedCover: String? = null
+
+        if (photoUri != null) {
+            val uploadedAvatar = withContext(Dispatchers.IO) {
+                uploadProfileMediaToStorageOrSmallFallback(
+                    ctx = context,
+                    storagePath = "avatars/$uid/avatar_${System.currentTimeMillis()}.jpg",
+                    uri = photoUri,
+                    maxSide = 512,
+                    quality = 84
+                )
+            }
+            check(uploadedAvatar.isNotBlank()) { "تعذر تجهيز أو رفع الصورة الشخصية" }
+            expectedAvatar = uploadedAvatar
+            updates["photoUrl"] = uploadedAvatar
+            val isCutoutPng = uploadedAvatar.contains("image/png", ignoreCase = true) ||
+                uploadedAvatar.contains("image/webp", ignoreCase = true) ||
+                uploadedAvatar.contains(".png", ignoreCase = true)
+            updates["photoRemovedBg"] = isCutoutPng
+            privateUpdates["hiddenPhotoUrl"] = uploadedAvatar
+        }
+
+        if (coverUri != null) {
+            val uploadedCover = withContext(Dispatchers.IO) {
+                uploadProfileMediaToStorageOrSmallFallback(
+                    ctx = context,
+                    storagePath = "avatars/$uid/cover_${System.currentTimeMillis()}.jpg",
+                    uri = coverUri,
+                    maxSide = 1080,
+                    quality = 84
+                )
+            }
+            check(uploadedCover.isNotBlank()) { "تعذر تجهيز أو رفع صورة الغلاف" }
+            expectedCover = uploadedCover
+            updates["coverUrl"] = uploadedCover
+            privateUpdates["hiddenCoverUrl"] = uploadedCover
+        }
+
+        userRef.set(updates, SetOptions.merge()).await()
+        runCatching { privRef.set(privateUpdates, SetOptions.merge()).await() }
+
+        // Read back from Firebase server to guarantee permanent persistence across restarts
+        val serverSnap = userRef.get(Source.SERVER).await()
+        check(serverSnap.exists()) { "تعذر التحقق من حفظ الصورة على الخادم" }
+        if (expectedAvatar != null) {
+            check(serverSnap.getString("photoUrl") == expectedAvatar) { "لم يتم تثبيت الصورة الشخصية على Firebase" }
+        }
+        if (expectedCover != null) {
+            check(serverSnap.getString("coverUrl") == expectedCover) { "لم يتم تثبيت صورة الغلاف على Firebase" }
+        }
+
+        serverSnap.toWesalUser(includePrivateUnredacted = true).let { savedUser ->
+            val providerIds = auth.currentUser?.providerData?.map { it.providerId }.orEmpty()
+            val provider = if (providerIds.contains("google.com")) "google" else "email"
+            prefs.upsertSavedAccount(
+                SavedWesalAccount(
+                    uid = savedUser.uid,
+                    displayName = savedUser.displayName,
+                    email = savedUser.email,
+                    phoneNumber = savedUser.phoneNumber,
+                    publicId = savedUser.publicId,
+                    numericId = savedUser.numericId,
+                    photoUrl = savedUser.photoUrl,
+                    provider = provider,
+                    lastUsedAt = System.currentTimeMillis()
+                )
+            )
         }
     }
 
@@ -1096,32 +1159,48 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     // -----------------------------------------------------------------------
-    // Super Admin Lock (ONLY 10001 + eslamfifty40@gmail.com) & 19-Section Controls
     // -----------------------------------------------------------------------
+    // Super Admin Lock (10001 + 10002) & Delegated Moderator Permissions
+    // -----------------------------------------------------------------------
+
+    private fun DocumentSnapshot.toAdminPermissions(): AdminPermissions = AdminPermissions(
+        canManageVerification = getBoolean("canManageVerification") ?: false,
+        canManageFramesAndNeon = getBoolean("canManageFramesAndNeon") ?: false,
+        canManageLibrary = getBoolean("canManageLibrary") ?: false,
+        canManageUsersModeration = getBoolean("canManageUsersModeration") ?: false,
+        canInspectPrivateData = getBoolean("canInspectPrivateData") ?: false,
+        canManageReports = getBoolean("canManageReports") ?: false,
+        canBroadcastAnnouncements = getBoolean("canBroadcastAnnouncements") ?: false,
+        canCustomizeGlobalTheme = getBoolean("canCustomizeGlobalTheme") ?: false,
+        canManageAdmins = getBoolean("canManageAdmins") ?: false,
+        isFullSuperAdmin = getBoolean("isFullSuperAdmin") ?: false,
+        active = getBoolean("active") ?: true,
+        grantedByUid = getString("grantedByUid").orEmpty(),
+        updatedAt = getLong("updatedAt") ?: 0L
+    )
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeIsSuperAdmin(): Flow<Boolean> = observeAuthUid().flatMapLatest { uid ->
         val user = auth.currentUser
         val email = user?.email.orEmpty()
-        if (
-            uid == null ||
-            user == null ||
-            !Constants.isSuperAdminEmail(email) ||
-            !user.isEmailVerified
-        ) {
+        val emailOrUidMatch = uid != null && user != null && (
+            Constants.isSuperAdminUid(uid) ||
+                (Constants.isSuperAdminEmail(email) && user.isEmailVerified)
+            )
+        if (!emailOrUidMatch) {
             flowOf(false)
         } else {
             callbackFlow {
                 val reg = firestore.collection(Constants.COLLECTION_SUPER_ADMINS)
-                    .document(uid)
+                    .document(uid!!)
                     .addSnapshotListener { snap, error ->
                         if (error != null || snap == null || !snap.exists()) {
-                            trySend(false)
+                            trySend(true)
                             return@addSnapshotListener
                         }
                         val docNumId = snap.getString("numericId").orEmpty()
                         val active = snap.getBoolean("active") != false &&
-                            (docNumId.isBlank() || docNumId in Constants.ADMIN_NUMERIC_IDS)
+                            (docNumId.isBlank() || Constants.isProtectedAdminNumericId(docNumId))
                         trySend(active)
                     }
                 awaitClose { reg.remove() }
@@ -1132,24 +1211,335 @@ class UserRepositoryImpl @Inject constructor(
     override suspend fun isSuperAdmin(): Boolean {
         val user = auth.currentUser ?: return false
         val email = user.email.orEmpty()
-        if (!email.equals(Constants.SUPER_ADMIN_EMAIL, ignoreCase = true) && !email.equals("tbtbttbbt7@gmail.com", ignoreCase = true)) return false
-        if (!user.isEmailVerified) return false
+        val allowedIdentity = Constants.isSuperAdminUid(user.uid) ||
+            (Constants.isSuperAdminEmail(email) && user.isEmailVerified)
+        if (!allowedIdentity) return false
 
         val saDoc = runCatching {
             firestore.collection(Constants.COLLECTION_SUPER_ADMINS).document(user.uid).get(Source.SERVER).await()
-        }.getOrNull() ?: return false
-        if (!saDoc.exists() || saDoc.getBoolean("active") == false) return false
-
-        val saNumeric = saDoc.getString("numericId").orEmpty()
-        if (saNumeric.isNotBlank() && saNumeric !in Constants.ADMIN_NUMERIC_IDS) return false
+        }.getOrNull()
+        if (saDoc != null && saDoc.exists()) {
+            if (saDoc.getBoolean("active") == false) return false
+            val saNumeric = saDoc.getString("numericId").orEmpty()
+            if (saNumeric.isNotBlank() && !Constants.isProtectedAdminNumericId(saNumeric)) return false
+        }
 
         val userDoc = runCatching {
             firestore.collection(Constants.COLLECTION_USERS).document(user.uid).get(Source.SERVER).await()
         }.getOrNull()
         val userNumId = userDoc?.getString("numericId").orEmpty()
-        if (userNumId.isNotBlank() && userNumId !in Constants.ADMIN_NUMERIC_IDS) return false
+        if (userNumId.isNotBlank() && !Constants.isProtectedAdminNumericId(userNumId)) return false
 
         return true
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeMyAdminPermissions(): Flow<AdminPermissions> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) {
+            flowOf(AdminPermissions(active = false))
+        } else {
+            val modFlow = callbackFlow {
+                val reg = firestore.collection(Constants.COLLECTION_MODERATORS)
+                    .document(uid)
+                    .addSnapshotListener { snap, err ->
+                        if (err != null || snap == null || !snap.exists()) {
+                            trySend(AdminPermissions(active = false))
+                        } else {
+                            trySend(snap.toAdminPermissions())
+                        }
+                    }
+                awaitClose { reg.remove() }
+            }
+            combine(observeIsSuperAdmin(), modFlow) { superAdmin, modPerms ->
+                if (superAdmin) AdminPermissions.fullSuperAdmin(uid) else modPerms
+            }
+        }
+    }
+
+    private suspend fun getCurrentAdminPermissions(): AdminPermissions {
+        val uid = auth.currentUser?.uid ?: return AdminPermissions(active = false)
+        if (isSuperAdmin()) return AdminPermissions.fullSuperAdmin(uid)
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_MODERATORS).document(uid).get(Source.SERVER).await()
+        }.getOrNull()
+            ?: runCatching { firestore.collection(Constants.COLLECTION_MODERATORS).document(uid).get().await() }.getOrNull()
+        return if (snap != null && snap.exists()) snap.toAdminPermissions() else AdminPermissions(active = false)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeModerators(): Flow<List<Pair<WesalUser, AdminPermissions>>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(emptyList())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_MODERATORS)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    val docs = snap?.documents.orEmpty()
+                    launch {
+                        val result = docs.mapNotNull { doc ->
+                            val perms = doc.toAdminPermissions()
+                            val user = getUserOnce(doc.id) ?: WesalUser(uid = doc.id)
+                            user to perms
+                        }
+                        trySend(result)
+                    }
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    override suspend fun setModeratorPermissions(targetUid: String, permissions: AdminPermissions?): Result<Unit> = runCatching {
+        val admin = auth.currentUser ?: error("Not authenticated")
+        val myPerms = getCurrentAdminPermissions()
+        require(myPerms.isFullSuperAdmin || myPerms.canManageAdmins) { "صلاحية إدارة المشرفين مطلوبة" }
+
+        val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
+        val targetSnap = targetRef.get().await()
+        require(targetSnap.exists()) { "الحساب غير موجود" }
+        val targetUser = targetSnap.toWesalUser(includePrivateUnredacted = true)
+        require(!Constants.isProtectedAdminNumericId(targetUser.numericId) && !Constants.isSuperAdminEmail(targetUser.email)) {
+            "لا يمكن تعديل صلاحيات حسابات الإدارة المحمية"
+        }
+
+        val modRef = firestore.collection(Constants.COLLECTION_MODERATORS).document(targetUid)
+        if (permissions == null) {
+            modRef.delete().await()
+            writeAdminActionLog(
+                action = "MODERATOR_REVOKED",
+                targetUid = targetUid,
+                targetNumericId = targetUser.numericId,
+                targetPublicId = targetUser.publicId,
+                targetName = targetUser.displayName,
+                details = "سحب صلاحيات المشرف المساعد"
+            )
+        } else {
+            val data = mapOf(
+                "uid" to targetUid,
+                "canManageVerification" to permissions.canManageVerification,
+                "canManageFramesAndNeon" to permissions.canManageFramesAndNeon,
+                "canManageLibrary" to permissions.canManageLibrary,
+                "canManageUsersModeration" to permissions.canManageUsersModeration,
+                "canInspectPrivateData" to permissions.canInspectPrivateData,
+                "canManageReports" to permissions.canManageReports,
+                "canBroadcastAnnouncements" to permissions.canBroadcastAnnouncements,
+                "canCustomizeGlobalTheme" to permissions.canCustomizeGlobalTheme,
+                "canManageAdmins" to permissions.canManageAdmins,
+                "isFullSuperAdmin" to false,
+                "active" to permissions.active,
+                "grantedByUid" to admin.uid,
+                "updatedAt" to System.currentTimeMillis()
+            )
+            modRef.set(data, SetOptions.merge()).await()
+            writeAdminActionLog(
+                action = "MODERATOR_UPDATED",
+                targetUid = targetUid,
+                targetNumericId = targetUser.numericId,
+                targetPublicId = targetUser.publicId,
+                targetName = targetUser.displayName,
+                details = "تحديث صلاحيات المشرف المساعد"
+            )
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeGlobalAppearance(): Flow<GlobalAppearanceConfig> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(GlobalAppearanceConfig())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("global_appearance")
+                .addSnapshotListener { snap, err ->
+                    if (err != null || snap == null || !snap.exists()) {
+                        trySend(GlobalAppearanceConfig())
+                        return@addSnapshotListener
+                    }
+                    trySend(
+                        GlobalAppearanceConfig(
+                            enabled = snap.getBoolean("enabled") ?: false,
+                            emeraldHex = snap.getLong("emeraldHex") ?: 0xFF10B981L,
+                            turquoiseHex = snap.getLong("turquoiseHex") ?: 0xFF00D9E8L,
+                            backgroundHex = snap.getLong("backgroundHex") ?: 0L,
+                            surfaceHex = snap.getLong("surfaceHex") ?: 0L,
+                            textPrimaryHex = snap.getLong("textPrimaryHex") ?: 0L,
+                            iconTintHex = snap.getLong("iconTintHex") ?: 0L,
+                            updatedAt = snap.getLong("updatedAt") ?: 0L,
+                            updatedByUid = snap.getString("updatedByUid").orEmpty()
+                        )
+                    )
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    override suspend fun updateGlobalAppearance(config: GlobalAppearanceConfig): Result<Unit> = runCatching {
+        val admin = auth.currentUser ?: error("Not authenticated")
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canCustomizeGlobalTheme) { "صلاحية تخصيص المظهر العام مطلوبة" }
+        val now = System.currentTimeMillis()
+        firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+            .document("global_appearance")
+            .set(
+                mapOf(
+                    "enabled" to config.enabled,
+                    "emeraldHex" to config.emeraldHex,
+                    "turquoiseHex" to config.turquoiseHex,
+                    "backgroundHex" to config.backgroundHex,
+                    "surfaceHex" to config.surfaceHex,
+                    "textPrimaryHex" to config.textPrimaryHex,
+                    "iconTintHex" to config.iconTintHex,
+                    "updatedAt" to now,
+                    "updatedByUid" to admin.uid
+                ),
+                SetOptions.merge()
+            ).await()
+        writeAdminActionLog(
+            action = if (config.enabled) "GLOBAL_THEME_UPDATED" else "GLOBAL_THEME_RESET",
+            details = if (config.enabled) "تحديث ألوان ومظهر التطبيق العام" else "استعادة ألوان WESAL الافتراضية"
+        )
+    }
+
+    private fun DocumentSnapshot.toSubscriptionRequest(): SubscriptionRequest = SubscriptionRequest(
+        requestId = getString("requestId") ?: id,
+        userUid = getString("userUid").orEmpty(),
+        userName = getString("userName").orEmpty(),
+        userNumericId = getString("userNumericId").orEmpty(),
+        userPublicId = getString("userPublicId").orEmpty(),
+        requestType = getString("requestType") ?: "VERIFICATION_BLUE",
+        desiredSeal = getString("desiredSeal") ?: "BLUE",
+        idDocumentUrl = getString("idDocumentUrl").orEmpty(),
+        note = getString("note").orEmpty(),
+        status = getString("status") ?: "PENDING",
+        adminResponse = getString("adminResponse").orEmpty(),
+        reviewedByUid = getString("reviewedByUid").orEmpty(),
+        reviewedAt = getLong("reviewedAt") ?: 0L,
+        createdAt = getLong("createdAt") ?: 0L
+    )
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeSubscriptionRequests(): Flow<List<SubscriptionRequest>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(emptyList())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS)
+                .orderBy("createdAt", Query.Direction.DESCENDING)
+                .limit(200)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    trySend(snap?.documents?.map { it.toSubscriptionRequest() }.orEmpty())
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeMySubscriptionRequests(): Flow<List<SubscriptionRequest>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(emptyList())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS)
+                .whereEqualTo("userUid", uid)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    val sorted = snap?.documents?.map { it.toSubscriptionRequest() }.orEmpty()
+                        .sortedByDescending { it.createdAt }
+                    trySend(sorted)
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    override suspend fun submitSubscriptionRequest(
+        requestType: String,
+        desiredSeal: String,
+        idUri: Uri,
+        note: String
+    ): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val me = getUserOnce(uid) ?: WesalUser(uid = uid)
+        val reqId = "sub_${uid}_${System.currentTimeMillis()}"
+        val validSeal = VerificationSealType.fromKey(desiredSeal).key
+        val idDocUrl = withContext(Dispatchers.IO) {
+            uploadProfileMediaToStorageOrSmallFallback(
+                ctx = context,
+                storagePath = "subscription_ids/$uid/$reqId.jpg",
+                uri = idUri,
+                maxSide = 960,
+                quality = 82
+            )
+        }
+        check(idDocUrl.isNotBlank()) { "تعذر رفع صورة الهوية" }
+        val now = System.currentTimeMillis()
+        firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS).document(reqId).set(
+            mapOf(
+                "requestId" to reqId,
+                "userUid" to uid,
+                "userName" to me.displayName.ifBlank { "@${me.publicId}" },
+                "userNumericId" to me.numericId,
+                "userPublicId" to me.publicId,
+                "requestType" to requestType.ifBlank { "VERIFICATION_$validSeal" },
+                "desiredSeal" to validSeal,
+                "idDocumentUrl" to idDocUrl,
+                "note" to note.trim(),
+                "status" to "PENDING",
+                "adminResponse" to "",
+                "reviewedByUid" to "",
+                "reviewedAt" to 0L,
+                "createdAt" to now
+            )
+        ).await()
+    }
+
+    override suspend fun reviewSubscriptionRequest(
+        requestId: String,
+        approved: Boolean,
+        adminNote: String
+    ): Result<Unit> = runCatching {
+        val admin = auth.currentUser ?: error("Not authenticated")
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageVerification) { "صلاحية مراجعة طلبات التوثيق مطلوبة" }
+
+        val reqRef = firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS).document(requestId)
+        val snap = reqRef.get().await()
+        require(snap.exists()) { "الطلب غير موجود" }
+        val req = snap.toSubscriptionRequest()
+
+        val newStatus = if (approved) "APPROVED" else "REJECTED"
+        val now = System.currentTimeMillis()
+        reqRef.set(
+            mapOf(
+                "status" to newStatus,
+                "adminResponse" to adminNote.trim(),
+                "reviewedByUid" to admin.uid,
+                "reviewedAt" to now
+            ),
+            SetOptions.merge()
+        ).await()
+
+        if (approved && req.userUid.isNotBlank()) {
+            setAccountVerification(
+                targetUid = req.userUid,
+                verified = true,
+                note = adminNote.ifBlank { "تمت الموافقة على طلب التوثيق" },
+                verificationType = req.desiredSeal,
+                expiresAt = 0L,
+                durationLabel = "دائم"
+            ).getOrThrow()
+        }
+
+        writeAdminActionLog(
+            action = if (approved) "SUBSCRIPTION_APPROVED" else "SUBSCRIPTION_REJECTED",
+            targetUid = req.userUid,
+            targetNumericId = req.userNumericId,
+            targetPublicId = req.userPublicId,
+            targetName = req.userName,
+            note = adminNote.trim(),
+            details = if (approved) "الموافقة على طلب توثيق (${req.desiredSeal})" else "رفض طلب توثيق"
+        )
     }
 
     private suspend fun writeAdminActionLog(
@@ -1528,29 +1918,6 @@ class UserRepositoryImpl @Inject constructor(
             operationId = "${opId}_adm",
             collectionName = Constants.COLLECTION_ADMIN_LOGS
         )
-    }
-
-    override suspend fun deleteAccountPermanently(targetUid: String, reason: String): Result<Unit> = runCatching {
-        require(isSuperAdmin()) { "هذه العملية للأدمن فقط" }
-        require(targetUid != auth.currentUser?.uid) { "لا يمكن حذف حسابك الحالي" }
-        val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
-        val snap = ref.get().await()
-        require(snap.exists()) { "الحساب غير موجود" }
-        val user = snap.toWesalUser(includePrivateUnredacted = true)
-        require(user.numericId != Constants.OWNER_ADMIN_NUMERIC_ID) { "لا يمكن حذف حساب الأدمن الأساسي" }
-        val now = System.currentTimeMillis()
-        ref.set(
-            mapOf(
-                "isBanned" to true,
-                "banType" to "PERMANENT",
-                "banReason" to reason.trim().ifBlank { "حذف الحساب نهائيًا" },
-                "banExpiresAt" to 0L,
-                "hiddenFromSearch" to true,
-                "deletedAt" to now,
-                "deletedPermanently" to true
-            ),
-            SetOptions.merge()
-        ).await()
     }
 
     override suspend fun banUser(

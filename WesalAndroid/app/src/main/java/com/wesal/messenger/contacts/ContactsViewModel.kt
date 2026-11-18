@@ -83,15 +83,25 @@ class ContactsViewModel @Inject constructor(
 
                 deviceList.forEach { contact ->
                     val user = contact.phoneHash?.let { matchedByHash[it] }
-                    if (user != null) {
+                    val isSecondaryAdmin = user != null && (
+                        user.numericId == Constants.SECONDARY_ADMIN_NUMERIC_ID ||
+                            Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true)
+                        )
+                    if (user != null && !isSecondaryAdmin) {
                         if (seenUids.add(user.uid)) {
                             matched.add(MatchedWesalContact(deviceName = contact.displayName, user = user))
                         }
-                    } else {
+                    } else if (user == null) {
                         unmatched.add(contact)
                     }
                 }
-                Pair(matched, unmatched)
+                val sortedMatched = matched.sortedBy {
+                    it.deviceName.ifBlank { it.user.displayName }.trim().lowercase()
+                }
+                val sortedUnmatched = unmatched.sortedBy {
+                    it.displayName.trim().lowercase()
+                }
+                Pair(sortedMatched, sortedUnmatched)
             }.onSuccess { (matched, unmatched) ->
                 _uiState.update {
                     it.copy(

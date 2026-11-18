@@ -33,6 +33,7 @@ object Constants {
     const val COLLECTION_PHONE_UNIQUENESS = "phone_uniqueness"
     const val COLLECTION_MODERATORS = "moderators"
     const val COLLECTION_FRAME_LIBRARY = "frame_library"
+    const val COLLECTION_SUBSCRIPTION_REQUESTS = "subscription_requests"
 
     const val CHANNEL_MESSAGES = "wesal_messages"
     const val CHANNEL_CALLS = "wesal_calls"
@@ -49,8 +50,8 @@ object Constants {
     const val CONFIRMED_SUPER_ADMIN_UID = "" // Optional hard lock once deployed
     const val OWNER_ADMIN_NUMERIC_ID = "10001"
     const val SECONDARY_ADMIN_NUMERIC_ID = "10002"
+    val ADMIN_NUMERIC_IDS = listOf(OWNER_ADMIN_NUMERIC_ID, SECONDARY_ADMIN_NUMERIC_ID)
     const val OFFICIAL_WESAL_TEAM_CHANNEL_ID = "wesal_official_team_channel"
-    val ADMIN_NUMERIC_IDS: Set<String> = setOf("10001", "10002")
     const val OFFICIAL_CHAT_PREFIX = "wesal_official_"
     const val OFFICIAL_WESAL_SENDER_ID = "WESAL_SYSTEM"
     const val OFFICIAL_WESAL_SENDER_NAME = "WESAL Messenger"

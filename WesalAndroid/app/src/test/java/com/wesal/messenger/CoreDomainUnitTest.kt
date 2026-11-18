@@ -286,4 +286,69 @@ class CoreDomainUnitTest {
         assertTrue(ownerVerifiedUser.isVerified)
         assertFalse(ownerVerifiedUser.isPhoneVerified)
     }
+
+    @Test
+    fun verificationSeals_haveAllTenColorsAndFallbackToBlue() {
+        val keys = com.wesal.messenger.core.util.VerificationSealType.entries.map { it.key }
+        assertEquals(10, keys.size)
+        assertTrue(keys.containsAll(listOf("BLUE", "BLACK", "GREEN", "GOLD", "CYAN", "PURPLE", "RED", "SILVER", "ROSE", "ORANGE")))
+        assertEquals(
+            com.wesal.messenger.core.util.VerificationSealType.GOLD,
+            com.wesal.messenger.core.util.VerificationSealType.fromKey("gold")
+        )
+        assertEquals(
+            com.wesal.messenger.core.util.VerificationSealType.BLUE,
+            com.wesal.messenger.core.util.VerificationSealType.fromKey("unknown")
+        )
+    }
+
+    @Test
+    fun protectedAdmins_include10001And10002WithCorrectEmails() {
+        assertTrue(com.wesal.messenger.core.util.Constants.isProtectedAdminNumericId("10001"))
+        assertTrue(com.wesal.messenger.core.util.Constants.isProtectedAdminNumericId("10002"))
+        assertFalse(com.wesal.messenger.core.util.Constants.isProtectedAdminNumericId("10003"))
+        assertTrue(com.wesal.messenger.core.util.Constants.isSuperAdminEmail("eslamfifty40@gmail.com"))
+        assertTrue(com.wesal.messenger.core.util.Constants.isSuperAdminEmail("TBTBTTBBT7@GMAIL.COM"))
+        assertFalse(com.wesal.messenger.core.util.Constants.isSuperAdminEmail("user@example.com"))
+    }
+
+    @Test
+    fun adminPermissions_evaluatesGranularAndFullAccess() {
+        val empty = com.wesal.messenger.domain.model.AdminPermissions(active = true)
+        assertFalse(empty.hasAnyAccess())
+
+        val disabledMod = com.wesal.messenger.domain.model.AdminPermissions(canManageReports = true, active = false)
+        assertFalse(disabledMod.hasAnyAccess())
+
+        val activeMod = com.wesal.messenger.domain.model.AdminPermissions(canManageReports = true, active = true)
+        assertTrue(activeMod.hasAnyAccess())
+        assertFalse(activeMod.isFullSuperAdmin)
+
+        val superAdmin = com.wesal.messenger.domain.model.AdminPermissions.fullSuperAdmin("uid_1")
+        assertTrue(superAdmin.hasAnyAccess())
+        assertTrue(superAdmin.isFullSuperAdmin)
+        assertTrue(superAdmin.canManageAdmins)
+        assertTrue(superAdmin.canCustomizeGlobalTheme)
+    }
+
+    @Test
+    fun globalAppearanceAndSubscriptionAndFrameGlow_matchSpec() {
+        val defaultTheme = com.wesal.messenger.domain.model.GlobalAppearanceConfig()
+        assertFalse(defaultTheme.enabled)
+        assertEquals(0xFF10B981L, defaultTheme.emeraldHex)
+        assertEquals(0xFF00D9E8L, defaultTheme.turquoiseHex)
+
+        val req = com.wesal.messenger.domain.model.SubscriptionRequest(
+            requestId = "r1",
+            userUid = "u1",
+            desiredSeal = "GOLD"
+        )
+        assertEquals("PENDING", req.status)
+        assertEquals("GOLD", req.desiredSeal)
+
+        assertEquals(
+            com.wesal.messenger.core.util.WesalFrameCatalog.allFrames.size,
+            com.wesal.messenger.core.util.WesalFrameCatalog.builtinGlow.size
+        )
+    }
 }

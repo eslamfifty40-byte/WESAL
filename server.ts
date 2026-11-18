@@ -159,6 +159,16 @@ async function startServer(): Promise<void> {
       );
     }
 
+    app.get("/WesalAndroid.zip", (_req: Request, res: Response) => {
+      const zipPath = path.resolve(__dirname, "WesalAndroid.zip");
+      if (!fs.existsSync(zipPath)) {
+        res.status(404).json({ ok: false, error: "WesalAndroid.zip not found" });
+        return;
+      }
+      res.setHeader("Content-Type", "application/zip");
+      res.download(zipPath, "WesalAndroid.zip");
+    });
+
     app.use(
       express.static(distPath, {
         index: "index.html",

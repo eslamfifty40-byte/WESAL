@@ -7,7 +7,14 @@ import com.wesal.messenger.R
 enum class VerificationSealType(val key: String, val labelAr: String, val labelEn: String) {
     BLUE("BLUE", "الشارة الزرقاء", "Blue Seal"),
     BLACK("BLACK", "الشارة السمراء", "Black Seal"),
-    GREEN("GREEN", "الشارة الخضراء", "Green Seal");
+    GREEN("GREEN", "الشارة الخضراء", "Green Seal"),
+    GOLD("GOLD", "الشارة الذهبية", "Gold Seal"),
+    CYAN("CYAN", "الشارة السماوية", "Cyan Seal"),
+    PURPLE("PURPLE", "الشارة البنفسجية", "Purple Seal"),
+    RED("RED", "الشارة الحمراء", "Red Seal"),
+    SILVER("SILVER", "الشارة الفضية", "Silver Seal"),
+    ROSE("ROSE", "الشارة الوردية", "Rose Seal"),
+    ORANGE("ORANGE", "الشارة البرتقالية", "Orange Seal");
 
     companion object {
         fun fromKey(raw: String?): VerificationSealType =
@@ -146,6 +153,8 @@ object WesalFrameCatalog {
     )
 
     val allFrames: List<WesalFrameSpec> = customerFrames + adminFrames
+
+    val builtinGlow: Map<String, Long> = allFrames.associate { it.id to it.accentColorHex }
 
     fun findActiveFrame(frameId: String?, frameExpiresAt: Long): WesalFrameSpec? {
         if (frameId.isNullOrBlank()) return null

@@ -30,15 +30,26 @@ fun WesalVerifiedMark(
         VerificationSealType.BLUE -> if (badgeColor == Color(0xFF1D9BF0)) Color(0xFF1D9BF0) else badgeColor
         VerificationSealType.BLACK -> Color(0xFF0B0E11)
         VerificationSealType.GREEN -> Color(0xFF00D66B)
+        VerificationSealType.GOLD -> Color(0xFFE5A100)
+        VerificationSealType.CYAN -> Color(0xFF00B8D4)
+        VerificationSealType.PURPLE -> Color(0xFF7C3AED)
+        VerificationSealType.RED -> Color(0xFFDC2626)
+        VerificationSealType.SILVER -> Color(0xFF64748B)
+        VerificationSealType.ROSE -> Color(0xFFDB2777)
+        VerificationSealType.ORANGE -> Color(0xFFEA580C)
     }
     val borderStrokeColor = when (sealType) {
         VerificationSealType.BLACK -> Color(0xFFE2E8F0)
+        VerificationSealType.SILVER -> Color(0xFFCBD5E1)
+        VerificationSealType.GOLD -> Color(0xFFFDE68A)
         else -> resolvedFill
     }
 
     // Same badge shape + check mark as before; only a neon halo is added behind it.
     val halo = glowColor ?: when (sealType) {
         VerificationSealType.BLACK -> Color(0xFF9FB4C7)
+        VerificationSealType.SILVER -> Color(0xFF94A3B8)
+        VerificationSealType.GOLD -> Color(0xFFFBBF24)
         else -> resolvedFill
     }
 
