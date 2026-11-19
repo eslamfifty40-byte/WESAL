@@ -164,12 +164,25 @@ class ChannelRepositoryImpl @Inject constructor(
 
         if (existing != null && existing.exists()) {
             val mapped = mapChannel(existing, currentUid)
-            if (isSuperAdmin && existing.getString("ownerUid") != currentUid) {
+            val existingOwner = existing.getString("ownerUid").orEmpty()
+            if (isSuperAdmin && existingOwner.isNotBlank() && !mapped.moderatorIds.contains(currentUid)) {
+                runCatching {
+                    channelRef.update(
+                        mapOf(
+                            "moderatorIds" to FieldValue.arrayUnion(currentUid),
+                            "subscriberIds" to FieldValue.arrayUnion(currentUid),
+                            "isOfficialTeamChannel" to true,
+                            "isVerified" to true,
+                            "verificationType" to "BLUE"
+                        )
+                    ).await()
+                }
+            } else if (isSuperAdmin && existingOwner.isBlank()) {
                 runCatching {
                     channelRef.update(
                         mapOf(
                             "ownerUid" to currentUid,
-                            "moderatorIds" to listOf(currentUid),
+                            "moderatorIds" to FieldValue.arrayUnion(currentUid),
                             "subscriberIds" to FieldValue.arrayUnion(currentUid),
                             "isOfficialTeamChannel" to true,
                             "isVerified" to true,

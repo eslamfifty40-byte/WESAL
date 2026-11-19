@@ -14,8 +14,7 @@ service cloud.firestore {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/super_admins/$(request.auth.uid)) ||
         request.auth.uid in ['fxKvKnbnksPqZy07rQjTzxIKzzP2', 'D6Z812za9ZNUW0kAt7SaFD3a9UN2'] ||
-        request.auth.token.email == 'eslamfifty40@gmail.com' ||
-        request.auth.token.email == 'tbtbttbbt7@gmail.com'
+        (request.auth.token.email != null && request.auth.token.email.lower() in ['eslamfifty40@gmail.com', 'tbtbttbbt7@gmail.com'])
       );
     }
 
@@ -107,19 +106,22 @@ service cloud.firestore {
     match /verification_audit_logs/{logId} {
       allow read: if isAdminOrMod();
       allow create: if isAdminOrMod() && request.resource.data.adminUid == request.auth.uid;
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /admin_audit_logs/{logId} {
       allow read: if isAdminOrMod();
       allow create: if isAdminOrMod() && request.resource.data.adminUid == request.auth.uid;
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /hidden_audit_logs/{logId} {
       allow read: if isAdminOrMod();
       allow create: if isAdminOrMod() && request.resource.data.adminUid == request.auth.uid;
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /official_announcements/{annId} {
@@ -189,32 +191,58 @@ service cloud.firestore {
       );
     }
 
-    // Chats & E2EE Messages (direct chat creation requires ACCEPTED contact request)
+    // Chats & E2EE Messages (direct chat creation requires ACCEPTED contact request; official WESAL & support chats allowed)
     match /chats/{chatId} {
-      allow read: if isSignedIn() && request.auth.uid in resource.data.participantIds;
-      allow create: if isSignedIn() &&
-        request.auth.uid in request.resource.data.participantIds && (
-          request.resource.data.isGroup == true ||
-          (
-            request.resource.data.participantIds.size() == 2 &&
-            areContactsAccepted(
-              request.resource.data.participantIds[0],
-              request.resource.data.participantIds[1]
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        chatId == ('wesal_official_' + request.auth.uid) ||
+        isAdminOrMod()
+      );
+      allow create: if isSignedIn() && (
+        (
+          chatId == ('wesal_official_' + request.auth.uid) &&
+          request.resource.data.isOfficialWesalChat == true &&
+          request.auth.uid in request.resource.data.participantIds
+        ) ||
+        isAdminOrMod() ||
+        (
+          request.auth.uid in request.resource.data.participantIds && (
+            request.resource.data.isGroup == true ||
+            request.resource.data.isSupportChat == true ||
+            (
+              request.resource.data.participantIds.size() == 2 &&
+              areContactsAccepted(
+                request.resource.data.participantIds[0],
+                request.resource.data.participantIds[1]
+              )
             )
           )
-        );
-      allow update: if isSignedIn() && request.auth.uid in resource.data.participantIds;
-      allow delete: if false;
+        )
+      );
+      allow update: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        chatId == ('wesal_official_' + request.auth.uid) ||
+        isAdminOrMod()
+      );
+      allow delete: if isSuperAdmin();
 
       match /messages/{messageId} {
-        allow read: if isChatParticipant(chatId);
-        allow create: if isChatParticipant(chatId) &&
-          request.resource.data.senderId == request.auth.uid;
+        allow read: if isChatParticipant(chatId) ||
+          chatId == ('wesal_official_' + request.auth.uid) ||
+          isAdminOrMod();
+        allow create: if isSignedIn() && (
+          (isChatParticipant(chatId) && request.resource.data.senderId == request.auth.uid) ||
+          (
+            request.resource.data.senderId in ['WESAL_SYSTEM', 'wesal_system'] &&
+            chatId.matches('wesal_official_.*') &&
+            (chatId == ('wesal_official_' + request.auth.uid) || isAdminOrMod())
+          )
+        );
         allow update: if isChatParticipant(chatId) && (
           resource.data.senderId == request.auth.uid ||
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'deletedForUsers'])
         );
-        allow delete: if false;
+        allow delete: if isSuperAdmin();
       }
     }
 
@@ -239,20 +267,22 @@ service cloud.firestore {
       allow create: if isSignedIn() &&
         request.resource.data.ownerUid == request.auth.uid &&
         request.auth.uid in request.resource.data.subscriberIds;
-      allow update: if isSignedIn() && (
-        (
-          (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.moderatorIds) &&
-          request.resource.data.ownerUid == resource.data.ownerUid
-        ) || (
-          resource.data.isPublic == true &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'subscribersCount'])
-        ) || (
-          request.auth.uid in resource.data.subscriberIds &&
-          request.auth.uid != resource.data.ownerUid &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'moderatorIds', 'subscribersCount'])
+      allow update: if isAdminOrMod() || (
+        isSignedIn() && (
+          (
+            (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.moderatorIds) &&
+            request.resource.data.ownerUid == resource.data.ownerUid
+          ) || (
+            resource.data.isPublic == true &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'subscribersCount'])
+          ) || (
+            request.auth.uid in resource.data.subscriberIds &&
+            request.auth.uid != resource.data.ownerUid &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'moderatorIds', 'subscribersCount'])
+          )
         )
       );
-      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+      allow delete: if isAdminOrMod() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
 
       match /posts/{postId} {
         allow read: if canReadChannelPosts(channelId);

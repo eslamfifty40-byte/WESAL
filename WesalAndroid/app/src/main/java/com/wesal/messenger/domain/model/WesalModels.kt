@@ -147,6 +147,10 @@ data class GlobalAppearanceConfig(
     val surfaceHex: Long = 0L,
     val textPrimaryHex: Long = 0L,
     val iconTintHex: Long = 0L,
+    val globalCustomerFrameEnabled: Boolean = true,
+    val defaultCustomerFrameId: String = "cust_01",
+    val defaultCustomerIconId: String = "",
+    val defaultCustomerIconUrl: String = "",
     val updatedAt: Long = 0L,
     val updatedByUid: String = ""
 )

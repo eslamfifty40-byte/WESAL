@@ -8,7 +8,7 @@ object WesalIdUtils {
     private val numericIdPattern = Regex("^(?:1000000|[1-9][0-9]{4,5})$")
     private val random = SecureRandom()
 
-    private fun normalizeDigits(input: String): String {
+    fun normalizeDigits(input: String): String {
         val sb = StringBuilder(input.length)
         for (ch in input) {
             when (ch) {
@@ -47,6 +47,17 @@ object WesalIdUtils {
             .removePrefix("id:")
             .trim()
         return if (isValidNumericId(trimmed)) trimmed else ""
+    }
+
+    fun extractSearchNumericIdQuery(rawInput: String): String {
+        val trimmed = normalizeDigits(rawInput)
+            .trim()
+            .removePrefix("#")
+            .removePrefix("@")
+            .removePrefix("ID:")
+            .removePrefix("id:")
+            .trim()
+        return if (isValidNumericId(trimmed) || trimmed == "1001") trimmed else ""
     }
 
     fun generateRandomNumericCandidate(): String {

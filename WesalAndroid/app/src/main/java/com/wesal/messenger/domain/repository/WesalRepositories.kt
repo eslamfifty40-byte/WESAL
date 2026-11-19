@@ -138,6 +138,12 @@ interface UserRepository {
     ): Result<Unit>
     suspend fun setAccountIcon(targetUid: String, iconId: String, iconUrl: String): Result<Unit>
     suspend fun setGlobalCustomerFrameEnabled(enabled: Boolean): Result<Int>
+    suspend fun setGlobalCustomerDefaults(
+        enabled: Boolean,
+        frameId: String,
+        iconId: String,
+        iconUrl: String
+    ): Result<Int>
     suspend fun getGlobalCustomerFrameEnabled(): Boolean
     suspend fun setAccountNeonStyle(
         targetUid: String,
@@ -163,6 +169,8 @@ interface UserRepository {
     fun observeVerificationAuditLogs(): Flow<List<VerificationAuditLog>>
     fun observeHiddenAuditLogs(): Flow<List<VerificationAuditLog>>
     fun observeAdminActionLogs(): Flow<List<VerificationAuditLog>>
+    suspend fun deleteAuditLog(collectionName: String, logId: String): Result<Unit>
+    suspend fun clearAuditLogs(collectionName: String): Result<Unit>
     suspend fun getWelcomeConfig(): SystemWelcomeConfig
     suspend fun updateWelcomeConfig(enabled: Boolean, template: String): Result<Unit>
     suspend fun sendWelcomeTestToSelf(): Result<Unit>

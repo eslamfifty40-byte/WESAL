@@ -64,13 +64,25 @@ object PhoneUtils {
         }?.dialCode ?: Constants.DEFAULT_COUNTRY_DIAL
     }
 
+    fun normalizeAsciiDigits(input: String): String {
+        val sb = StringBuilder(input.length)
+        for (ch in input) {
+            when (ch) {
+                in '\u0660'..'\u0669' -> sb.append(('0'.code + (ch.code - '\u0660'.code)).toChar())
+                in '\u06F0'..'\u06F9' -> sb.append(('0'.code + (ch.code - '\u06F0'.code)).toChar())
+                else -> sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
+
     /**
      * Validates a separated country + local phone input per country rules (Sec 9).
      * Egypt: requires 11 local digits starting with 010/011/012/015 (or 10 digits without leading 0).
      * Other countries: applies per-country length and E.164 rules without forcing 11 digits.
      */
     fun validateForCountry(country: CountryCode, rawLocalInput: String): PhoneValidationResult {
-        val cleaned = rawLocalInput.trim().replace(Regex("[\\s\\-().]"), "")
+        val cleaned = normalizeAsciiDigits(rawLocalInput).trim().replace(Regex("[\\s\\-().]"), "")
         if (cleaned.isEmpty()) {
             return PhoneValidationResult(
                 isValid = false,
@@ -84,7 +96,7 @@ object PhoneUtils {
             cleaned.startsWith(country.dialCode) -> cleaned.removePrefix(country.dialCode)
             cleaned.startsWith("00" + country.dialCode.drop(1)) -> cleaned.removePrefix("00" + country.dialCode.drop(1))
             else -> cleaned
-        }.filter { it.isDigit() }
+        }.filter { it in '0'..'9' }
 
         if (localDigits.isEmpty()) {
             return PhoneValidationResult(
@@ -147,15 +159,16 @@ object PhoneUtils {
      * Normalizes local/international phone numbers to E.164 format.
      */
     fun normalizeToE164(rawInput: String, defaultDialCode: String = Constants.DEFAULT_COUNTRY_DIAL): String? {
-        val cleaned = rawInput.trim().replace(Regex("[\\s\\-().]"), "")
+        val cleaned = normalizeAsciiDigits(rawInput).trim().replace(Regex("[\\s\\-().]"), "")
         if (cleaned.isEmpty()) return null
 
+        val digitsOnly = cleaned.filter { it in '0'..'9' }
         val e164 = when {
-            cleaned.startsWith("+") -> "+" + cleaned.drop(1).filter { it.isDigit() }
-            cleaned.startsWith("00") -> "+" + cleaned.drop(2).filter { it.isDigit() }
-            cleaned.startsWith("0") -> defaultDialCode + cleaned.drop(1).filter { it.isDigit() }
-            cleaned.startsWith("20") && cleaned.length == 12 -> "+" + cleaned.filter { it.isDigit() }
-            else -> defaultDialCode + cleaned.filter { it.isDigit() }
+            cleaned.startsWith("+") -> "+$digitsOnly"
+            cleaned.startsWith("00") -> "+${digitsOnly.drop(2)}"
+            cleaned.startsWith("0") -> defaultDialCode + digitsOnly.drop(1)
+            cleaned.startsWith("20") && digitsOnly.length == 12 -> "+$digitsOnly"
+            else -> defaultDialCode + digitsOnly
         }
 
         val (country, local) = CountryCatalog.detectFromE164(e164)

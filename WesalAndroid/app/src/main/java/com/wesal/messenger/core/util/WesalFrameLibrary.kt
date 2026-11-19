@@ -34,6 +34,8 @@ data class FrameDoc(
     val kind: String = "FRAME", // FRAME | ICON
     val imageUrl: String = "",
     val glowColor: Long = 0L,
+    val animated: Boolean = false,
+    val animationStyle: String = "PULSE_GLOW", // PULSE_GLOW | ROTATE_AURA | SHIMMER | SPARKLE
     val hidden: Boolean = false,
     val deleted: Boolean = false,
     val builtin: Boolean = false,
@@ -46,7 +48,9 @@ data class ResolvedFrame(
     val id: String,
     val resId: Int,
     val imageUrl: String,
-    val glow: Color
+    val glow: Color,
+    val animated: Boolean = false,
+    val animationStyle: String = "PULSE_GLOW"
 )
 
 /** One row in an admin/user picker. */
@@ -59,7 +63,9 @@ data class FramePickerItem(
     val hidden: Boolean,
     val deleted: Boolean,
     val builtin: Boolean,
-    val kind: String = "FRAME"
+    val kind: String = "FRAME",
+    val animated: Boolean = false,
+    val animationStyle: String = "PULSE_GLOW"
 )
 
 object WesalFrameLibrary {
@@ -106,6 +112,8 @@ object WesalFrameLibrary {
                             kind = kind,
                             imageUrl = d.getString("imageUrl").orEmpty(),
                             glowColor = d.getLong("glowColor") ?: 0L,
+                            animated = d.getBoolean("animated") ?: false,
+                            animationStyle = d.getString("animationStyle") ?: "PULSE_GLOW",
                             hidden = d.getBoolean("hidden") ?: false,
                             deleted = d.getBoolean("deleted") ?: false,
                             builtin = d.getBoolean("builtin") ?: false,
@@ -150,11 +158,13 @@ object WesalFrameLibrary {
         if (expiresAt > 0L && System.currentTimeMillis() > expiresAt) return null
         val doc = docs[frameId]
         val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
+        val isAnimated = doc?.animated == true
+        val animStyle = doc?.animationStyle?.takeIf { it.isNotBlank() } ?: "PULSE_GLOW"
         if (doc != null && doc.imageUrl.isNotBlank()) {
-            return ResolvedFrame(frameId, 0, doc.imageUrl, glowOf(frameId, doc))
+            return ResolvedFrame(frameId, 0, doc.imageUrl, glowOf(frameId, doc), isAnimated, animStyle)
         }
         if (builtin != null) {
-            return ResolvedFrame(frameId, builtin.resId, "", glowOf(frameId, doc))
+            return ResolvedFrame(frameId, builtin.resId, "", glowOf(frameId, doc), isAnimated, animStyle)
         }
         return null
     }
@@ -177,7 +187,9 @@ object WesalFrameLibrary {
                         hidden = d.hidden,
                         deleted = d.deleted,
                         builtin = false,
-                        kind = "ICON"
+                        kind = "ICON",
+                        animated = d.animated,
+                        animationStyle = d.animationStyle
                     )
                 }
             return out
@@ -198,7 +210,9 @@ object WesalFrameLibrary {
                 hidden = hidden,
                 deleted = deleted,
                 builtin = true,
-                kind = "FRAME"
+                kind = "FRAME",
+                animated = doc?.animated == true,
+                animationStyle = doc?.animationStyle ?: "PULSE_GLOW"
             )
         }
         val builtinIds = WesalFrameCatalog.allFrames.map { it.id }.toSet()
@@ -221,7 +235,9 @@ object WesalFrameLibrary {
                     hidden = d.hidden,
                     deleted = d.deleted,
                     builtin = false,
-                    kind = "FRAME"
+                    kind = "FRAME",
+                    animated = d.animated,
+                    animationStyle = d.animationStyle
                 )
             }
         return out
@@ -239,7 +255,9 @@ object WesalFrameLibrary {
         uri: Uri,
         titleAr: String,
         category: String,
-        kind: String = if (category == "ICON") "ICON" else "FRAME"
+        kind: String = if (category == "ICON") "ICON" else "FRAME",
+        animated: Boolean = false,
+        animationStyle: String = "PULSE_GLOW"
     ): Result<String> = runCatching {
         val isIcon = kind == "ICON" || category == "ICON"
         val prefix = when {
@@ -248,7 +266,9 @@ object WesalFrameLibrary {
             else -> "cust_x_"
         }
         val id = prefix + System.currentTimeMillis()
-        val (url, glow) = processAndStore(ctx, uri, id)
+        val mime = runCatching { ctx.contentResolver.getType(uri).orEmpty().lowercase() }.getOrDefault("")
+        val isGif = mime.contains("gif") || uri.toString().lowercase().endsWith(".gif")
+        val (url, glow) = if (isGif) processAndStoreRawGif(ctx, uri, id) else processAndStore(ctx, uri, id)
         col().document(id).set(
             mapOf(
                 "titleAr" to titleAr.ifBlank { if (isIcon) "أيقونة جديدة" else "إطار جديد" },
@@ -256,6 +276,8 @@ object WesalFrameLibrary {
                 "kind" to if (isIcon) "ICON" else "FRAME",
                 "imageUrl" to url,
                 "glowColor" to glow,
+                "animated" to (animated || isGif),
+                "animationStyle" to animationStyle,
                 "hidden" to false,
                 "deleted" to false,
                 "builtin" to false,
@@ -307,6 +329,25 @@ object WesalFrameLibrary {
 
     suspend fun rename(frameId: String, titleAr: String): Result<Unit> = runCatching {
         writeFlag(frameId, "titleAr", titleAr.trim())
+    }
+
+    suspend fun setAnimated(frameId: String, animated: Boolean, style: String = "PULSE_GLOW"): Result<Unit> = runCatching {
+        val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
+        val existingDoc = docs[frameId]
+        val data = hashMapOf<String, Any>(
+            "animated" to animated,
+            "animationStyle" to style,
+            "updatedAt" to System.currentTimeMillis()
+        )
+        if (builtin != null) {
+            data["builtin"] = true
+            data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["kind"] = "FRAME"
+        } else if (existingDoc != null) {
+            data["kind"] = existingDoc.kind
+            data["category"] = existingDoc.category
+        }
+        col().document(frameId).set(data, SetOptions.merge()).await()
     }
 
     /** Drops an image replacement on a built-in frame, restoring the original bundled image. */
@@ -362,6 +403,22 @@ object WesalFrameLibrary {
         }
         check(bytes.size <= 800_000) { "حجم الإطار كبير جدًا" }
         ("data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)) to glow
+    }
+
+    private suspend fun processAndStoreRawGif(ctx: Context, uri: Uri, name: String): Pair<String, Long> = withContext(Dispatchers.IO) {
+        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: error("تعذر قراءة ملف GIF")
+        val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 256)
+        val glow = bmp?.let { FrameImageProcessor.dominantGlow(it) } ?: 0xFF00D9E8L
+        val storageUrl = runCatching {
+            val ref = FirebaseStorage.getInstance().reference.child("frame_library/$name.gif")
+            val meta = com.google.firebase.storage.StorageMetadata.Builder().setContentType("image/gif").build()
+            ref.putBytes(bytes, meta).await()
+            ref.downloadUrl.await().toString()
+        }.getOrNull()
+        if (!storageUrl.isNullOrBlank()) return@withContext storageUrl to glow
+        check(bytes.size <= 780_000) { "حجم الصورة المتحركة كبير جدًا للتخزين الاحتياطي" }
+        ("data:image/gif;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)) to glow
     }
 }
 

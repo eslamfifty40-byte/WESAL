@@ -139,6 +139,15 @@ fun uriToBase64Smart(
     return "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
 }
 
+fun hasUriAlphaChannel(ctx: Context, uri: Uri): Boolean {
+    val bmp = decodeArgbBitmap(ctx, uri, maxSide = 256) ?: return false
+    return try {
+        hasTransparency(bmp)
+    } finally {
+        runCatching { bmp.recycle() }
+    }
+}
+
 private fun hasTransparency(bmp: Bitmap): Boolean {
     if (!bmp.hasAlpha()) return false
     val stepX = maxOf(1, bmp.width / 20)

@@ -787,6 +787,11 @@ class AuthRepositoryImpl @Inject constructor(
 
         val welcomeCfgSnap = runCatching {
             firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("welcome_message")
+                .get()
+                .await()
+        }.getOrNull()?.takeIf { it.exists() } ?: runCatching {
+            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
                 .document("welcome_config")
                 .get()
                 .await()
@@ -805,8 +810,8 @@ class AuthRepositoryImpl @Inject constructor(
         val msgRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document("welcome_$uid")
 
         val now = System.currentTimeMillis()
-        val existingMsg = runCatching { msgRef.get().await() }.getOrNull()
-        if (existingMsg != null && existingMsg.exists()) {
+        val existingMsgs = runCatching { chatRef.collection(Constants.COLLECTION_MESSAGES).limit(1).get().await() }.getOrNull()
+        if (existingMsgs != null && !existingMsgs.isEmpty) {
             userRef.set(mapOf("welcomeSent" to true), SetOptions.merge()).await()
             return
         }
@@ -816,13 +821,14 @@ class AuthRepositoryImpl @Inject constructor(
                 "chatId" to officialChatId,
                 "isGroup" to false,
                 "isOfficialWesalChat" to true,
+                "groupName" to "WESAL Messenger",
                 "isSupportChat" to false,
-                "participantIds" to listOf(uid, Constants.OFFICIAL_WESAL_SENDER_ID),
+                "participantIds" to listOf(uid),
                 "lastMessagePreview" to "مرحبًا بك يا $nameForGreeting 👋",
                 "lastMessageTime" to now,
                 "lastMessageSenderId" to Constants.OFFICIAL_WESAL_SENDER_ID,
                 "lastMessageStatus" to "SENT",
-                "pinnedBy" to listOf(uid),
+                "pinnedBy" to mapOf(uid to true),
                 "unreadCounts" to mapOf(uid to 1),
                 "createdAt" to now
             ),

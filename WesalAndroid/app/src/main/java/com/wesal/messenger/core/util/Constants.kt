@@ -56,8 +56,9 @@ object Constants {
     const val OFFICIAL_WESAL_SENDER_ID = "WESAL_SYSTEM"
     const val OFFICIAL_WESAL_SENDER_NAME = "WESAL Messenger"
 
-    // Official approved invite URL
+    // Official approved invite URL & web portal base URL
     const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-Messenger"
+    const val WEB_BASE_URL = "https://ais-pre-dcqe7rfl5fmp57d6kasklc-603239014289.europe-west3.run.app"
 
     const val MESSAGE_EDIT_WINDOW_MS = 15 * 60 * 1000L // 15 minutes edit policy
     const val STORY_EXPIRATION_MS = 24 * 60 * 60 * 1000L // 24 hours

@@ -583,6 +583,11 @@ class ChatRepositoryImpl @Inject constructor(
                 .document("welcome_message")
                 .get()
                 .await()
+        }.getOrNull()?.takeIf { it.exists() } ?: runCatching {
+            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("welcome_config")
+                .get()
+                .await()
         }.getOrNull()
 
         val enabled = cfgSnap?.getBoolean("enabled") ?: true
@@ -599,7 +604,9 @@ class ChatRepositoryImpl @Inject constructor(
 
         val messageId = if (forceResend) "welcome_test_${System.currentTimeMillis()}" else "welcome_$myUid"
         val msgRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId)
-        val existingMsg = runCatching { msgRef.get().await() }.getOrNull()
+        val hasAnyMessage = runCatching {
+            !chatRef.collection(Constants.COLLECTION_MESSAGES).limit(1).get().await().isEmpty
+        }.getOrDefault(false)
         val now = System.currentTimeMillis()
 
         if (chatSnap == null || !chatSnap.exists()) {
@@ -617,19 +624,19 @@ class ChatRepositoryImpl @Inject constructor(
                     "unreadCounts" to mapOf(myUid to 1),
                     "lastMessagePreview" to personalizedBody.take(80),
                     "lastMessageTime" to now,
-                    "lastMessageSenderId" to "wesal_system",
+                    "lastMessageSenderId" to Constants.OFFICIAL_WESAL_SENDER_ID,
                     "lastMessageStatus" to MessageStatus.DELIVERED.raw
                 ),
                 SetOptions.merge()
             ).await()
         }
 
-        if (existingMsg == null || !existingMsg.exists() || forceResend) {
+        if (!hasAnyMessage || forceResend) {
             msgRef.set(
                 mapOf(
                     "messageId" to messageId,
                     "chatId" to officialChatId,
-                    "senderId" to "wesal_system",
+                    "senderId" to Constants.OFFICIAL_WESAL_SENDER_ID,
                     "senderName" to "WESAL Messenger",
                     "type" to MessageType.TEXT.raw,
                     "text" to personalizedBody,
