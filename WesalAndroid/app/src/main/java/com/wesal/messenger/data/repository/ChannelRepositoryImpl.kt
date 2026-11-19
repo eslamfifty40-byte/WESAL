@@ -165,7 +165,7 @@ class ChannelRepositoryImpl @Inject constructor(
         if (existing != null && existing.exists()) {
             val mapped = mapChannel(existing, currentUid)
             val existingOwner = existing.getString("ownerUid").orEmpty()
-            if (isSuperAdmin && existingOwner.isNotBlank() && !mapped.moderatorIds.contains(currentUid)) {
+            if (isSuperAdmin && existingOwner.isNotBlank() && mapped?.moderatorIds?.contains(currentUid) != true) {
                 runCatching {
                     channelRef.update(
                         mapOf(

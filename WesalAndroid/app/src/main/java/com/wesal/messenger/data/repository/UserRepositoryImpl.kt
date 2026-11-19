@@ -2772,4 +2772,14 @@ class UserRepositoryImpl @Inject constructor(
         }.getOrNull()
         return snap != null && snap.exists() && snap.getString("status") == ContactRequestStatus.ACCEPTED.raw
     }
+
+    override suspend fun setGlobalCustomerDefaults(
+        enabled: Boolean,
+        frameId: String,
+        iconId: String,
+        iconUrl: String
+    ): Result<Int> {
+        // TODO: placeholder so the build compiles
+        return Result.success(0)
+    }
 }
