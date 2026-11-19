@@ -13,6 +13,9 @@ import androidx.security.crypto.MasterKey
 import com.wesal.messenger.domain.model.SavedWesalAccount
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -148,6 +151,37 @@ class UserPreferencesDataStore @Inject constructor(
         decodeSavedAccounts(prefs[Keys.SAVED_ACCOUNTS_JSON])
     }
 
+    private val _hiddenChatsUnlockedSession = MutableStateFlow(false)
+    val hiddenChatsUnlockedSession: StateFlow<Boolean> = _hiddenChatsUnlockedSession.asStateFlow()
+
+    private val _openHiddenChatsTrigger = MutableStateFlow(false)
+    val openHiddenChatsTrigger: StateFlow<Boolean> = _openHiddenChatsTrigger.asStateFlow()
+
+    fun setHiddenChatsUnlockedSession(unlocked: Boolean) {
+        _hiddenChatsUnlockedSession.value = unlocked
+    }
+
+    fun requestOpenHiddenChats() {
+        _openHiddenChatsTrigger.value = true
+    }
+
+    fun consumeOpenHiddenChats() {
+        _openHiddenChatsTrigger.value = false
+    }
+
+    fun normalizeHiddenPinInput(raw: String): String {
+        val trimmed = raw.trim()
+        val sb = StringBuilder(trimmed.length)
+        for (ch in trimmed) {
+            when (ch) {
+                in '\u0660'..'\u0669' -> sb.append(('0'.code + (ch.code - '\u0660'.code)).toChar())
+                in '\u06F0'..'\u06F9' -> sb.append(('0'.code + (ch.code - '\u06F0'.code)).toChar())
+                else -> sb.append(ch)
+            }
+        }
+        return sb.toString()
+    }
+
     // -----------------------------------------------------------------------
     // Hidden Chats Secure Password Lock (PBKDF2WithHmacSHA256 + random salt in Keystore EncryptedSharedPreferences)
     // -----------------------------------------------------------------------
@@ -162,38 +196,41 @@ class UserPreferencesDataStore @Inject constructor(
     }
 
     fun setHiddenChatsPassword(uid: String, password: String, recoveryQuestion: String = "", recoveryAnswer: String = "") {
-        if (uid.isBlank() || password.length < 4) return
+        val cleanPass = normalizeHiddenPinInput(password)
+        if (uid.isBlank() || cleanPass.length < 4) return
         val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
-        val hash = pbkdf2Hash(password, salt)
+        val hash = pbkdf2Hash(cleanPass, salt)
         val editor = encryptedPrefs.edit()
             .putString("hc_salt_$uid", Base64.encodeToString(salt, Base64.NO_WRAP))
             .putString("hc_hash_$uid", hash)
         if (recoveryQuestion.isNotBlank() && recoveryAnswer.isNotBlank()) {
             val qSalt = ByteArray(16).also { SecureRandom().nextBytes(it) }
-            val aHash = pbkdf2Hash(recoveryAnswer.trim().lowercase(), qSalt)
+            val aHash = pbkdf2Hash(normalizeHiddenPinInput(recoveryAnswer).lowercase(), qSalt)
             editor
                 .putString("hc_q_$uid", recoveryQuestion.trim())
                 .putString("hc_qsalt_$uid", Base64.encodeToString(qSalt, Base64.NO_WRAP))
                 .putString("hc_ahash_$uid", aHash)
         }
-        editor.apply()
+        editor.commit()
     }
 
     fun verifyHiddenChatsPassword(uid: String, candidate: String): Boolean {
-        if (uid.isBlank() || candidate.isBlank()) return false
+        val cleanCandidate = normalizeHiddenPinInput(candidate)
+        if (uid.isBlank() || cleanCandidate.isBlank()) return false
         val saltB64 = encryptedPrefs.getString("hc_salt_$uid", null) ?: return false
         val expected = encryptedPrefs.getString("hc_hash_$uid", null) ?: return false
         val salt = runCatching { Base64.decode(saltB64, Base64.NO_WRAP) }.getOrNull() ?: return false
-        val actual = pbkdf2Hash(candidate, salt)
+        val actual = pbkdf2Hash(cleanCandidate, salt)
         return constantTimeEquals(expected, actual)
     }
 
     fun verifyHiddenChatsRecoveryAnswer(uid: String, answer: String): Boolean {
-        if (uid.isBlank() || answer.isBlank()) return false
+        val cleanAnswer = normalizeHiddenPinInput(answer).lowercase()
+        if (uid.isBlank() || cleanAnswer.isBlank()) return false
         val saltB64 = encryptedPrefs.getString("hc_qsalt_$uid", null) ?: return false
         val expected = encryptedPrefs.getString("hc_ahash_$uid", null) ?: return false
         val salt = runCatching { Base64.decode(saltB64, Base64.NO_WRAP) }.getOrNull() ?: return false
-        val actual = pbkdf2Hash(answer.trim().lowercase(), salt)
+        val actual = pbkdf2Hash(cleanAnswer, salt)
         return constantTimeEquals(expected, actual)
     }
 
@@ -205,8 +242,9 @@ class UserPreferencesDataStore @Inject constructor(
                 .remove("hc_q_$uid")
                 .remove("hc_qsalt_$uid")
                 .remove("hc_ahash_$uid")
-                .apply()
+                .commit()
         }
+        _hiddenChatsUnlockedSession.value = false
         context.wesalDataStore.edit { prefs ->
             prefs[Keys.HIDDEN_CHAT_IDS_JSON] = "[]"
         }

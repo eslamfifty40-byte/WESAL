@@ -39,12 +39,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
-        val splashStartedAt = android.os.SystemClock.elapsedRealtime()
         splashScreen.setKeepOnScreenCondition {
-            // Keep the WESAL logo visible until the start destination is resolved,
-            // and for at least ~900ms so it never flashes past or jumps straight to a screen.
-            mainViewModel.startDestination.value is StartDestination.Loading ||
-                (android.os.SystemClock.elapsedRealtime() - splashStartedAt) < 0L
+            mainViewModel.startDestination.value is StartDestination.Loading
         }
         enableEdgeToEdge()
 
@@ -56,6 +52,7 @@ class MainActivity : AppCompatActivity() {
 
         setContent {
             val settings by mainViewModel.appSettings.collectAsStateWithLifecycle()
+            val globalAppearance by mainViewModel.globalAppearance.collectAsStateWithLifecycle()
             val startDest by mainViewModel.startDestination.collectAsStateWithLifecycle()
             val authUid by mainViewModel.authUid.collectAsStateWithLifecycle()
             val incomingCall by mainViewModel.incomingCall.collectAsStateWithLifecycle()
@@ -93,7 +90,8 @@ class MainActivity : AppCompatActivity() {
             WesalTheme(
                 darkTheme = settings.darkTheme,
                 languageTag = settings.languageTag,
-                fontScale = settings.fontScale
+                fontScale = settings.fontScale,
+                globalAppearance = globalAppearance
             ) {
                 CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
                     if (startDest !is StartDestination.Loading) {

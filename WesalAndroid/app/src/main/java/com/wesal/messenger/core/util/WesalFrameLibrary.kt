@@ -9,6 +9,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
@@ -63,6 +64,10 @@ data class FramePickerItem(
 
 object WesalFrameLibrary {
     const val COLLECTION = "frame_library"
+    private const val FIRESTORE_DB_ID = "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424"
+
+    private fun db(): FirebaseFirestore =
+        FirebaseFirestore.getInstance(FirebaseApp.getInstance(), FIRESTORE_DB_ID)
 
     /** Compose snapshot state: UI recomposes automatically when the library changes. */
     var docs: Map<String, FrameDoc> by mutableStateOf(emptyMap())
@@ -75,42 +80,46 @@ object WesalFrameLibrary {
     /** Call once from Application.onCreate: (re)starts the listener whenever a user signs in. */
     fun startWithAuth() {
         if (authHooked) return
-        authHooked = true
-        com.google.firebase.auth.FirebaseAuth.getInstance().addAuthStateListener { fa ->
-            stop()
-            if (fa.currentUser != null) start() else docs = emptyMap()
+        runCatching {
+            authHooked = true
+            com.google.firebase.auth.FirebaseAuth.getInstance().addAuthStateListener { fa ->
+                stop()
+                if (fa.currentUser != null) start() else docs = emptyMap()
+            }
         }
     }
 
     private fun start() {
         if (registration != null) return
-        registration = FirebaseFirestore.getInstance().collection(COLLECTION)
-            .addSnapshotListener { snap, error ->
-                if (error != null || snap == null) return@addSnapshotListener
-                val map = HashMap<String, FrameDoc>()
-                for (d in snap.documents) {
-                    val cat = d.getString("category") ?: "CUSTOMER"
-                    val kind = d.getString("kind") ?: if (cat == "ICON") "ICON" else "FRAME"
-                    map[d.id] = FrameDoc(
-                        id = d.id,
-                        titleAr = d.getString("titleAr").orEmpty(),
-                        category = cat,
-                        kind = kind,
-                        imageUrl = d.getString("imageUrl").orEmpty(),
-                        glowColor = d.getLong("glowColor") ?: 0L,
-                        hidden = d.getBoolean("hidden") ?: false,
-                        deleted = d.getBoolean("deleted") ?: false,
-                        builtin = d.getBoolean("builtin") ?: false,
-                        sortOrder = d.getLong("sortOrder") ?: 0L,
-                        createdAt = d.getLong("createdAt") ?: 0L
-                    )
+        runCatching {
+            registration = db().collection(COLLECTION)
+                .addSnapshotListener { snap, error ->
+                    if (error != null || snap == null) return@addSnapshotListener
+                    val map = HashMap<String, FrameDoc>()
+                    for (d in snap.documents) {
+                        val cat = d.getString("category") ?: "CUSTOMER"
+                        val kind = d.getString("kind") ?: if (cat == "ICON") "ICON" else "FRAME"
+                        map[d.id] = FrameDoc(
+                            id = d.id,
+                            titleAr = d.getString("titleAr").orEmpty(),
+                            category = cat,
+                            kind = kind,
+                            imageUrl = d.getString("imageUrl").orEmpty(),
+                            glowColor = d.getLong("glowColor") ?: 0L,
+                            hidden = d.getBoolean("hidden") ?: false,
+                            deleted = d.getBoolean("deleted") ?: false,
+                            builtin = d.getBoolean("builtin") ?: false,
+                            sortOrder = d.getLong("sortOrder") ?: 0L,
+                            createdAt = d.getLong("createdAt") ?: 0L
+                        )
+                    }
+                    docs = map
                 }
-                docs = map
-            }
+        }
     }
 
     fun stop() {
-        registration?.remove()
+        runCatching { registration?.remove() }
         registration = null
     }
 
@@ -222,7 +231,7 @@ object WesalFrameLibrary {
     // Admin operations (all write to Firestore; Firestore rules allow only the super admin)
     // ---------------------------------------------------------------------------------------------
 
-    private fun col() = FirebaseFirestore.getInstance().collection(COLLECTION)
+    private fun col() = db().collection(COLLECTION)
 
     /** Uploads a NEW frame or icon to the library. Returns the new item id. */
     suspend fun uploadNewFrame(

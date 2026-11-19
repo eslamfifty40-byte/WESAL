@@ -244,23 +244,27 @@ class AdminVerificationViewModel @Inject constructor(
 
     private var searchJob: Job? = null
 
+    private fun hasPanelAccess(): Boolean = isSuperAdmin.value || adminPermissions.value.hasAnyAccess()
+
     init {
         viewModelScope.launch {
-            isSuperAdmin.collect { allowed ->
-                if (!allowed) {
-                    _users.value = emptyList()
-                    _searchResults.value = emptyList()
-                    _channels.value = emptyList()
-                } else {
-                    refreshAll()
+            combine(isSuperAdmin, adminPermissions) { sa, perms -> sa || perms.hasAnyAccess() }
+                .distinctUntilChanged()
+                .collect { allowed ->
+                    if (!allowed) {
+                        _users.value = emptyList()
+                        _searchResults.value = emptyList()
+                        _channels.value = emptyList()
+                    } else {
+                        refreshAll()
+                    }
                 }
-            }
         }
     }
 
     fun refreshAll() {
         viewModelScope.launch {
-            if (!userRepository.isSuperAdmin()) return@launch
+            if (!hasPanelAccess() && !userRepository.isSuperAdmin()) return@launch
             _busy.value = true
             runCatching { _stats.value = userRepository.computeAdminStats() }
             runCatching {
@@ -278,7 +282,7 @@ class AdminVerificationViewModel @Inject constructor(
 
     fun loadAllChannels() {
         viewModelScope.launch {
-            if (!userRepository.isSuperAdmin()) return@launch
+            if (!hasPanelAccess() && !userRepository.isSuperAdmin()) return@launch
             val snap = runCatching {
                 firestore.collection(Constants.COLLECTION_CHANNELS).limit(150).get().await()
             }.getOrNull() ?: return@launch
@@ -322,7 +326,7 @@ class AdminVerificationViewModel @Inject constructor(
         searchJob?.cancel()
         searchJob = viewModelScope.launch {
             delay(250L)
-            if (!userRepository.isSuperAdmin()) return@launch
+            if (!hasPanelAccess() && !userRepository.isSuperAdmin()) return@launch
             val trimmed = q.trim()
             _searchResults.value = if (trimmed.isBlank()) {
                 _users.value
@@ -518,8 +522,8 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun deleteAccountPermanently(target: WesalUser, reason: String) {
-        if (target.numericId == Constants.OWNER_ADMIN_NUMERIC_ID) {
-            _statusMessage.value = "لا يمكن حذف حساب الأدمن الأساسي 10001"
+        if (Constants.isProtectedAdminNumericId(target.numericId) || Constants.isSuperAdminEmail(target.email)) {
+            _statusMessage.value = "لا يمكن حذف حساب الإدارة المحمي ${target.numericId}"
             return
         }
         viewModelScope.launch {

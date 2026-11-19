@@ -19,6 +19,7 @@ import com.wesal.messenger.chat.ChatsListScreen
 import com.wesal.messenger.contacts.ContactsInviteActivity
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.groups.GroupsScreen
 import com.wesal.messenger.presentation.components.OfflineBanner
@@ -27,15 +28,26 @@ import com.wesal.messenger.stories.StoriesScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    userRepository: UserRepository
+    userRepository: UserRepository,
+    prefs: UserPreferencesDataStore
 ) : ViewModel() {
     val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val hasAdminAccess: StateFlow<Boolean> = combine(
+        userRepository.observeIsSuperAdmin(),
+        userRepository.observeMyAdminPermissions()
+    ) { isSuper, perms ->
+        isSuper || perms.hasAnyAccess()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val openHiddenChatsTrigger: StateFlow<Boolean> = prefs.openHiddenChatsTrigger
 }
 
 private enum class HomeTab(
@@ -66,11 +78,18 @@ fun HomeScreen(
 ) {
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
-    val isSuperAdmin by homeViewModel.isSuperAdmin.collectAsStateWithLifecycle()
+    val hasAdminAccess by homeViewModel.hasAdminAccess.collectAsStateWithLifecycle()
+    val openHiddenChatsTrigger by homeViewModel.openHiddenChatsTrigger.collectAsStateWithLifecycle()
 
     var selectedTab by rememberSaveable { mutableStateOf(HomeTab.CHATS) }
     var menuOpen by remember { mutableStateOf(false) }
     val ctxHome = LocalContext.current
+
+    LaunchedEffect(openHiddenChatsTrigger) {
+        if (openHiddenChatsTrigger) {
+            selectedTab = HomeTab.CHATS
+        }
+    }
 
     Scaffold(
         containerColor = palette.background,
@@ -86,7 +105,7 @@ fun HomeScreen(
                         )
                     },
                     actions = {
-                        if (isSuperAdmin) {
+                        if (hasAdminAccess) {
                             IconButton(onClick = onOpenAdminVerification) {
                                 Icon(
                                     imageVector = Icons.Default.Verified,
@@ -122,7 +141,7 @@ fun HomeScreen(
                                         ctxHome.startActivity(Intent(ctxHome, ContactsInviteActivity::class.java))
                                     }
                                 )
-                                if (isSuperAdmin) {
+                                if (hasAdminAccess) {
                                     DropdownMenuItem(
                                         text = { Text(strings.adminVerificationTitle, color = palette.verifiedBlue) },
                                         onClick = { menuOpen = false; onOpenAdminVerification() }
@@ -184,6 +203,7 @@ fun HomeScreen(
                     onOpenAccountShare = onOpenAccountShare,
                     onOpenAdminPanel = onOpenAdminVerification,
                     onOpenChat = onOpenChat,
+                    onOpenHiddenChatsTab = { selectedTab = HomeTab.CHATS },
                     onSignedOut = onSignedOut,
                     onOpenAddAccount = onOpenAddAccount,
                     onAccountSwitched = onAccountSwitched

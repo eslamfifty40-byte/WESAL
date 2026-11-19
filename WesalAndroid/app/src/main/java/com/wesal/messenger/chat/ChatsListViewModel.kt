@@ -24,8 +24,8 @@ class ChatsListViewModel @Inject constructor(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _showHiddenChats = MutableStateFlow(false)
-    val showHiddenChats: StateFlow<Boolean> = _showHiddenChats.asStateFlow()
+    val showHiddenChats: StateFlow<Boolean> = prefs.hiddenChatsUnlockedSession
+    val openHiddenChatsTrigger: StateFlow<Boolean> = prefs.openHiddenChatsTrigger
 
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
@@ -38,7 +38,7 @@ class ChatsListViewModel @Inject constructor(
         chatRepository.observeChats(),
         _searchQuery,
         hiddenChatIds,
-        _showHiddenChats
+        showHiddenChats
     ) { allChats, query, hiddenIds, showingHidden ->
         allChats.filter { chat ->
             val isHidden = chat.chatId in hiddenIds
@@ -67,14 +67,19 @@ class ChatsListViewModel @Inject constructor(
     fun verifyHiddenRecoveryAnswer(answer: String): Boolean =
         prefs.verifyHiddenChatsRecoveryAnswer(currentUid, answer)
 
+    fun consumeOpenHiddenChatsTrigger() {
+        prefs.consumeOpenHiddenChats()
+    }
+
     fun setupOrResetHiddenPassword(
         password: String,
         question: String,
         answer: String,
         pendingHideChatId: String? = null
     ) {
+        val clean = prefs.normalizeHiddenPinInput(password)
+        prefs.setHiddenChatsPassword(currentUid, clean, question, answer)
         viewModelScope.launch {
-            prefs.setHiddenChatsPassword(currentUid, password, question, answer)
             if (!pendingHideChatId.isNullOrBlank()) {
                 prefs.toggleHiddenChat(pendingHideChatId, true)
                 _toastMessage.value = "تم تعيين كلمة المرور وإخفاء المحادثة"
@@ -87,13 +92,16 @@ class ChatsListViewModel @Inject constructor(
     fun resetHiddenLockAndUnhideAll() {
         viewModelScope.launch {
             prefs.clearHiddenChatsProtectionAndUnhideAll(currentUid)
-            _showHiddenChats.value = false
+            prefs.setHiddenChatsUnlockedSession(false)
             _toastMessage.value = "تمت إعادة تعيين حماية المحادثات المخفية وإظهارها"
         }
     }
 
     fun setShowingHiddenChats(showing: Boolean) {
-        _showHiddenChats.value = showing
+        if (showing) {
+            _searchQuery.value = ""
+        }
+        prefs.setHiddenChatsUnlockedSession(showing)
     }
 
     fun hideOrUnhideChat(chat: ChatPreview, hide: Boolean) {

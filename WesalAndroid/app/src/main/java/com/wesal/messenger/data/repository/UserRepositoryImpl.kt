@@ -427,8 +427,8 @@ class UserRepositoryImpl @Inject constructor(
 
     /**
      * Strict User Search (Sec 14, 25, 31):
-     * Normal users may ONLY locate users via exact 5-digit numeric WESAL ID OR exact/normalized @username.
-     * Excludes hiddenFromSearch, banned, deleted, and blocked accounts.
+     * Normal users locate accounts via numeric WESAL ID (10000..1000000) OR exact/normalized @username.
+     * Excludes hiddenFromSearch, secondary admin 10002, banned, deleted, and blocked accounts.
      */
     override suspend fun searchUsers(query: String): List<WesalUser> {
         val trimmed = query.trim()
@@ -448,12 +448,26 @@ class UserRepositoryImpl @Inject constructor(
 
         val numericQuery = WesalIdUtils.extractNumericIdQuery(trimmed)
         if (WesalIdUtils.isValidNumericId(numericQuery)) {
-            val numSnap = getQueryCachedOrServer(
+            val exactNumSnap = getQueryCachedOrServer(
                 usersCollection
                     .whereEqualTo("numericId", numericQuery)
                     .limit(5)
             )
-            numSnap?.documents?.forEach { consider(it.toWesalUser()) }
+            exactNumSnap?.documents?.forEach { consider(it.toWesalUser()) }
+
+            val prefixSnap = getQueryCachedOrServer(
+                usersCollection
+                    .orderBy("numericId")
+                    .whereGreaterThanOrEqualTo("numericId", numericQuery)
+                    .whereLessThanOrEqualTo("numericId", "$numericQuery\uf8ff")
+                    .limit(15)
+            )
+            prefixSnap?.documents?.forEach { doc ->
+                val user = doc.toWesalUser()
+                if (WesalIdUtils.isValidNumericId(user.numericId)) {
+                    consider(user)
+                }
+            }
         }
 
         val cleanHandle = WesalIdUtils.normalize(trimmed)
@@ -1580,7 +1594,7 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getAdminUsersList(limit: Int): List<WesalUser> {
-        if (!isSuperAdmin()) return emptyList()
+        if (!getCurrentAdminPermissions().hasAnyAccess()) return emptyList()
         val snap = runCatching {
             firestore.collection(Constants.COLLECTION_USERS)
                 .orderBy("createdAt", Query.Direction.DESCENDING)
@@ -1592,7 +1606,7 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun adminSearchUsers(query: String): List<WesalUser> {
-        if (!isSuperAdmin()) return emptyList()
+        if (!getCurrentAdminPermissions().hasAnyAccess()) return emptyList()
         val q = query.trim()
         if (q.isBlank()) return getAdminUsersList(120)
         val usersCol = firestore.collection(Constants.COLLECTION_USERS)
@@ -1604,7 +1618,7 @@ class UserRepositoryImpl @Inject constructor(
             results[u.uid] = u
         }
 
-        // 2. Numeric WESAL ID
+        // 2. Numeric WESAL ID (10000..1000000)
         val numQ = WesalIdUtils.extractNumericIdQuery(q)
         if (numQ.isNotBlank()) {
             getQueryCachedOrServer(usersCol.whereEqualTo("numericId", numQ).limit(5))?.documents?.forEach {
@@ -1638,7 +1652,10 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun adminGetUserFullDetails(targetUid: String, reason: String): Result<WesalUser> = runCatching {
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canInspectPrivateData || perms.canManageUsersModeration || perms.canManageReports) {
+            "صلاحية معاينة بيانات المستخدم مطلوبة"
+        }
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = userRef.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
@@ -1673,7 +1690,7 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun computeAdminStats(): AdminDashboardStats {
-        if (!isSuperAdmin()) return AdminDashboardStats()
+        if (!getCurrentAdminPermissions().hasAnyAccess()) return AdminDashboardStats()
         val snap = runCatching {
             firestore.collection(Constants.COLLECTION_USERS).limit(500).get().await()
         }.getOrNull() ?: return AdminDashboardStats()
@@ -1710,14 +1727,15 @@ class UserRepositoryImpl @Inject constructor(
         durationLabel: String
     ): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى غير مفعلة لهذا الحساب" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageVerification) { "صلاحية إدارة التوثيق غير مفعلة لهذا الحساب" }
 
         val now = System.currentTimeMillis()
         val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val targetSnap = targetRef.get().await()
         require(targetSnap.exists()) { "الحساب غير موجود" }
 
-        val safeType = verificationType.uppercase().takeIf { it in setOf("BLUE", "BLACK", "GREEN") } ?: "BLUE"
+        val safeType = VerificationSealType.fromKey(verificationType).key
         val actionName = if (verified) "GRANTED" else "REVOKED"
         // Operation ID bucketed gently to prevent accidental duplicate write from rapid double-tap retries
         val opBucket = now / 5000L
@@ -1765,7 +1783,8 @@ class UserRepositoryImpl @Inject constructor(
         expiresAt: Long,
         durationLabel: String
     ): Result<Unit> = runCatching {
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageFramesAndNeon) { "صلاحية إدارة الإطارات والمظهر مطلوبة" }
         val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = targetRef.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
@@ -1793,6 +1812,33 @@ class UserRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun setAccountIcon(targetUid: String, iconId: String, iconUrl: String): Result<Unit> = runCatching {
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageFramesAndNeon) { "صلاحية إدارة الأيقونات مطلوبة" }
+        val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
+        val snap = targetRef.get().await()
+        require(snap.exists()) { "الحساب غير موجود" }
+
+        val cleanId = iconId.trim()
+        val resolvedUrl = if (cleanId.isBlank()) "" else iconUrl.trim().ifBlank { WesalFrameLibrary.resolveIconUrl(cleanId) }
+        targetRef.set(
+            mapOf(
+                "iconId" to cleanId,
+                "iconUrl" to resolvedUrl
+            ),
+            SetOptions.merge()
+        ).await()
+
+        writeAdminActionLog(
+            action = if (cleanId.isBlank()) "ICON_REMOVED" else "ICON_GRANTED",
+            targetUid = targetUid,
+            targetNumericId = snap.getString("numericId").orEmpty(),
+            targetPublicId = snap.getString("publicId").orEmpty(),
+            targetName = snap.getString("displayName").orEmpty(),
+            details = if (cleanId.isBlank()) "إزالة أيقونة الحساب" else "تعيين أيقونة الحساب: $cleanId"
+        )
+    }
+
     override suspend fun getGlobalCustomerFrameEnabled(): Boolean {
         val snap = runCatching {
             firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG).document("global_appearance").get().await()
@@ -1801,7 +1847,8 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun setGlobalCustomerFrameEnabled(enabled: Boolean): Result<Int> = runCatching {
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageFramesAndNeon) { "صلاحية إدارة الإطارات مطلوبة" }
         firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
             .document("global_appearance")
             .set(
@@ -1821,7 +1868,7 @@ class UserRepositoryImpl @Inject constructor(
             for (doc in chunk) {
                 val currentFrame = doc.getString("frameId").orEmpty()
                 val numId = doc.getString("numericId").orEmpty()
-                if (numId == Constants.OWNER_ADMIN_NUMERIC_ID) continue
+                if (Constants.isProtectedAdminNumericId(numId)) continue
                 if (enabled) {
                     if (currentFrame.isBlank()) {
                         batch.set(
@@ -1850,15 +1897,27 @@ class UserRepositoryImpl @Inject constructor(
         updatedCount
     }
 
-    override suspend fun setAccountNeonStyle(targetUid: String, neonColor: String, glowIntensity: Float): Result<Unit> = runCatching {
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+    override suspend fun setAccountNeonStyle(
+        targetUid: String,
+        neonColor: String,
+        glowIntensity: Float,
+        enabled: Boolean
+    ): Result<Unit> = runCatching {
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageFramesAndNeon) { "صلاحية إدارة النيون مطلوبة" }
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = ref.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
 
+        val cleanColor = if (enabled) neonColor.trim() else ""
+        val effectiveEnabled = enabled && cleanColor.isNotBlank()
         val safeGlow = glowIntensity.coerceIn(0.15f, 1.0f)
         ref.set(
-            mapOf("neonColor" to neonColor.trim(), "neonGlowIntensity" to safeGlow.toDouble()),
+            mapOf(
+                "neonEnabled" to effectiveEnabled,
+                "neonColor" to cleanColor,
+                "neonGlowIntensity" to safeGlow.toDouble()
+            ),
             SetOptions.merge()
         ).await()
 
@@ -1868,13 +1927,14 @@ class UserRepositoryImpl @Inject constructor(
             targetNumericId = snap.getString("numericId").orEmpty(),
             targetPublicId = snap.getString("publicId").orEmpty(),
             targetName = snap.getString("displayName").orEmpty(),
-            details = "نيون: ${neonColor.ifBlank { "بدون" }} (${(safeGlow * 100).toInt()}%)"
+            details = if (!effectiveEnabled) "إيقاف النيون" else "نيون: $cleanColor (${(safeGlow * 100).toInt()}%)"
         )
     }
 
     override suspend fun setAccountHiddenFromSearch(targetUid: String, hidden: Boolean, reason: String): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageUsersModeration) { "صلاحية إدارة المستخدمين مطلوبة" }
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = ref.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
@@ -1927,12 +1987,15 @@ class UserRepositoryImpl @Inject constructor(
         reason: String,
         blockEmailAndVerifiedPhone: Boolean
     ): Result<Unit> = runCatching {
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageUsersModeration) { "صلاحية الحظر مطلوبة" }
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = ref.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
         val user = snap.toWesalUser(includePrivateUnredacted = true)
-        require(user.numericId != Constants.OWNER_ADMIN_NUMERIC_ID) { "لا يمكن حظر حساب المالك" }
+        require(!Constants.isProtectedAdminNumericId(user.numericId) && !Constants.isSuperAdminEmail(user.email)) {
+            "لا يمكن حظر حساب الإدارة المحمي"
+        }
 
         val now = System.currentTimeMillis()
         val banType = if (permanent) "PERMANENT" else "TEMPORARY"
@@ -1995,7 +2058,8 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun unbanUser(targetUid: String, note: String): Result<Unit> = runCatching {
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageUsersModeration) { "صلاحية فك الحظر مطلوبة" }
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = ref.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
@@ -2037,8 +2101,86 @@ class UserRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun adminDeleteUser(targetUid: String, permanent: Boolean): Result<Unit> = runCatching {
+        if (permanent) {
+            deleteAccountPermanently(targetUid, "حذف نهائي من لوحة الإدارة").getOrThrow()
+        } else {
+            val perms = getCurrentAdminPermissions()
+            require(perms.isFullSuperAdmin || perms.canManageUsersModeration) { "صلاحية تعطيل الحسابات مطلوبة" }
+            val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
+            val snap = ref.get().await()
+            require(snap.exists()) { "الحساب غير موجود" }
+            val user = snap.toWesalUser(includePrivateUnredacted = true)
+            require(!Constants.isProtectedAdminNumericId(user.numericId) && !Constants.isSuperAdminEmail(user.email)) {
+                "لا يمكن حذف أو تعطيل حساب الإدارة المحمي"
+            }
+            val now = System.currentTimeMillis()
+            ref.set(
+                mapOf(
+                    "deletedAt" to now,
+                    "hiddenFromSearch" to true,
+                    "isOnline" to false
+                ),
+                SetOptions.merge()
+            ).await()
+            writeAdminActionLog(
+                action = "USER_SOFT_DELETED",
+                targetUid = targetUid,
+                targetNumericId = user.numericId,
+                targetPublicId = user.publicId,
+                targetName = user.displayName,
+                details = "تعطيل الحساب وإخفاؤه من البحث"
+            )
+        }
+    }
+
+    override suspend fun deleteAccountPermanently(targetUid: String, reason: String): Result<Unit> = runCatching {
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin) { "صلاحية المشرف الأعلى مطلوبة للحذف النهائي" }
+        val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
+        val snap = ref.get().await()
+        require(snap.exists()) { "الحساب غير موجود" }
+        val user = snap.toWesalUser(includePrivateUnredacted = true)
+        require(!Constants.isProtectedAdminNumericId(user.numericId) && !Constants.isSuperAdminEmail(user.email)) {
+            "لا يمكن حذف حساب الإدارة المحمي نهائيًا"
+        }
+
+        val privSnap = runCatching { ref.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").get().await() }.getOrNull()
+        val realPhone = privSnap?.getString("phoneNumber").orEmpty().ifBlank { user.phoneNumber }
+        if (realPhone.isNotBlank()) {
+            val pHash = PhoneUtils.sha256Hash(realPhone)
+            runCatching { firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS).document(pHash).delete().await() }
+        }
+        if (user.numericId.isNotBlank()) {
+            runCatching { firestore.collection(Constants.COLLECTION_WESAL_ID_INDEX).document(user.numericId).delete().await() }
+        }
+        runCatching { firestore.collection(Constants.COLLECTION_PRESENCE).document(targetUid).delete().await() }
+        runCatching { firestore.collection(Constants.COLLECTION_MODERATORS).document(targetUid).delete().await() }
+        runCatching { ref.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").delete().await() }
+
+        val sessions = runCatching { ref.collection(Constants.COLLECTION_SESSIONS).get().await() }.getOrNull()
+        if (sessions != null && !sessions.isEmpty) {
+            val batch = firestore.batch()
+            sessions.documents.forEach { batch.delete(it.reference) }
+            runCatching { batch.commit().await() }
+        }
+
+        ref.delete().await()
+
+        writeAdminActionLog(
+            action = "USER_DELETED_PERMANENT",
+            targetUid = targetUid,
+            targetNumericId = user.numericId,
+            targetPublicId = user.publicId,
+            targetName = user.displayName,
+            note = reason.trim().ifBlank { "حذف الحساب نهائيًا" },
+            details = "حذف الحساب وبياناته نهائيًا بواسطة الإدارة"
+        )
+    }
+
     override suspend fun warnUser(targetUid: String, reason: String): Result<Unit> = runCatching {
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageUsersModeration) { "صلاحية إرسال الإنذارات مطلوبة" }
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = ref.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
@@ -2135,7 +2277,8 @@ class UserRepositoryImpl @Inject constructor(
         resolutionAction: String
     ): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageReports) { "صلاحية معالجة البلاغات مطلوبة" }
         firestore.collection(Constants.COLLECTION_REPORTS).document(reportId).set(
             mapOf(
                 "status" to status,
@@ -2155,7 +2298,8 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun adminLogReportChatInspection(reportId: String, chatId: String, targetUid: String, reason: String) {
-        if (!isSuperAdmin()) return
+        val perms = getCurrentAdminPermissions()
+        if (!perms.isFullSuperAdmin && !perms.canManageReports && !perms.canInspectPrivateData) return
         writeAdminActionLog(
             action = "REPORT_CHAT_INSPECTED",
             targetUid = targetUid,
@@ -2290,7 +2434,8 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun updateWelcomeConfig(enabled: Boolean, template: String): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canBroadcastAnnouncements) { "صلاحية تعديل رسالة الترحيب مطلوبة" }
         val cleanTemplate = template.trim().ifBlank { SystemWelcomeConfig.DEFAULT_OFFICIAL_WELCOME_TEMPLATE }
         val existing = getWelcomeConfig()
         val history = buildList {
@@ -2321,7 +2466,8 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun sendWelcomeTestToSelf(): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canBroadcastAnnouncements) { "صلاحية اختبار رسالة الترحيب مطلوبة" }
         val adminUser = getUserOnce(admin.uid)
         val config = getWelcomeConfig()
         val name = adminUser?.displayName?.ifBlank { "فريق وصال" } ?: "فريق وصال"
@@ -2360,7 +2506,8 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun publishOfficialAnnouncement(title: String, body: String): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
-        require(isSuperAdmin()) { "صلاحية المشرف الأعلى مطلوبة" }
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canBroadcastAnnouncements) { "صلاحية نشر الإعلانات الرسمية مطلوبة" }
         val cleanBody = body.trim()
         require(cleanBody.isNotBlank()) { "نص الإعلان مطلوب" }
         val cleanTitle = title.trim().ifBlank { "WESAL Messenger" }

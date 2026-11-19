@@ -73,7 +73,6 @@ data class WesalFrameSpec(
 )
 
 object WesalFrameCatalog {
-    val builtinGlow: Map<String, Long> = emptyMap()
     const val DEFAULT_ALL_CUSTOMERS_FRAME_ID = "all_customers"
 
     val defaultCustomerFrame = WesalFrameSpec(
@@ -149,7 +148,8 @@ object WesalFrameCatalog {
         WesalFrameSpec("admin_35", "إطار إدارة #35", "Admin Frame #35", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_35, true, 0xFF00E5FFL),
         WesalFrameSpec("admin_36", "إطار إدارة #36", "Admin Frame #36", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_36, true, 0xFFFFD740L),
         WesalFrameSpec("admin_37", "إطار إدارة #37", "Admin Frame #37", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_37, true, 0xFFFF6E40L),
-        WesalFrameSpec("admin_38", "إطار إدارة #38", "Admin Frame #38", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_38, true, 0xFF00D9E8L)
+        WesalFrameSpec("admin_38", "إطار إدارة #38", "Admin Frame #38", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_38, true, 0xFF00D9E8L),
+        WesalFrameSpec("admin_39", "إطار الإدارة الملكي #39", "Admin Royal Crest #39", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_39, true, 0xFFFF1744L)
     )
 
     val allFrames: List<WesalFrameSpec> = customerFrames + adminFrames

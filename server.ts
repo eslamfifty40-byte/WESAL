@@ -144,6 +144,43 @@ async function startServer(): Promise<void> {
     res.redirect(302, apkUrl);
   });
 
+  const apkOutputPath = path.resolve(
+    __dirname,
+    "WesalAndroid/app/build/outputs/apk/debug/app-debug.apk"
+  );
+  const zipArchivePath = path.resolve(__dirname, "WesalAndroid.zip");
+
+  app.get("/api/release-info", (_req: Request, res: Response) => {
+    const zipStat = fs.existsSync(zipArchivePath) ? fs.statSync(zipArchivePath) : null;
+    const apkStat = fs.existsSync(apkOutputPath) ? fs.statSync(apkOutputPath) : null;
+    res.setHeader("Cache-Control", "no-store");
+    res.status(200).json({
+      zipAvailable: Boolean(zipStat && zipStat.size > 0),
+      zipSizeBytes: zipStat?.size ?? 0,
+      apkAvailable: Boolean(apkStat && apkStat.size > 0),
+      apkSizeBytes: apkStat?.size ?? 0,
+      packageName: "com.wesal.messenger",
+    });
+  });
+
+  app.get("/WesalAndroid.zip", (_req: Request, res: Response) => {
+    if (!fs.existsSync(zipArchivePath)) {
+      res.status(404).json({ ok: false, error: "WesalAndroid.zip not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "application/zip");
+    res.download(zipArchivePath, "WesalAndroid.zip");
+  });
+
+  app.get("/download/app-debug.apk", (_req: Request, res: Response) => {
+    if (!fs.existsSync(apkOutputPath)) {
+      res.status(404).json({ ok: false, error: "app-debug.apk is not built yet" });
+      return;
+    }
+    res.setHeader("Content-Type", "application/vnd.android.package-archive");
+    res.download(apkOutputPath, "WESAL-Messenger-debug.apk");
+  });
+
   if (isDevMode) {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -158,16 +195,6 @@ async function startServer(): Promise<void> {
         `Production build missing at ${indexHtmlPath}. Run "npm run build" before starting the server.`
       );
     }
-
-    app.get("/WesalAndroid.zip", (_req: Request, res: Response) => {
-      const zipPath = path.resolve(__dirname, "WesalAndroid.zip");
-      if (!fs.existsSync(zipPath)) {
-        res.status(404).json({ ok: false, error: "WesalAndroid.zip not found" });
-        return;
-      }
-      res.setHeader("Content-Type", "application/zip");
-      res.download(zipPath, "WesalAndroid.zip");
-    });
 
     app.use(
       express.static(distPath, {

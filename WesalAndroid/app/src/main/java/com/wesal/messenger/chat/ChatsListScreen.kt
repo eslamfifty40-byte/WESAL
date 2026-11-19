@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -17,7 +18,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -43,6 +47,7 @@ fun ChatsListScreen(
     val showHiddenChats by viewModel.showHiddenChats.collectAsStateWithLifecycle()
     val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
     val hiddenIds by viewModel.hiddenChatIds.collectAsStateWithLifecycle()
+    val openHiddenTrigger by viewModel.openHiddenChatsTrigger.collectAsStateWithLifecycle()
     val toastMsg by viewModel.toastMessage.collectAsStateWithLifecycle()
 
     var selectedChatForMenu by remember { mutableStateOf<ChatPreview?>(null) }
@@ -59,12 +64,20 @@ fun ChatsListScreen(
         }
     }
 
-    // Re-lock hidden chats view when user leaves screen
-    DisposableEffect(Unit) {
-        onDispose {
-            viewModel.setShowingHiddenChats(false)
+    LaunchedEffect(openHiddenTrigger) {
+        if (openHiddenTrigger) {
+            viewModel.consumeOpenHiddenChatsTrigger()
+            if (!showHiddenChats) {
+                if (viewModel.hasHiddenPassword()) {
+                    showUnlockDialog = true
+                } else {
+                    viewModel.setShowingHiddenChats(true)
+                }
+            }
         }
     }
+
+    val hasHiddenEntryPoint = hiddenCount > 0 || hiddenIds.isNotEmpty() || showHiddenChats || viewModel.hasHiddenPassword()
 
     Box(
         modifier = Modifier
@@ -72,39 +85,69 @@ fun ChatsListScreen(
             .background(palette.background)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = viewModel::updateSearchQuery,
-                placeholder = {
-                    Text(if (strings.isEnglish) "Search chats..." else "ابحث في المحادثات...")
-                },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.textSecondary) },
-                trailingIcon = {
-                    if (searchQuery.isNotBlank()) {
-                        IconButton(onClick = { viewModel.updateSearchQuery("") }) {
-                            Icon(Icons.Default.Close, contentDescription = strings.clear)
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(24.dp),
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 10.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = palette.textPrimary,
-                    unfocusedTextColor = palette.textPrimary,
-                    focusedPlaceholderColor = palette.textMuted,
-                    unfocusedPlaceholderColor = palette.textMuted,
-                    focusedBorderColor = palette.turquoise,
-                    unfocusedBorderColor = palette.border,
-                    focusedContainerColor = palette.surface,
-                    unfocusedContainerColor = palette.surface,
-                    cursorColor = palette.turquoise
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = viewModel::updateSearchQuery,
+                    placeholder = {
+                        Text(if (strings.isEnglish) "Search chats..." else "ابحث في المحادثات...")
+                    },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = palette.textSecondary) },
+                    trailingIcon = {
+                        if (searchQuery.isNotBlank()) {
+                            IconButton(onClick = { viewModel.updateSearchQuery("") }) {
+                                Icon(Icons.Default.Close, contentDescription = strings.clear)
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier.weight(1f),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = palette.textPrimary,
+                        unfocusedTextColor = palette.textPrimary,
+                        focusedPlaceholderColor = palette.textMuted,
+                        unfocusedPlaceholderColor = palette.textMuted,
+                        focusedBorderColor = palette.turquoise,
+                        unfocusedBorderColor = palette.border,
+                        focusedContainerColor = palette.surface,
+                        unfocusedContainerColor = palette.surface,
+                        cursorColor = palette.turquoise
+                    )
                 )
-            )
 
-            if (hiddenCount > 0 || showHiddenChats) {
+                if (hasHiddenEntryPoint) {
+                    IconButton(
+                        onClick = {
+                            if (showHiddenChats) {
+                                viewModel.setShowingHiddenChats(false)
+                            } else if (viewModel.hasHiddenPassword()) {
+                                showUnlockDialog = true
+                            } else {
+                                viewModel.setShowingHiddenChats(true)
+                            }
+                        },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .clip(CircleShape)
+                            .background(if (showHiddenChats) palette.emerald.copy(alpha = 0.2f) else palette.surface)
+                    ) {
+                        Icon(
+                            imageVector = if (showHiddenChats) Icons.Default.LockOpen else Icons.Default.Lock,
+                            contentDescription = if (strings.isEnglish) "Hidden Chats" else "المحادثات المخفية",
+                            tint = if (showHiddenChats) palette.emerald else palette.turquoise
+                        )
+                    }
+                }
+            }
+
+            if (hasHiddenEntryPoint) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -140,7 +183,7 @@ fun ChatsListScreen(
                             color = palette.textPrimary
                         )
                     }
-                    if (!showHiddenChats) {
+                    if (!showHiddenChats && hiddenCount > 0) {
                         Text(text = hiddenCount.toString(), color = palette.emerald, fontWeight = FontWeight.Bold)
                     }
                 }
@@ -398,6 +441,7 @@ fun ChatsListScreen(
 
     if (showUnlockDialog) {
         var passInput by remember { mutableStateOf("") }
+        var passVisible by remember { mutableStateOf(false) }
         var passError by remember { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = { showUnlockDialog = false },
@@ -415,7 +459,17 @@ fun ChatsListScreen(
                         value = passInput,
                         onValueChange = { passInput = it; passError = null },
                         label = { Text(if (strings.isEnglish) "Hidden Chats Password" else "كلمة مرور المحادثات المخفية") },
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        trailingIcon = {
+                            IconButton(onClick = { passVisible = !passVisible }) {
+                                Icon(
+                                    if (passVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = null,
+                                    tint = palette.textSecondary
+                                )
+                            }
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -458,6 +512,7 @@ fun ChatsListScreen(
         val question = remember { viewModel.getHiddenRecoveryQuestion() }
         var answerInput by remember { mutableStateOf("") }
         var newPass by remember { mutableStateOf("") }
+        var newPassVisible by remember { mutableStateOf(false) }
         var recError by remember { mutableStateOf<String?>(null) }
         AlertDialog(
             onDismissRequest = { showRecoveryDialog = false },
@@ -488,7 +543,17 @@ fun ChatsListScreen(
                             value = newPass,
                             onValueChange = { newPass = it; recError = null },
                             label = { Text(if (strings.isEnglish) "New password (4+ chars)" else "كلمة المرور الجديدة (4 أحرف فأكثر)") },
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = if (newPassVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                            trailingIcon = {
+                                IconButton(onClick = { newPassVisible = !newPassVisible }) {
+                                    Icon(
+                                        if (newPassVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = null,
+                                        tint = palette.textSecondary
+                                    )
+                                }
+                            },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )
@@ -513,7 +578,7 @@ fun ChatsListScreen(
                         onClick = {
                             if (!viewModel.verifyHiddenRecoveryAnswer(answerInput)) {
                                 recError = if (strings.isEnglish) "Incorrect answer" else "الإجابة غير صحيحة"
-                            } else if (newPass.length < 4) {
+                            } else if (newPass.trim().length < 4) {
                                 recError = if (strings.isEnglish) "Password must be at least 4 characters" else "كلمة المرور يجب أن تكون 4 أحرف على الأقل"
                             } else {
                                 viewModel.setupOrResetHiddenPassword(newPass, question, answerInput)
@@ -546,6 +611,7 @@ fun ChatsListScreen(
     showSetupPasswordForChatId?.let { pendingChatId ->
         var pass by remember { mutableStateOf("") }
         var confirmPass by remember { mutableStateOf("") }
+        var passVisible by remember { mutableStateOf(false) }
         var question by remember { mutableStateOf("") }
         var answer by remember { mutableStateOf("") }
         var errMsg by remember { mutableStateOf<String?>(null) }
@@ -565,7 +631,17 @@ fun ChatsListScreen(
                         value = pass,
                         onValueChange = { pass = it; errMsg = null },
                         label = { Text(if (strings.isEnglish) "Password (4+ chars)" else "كلمة المرور (4 أحرف فأكثر)") },
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        trailingIcon = {
+                            IconButton(onClick = { passVisible = !passVisible }) {
+                                Icon(
+                                    if (passVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = null,
+                                    tint = palette.textSecondary
+                                )
+                            }
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -573,7 +649,8 @@ fun ChatsListScreen(
                         value = confirmPass,
                         onValueChange = { confirmPass = it; errMsg = null },
                         label = { Text(if (strings.isEnglish) "Confirm password" else "تأكيد كلمة المرور") },
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -598,8 +675,8 @@ fun ChatsListScreen(
                 Button(
                     onClick = {
                         when {
-                            pass.length < 4 -> errMsg = "كلمة المرور يجب أن لا تقل عن 4 أحرف"
-                            pass != confirmPass -> errMsg = "كلمتا المرور غير متطابقتين"
+                            pass.trim().length < 4 -> errMsg = "كلمة المرور يجب أن لا تقل عن 4 أحرف"
+                            pass.trim() != confirmPass.trim() -> errMsg = "كلمتا المرور غير متطابقتين"
                             else -> {
                                 viewModel.setupOrResetHiddenPassword(pass, question, answer, pendingChatId)
                                 showSetupPasswordForChatId = null
@@ -643,7 +720,11 @@ private fun ChatRowItem(
             size = 54.dp,
             isOnline = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerOnline,
             frameId = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerFrameId else "",
-            frameExpiresAt = chat.peerFrameExpiresAt
+            frameExpiresAt = chat.peerFrameExpiresAt,
+            isCutout = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerPhotoRemovedBg,
+            iconUrl = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerIconUrl else "",
+            neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled) chat.peerNeonColor else "",
+            neonGlowIntensity = chat.peerNeonGlowIntensity
         )
 
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -661,6 +742,9 @@ private fun ChatRowItem(
                         name = chat.title,
                         isVerified = (!chat.isGroup && chat.peerVerified) || chat.isOfficialWesalChat,
                         verificationType = if (chat.isOfficialWesalChat) "BLUE" else chat.peerVerificationType,
+                        neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerNeonColor else "",
+                        neonGlowIntensity = chat.peerNeonGlowIntensity,
+                        neonEnabled = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f, fill = false)
                     )

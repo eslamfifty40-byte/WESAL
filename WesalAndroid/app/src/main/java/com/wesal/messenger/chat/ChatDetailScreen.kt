@@ -144,6 +144,7 @@ fun ChatDetailScreen(
     var showReportChatDialog by remember { mutableStateOf(false) }
 
     var pendingDraft by remember { mutableStateOf<MediaDraftPreview?>(null) }
+    var pendingDraftQueue by remember { mutableStateOf<List<MediaDraftPreview>>(emptyList()) }
     var croppedWallpaperUri by remember { mutableStateOf<Uri?>(null) }
 
     var fullscreenImageState by remember { mutableStateOf<Pair<File, WesalMessage?>?>(null) }
@@ -180,27 +181,34 @@ fun ChatDetailScreen(
         }
     }
 
-    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) {
-            pendingDraft = viewModel.buildMediaDraft(uri, MessageType.IMAGE)
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(10)) { uris ->
+        if (uris.isNotEmpty()) {
+            val drafts = uris.map { viewModel.buildMediaDraft(it, MessageType.IMAGE) }
+            pendingDraft = drafts.first()
+            pendingDraftQueue = drafts.drop(1)
         }
     }
 
-    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) {
-            pendingDraft = viewModel.buildMediaDraft(uri, MessageType.VIDEO)
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(5)) { uris ->
+        if (uris.isNotEmpty()) {
+            val drafts = uris.map { viewModel.buildMediaDraft(it, MessageType.VIDEO) }
+            pendingDraft = drafts.first()
+            pendingDraftQueue = drafts.drop(1)
         }
     }
 
     val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             pendingDraft = viewModel.buildMediaDraft(uri, MessageType.AUDIO)
+            pendingDraftQueue = emptyList()
         }
     }
 
-    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            pendingDraft = viewModel.buildMediaDraft(uri, MessageType.DOCUMENT)
+    val documentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            val drafts = uris.map { viewModel.buildMediaDraft(it, MessageType.DOCUMENT) }
+            pendingDraft = drafts.first()
+            pendingDraftQueue = drafts.drop(1)
         }
     }
 
@@ -223,6 +231,7 @@ fun ChatDetailScreen(
             pendingDraft != null -> {
                 viewModel.stopVoicePreviewPlayback()
                 pendingDraft = null
+                pendingDraftQueue = emptyList()
             }
             showCamera -> showCamera = false
             showEmojiKeyboard -> showEmojiKeyboard = false
@@ -300,6 +309,7 @@ fun ChatDetailScreen(
     pendingDraft?.let { draft ->
         MediaDraftPreviewScreen(
             draft = draft,
+            remainingQueueCount = pendingDraftQueue.size,
             playbackState = playbackState,
             onUpdateDraft = { pendingDraft = it },
             onCropPhoto = {
@@ -309,11 +319,26 @@ fun ChatDetailScreen(
             onCancel = {
                 viewModel.stopVoicePreviewPlayback()
                 pendingDraft = null
+                pendingDraftQueue = emptyList()
             },
             onSend = {
                 viewModel.stopVoicePreviewPlayback()
                 viewModel.sendMediaDraft(draft)
+                if (pendingDraftQueue.isNotEmpty()) {
+                    pendingDraft = pendingDraftQueue.first()
+                    pendingDraftQueue = pendingDraftQueue.drop(1)
+                } else {
+                    pendingDraft = null
+                }
+            },
+            onSendAll = {
+                viewModel.stopVoicePreviewPlayback()
+                viewModel.sendMediaDraft(draft)
+                pendingDraftQueue.forEach { queued ->
+                    viewModel.sendMediaDraft(queued)
+                }
                 pendingDraft = null
+                pendingDraftQueue = emptyList()
             }
         )
         return
@@ -352,15 +377,20 @@ fun ChatDetailScreen(
                             size = 38.dp,
                             isOnline = chat?.isGroup == false && !isOfficialReadOnly && chat?.peerOnline == true,
                             frameId = if (!isOfficialReadOnly && chat?.isGroup == false) chat?.peerFrameId.orEmpty() else "",
-                            frameExpiresAt = chat?.peerFrameExpiresAt ?: 0L
+                            frameExpiresAt = chat?.peerFrameExpiresAt ?: 0L,
+                            isCutout = !isOfficialReadOnly && chat?.isGroup == false && (chat?.peerPhotoRemovedBg == true),
+                            iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) chat?.peerIconUrl.orEmpty() else "",
+                            neonColor = if (!isOfficialReadOnly && chat?.isGroup == false && (chat?.peerNeonEnabled == true)) chat?.peerNeonColor.orEmpty() else "",
+                            neonGlowIntensity = chat?.peerNeonGlowIntensity ?: 0.7f
                         )
                         Column {
                             WesalNameWithBadge(
                                 name = chat?.title ?: if (strings.isEnglish) "Chat" else "محادثة",
                                 isVerified = (chat?.isGroup == false && chat?.peerVerified == true) || isOfficialReadOnly,
                                 verificationType = if (isOfficialReadOnly) "BLUE" else (chat?.peerVerificationType ?: "BLUE"),
-                                neonColor = peerUser?.neonColor.orEmpty(),
-                                neonGlowIntensity = peerUser?.neonGlowIntensity ?: 0.7f,
+                                neonColor = peerUser?.neonColor ?: chat?.peerNeonColor.orEmpty(),
+                                neonGlowIntensity = peerUser?.neonGlowIntensity ?: (chat?.peerNeonGlowIntensity ?: 0.7f),
+                                neonEnabled = if (isOfficialReadOnly || chat?.isGroup == true) false else (peerUser?.neonEnabled ?: (chat?.peerNeonEnabled == true)),
                                 style = MaterialTheme.typography.titleMedium,
                                 color = palette.textPrimary
                             )
@@ -1360,12 +1390,14 @@ fun ChatDetailScreen(
 @Composable
 private fun MediaDraftPreviewScreen(
     draft: MediaDraftPreview,
+    remainingQueueCount: Int = 0,
     playbackState: VoicePlaybackState,
     onUpdateDraft: (MediaDraftPreview) -> Unit,
     onCropPhoto: () -> Unit,
     onTogglePlayVoice: () -> Unit,
     onCancel: () -> Unit,
-    onSend: () -> Unit
+    onSend: () -> Unit,
+    onSendAll: () -> Unit = onSend
 ) {
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
@@ -1502,6 +1534,21 @@ private fun MediaDraftPreviewScreen(
                     contentColor = palette.onPrimary
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = strings.send)
+                }
+                if (remainingQueueCount > 0) {
+                    FilledTonalButton(
+                        onClick = onSendAll,
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = palette.turquoise.copy(alpha = 0.22f),
+                            contentColor = palette.turquoise
+                        )
+                    ) {
+                        Text(
+                            if (strings.isEnglish) "Send All (${remainingQueueCount + 1})" else "إرسال الكل (${remainingQueueCount + 1})",
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
         }

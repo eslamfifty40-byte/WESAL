@@ -95,7 +95,12 @@ fun WesalAvatar(
     var loadFailed by remember(imageUrl) { mutableStateOf(false) }
     var detectedCutout by remember(imageUrl, isCutout) { mutableStateOf(isCutout) }
     val imageModel = remember(imageUrl) { wesalImageModel(imageUrl) }
-    val activeFrame = WesalFrameLibrary.resolve(frameId, frameExpiresAt)
+    val imageCacheKey = remember(imageUrl) { wesalImageCacheKey(imageUrl) }
+    val activeFrame = remember(frameId, frameExpiresAt, WesalFrameLibrary.docs) {
+        WesalFrameLibrary.resolve(frameId, frameExpiresAt)
+    }
+    val iconModel = remember(iconUrl) { wesalImageModel(iconUrl) }
+    val iconCacheKey = remember(iconUrl) { wesalImageCacheKey(iconUrl) }
     val neonPreset = NeonColorPreset.fromKey(neonColor)
     val avatarGlowColor = when {
         activeFrame != null && glowEnabled -> activeFrame.glow
@@ -114,8 +119,14 @@ fun WesalAvatar(
     @Composable
     fun FrameLayer(frame: ResolvedFrame) {
         if (frame.imageUrl.isNotBlank()) {
+            val frameModel = remember(frame.imageUrl) { wesalImageModel(frame.imageUrl) }
+            val frameKey = remember(frame.imageUrl) { wesalImageCacheKey(frame.imageUrl) }
             AsyncImage(
-                model = ImageRequest.Builder(context).data(wesalImageModel(frame.imageUrl)).crossfade(false).build(),
+                model = ImageRequest.Builder(context)
+                    .data(frameModel)
+                    .apply { if (frameKey != null) memoryCacheKey(frameKey) }
+                    .crossfade(false)
+                    .build(),
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
@@ -158,12 +169,15 @@ fun WesalAvatar(
             FrameLayer(activeFrame)
             if (imageUrl.isNotBlank() && !loadFailed) {
                 AsyncImage(
-                    model = ImageRequest.Builder(context).data(imageModel).build(),
+                    model = ImageRequest.Builder(context)
+                        .data(imageModel)
+                        .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
+                        .build(),
                     contentDescription = name,
                     onError = { loadFailed = true },
                     modifier = Modifier
                         .requiredSize(containerSize * 1.14f)
-                    .offset(y = containerSize * 0.07f)
+                        .offset(y = containerSize * 0.07f)
                         .align(Alignment.BottomCenter),
                     contentScale = ContentScale.Fit,
                     alignment = Alignment.BottomCenter
@@ -177,8 +191,9 @@ fun WesalAvatar(
                     AsyncImage(
                         model = ImageRequest.Builder(context)
                             .data(imageModel)
+                            .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
                             .crossfade(true)
-                        .allowHardware(false)
+                            .allowHardware(false)
                             .build(),
                         contentDescription = name,
                         onError = { loadFailed = true },
@@ -220,7 +235,11 @@ fun WesalAvatar(
 
         if (iconUrl.isNotBlank()) {
             AsyncImage(
-                model = ImageRequest.Builder(context).data(wesalImageModel(iconUrl)).crossfade(false).build(),
+                model = ImageRequest.Builder(context)
+                    .data(iconModel)
+                    .apply { if (iconCacheKey != null) memoryCacheKey(iconCacheKey) }
+                    .crossfade(false)
+                    .build(),
                 contentDescription = null,
                 modifier = Modifier
                     .size((innerAvatarSize * 0.36f).coerceIn(16.dp, 26.dp))
@@ -279,7 +298,6 @@ fun WesalNameWithBadge(
 ) {
     val preset = NeonColorPreset.fromKey(neonColor)
     val neonOn = neonEnabled && preset != NeonColorPreset.NONE
-    val glow = neonGlowIntensity.coerceIn(0.15f, 1.0f)
     val effectiveNeonKey = if (neonOn) neonColor else ""
     val resolvedStyle = wesalNeonTextStyle(
         baseStyle = style,
@@ -288,61 +306,20 @@ fun WesalNameWithBadge(
         fallbackColor = color
     )
     val badgeGlow = if (neonOn) preset.glowColor else glowColor
-    val capsuleShape = RoundedCornerShape(50)
 
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(5.dp)
     ) {
-        if (neonOn) {
-            // Glowing "button-like" capsule around the name: soft outer glow + thin neon border, text stays crisp.
-            Box(
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .drawBehind {
-                        drawRoundRect(
-                            brush = Brush.radialGradient(
-                                colors = listOf(preset.glowColor.copy(alpha = 0.28f * glow), Color.Transparent),
-                                center = center,
-                                radius = this.size.maxDimension * 0.75f
-                            ),
-                            topLeft = Offset(-6.dp.toPx(), -4.dp.toPx()),
-                            size = androidx.compose.ui.geometry.Size(this.size.width + 12.dp.toPx(), this.size.height + 8.dp.toPx()),
-                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(100f, 100f)
-                        )
-                    }
-                    .clip(capsuleShape)
-                    .background(
-                        Brush.horizontalGradient(
-                            listOf(
-                                preset.glowColor.copy(alpha = 0.10f + 0.10f * glow),
-                                preset.glowColor.copy(alpha = 0.04f),
-                                preset.glowColor.copy(alpha = 0.10f + 0.10f * glow)
-                            )
-                        )
-                    )
-                    .border(1.dp, preset.glowColor.copy(alpha = 0.45f + 0.4f * glow), capsuleShape)
-                    .padding(horizontal = 12.dp, vertical = 3.dp)
-            ) {
-                Text(
-                    text = name,
-                    style = resolvedStyle,
-                    fontWeight = fontWeight,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        } else {
-            Text(
-                text = name,
-                style = resolvedStyle,
-                fontWeight = fontWeight,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-        }
+        Text(
+            text = name,
+            style = resolvedStyle,
+            fontWeight = fontWeight,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
         if (isVerified) {
             WesalVerifiedBadge(size = badgeSize, verificationType = verificationType, glowColor = badgeGlow)
         }

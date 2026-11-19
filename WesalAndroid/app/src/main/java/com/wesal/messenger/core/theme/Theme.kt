@@ -13,6 +13,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.wesalStringsForLanguage
+import com.wesal.messenger.domain.model.GlobalAppearanceConfig
 
 private val WesalDarkColorScheme = darkColorScheme(
     primary = WesalEmerald,
@@ -54,15 +55,53 @@ private val WesalLightColorScheme = lightColorScheme(
     onError = Color.White
 )
 
+private fun safeArgbColor(hex: Long): Color? {
+    if (hex == 0L) return null
+    val normalized = if ((hex ushr 24) == 0L) (hex or 0xFF000000L) else hex
+    return Color(normalized)
+}
+
 @Composable
 fun WesalTheme(
     darkTheme: Boolean = true,
     languageTag: String = "ar",
     fontScale: Float = 1.0f,
+    globalAppearance: GlobalAppearanceConfig = GlobalAppearanceConfig(),
     content: @Composable () -> Unit
 ) {
-    val palette = if (darkTheme) WesalDarkPalette else WesalLightPalette
-    val colorScheme = if (darkTheme) WesalDarkColorScheme else WesalLightColorScheme
+    val basePalette = if (darkTheme) WesalDarkPalette else WesalLightPalette
+    val palette = if (globalAppearance.enabled) {
+        val customEmerald = safeArgbColor(globalAppearance.emeraldHex) ?: basePalette.emerald
+        val customTurquoise = safeArgbColor(globalAppearance.turquoiseHex) ?: basePalette.turquoise
+        val customBg = safeArgbColor(globalAppearance.backgroundHex) ?: basePalette.background
+        val customSurface = safeArgbColor(globalAppearance.surfaceHex) ?: basePalette.surface
+        val customText = safeArgbColor(globalAppearance.textPrimaryHex) ?: basePalette.textPrimary
+        val customIconTint = safeArgbColor(globalAppearance.iconTintHex) ?: customTurquoise
+        basePalette.copy(
+            emerald = customEmerald,
+            turquoise = customTurquoise,
+            turquoiseSoft = customTurquoise,
+            background = customBg,
+            surface = customSurface,
+            textPrimary = customText,
+            iconTint = customIconTint
+        )
+    } else {
+        basePalette
+    }
+    val baseColorScheme = if (darkTheme) WesalDarkColorScheme else WesalLightColorScheme
+    val colorScheme = if (globalAppearance.enabled) {
+        baseColorScheme.copy(
+            primary = palette.emerald,
+            secondary = palette.turquoise,
+            background = palette.background,
+            onBackground = palette.textPrimary,
+            surface = palette.surface,
+            onSurface = palette.textPrimary
+        )
+    } else {
+        baseColorScheme
+    }
     val strings = wesalStringsForLanguage(languageTag)
 
     val view = LocalView.current

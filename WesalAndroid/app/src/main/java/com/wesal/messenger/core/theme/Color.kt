@@ -48,7 +48,8 @@ data class WesalPalette(
     val error: Color,
     val warning: Color,
     val readTick: Color,
-    val verifiedBlue: Color
+    val verifiedBlue: Color,
+    val iconTint: Color = turquoise
 )
 
 val WesalDarkPalette = WesalPalette(
@@ -72,7 +73,8 @@ val WesalDarkPalette = WesalPalette(
     error = WesalError,
     warning = WesalWarning,
     readTick = WesalReadTick,
-    verifiedBlue = WesalVerifiedBlue
+    verifiedBlue = WesalVerifiedBlue,
+    iconTint = WesalTurquoise
 )
 
 val WesalLightPalette = WesalPalette(
@@ -96,7 +98,8 @@ val WesalLightPalette = WesalPalette(
     error = Color(0xFFDC2626),
     warning = Color(0xFFD97706),
     readTick = Color(0xFF0284C7),
-    verifiedBlue = WesalVerifiedBlue
+    verifiedBlue = WesalVerifiedBlue,
+    iconTint = Color(0xFF008B99)
 )
 
 val WesalColors = staticCompositionLocalOf { WesalDarkPalette }

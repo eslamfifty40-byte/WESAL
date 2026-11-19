@@ -4,6 +4,7 @@ import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,7 +20,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -34,13 +34,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -52,6 +55,7 @@ import androidx.credentials.exceptions.NoCredentialException
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
+import com.wesal.messenger.R
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.presentation.components.WesalAvatar
 import kotlinx.coroutines.launch
@@ -222,58 +226,50 @@ fun PhoneLoginScreen(
                 }
             }
 
-            // App Brand Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterHorizontally)
+            // App Brand Header (centered logo, WESAL Messenger title & welcome message)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Box(
+                Image(
+                    painter = painterResource(id = R.drawable.wesal_brand_logo),
+                    contentDescription = "WESAL Messenger",
                     modifier = Modifier
-                        .size(54.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(
-                            Brush.linearGradient(
-                                listOf(LoginCyan.copy(alpha = 0.22f), LoginSuccess.copy(alpha = 0.16f))
-                            )
-                        )
-                        .border(1.2.dp, LoginCyan.copy(alpha = 0.6f), RoundedCornerShape(16.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Shield,
-                        contentDescription = "WESAL",
-                        tint = LoginCyan,
-                        modifier = Modifier.size(30.dp)
-                    )
-                }
-                Column {
-                    Text(
-                        text = "WESAL Messenger",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = LoginCyan,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = if (isAddAccountMode) {
-                            if (strings.isEnglish) "Add Account to WESAL" else "إضافة حساب إلى وِصال"
-                        } else {
-                            if (strings.isEnglish) "Welcome to WESAL" else "مرحبًا بك في وِصال"
-                        },
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = if (strings.isEnglish) {
-                            "Connect with those you love, wherever you are"
-                        } else {
-                            "تواصل مع من تحب، أينما كنت"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = LoginTextSecondary
-                    )
-                }
+                        .size(62.dp)
+                        .clip(RoundedCornerShape(16.dp)),
+                    contentScale = ContentScale.Fit
+                )
+                Text(
+                    text = "WESAL Messenger",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = LoginCyan,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = if (isAddAccountMode) {
+                        if (strings.isEnglish) "Add Account to WESAL" else "إضافة حساب إلى وِصال"
+                    } else {
+                        if (strings.isEnglish) "Welcome to WESAL" else "مرحبًا بك في وِصال"
+                    },
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = if (strings.isEnglish) {
+                        "Connect with those you love, wherever you are"
+                    } else {
+                        "تواصل مع من تحب، أينما كنت"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LoginTextSecondary,
+                    textAlign = TextAlign.Center
+                )
             }
 
             // Segmented Auth Mode Toggle

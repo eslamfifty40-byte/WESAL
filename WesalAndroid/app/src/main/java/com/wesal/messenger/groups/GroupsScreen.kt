@@ -887,7 +887,11 @@ fun GroupInfoScreen(
                             name = member.displayName,
                             size = 44.dp,
                             frameId = member.frameId,
-                            frameExpiresAt = member.frameExpiresAt
+                            frameExpiresAt = member.frameExpiresAt,
+                            isCutout = member.photoRemovedBg,
+                            iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(member.iconId, member.iconUrl),
+                            neonColor = if (member.neonEnabled) member.neonColor else "",
+                            neonGlowIntensity = member.neonGlowIntensity
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             WesalNameWithBadge(
@@ -895,7 +899,8 @@ fun GroupInfoScreen(
                                 isVerified = member.isVerified,
                                 verificationType = member.verificationType,
                                 neonColor = member.neonColor,
-                                neonGlowIntensity = member.neonGlowIntensity
+                                neonGlowIntensity = member.neonGlowIntensity,
+                                neonEnabled = member.neonEnabled
                             )
                             if (memberIsAdmin) {
                                 Text(

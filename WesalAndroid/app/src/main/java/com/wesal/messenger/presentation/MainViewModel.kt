@@ -8,6 +8,7 @@ import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.CallRecord
+import com.wesal.messenger.domain.model.GlobalAppearanceConfig
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.CallRepository
 import com.wesal.messenger.domain.repository.ChannelRepository
@@ -39,6 +40,9 @@ class MainViewModel @Inject constructor(
 
     val appSettings: StateFlow<AppUserSettings> = prefs.settingsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, AppUserSettings())
+
+    val globalAppearance: StateFlow<GlobalAppearanceConfig> = userRepository.observeGlobalAppearance()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, GlobalAppearanceConfig())
 
     val isOnline: StateFlow<Boolean> = networkMonitor.isOnline
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
@@ -131,9 +135,12 @@ class MainViewModel @Inject constructor(
                     delay(Constants.PRESENCE_HEARTBEAT_INTERVAL_MS)
                 }
             }
-        } else if (!foreground && authRepository.currentUserId != null) {
-            viewModelScope.launch {
-                runCatching { userRepository.updatePresenceHeartbeat(isOnline = false) }
+        } else if (!foreground) {
+            prefs.setHiddenChatsUnlockedSession(false)
+            if (authRepository.currentUserId != null) {
+                viewModelScope.launch {
+                    runCatching { userRepository.updatePresenceHeartbeat(isOnline = false) }
+                }
             }
         }
     }

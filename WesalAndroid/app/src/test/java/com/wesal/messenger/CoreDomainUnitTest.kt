@@ -245,23 +245,25 @@ class CoreDomainUnitTest {
     }
 
     @Test
-    fun numericIdUtils_validatesExtractsAndGeneratesFiveDigitIds() {
+    fun numericIdUtils_validatesExtractsAndGeneratesIdsInRange() {
         assertTrue(WesalIdUtils.isValidNumericId("10000"))
         assertTrue(WesalIdUtils.isValidNumericId("99999"))
+        assertTrue(WesalIdUtils.isValidNumericId("100000"))
+        assertTrue(WesalIdUtils.isValidNumericId("1000000"))
         assertFalse(WesalIdUtils.isValidNumericId("09999"))
-        assertFalse(WesalIdUtils.isValidNumericId("1234"))
-        assertFalse(WesalIdUtils.isValidNumericId("123456"))
+        assertFalse(WesalIdUtils.isValidNumericId("9999"))
+        assertFalse(WesalIdUtils.isValidNumericId("1000001"))
         assertFalse(WesalIdUtils.isValidNumericId("12a45"))
 
         assertEquals("48291", WesalIdUtils.extractNumericIdQuery("48291"))
-        assertEquals("48291", WesalIdUtils.extractNumericIdQuery("ID: 48291"))
-        assertEquals("48291", WesalIdUtils.extractNumericIdQuery(" #48291 "))
-        assertNull(WesalIdUtils.extractNumericIdQuery("@ahmed_1"))
-        assertNull(WesalIdUtils.extractNumericIdQuery("1234"))
+        assertEquals("1000000", WesalIdUtils.extractNumericIdQuery("ID: 1000000"))
+        assertEquals("482910", WesalIdUtils.extractNumericIdQuery(" #482910 "))
+        assertEquals("", WesalIdUtils.extractNumericIdQuery("@ahmed_1"))
+        assertEquals("", WesalIdUtils.extractNumericIdQuery("1234"))
 
         repeat(20) {
             val candidate = WesalIdUtils.generateRandomNumericCandidate()
-            assertTrue("Generated candidate $candidate must be valid 5-digit numericId", WesalIdUtils.isValidNumericId(candidate))
+            assertTrue("Generated candidate $candidate must be valid in 10000..1000000", WesalIdUtils.isValidNumericId(candidate))
         }
     }
 

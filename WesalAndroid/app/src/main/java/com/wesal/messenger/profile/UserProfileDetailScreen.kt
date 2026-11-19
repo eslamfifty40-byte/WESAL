@@ -295,7 +295,11 @@ fun UserProfileDetailScreen(
                             size = 114.dp,
                             isOnline = canSeeOnline && target.isOnline,
                             frameId = target.frameId,
-                            frameExpiresAt = target.frameExpiresAt
+                            frameExpiresAt = target.frameExpiresAt,
+                            isCutout = target.photoRemovedBg,
+                            iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(target.iconId, target.iconUrl),
+                            neonColor = if (target.neonEnabled) target.neonColor else "",
+                            neonGlowIntensity = neonGlow
                         )
                     }
                 }
@@ -309,7 +313,8 @@ fun UserProfileDetailScreen(
                         fontWeight = FontWeight.Bold,
                         verificationType = target.verificationType,
                         neonColor = neonColor,
-                        neonGlowIntensity = neonGlow
+                        neonGlowIntensity = neonGlow,
+                        neonEnabled = target.neonEnabled
                     )
                     if (target.numericId.isNotBlank()) {
                         Surface(

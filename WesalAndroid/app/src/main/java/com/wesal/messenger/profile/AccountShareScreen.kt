@@ -103,7 +103,11 @@ fun AccountShareScreen(
                         name = user?.displayName?.ifBlank { "@$publicId" } ?: "WESAL",
                         size = 86.dp,
                         frameId = user?.frameId.orEmpty(),
-                        frameExpiresAt = user?.frameExpiresAt ?: 0L
+                        frameExpiresAt = user?.frameExpiresAt ?: 0L,
+                        isCutout = user?.photoRemovedBg == true,
+                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
+                        neonColor = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
+                        neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
                     )
 
                     WesalNameWithBadge(
@@ -112,6 +116,7 @@ fun AccountShareScreen(
                         verificationType = user?.verificationType ?: "BLUE",
                         neonColor = user?.neonColor.orEmpty(),
                         neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f,
+                        neonEnabled = user?.neonEnabled != false,
                         style = MaterialTheme.typography.titleLarge,
                         color = palette.textPrimary,
                         fontWeight = FontWeight.Bold

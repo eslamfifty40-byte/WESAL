@@ -136,7 +136,12 @@ class ChatDetailViewModel @Inject constructor(
                             peerVerified = peer.isVerified,
                             peerVerificationType = peer.verificationType,
                             peerFrameId = peer.frameId,
-                            peerFrameExpiresAt = peer.frameExpiresAt
+                            peerFrameExpiresAt = peer.frameExpiresAt,
+                            peerIconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(peer.iconId, peer.iconUrl),
+                            peerPhotoRemovedBg = peer.photoRemovedBg,
+                            peerNeonColor = peer.neonColor,
+                            peerNeonGlowIntensity = peer.neonGlowIntensity,
+                            peerNeonEnabled = peer.neonEnabled
                         )
                     } else {
                         preview

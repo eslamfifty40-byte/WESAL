@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
@@ -31,7 +32,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.credentials.ClearCredentialStateRequest
@@ -150,6 +153,11 @@ class SettingsViewModel @Inject constructor(
         return prefs.getHiddenChatsRecoveryQuestion(uid)
     }
 
+    fun openHiddenChatsFromSettings(onOpenHiddenChatsTab: () -> Unit) {
+        prefs.requestOpenHiddenChats()
+        onOpenHiddenChatsTab()
+    }
+
     fun setupHiddenChatsPassword(
         currentPassword: String,
         newPassword: String,
@@ -159,15 +167,16 @@ class SettingsViewModel @Inject constructor(
     ): Boolean {
         val uid = authRepository.currentUserId.orEmpty()
         if (uid.isBlank()) return false
+        val cleanNew = prefs.normalizeHiddenPinInput(newPassword)
         if (prefs.hasHiddenChatsPassword(uid) && !prefs.verifyHiddenChatsPassword(uid, currentPassword)) {
             statusMessage.value = if (isEn) "Current password is incorrect" else "كلمة المرور الحالية غير صحيحة"
             return false
         }
-        if (newPassword.length < 4 || !newPassword.any { it.isLetterOrDigit() }) {
+        if (cleanNew.length < 4 || !cleanNew.any { it.isLetterOrDigit() }) {
             statusMessage.value = if (isEn) "Use at least 4 letters or numbers" else "استخدم 4 حروف أو أرقام على الأقل"
             return false
         }
-        prefs.setHiddenChatsPassword(uid, newPassword, recoveryQuestion, recoveryAnswer)
+        prefs.setHiddenChatsPassword(uid, cleanNew, recoveryQuestion, recoveryAnswer)
         statusMessage.value = if (isEn) "Hidden chats password saved" else "تم حفظ كلمة مرور المحادثات المخفية"
         return true
     }
@@ -292,6 +301,7 @@ class SettingsViewModel @Inject constructor(
 
     fun signOut(onSignedOut: () -> Unit) {
         viewModelScope.launch {
+            prefs.setHiddenChatsUnlockedSession(false)
             authRepository.signOut()
             onSignedOut()
         }
@@ -305,6 +315,7 @@ class SettingsViewModel @Inject constructor(
                 googleIdTokenForReauth = googleIdToken?.takeIf { it.isNotBlank() }
             ).onSuccess {
                 isDeletingAccount.value = false
+                prefs.setHiddenChatsUnlockedSession(false)
                 onDeleted()
             }.onFailure { err ->
                 isDeletingAccount.value = false
@@ -325,6 +336,7 @@ fun SettingsScreen(
     onOpenAccountShare: () -> Unit = {},
     onOpenAdminPanel: () -> Unit = {},
     onOpenChat: (String) -> Unit = {},
+    onOpenHiddenChatsTab: () -> Unit = {},
     onSignedOut: () -> Unit,
     onOpenAddAccount: (prefillEmail: String?) -> Unit = {},
     onAccountSwitched: (isNewProfile: Boolean) -> Unit = {},
@@ -784,6 +796,7 @@ fun SettingsScreen(
         val existingQ = remember(showHiddenLockDialog) { viewModel.getHiddenChatsRecoveryQuestion() }
         var currentPass by remember { mutableStateOf("") }
         var newPass by remember { mutableStateOf("") }
+        var showPassChars by remember { mutableStateOf(false) }
         var recoveryQ by remember { mutableStateOf(existingQ.ifBlank { if (strings.isEnglish) "Your favorite city?" else "ما اسم مدينتك المفضلة؟" }) }
         var recoveryA by remember { mutableStateOf("") }
         var recoveryMode by remember { mutableStateOf(false) }
@@ -804,13 +817,38 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = palette.textSecondary
                     )
+                    OutlinedButton(
+                        onClick = {
+                            showHiddenLockDialog = false
+                            viewModel.openHiddenChatsFromSettings(onOpenHiddenChatsTab)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.LockOpen, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (strings.isEnglish) "Open Hidden Chats Section" else "فتح قسم المحادثات المخفية",
+                            color = palette.emerald,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                     if (!recoveryMode) {
                         if (hasExisting) {
                             OutlinedTextField(
                                 value = currentPass,
                                 onValueChange = { currentPass = it },
                                 label = { Text(if (strings.isEnglish) "Current Password" else "كلمة المرور الحالية") },
-                                visualTransformation = PasswordVisualTransformation(),
+                                visualTransformation = if (showPassChars) VisualTransformation.None else PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                trailingIcon = {
+                                    IconButton(onClick = { showPassChars = !showPassChars }) {
+                                        Icon(
+                                            if (showPassChars) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                            contentDescription = null,
+                                            tint = palette.textSecondary
+                                        )
+                                    }
+                                },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -819,7 +857,17 @@ fun SettingsScreen(
                             value = newPass,
                             onValueChange = { newPass = it },
                             label = { Text(if (strings.isEnglish) "New Password (letters/numbers)" else "كلمة المرور الجديدة (حروف وأرقام)") },
-                            visualTransformation = PasswordVisualTransformation(),
+                            visualTransformation = if (showPassChars) VisualTransformation.None else PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                            trailingIcon = {
+                                IconButton(onClick = { showPassChars = !showPassChars }) {
+                                    Icon(
+                                        if (showPassChars) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                        contentDescription = null,
+                                        tint = palette.textSecondary
+                                    )
+                                }
+                            },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth()
                         )

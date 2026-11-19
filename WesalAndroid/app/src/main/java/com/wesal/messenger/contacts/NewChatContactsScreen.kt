@@ -594,7 +594,11 @@ private fun WesalContactDirectoryRow(
                 name = displayTitle,
                 isOnline = user.isOnline,
                 frameId = user.frameId,
-                frameExpiresAt = user.frameExpiresAt
+                frameExpiresAt = user.frameExpiresAt,
+                isCutout = user.photoRemovedBg,
+                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
+                neonColor = if (user.neonEnabled) user.neonColor else "",
+                neonGlowIntensity = user.neonGlowIntensity
             )
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -604,7 +608,8 @@ private fun WesalContactDirectoryRow(
                 fontWeight = FontWeight.SemiBold,
                 verificationType = user.verificationType,
                 neonColor = user.neonColor,
-                neonGlowIntensity = user.neonGlowIntensity
+                neonGlowIntensity = user.neonGlowIntensity,
+                neonEnabled = user.neonEnabled
             )
             val subtitle = buildList {
                 if (user.numericId.isNotBlank()) add("ID: ${user.numericId}")
