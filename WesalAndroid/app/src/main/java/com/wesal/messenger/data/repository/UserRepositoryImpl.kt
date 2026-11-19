@@ -2787,4 +2787,8 @@ class UserRepositoryImpl @Inject constructor(
         // TODO: placeholder so the build compiles
         return Result.success(Unit)
     }
+
+    override suspend fun clearAuditLogs(collectionName: String): Result<Unit> {
+        return Result.success(Unit)
+    }
 }
