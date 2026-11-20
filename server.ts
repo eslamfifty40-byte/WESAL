@@ -7,7 +7,27 @@ import express, { type Request, type Response } from "express";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function resolvePort(rawPort: string | undefined): number {
+function resolveCliPortArg(): number | null {
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--port" && args[i + 1]) {
+      const parsed = Number.parseInt(args[i + 1], 10);
+      if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) return parsed;
+    } else if (arg.startsWith("--port=")) {
+      const parsed = Number.parseInt(arg.slice("--port=".length), 10);
+      if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) return parsed;
+    }
+  }
+  return null;
+}
+
+function resolvePort(isDevMode: boolean): number {
+  const cliPort = resolveCliPortArg();
+  if (cliPort !== null) return cliPort;
+  const rawPort = isDevMode
+    ? process.env.DEFAULT_APP_PORT
+    : process.env.PORT ?? process.env.DEFAULT_APP_PORT;
   const parsed = Number.parseInt(String(rawPort ?? "").trim(), 10);
   if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
     return parsed;
@@ -15,7 +35,9 @@ function resolvePort(rawPort: string | undefined): number {
   return 3000;
 }
 
-const PORT = resolvePort(process.env.PORT);
+const isDevMode =
+  process.env.NODE_ENV === "development" && !process.env.CLOUD_RUN_JOB;
+const PORT = resolvePort(isDevMode);
 const HOST = "0.0.0.0";
 const distPath = path.resolve(__dirname, "dist");
 const publicPath = path.resolve(__dirname, "public");
@@ -55,15 +77,167 @@ function sanitizeRefParam(raw: unknown): string {
     .slice(0, 64);
 }
 
+function escapeHtml(raw: string): string {
+  return raw
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
+    .replace("'", "&#39;");
+}
+
+function renderInviteLandingHtml(opts: {
+  kind: "join" | "channel";
+  code: string;
+  apkUrl: string;
+}): string {
+  const safeCode = escapeHtml(opts.code || "10001");
+  const deepLink =
+    opts.kind === "channel"
+      ? `wesal://channel?code=${encodeURIComponent(opts.code)}`
+      : `wesal://join?id=${encodeURIComponent(opts.code)}`;
+  const safeDeepLink = escapeHtml(deepLink);
+  const safeApkUrl = escapeHtml(opts.apkUrl);
+  const title =
+    opts.kind === "channel"
+      ? `دعوة قناة WESAL • ${safeCode}`
+      : `دعوة تواصل WESAL Messenger • ID ${safeCode}`;
+  const badgeLabel =
+    opts.kind === "channel"
+      ? `رمز القناة: ${safeCode}`
+      : `معرّف WESAL: ${safeCode}`;
+  const headline =
+    opts.kind === "channel"
+      ? "انضم إلى القناة على WESAL Messenger"
+      : "تواصل معي مباشرة على WESAL Messenger";
+  const subtitle =
+    opts.kind === "channel"
+      ? "Open this channel directly inside WESAL Messenger, or download the Android APK below if the app is not installed yet."
+      : "افتح هذا الحساب مباشرة داخل تطبيق WESAL Messenger، أو قم بتنزيل ملف التطبيق لأجهزة أندرويد بالأسفل.";
+
+  return `<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070e10;
+      --surface: #0f1b1f;
+      --border: #1e373d;
+      --emerald: #10b981;
+      --turquoise: #00d9e8;
+      --text: #f3f7f8;
+      --muted: #9eb3b8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: radial-gradient(circle at top, rgba(16,185,129,0.16), transparent 55%), var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    .card {
+      width: 100%;
+      max-width: 440px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 28px 22px;
+      text-align: center;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+    }
+    .logo {
+      width: 72px;
+      height: 72px;
+      border-radius: 20px;
+      margin: 0 auto 14px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, rgba(16,185,129,0.22), rgba(0,217,232,0.18));
+      border: 1px solid rgba(0,217,232,0.35);
+      font-weight: 800;
+      font-size: 26px;
+      letter-spacing: 1px;
+      color: var(--turquoise);
+    }
+    .pill {
+      display: inline-block;
+      padding: 6px 14px;
+      border-radius: 999px;
+      background: rgba(16,185,129,0.14);
+      border: 1px solid rgba(16,185,129,0.35);
+      color: var(--emerald);
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      direction: ltr;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 20px;
+      line-height: 1.4;
+    }
+    p {
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 14px 18px;
+      border-radius: 14px;
+      font-size: 15px;
+      font-weight: 700;
+      text-decoration: none;
+      margin-bottom: 10px;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--emerald), #059669);
+      color: #04120e;
+    }
+    .btn-secondary {
+      background: rgba(0,217,232,0.10);
+      border: 1px solid rgba(0,217,232,0.35);
+      color: var(--turquoise);
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="logo">W</div>
+    <div class="pill">${badgeLabel}</div>
+    <h1>${headline}</h1>
+    <p>${subtitle}</p>
+    <a class="btn btn-primary" href="${safeDeepLink}">فتح في تطبيق WESAL / Open in WESAL</a>
+    <a class="btn btn-secondary" href="${safeApkUrl}">تنزيل تطبيق WESAL (APK)</a>
+  </main>
+  <script>
+    setTimeout(function () {
+      try {
+        window.location.href = ${JSON.stringify(deepLink)};
+      } catch (_) {}
+    }, 250);
+  </script>
+</body>
+</html>`;
+}
+
 async function startServer(): Promise<void> {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json({ limit: "2mb" }));
 
-  const isDevMode =
-    process.env.NODE_ENV === "development" &&
-    !process.env.K_SERVICE &&
-    !process.env.CLOUD_RUN_JOB;
+  // Dev vs Production mode is determined at module level from NODE_ENV
 
   app.get(["/health", "/healthz", "/api/health"], (_req: Request, res: Response) => {
     res.status(200).json({
@@ -92,11 +266,9 @@ async function startServer(): Promise<void> {
     ]);
   });
 
-  // Single-link WhatsApp invite target:
-  // If WESAL is installed on Android, App Links intercept /join?id=<wesalId> directly.
-  // If NOT installed, browser hits /join?id=<wesalId> and receives an immediate HTTP 302
-  // direct redirect to GitHub Releases WESAL.apk (no intermediate landing page), while storing
-  // the inviter's ID in a cookie.
+  // Invite landing target (/join?id=<wesalId>):
+  // If WESAL is installed on Android, App Links open the app directly.
+  // If opened in a browser, shows Arabic+English RTL invite page with deep link + APK download fallback.
   app.get(["/join", "/join/:id"], (req: Request, res: Response) => {
     const refId = sanitizeRefParam(req.query.id ?? req.params.id);
     if (refId) {
@@ -107,20 +279,13 @@ async function startServer(): Promise<void> {
         path: "/",
       });
     }
-    const apkUrl = resolveApkDownloadUrl();
-    if (!apkUrl) {
-      res.status(503).json({
-        ok: false,
-        error: "WESAL_GITHUB_REPO or WESAL_APK_DOWNLOAD_URL is not configured yet for direct APK download.",
-        inviterId: refId || null,
-      });
-      return;
-    }
+    const apkUrl = resolveApkDownloadUrl() ?? "/download/app-debug.apk";
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
-    res.redirect(302, apkUrl);
+    res.status(200).send(renderInviteLandingHtml({ kind: "join", code: refId, apkUrl }));
   });
 
-  // Channel invite link redirect (same direct APK fallback when app is not installed)
+  // Channel invite landing (/channel?code=<code>)
   app.get(["/channel", "/channel/:code"], (req: Request, res: Response) => {
     const code = sanitizeRefParam(req.query.code ?? req.params.code);
     if (code) {
@@ -131,17 +296,10 @@ async function startServer(): Promise<void> {
         path: "/",
       });
     }
-    const apkUrl = resolveApkDownloadUrl();
-    if (!apkUrl) {
-      res.status(503).json({
-        ok: false,
-        error: "WESAL_GITHUB_REPO or WESAL_APK_DOWNLOAD_URL is not configured yet for direct APK download.",
-        channelCode: code || null,
-      });
-      return;
-    }
+    const apkUrl = resolveApkDownloadUrl() ?? "/download/app-debug.apk";
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.setHeader("Cache-Control", "no-store");
-    res.redirect(302, apkUrl);
+    res.status(200).send(renderInviteLandingHtml({ kind: "channel", code, apkUrl }));
   });
 
   const apkOutputPath = path.resolve(
@@ -181,13 +339,34 @@ async function startServer(): Promise<void> {
     res.download(apkOutputPath, "WESAL-Messenger-debug.apk");
   });
 
+  let viteMiddlewarePromise: Promise<(req: Request, res: Response, next: express.NextFunction) => void> | null = null;
+
   if (isDevMode) {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
+    viteMiddlewarePromise = import("vite").then(async ({ createServer: createViteServer }) => {
+      const vite = await createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: false,
+          watch: null,
+        },
+        appType: "spa",
+      });
+      return vite.middlewares as unknown as (
+        req: Request,
+        res: Response,
+        next: express.NextFunction
+      ) => void;
     });
-    app.use(vite.middlewares);
+
+    app.use((req: Request, res: Response, next) => {
+      if (!viteMiddlewarePromise) {
+        next();
+        return;
+      }
+      viteMiddlewarePromise
+        .then((middlewares) => middlewares(req, res, next))
+        .catch(next);
+    });
   } else {
     const indexHtmlPath = path.join(distPath, "index.html");
     if (!fs.existsSync(indexHtmlPath)) {

@@ -724,7 +724,8 @@ private fun ChatRowItem(
             isCutout = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerPhotoRemovedBg,
             iconUrl = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerIconUrl else "",
             neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled) chat.peerNeonColor else "",
-            neonGlowIntensity = chat.peerNeonGlowIntensity
+            neonGlowIntensity = chat.peerNeonGlowIntensity,
+            fallbackResId = if (chat.isOfficialWesalChat) com.wesal.messenger.R.drawable.wesal_brand_logo else null
         )
 
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

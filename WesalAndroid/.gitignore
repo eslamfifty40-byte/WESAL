@@ -1,0 +1,28 @@
+# Gradle & Android build artifacts
+.gradle/
+build/
+app/build/
+.cxx/
+captures/
+*.apk
+*.ap_
+*.aab
+*.dex
+
+# Local IDE / SDK configuration
+local.properties
+.idea/
+*.iml
+.navigation/
+.externalNativeBuild/
+
+# Release keystores (keep app/wesal-debug.keystore for debug App Links SHA-256 verification)
+*.jks
+!app/wesal-debug.keystore
+
+# OS / temporary files
+.DS_Store
+Thumbs.db
+*.hprof
+*.log
+*.zip

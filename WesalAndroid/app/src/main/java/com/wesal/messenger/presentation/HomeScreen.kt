@@ -115,11 +115,11 @@ fun HomeScreen(
                             }
                         }
                         IconButton(onClick = onOpenCameraHub) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = strings.camera, tint = palette.textPrimary)
+                            Icon(Icons.Default.CameraAlt, contentDescription = strings.camera, tint = palette.iconTint)
                         }
                         Box {
                             IconButton(onClick = { menuOpen = true }) {
-                                Icon(Icons.Default.MoreVert, contentDescription = strings.more, tint = palette.textPrimary)
+                                Icon(Icons.Default.MoreVert, contentDescription = strings.more, tint = palette.iconTint)
                             }
                             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                                 DropdownMenuItem(
@@ -175,8 +175,8 @@ fun HomeScreen(
                         icon = { Icon(tab.icon, contentDescription = label) },
                         label = { Text(label, maxLines = 1) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = palette.turquoise,
-                            selectedTextColor = palette.turquoise,
+                            selectedIconColor = palette.iconTint,
+                            selectedTextColor = palette.iconTint,
                             indicatorColor = palette.emerald.copy(alpha = 0.16f),
                             unselectedIconColor = palette.textSecondary,
                             unselectedTextColor = palette.textSecondary

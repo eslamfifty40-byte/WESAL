@@ -11,11 +11,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -24,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -42,6 +47,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.coroutines.resume
+import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 class CropActivity : ComponentActivity() {
 
@@ -138,6 +145,12 @@ class CropActivity : ComponentActivity() {
     }
 }
 
+private enum class CropToolMode {
+    MOVE,
+    ERASE,
+    RESTORE
+}
+
 @Composable
 private fun CropScreen(
     initialBitmap: Bitmap,
@@ -147,12 +160,23 @@ private fun CropScreen(
     onDone: (Bitmap, Boolean) -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    var workingBitmap by remember { mutableStateOf(initialBitmap) }
+    val argbInitial = remember(initialBitmap) {
+        if (initialBitmap.config == Bitmap.Config.ARGB_8888) initialBitmap
+        else initialBitmap.copy(Bitmap.Config.ARGB_8888, false)
+    }
+    var workingBitmap by remember { mutableStateOf(argbInitial.copy(Bitmap.Config.ARGB_8888, true)) }
+    var bitmapVersion by remember { mutableIntStateOf(0) }
     var bgRemoved by remember { mutableStateOf(false) }
+    var glowPreview by remember { mutableStateOf(true) }
     var isProcessingBg by remember { mutableStateOf(false) }
     var bgError by remember { mutableStateOf<String?>(null) }
 
-    val img = remember(workingBitmap) { workingBitmap.asImageBitmap() }
+    var toolMode by remember { mutableStateOf(CropToolMode.MOVE) }
+    var brushSizePx by remember { mutableFloatStateOf(46f) }
+    var touchCursor by remember { mutableStateOf<Offset?>(null) }
+    val undoStack = remember { mutableStateListOf<Bitmap>() }
+
+    val img = remember(workingBitmap, bitmapVersion) { workingBitmap.asImageBitmap() }
     var zoomLevel by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
@@ -178,6 +202,59 @@ private fun CropScreen(
         return Offset(o.x.coerceIn(-mx, mx), o.y.coerceIn(-my, my))
     }
 
+    fun pushUndoSnapshot() {
+        if (undoStack.size >= 12) undoStack.removeAt(0)
+        undoStack.add(workingBitmap.copy(Bitmap.Config.ARGB_8888, true))
+    }
+
+    fun applyBrushAt(screenPos: Offset, eraseMode: Boolean) {
+        val vw = viewportSize.width.toFloat()
+        val vh = viewportSize.height.toFloat()
+        if (vw <= 0f || vh <= 0f) return
+        val total = baseScale(vw, vh) * zoomLevel
+        val bx = ((screenPos.x - (vw / 2f + offset.x)) / total + bw / 2f).roundToInt()
+        val by = ((screenPos.y - (vh / 2f + offset.y)) / total + bh / 2f).roundToInt()
+        val radiusPx = (brushSizePx / total).coerceAtLeast(3f)
+        val rInt = radiusPx.toInt() + 1
+        val w = workingBitmap.width
+        val h = workingBitmap.height
+        val x0 = (bx - rInt).coerceIn(0, w - 1)
+        val x1 = (bx + rInt).coerceIn(0, w - 1)
+        val y0 = (by - rInt).coerceIn(0, h - 1)
+        val y1 = (by + rInt).coerceIn(0, h - 1)
+        val pw = x1 - x0 + 1
+        val ph = y1 - y0 + 1
+        if (pw <= 0 || ph <= 0) return
+
+        val workSlice = IntArray(pw * ph)
+        workingBitmap.getPixels(workSlice, 0, pw, x0, y0, pw, ph)
+        val origSlice = if (!eraseMode) {
+            IntArray(pw * ph).also { argbInitial.getPixels(it, 0, pw, x0, y0, pw, ph) }
+        } else null
+
+        for (dy in 0 until ph) {
+            val py = y0 + dy
+            for (dx in 0 until pw) {
+                val px = x0 + dx
+                val dist = hypot((px - bx).toFloat(), (py - by).toFloat())
+                if (dist <= radiusPx) {
+                    val idx = dy * pw + dx
+                    if (eraseMode) {
+                        val factor = ((dist / radiusPx - 0.72f) / 0.28f).coerceIn(0f, 1f)
+                        val oldA = (workSlice[idx] ushr 24) and 0xFF
+                        val newA = (oldA * factor).roundToInt().coerceIn(0, oldA)
+                        workSlice[idx] = (newA shl 24) or (workSlice[idx] and 0x00FFFFFF)
+                    } else if (origSlice != null) {
+                        workSlice[idx] = origSlice[idx]
+                    }
+                }
+            }
+        }
+        workingBitmap.setPixels(workSlice, 0, pw, x0, y0, pw, ph)
+        if (eraseMode) bgRemoved = true
+        bitmapVersion++
+    }
+
     val headerTitle = when {
         customTitle.isNotBlank() -> customTitle
         mode == CropActivity.MODE_COVER_16_9 -> "تحديد جزء الغلاف (16:9)"
@@ -198,13 +275,17 @@ private fun CropScreen(
             color = Color.White,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 16.dp, start = 16.dp, end = 16.dp)
+            modifier = Modifier.padding(top = 12.dp, start = 16.dp, end = 16.dp)
         )
         Text(
-            text = "اسحب وحرّك الصورة وكبّرها بإصبعين لاختيار الجزء المطلوب",
+            text = when (toolMode) {
+                CropToolMode.MOVE -> "اسحب وحرّك الصورة وكبّرها بإصبعين لاختيار الجزء المطلوب"
+                CropToolMode.ERASE -> "مرّر إصبعك لمسح الخلفية يدوياً بدقة"
+                CropToolMode.RESTORE -> "مرّر إصبعك لاسترجاع الأجزاء الممسوحة"
+            },
             color = Color(0xFFB0BEC5),
             style = MaterialTheme.typography.bodySmall,
-            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp, start = 16.dp, end = 16.dp)
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp, start = 16.dp, end = 16.dp)
         )
 
         Spacer(Modifier.weight(1f))
@@ -215,7 +296,7 @@ private fun CropScreen(
                 .padding(horizontal = 16.dp)
                 .aspectRatio(aspectRatio)
             CropActivity.MODE_WALLPAPER -> Modifier
-                .fillMaxHeight(0.62f)
+                .fillMaxHeight(0.55f)
                 .aspectRatio(aspectRatio)
             else -> Modifier
                 .fillMaxWidth()
@@ -225,16 +306,33 @@ private fun CropScreen(
 
         Box(
             modifier = cropBoxModifier
-                .background(if (bgRemoved) Color(0xFF141B20) else Color.Black)
+                .background(if (bgRemoved) Color(0xFF0B1518) else Color.Black)
                 .clipToBounds()
                 .onSizeChanged { viewportSize = it }
-                .pointerInput(viewportSize, workingBitmap) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        val vw = viewportSize.width.toFloat()
-                        val vh = viewportSize.height.toFloat()
-                        val nz = (zoomLevel * zoom).coerceIn(1f, 6f)
-                        zoomLevel = nz
-                        offset = clampOffset(offset + pan, nz, vw, vh)
+                .pointerInput(viewportSize, toolMode, zoomLevel, offset, brushSizePx) {
+                    if (toolMode == CropToolMode.MOVE) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            val vw = viewportSize.width.toFloat()
+                            val vh = viewportSize.height.toFloat()
+                            val nz = (zoomLevel * zoom).coerceIn(1f, 6f)
+                            zoomLevel = nz
+                            offset = clampOffset(offset + pan, nz, vw, vh)
+                        }
+                    } else {
+                        detectDragGestures(
+                            onDragStart = { start ->
+                                pushUndoSnapshot()
+                                touchCursor = start
+                                applyBrushAt(start, toolMode == CropToolMode.ERASE)
+                            },
+                            onDrag = { change, _ ->
+                                change.consume()
+                                touchCursor = change.position
+                                applyBrushAt(change.position, toolMode == CropToolMode.ERASE)
+                            },
+                            onDragEnd = { touchCursor = null },
+                            onDragCancel = { touchCursor = null }
+                        )
                     }
                 }
         ) {
@@ -242,17 +340,27 @@ private fun CropScreen(
                 val vw = size.width
                 val vh = size.height
                 if (bgRemoved) {
-                    val tile = 24.dp.toPx()
-                    val cols = (vw / tile).toInt() + 1
-                    val rows = (vh / tile).toInt() + 1
-                    for (r in 0..rows) {
-                        for (c in 0..cols) {
-                            val checkColor = if ((r + c) % 2 == 0) Color(0xFF1D272D) else Color(0xFF10161A)
-                            drawRect(
-                                color = checkColor,
-                                topLeft = Offset(c * tile, r * tile),
-                                size = Size(tile, tile)
+                    if (glowPreview) {
+                        drawRect(
+                            brush = Brush.radialGradient(
+                                colors = listOf(Color(0xFF004D40), Color(0xFF061E24), Color(0xFF04090C)),
+                                center = Offset(vw / 2f, vh / 2f),
+                                radius = maxOf(vw, vh) * 0.72f
                             )
+                        )
+                    } else {
+                        val tile = 24.dp.toPx()
+                        val cols = (vw / tile).toInt() + 1
+                        val rows = (vh / tile).toInt() + 1
+                        for (r in 0..rows) {
+                            for (c in 0..cols) {
+                                val checkColor = if ((r + c) % 2 == 0) Color(0xFF1D272D) else Color(0xFF10161A)
+                                drawRect(
+                                    color = checkColor,
+                                    topLeft = Offset(c * tile, r * tile),
+                                    size = Size(tile, tile)
+                                )
+                            }
                         }
                     }
                 }
@@ -264,6 +372,15 @@ private fun CropScreen(
                     translate(-bw / 2f, -bh / 2f)
                 }) {
                     drawImage(img)
+                }
+
+                touchCursor?.let { cur ->
+                    drawCircle(
+                        color = if (toolMode == CropToolMode.ERASE) Color(0xFFFF5252) else Color(0xFF00E676),
+                        radius = brushSizePx,
+                        center = cur,
+                        style = Stroke(width = 3f)
+                    )
                 }
 
                 if (mode == CropActivity.MODE_CIRCLE_AVATAR) {
@@ -292,30 +409,95 @@ private fun CropScreen(
             )
         }
 
-        // Background removal & Reset tools
+        // Manual touch brush mode selector + Undo + Glow preview toggle
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            FilterChip(
+                selected = toolMode == CropToolMode.MOVE,
+                onClick = { toolMode = CropToolMode.MOVE },
+                leadingIcon = { Icon(Icons.Default.OpenWith, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                label = { Text("تحريك", maxLines = 1) }
+            )
+            FilterChip(
+                selected = toolMode == CropToolMode.ERASE,
+                onClick = { toolMode = CropToolMode.ERASE },
+                leadingIcon = { Icon(Icons.Default.Brush, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                label = { Text("ممحاة", maxLines = 1) }
+            )
+            FilterChip(
+                selected = toolMode == CropToolMode.RESTORE,
+                onClick = { toolMode = CropToolMode.RESTORE },
+                leadingIcon = { Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                label = { Text("استعادة", maxLines = 1) }
+            )
+            if (undoStack.isNotEmpty()) {
+                IconButton(
+                    onClick = {
+                        val last = undoStack.removeAt(undoStack.lastIndex)
+                        workingBitmap = last
+                        bitmapVersion++
+                    }
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "تراجع", tint = Color(0xFF00D5E8))
+                }
+            }
+        }
+
+        if (toolMode != CropToolMode.MOVE) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("حجم الفرشاة", color = Color(0xFFB0BEC5), style = MaterialTheme.typography.labelSmall)
+                Slider(
+                    value = brushSizePx,
+                    onValueChange = { brushSizePx = it },
+                    valueRange = 16f..96f,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFF00D5E8),
+                        activeTrackColor = Color(0xFF00D66B)
+                    )
+                )
+            }
+        }
+
+        // Auto Background removal & Glow Preview / Reset tools
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedButton(
                 onClick = {
                     if (bgRemoved) {
-                        workingBitmap = initialBitmap
+                        pushUndoSnapshot()
+                        workingBitmap = argbInitial.copy(Bitmap.Config.ARGB_8888, true)
+                        bitmapVersion++
                         bgRemoved = false
                         bgError = null
                     } else {
                         isProcessingBg = true
                         bgError = null
                         scope.launch {
-                            val segmented = removeBackgroundPreservingPerson(initialBitmap)
+                            val segmented = removeBackgroundPreservingPerson(argbInitial)
                             isProcessingBg = false
                             if (segmented != null) {
-                                workingBitmap = segmented
+                                pushUndoSnapshot()
+                                workingBitmap = segmented.copy(Bitmap.Config.ARGB_8888, true)
+                                bitmapVersion++
                                 bgRemoved = true
                             } else {
-                                bgError = "تعذر عزل الشخص تلقائياً في هذه الصورة؛ استخدم الصورة الأصلية أو جرب صورة أوضح"
+                                bgError = "تعذر عزل الشخص تلقائياً؛ استخدم أداة الممحاة اليدوية أو جرب صورة أوضح"
                             }
                         }
                     }
@@ -328,11 +510,21 @@ private fun CropScreen(
                 if (isProcessingBg) {
                     CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color(0xFF00D5E8), strokeWidth = 2.dp)
                     Spacer(Modifier.width(6.dp))
-                    Text("جاري العزل...", color = Color.White)
+                    Text("جاري العزل...", color = Color.White, maxLines = 1)
                 } else {
                     Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(if (bgRemoved) "استرجاع الخلفية" else "إزالة الخلفية", color = Color.White)
+                    Text(if (bgRemoved) "استرجاع الكل" else "عزل تلقائي", color = Color.White, maxLines = 1)
+                }
+            }
+
+            if (bgRemoved) {
+                OutlinedButton(
+                    onClick = { glowPreview = !glowPreview },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00E676))
+                ) {
+                    Text(if (glowPreview) "توهج ✓" else "شفاف", color = Color.White, maxLines = 1)
                 }
             }
 
@@ -341,25 +533,24 @@ private fun CropScreen(
                     zoomLevel = 1f
                     offset = Offset.Zero
                 },
-                modifier = Modifier.wrapContentWidth(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
-                Text("إعادة ضبط")
+                Text("ضبط", maxLines = 1)
             }
         }
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             OutlinedButton(
                 onClick = onCancel,
-                modifier = Modifier.weight(1f).height(52.dp),
+                modifier = Modifier.weight(1f).height(50.dp),
                 shape = RoundedCornerShape(14.dp)
             ) {
                 Text("إلغاء", color = Color.White)
@@ -384,9 +575,10 @@ private fun CropScreen(
                         else -> 640 to 640
                     }
                     val scaled = Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
-                    onDone(scaled, bgRemoved)
+                    val actualHasAlpha = bgRemoved || bitmapHasTransparentCorner(scaled)
+                    onDone(scaled, actualHasAlpha)
                 },
-                modifier = Modifier.weight(1f).height(52.dp),
+                modifier = Modifier.weight(1f).height(50.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF00D66B),
@@ -397,6 +589,14 @@ private fun CropScreen(
             }
         }
     }
+}
+
+private fun bitmapHasTransparentCorner(bmp: Bitmap): Boolean {
+    if (!bmp.hasAlpha() || bmp.width < 4 || bmp.height < 4) return false
+    val w = bmp.width
+    val h = bmp.height
+    val samplePts = listOf(1 to 1, w - 2 to 1, 1 to h - 2, w - 2 to h - 2, w / 2 to 1)
+    return samplePts.any { (x, y) -> (bmp.getPixel(x, y) ushr 24) < 240 }
 }
 
 private suspend fun removeBackgroundPreservingPerson(source: Bitmap): Bitmap? = withContext(Dispatchers.Default) {

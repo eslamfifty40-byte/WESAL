@@ -1,5 +1,12 @@
 package com.wesal.messenger.presentation.components
 
+import androidx.annotation.DrawableRes
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -23,8 +30,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import com.wesal.messenger.core.util.ResolvedFrame
 import com.wesal.messenger.core.util.WesalFrameLibrary
@@ -44,7 +54,6 @@ import coil.request.ImageRequest
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
-import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.domain.model.MessageStatus
 
 @Composable
@@ -59,19 +68,20 @@ fun wesalNeonTextStyle(
     if (preset == NeonColorPreset.NONE) {
         return baseStyle.copy(color = fallbackColor)
     }
-    val glow = glowIntensity.coerceIn(0.15f, 1.0f)
+    val glow = glowIntensity.coerceIn(0.25f, 1.0f)
     val resolvedColor = if (palette.isDark) preset.textColorDarkBg else preset.textColorLightBg
+    val haloColor = if (preset == NeonColorPreset.BLACK) Color(0xFF00E5FF) else preset.glowColor
     val shadowColor = if (palette.isDark) {
-        preset.glowColor.copy(alpha = (0.55f + 0.45f * glow).coerceIn(0f, 1f))
+        haloColor.copy(alpha = (0.70f + 0.30f * glow).coerceIn(0f, 1f))
     } else {
-        preset.glowColor.copy(alpha = (0.30f * glow).coerceIn(0f, 0.5f))
+        haloColor.copy(alpha = (0.45f * glow).coerceIn(0f, 0.72f))
     }
     return baseStyle.copy(
         color = resolvedColor,
         shadow = Shadow(
             color = shadowColor,
             offset = Offset.Zero,
-            blurRadius = if (palette.isDark) 20f * glow else 10f * glow
+            blurRadius = if (palette.isDark) 28f * glow else 14f * glow
         )
     )
 }
@@ -88,7 +98,8 @@ fun WesalAvatar(
     isCutout: Boolean = false,
     iconUrl: String = "",
     neonColor: String = "",
-    neonGlowIntensity: Float = 0.7f
+    neonGlowIntensity: Float = 0.7f,
+    @DrawableRes fallbackResId: Int? = null
 ) {
     val context = LocalContext.current
     val palette = WesalColors.current
@@ -107,37 +118,96 @@ fun WesalAvatar(
         neonPreset != NeonColorPreset.NONE && glowEnabled -> neonPreset.glowColor
         else -> null
     }
-    val avatarGlowAlpha = if (neonPreset != NeonColorPreset.NONE) {
-        0.35f + 0.35f * neonGlowIntensity.coerceIn(0.15f, 1.0f)
+    val baseGlowAlpha = if (neonPreset != NeonColorPreset.NONE) {
+        0.42f + 0.36f * neonGlowIntensity.coerceIn(0.2f, 1.0f)
     } else {
-        0.55f
+        0.60f
     }
 
-    val containerSize = if (activeFrame != null) size * 1.20f else size
-    val innerAvatarSize = if (activeFrame == null) size else size * 0.90f
+    val isAnimatedFrame = activeFrame?.animated == true
+    val infiniteTransition = if (isAnimatedFrame) rememberInfiniteTransition(label = "wesal_frame_anim") else null
+    val animPulse by (infiniteTransition?.animateFloat(
+        initialValue = 0.97f,
+        targetValue = 1.045f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1500),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    ) ?: remember { mutableStateOf(1f) })
+    val animAlpha by (infiniteTransition?.animateFloat(
+        initialValue = 0.78f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1300),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "alpha"
+    ) ?: remember { mutableStateOf(1f) })
+    val animRotation by (infiniteTransition?.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 7000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotate"
+    ) ?: remember { mutableStateOf(0f) })
+
+    val containerSize = if (activeFrame != null) size * 1.24f else size
+    // Portrait fits cleanly inside the circular inner ring aperture of the frame (matching reference crest layout)
+    val innerAvatarSize = if (activeFrame == null) size else size * 0.84f
+    val avatarGlowAlpha = (baseGlowAlpha * animAlpha).coerceIn(0.1f, 0.95f)
 
     @Composable
     fun FrameLayer(frame: ResolvedFrame) {
-        if (frame.imageUrl.isNotBlank()) {
-            val frameModel = remember(frame.imageUrl) { wesalImageModel(frame.imageUrl) }
-            val frameKey = remember(frame.imageUrl) { wesalImageCacheKey(frame.imageUrl) }
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(frameModel)
-                    .apply { if (frameKey != null) memoryCacheKey(frameKey) }
-                    .crossfade(false)
-                    .build(),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit
-            )
-        } else {
-            Image(
-                painter = painterResource(id = frame.resId),
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Fit
-            )
+        val animModifier = when {
+            !frame.animated -> Modifier.fillMaxSize()
+            frame.animationStyle == "ROTATE_AURA" -> Modifier.fillMaxSize().scale(animPulse)
+            frame.animationStyle == "SHIMMER" -> Modifier.fillMaxSize().alpha(animAlpha).scale(animPulse)
+            else -> Modifier.fillMaxSize().scale(animPulse)
+        }
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            if (frame.animated && frame.animationStyle == "ROTATE_AURA") {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize(0.94f)
+                        .rotate(animRotation)
+                        .border(
+                            width = 2.dp,
+                            brush = Brush.sweepGradient(
+                                listOf(
+                                    frame.glow.copy(alpha = 0.85f),
+                                    Color.Transparent,
+                                    frame.glow.copy(alpha = 0.45f),
+                                    Color.Transparent
+                                )
+                            ),
+                            shape = CircleShape
+                        )
+                )
+            }
+            if (frame.imageUrl.isNotBlank()) {
+                val frameModel = remember(frame.imageUrl) { wesalImageModel(frame.imageUrl) }
+                val frameKey = remember(frame.imageUrl) { wesalImageCacheKey(frame.imageUrl) }
+                AsyncImage(
+                    model = ImageRequest.Builder(context)
+                        .data(frameModel)
+                        .apply { if (frameKey != null) memoryCacheKey(frameKey) }
+                        .crossfade(false)
+                        .build(),
+                    contentDescription = null,
+                    modifier = animModifier,
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                Image(
+                    painter = painterResource(id = frame.resId),
+                    contentDescription = null,
+                    modifier = animModifier,
+                    contentScale = ContentScale.Fit
+                )
+            }
         }
     }
 
@@ -151,13 +221,13 @@ fun WesalAvatar(
                             brush = Brush.radialGradient(
                                 colors = listOf(
                                     avatarGlowColor.copy(alpha = avatarGlowAlpha),
-                                    avatarGlowColor.copy(alpha = avatarGlowAlpha * 0.4f),
+                                    avatarGlowColor.copy(alpha = avatarGlowAlpha * 0.42f),
                                     Color.Transparent
                                 ),
                                 center = center,
-                                radius = this.size.minDimension * 0.62f
+                                radius = this.size.minDimension * 0.64f
                             ),
-                            radius = this.size.minDimension * 0.62f,
+                            radius = this.size.minDimension * 0.64f,
                             center = center
                         )
                     }
@@ -165,72 +235,90 @@ fun WesalAvatar(
             ),
         contentAlignment = Alignment.Center
     ) {
-        if (activeFrame != null && detectedCutout) {
-            FrameLayer(activeFrame)
+        val innerBackdropColor = avatarGlowColor ?: palette.turquoise
+        Box(
+            modifier = Modifier
+                .size(innerAvatarSize)
+                .clip(CircleShape)
+                .then(
+                    if (detectedCutout || activeFrame != null || neonPreset != NeonColorPreset.NONE) {
+                        Modifier.background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    innerBackdropColor.copy(alpha = 0.34f),
+                                    palette.surfaceElevated.copy(alpha = 0.92f),
+                                    palette.surface.copy(alpha = 0.98f)
+                                )
+                            )
+                        )
+                    } else Modifier
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            val borderColor = if (neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else palette.border
+            val borderWidth = if (neonPreset != NeonColorPreset.NONE) 1.8.dp else 1.dp
             if (imageUrl.isNotBlank() && !loadFailed) {
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(imageModel)
                         .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
+                        .crossfade(true)
+                        .allowHardware(false)
                         .build(),
                     contentDescription = name,
                     onError = { loadFailed = true },
+                    onSuccess = { st ->
+                        val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                        if (bmp != null && bmp.hasAlpha() && bmp.width > 8 && bmp.height > 8) {
+                            val c1 = (bmp.getPixel(1, 1) ushr 24) < 20
+                            val c2 = (bmp.getPixel(bmp.width - 2, 1) ushr 24) < 20
+                            detectedCutout = c1 && c2
+                        }
+                    },
                     modifier = Modifier
-                        .requiredSize(containerSize * 1.14f)
-                        .offset(y = containerSize * 0.07f)
-                        .align(Alignment.BottomCenter),
-                    contentScale = ContentScale.Fit,
-                    alignment = Alignment.BottomCenter
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .then(
+                            if (activeFrame == null) {
+                                Modifier.border(borderWidth, borderColor, CircleShape)
+                            } else Modifier
+                        ),
+                    contentScale = ContentScale.Crop,
+                    alignment = Alignment.TopCenter
                 )
-            }
-        } else {
-            Box(modifier = Modifier.size(innerAvatarSize), contentAlignment = Alignment.Center) {
-                val borderColor = if (neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else palette.border
-                val borderWidth = if (neonPreset != NeonColorPreset.NONE) 1.8.dp else 1.dp
-                if (imageUrl.isNotBlank() && !loadFailed) {
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(imageModel)
-                            .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
-                            .crossfade(true)
-                            .allowHardware(false)
-                            .build(),
-                        contentDescription = name,
-                        onError = { loadFailed = true },
-                        onSuccess = { st ->
-                            val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-                            if (bmp != null && bmp.hasAlpha() && bmp.width > 8 && bmp.height > 8) {
-                                val c1 = (bmp.getPixel(1, 1) ushr 24) < 20
-                                val c2 = (bmp.getPixel(bmp.width - 2, 1) ushr 24) < 20
-                                detectedCutout = c1 && c2
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(CircleShape)
-                            .border(borderWidth, borderColor, CircleShape),
-                        contentScale = ContentScale.Crop
+            } else if (fallbackResId != null) {
+                Image(
+                    painter = painterResource(id = fallbackResId),
+                    contentDescription = name,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .border(borderWidth, palette.emerald.copy(alpha = 0.55f), CircleShape),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "W"
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .background(palette.emeraldDark.copy(alpha = 0.35f))
+                        .border(borderWidth, if (neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else palette.emerald.copy(alpha = 0.45f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = initial,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.textPrimary
                     )
-                } else {
-                    val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "W"
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(CircleShape)
-                            .background(palette.emeraldDark.copy(alpha = 0.35f))
-                            .border(borderWidth, if (neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else palette.emerald.copy(alpha = 0.45f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = initial,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = palette.textPrimary
-                        )
-                    }
                 }
             }
-            if (activeFrame != null) FrameLayer(activeFrame)
+        }
+
+        // Frame draws around/over the circular inner aperture so wings, crown, and bottom crest remain crisp
+        if (activeFrame != null) {
+            FrameLayer(activeFrame)
         }
 
         if (iconUrl.isNotBlank()) {

@@ -8,7 +8,12 @@ import android.widget.Toast
 object WesalShareUtils {
 
     fun buildSingleInviteLink(myWesalId: String? = null): String {
-        return Constants.APK_DOWNLOAD_URL.trim()
+        val clean = myWesalId?.trim()?.removePrefix("@").orEmpty()
+        return if (clean.isNotBlank()) {
+            "${Constants.WEB_BASE_URL}/join?id=${Uri.encode(clean)}"
+        } else {
+            Constants.APK_DOWNLOAD_URL.trim()
+        }
     }
 
     /**
@@ -54,7 +59,12 @@ object WesalShareUtils {
     }
 
     fun buildChannelInviteLink(inviteCode: String): String {
-        return Constants.APK_DOWNLOAD_URL.trim()
+        val cleanCode = inviteCode.trim()
+        return if (cleanCode.isNotBlank()) {
+            "${Constants.WEB_BASE_URL}/channel?code=${Uri.encode(cleanCode)}"
+        } else {
+            Constants.APK_DOWNLOAD_URL.trim()
+        }
     }
 
     fun buildChannelInviteMessage(
