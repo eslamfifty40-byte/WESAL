@@ -27,6 +27,8 @@ jobs:
         with:
           gradle-version: 8.9
 
+      - name: Clean Gradle cache
+        run: rm -rf WesalAndroid/.gradle
       - name: Build Debug APK
         run: |
           cd WesalAndroid
