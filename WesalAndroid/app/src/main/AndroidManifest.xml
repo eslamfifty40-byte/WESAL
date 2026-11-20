@@ -64,6 +64,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- Android App Links for WESAL Invite & Channel URLs -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="ais-pre-dcqe7rfl5fmp57d6kasklc-603239014289.europe-west3.run.app"
+                    android:pathPrefix="/join" />
+                <data
+                    android:scheme="https"
+                    android:host="ais-pre-dcqe7rfl5fmp57d6kasklc-603239014289.europe-west3.run.app"
+                    android:pathPrefix="/channel" />
+            </intent-filter>
+
             <!-- Custom URL Scheme fallback -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

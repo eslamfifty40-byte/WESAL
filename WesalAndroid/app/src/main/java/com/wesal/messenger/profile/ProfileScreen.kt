@@ -683,6 +683,18 @@ fun ProfileScreen(
                         }
                     }
                 }
+                if (publicId.isNotBlank()) {
+                    Text(
+                        text = "@${publicId.trim()}",
+                        style = wesalNeonTextStyle(
+                            baseStyle = MaterialTheme.typography.titleMedium,
+                            neonColorKey = if (user?.neonEnabled != false) activeNeon else "",
+                            glowIntensity = activeGlow,
+                            fallbackColor = palette.turquoise
+                        ),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
                 // Frame / Neon / Seal active summary badge if any customization is granted
                 val activeFrame = WesalFrameLibrary.resolve(user?.frameId, user?.frameExpiresAt ?: 0L)

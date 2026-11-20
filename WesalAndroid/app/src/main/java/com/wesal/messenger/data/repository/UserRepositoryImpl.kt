@@ -446,8 +446,8 @@ class UserRepositoryImpl @Inject constructor(
             results[user.uid] = user
         }
 
-        val numericQuery = WesalIdUtils.extractNumericIdQuery(trimmed)
-        if (WesalIdUtils.isValidNumericId(numericQuery)) {
+        val numericQuery = WesalIdUtils.extractSearchNumericIdQuery(trimmed)
+        if (numericQuery.isNotBlank()) {
             val exactNumSnap = getQueryCachedOrServer(
                 usersCollection
                     .whereEqualTo("numericId", numericQuery)
@@ -464,7 +464,7 @@ class UserRepositoryImpl @Inject constructor(
             )
             prefixSnap?.documents?.forEach { doc ->
                 val user = doc.toWesalUser()
-                if (WesalIdUtils.isValidNumericId(user.numericId)) {
+                if (WesalIdUtils.isValidNumericId(user.numericId) || user.numericId == "1001") {
                     consider(user)
                 }
             }
@@ -510,6 +510,22 @@ class UserRepositoryImpl @Inject constructor(
         val currentUid = auth.currentUser?.uid
         val matched = mutableMapOf<String, WesalUser>()
 
+        fun considerUserDoc(hash: String, doc: DocumentSnapshot) {
+            if (!doc.exists() || hash.isBlank()) return
+            val user = doc.toWesalUser()
+            if (
+                user.uid != currentUid &&
+                !user.privacySettings.hidePhoneNumber &&
+                !user.hiddenFromSearch &&
+                user.numericId != Constants.SECONDARY_ADMIN_NUMERIC_ID &&
+                !Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true) &&
+                !user.isBanned &&
+                user.deletedAt == 0L
+            ) {
+                matched[hash] = user
+            }
+        }
+
         distinct.chunked(30).forEach { chunk ->
             val snap = getQueryCachedOrServer(
                 firestore.collection(Constants.COLLECTION_USERS)
@@ -517,18 +533,22 @@ class UserRepositoryImpl @Inject constructor(
             )
             snap?.documents?.forEach { doc ->
                 val hash = doc.getString("phoneHash").orEmpty()
-                val user = doc.toWesalUser()
-                if (
-                    hash.isNotBlank() &&
-                    user.uid != currentUid &&
-                    !user.privacySettings.hidePhoneNumber &&
-                    !user.hiddenFromSearch &&
-                    user.numericId != Constants.SECONDARY_ADMIN_NUMERIC_ID &&
-                    !Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true) &&
-                    !user.isBanned &&
-                    user.deletedAt == 0L
-                ) {
-                    matched[hash] = user
+                considerUserDoc(hash, doc)
+            }
+
+            // Fallback lookup via phone_uniqueness for legacy accounts missing phoneHash on /users
+            val missingHashes = chunk.filter { !matched.containsKey(it) }
+            if (missingHashes.isNotEmpty()) {
+                val lockSnap = getQueryCachedOrServer(
+                    firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                        .whereIn(com.google.firebase.firestore.FieldPath.documentId(), missingHashes)
+                )
+                lockSnap?.documents?.forEach { lockDoc ->
+                    val hash = lockDoc.id
+                    val ownerUid = lockDoc.getString("uid").orEmpty()
+                    if (ownerUid.isNotBlank() && ownerUid != currentUid && !matched.containsKey(hash)) {
+                        getDocCachedOrServer(ownerUid)?.let { uDoc -> considerUserDoc(hash, uDoc) }
+                    }
                 }
             }
         }
@@ -615,6 +635,7 @@ class UserRepositoryImpl @Inject constructor(
             }
 
             if (photoUri != null) {
+                val isCutout = withContext(Dispatchers.IO) { hasUriAlphaChannel(context, photoUri) }
                 val uploadedAvatar = withContext(Dispatchers.IO) {
                     uploadProfileMediaToStorageOrSmallFallback(
                         ctx = context,
@@ -626,6 +647,11 @@ class UserRepositoryImpl @Inject constructor(
                 }
                 if (uploadedAvatar.isNotBlank()) {
                     updates["photoUrl"] = uploadedAvatar
+                    val hasAlphaFlag = isCutout ||
+                        uploadedAvatar.contains("image/png", ignoreCase = true) ||
+                        uploadedAvatar.contains("image/webp", ignoreCase = true) ||
+                        uploadedAvatar.contains(".png", ignoreCase = true)
+                    updates["photoRemovedBg"] = hasAlphaFlag
                     userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
                         .set(mapOf("hiddenPhotoUrl" to uploadedAvatar), SetOptions.merge())
                         .await()
@@ -701,6 +727,7 @@ class UserRepositoryImpl @Inject constructor(
         var expectedCover: String? = null
 
         if (photoUri != null) {
+            val hasAlphaSource = withContext(Dispatchers.IO) { hasUriAlphaChannel(context, photoUri) }
             val uploadedAvatar = withContext(Dispatchers.IO) {
                 uploadProfileMediaToStorageOrSmallFallback(
                     ctx = context,
@@ -713,7 +740,8 @@ class UserRepositoryImpl @Inject constructor(
             check(uploadedAvatar.isNotBlank()) { "تعذر تجهيز أو رفع الصورة الشخصية" }
             expectedAvatar = uploadedAvatar
             updates["photoUrl"] = uploadedAvatar
-            val isCutoutPng = uploadedAvatar.contains("image/png", ignoreCase = true) ||
+            val isCutoutPng = hasAlphaSource ||
+                uploadedAvatar.contains("image/png", ignoreCase = true) ||
                 uploadedAvatar.contains("image/webp", ignoreCase = true) ||
                 uploadedAvatar.contains(".png", ignoreCase = true)
             updates["photoRemovedBg"] = isCutoutPng
@@ -1377,6 +1405,12 @@ class UserRepositoryImpl @Inject constructor(
                             surfaceHex = snap.getLong("surfaceHex") ?: 0L,
                             textPrimaryHex = snap.getLong("textPrimaryHex") ?: 0L,
                             iconTintHex = snap.getLong("iconTintHex") ?: 0L,
+                            globalCustomerFrameEnabled = snap.getBoolean("globalCustomerFrameEnabled") ?: true,
+                            defaultCustomerFrameId = snap.getString("defaultFrameId").orEmpty()
+                                .ifBlank { snap.getString("defaultCustomerFrameId").orEmpty() }
+                                .ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID },
+                            defaultCustomerIconId = snap.getString("defaultCustomerIconId").orEmpty(),
+                            defaultCustomerIconUrl = snap.getString("defaultCustomerIconUrl").orEmpty(),
                             updatedAt = snap.getLong("updatedAt") ?: 0L,
                             updatedByUid = snap.getString("updatedByUid").orEmpty()
                         )
@@ -1402,6 +1436,11 @@ class UserRepositoryImpl @Inject constructor(
                     "surfaceHex" to config.surfaceHex,
                     "textPrimaryHex" to config.textPrimaryHex,
                     "iconTintHex" to config.iconTintHex,
+                    "globalCustomerFrameEnabled" to config.globalCustomerFrameEnabled,
+                    "defaultFrameId" to config.defaultCustomerFrameId.ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID },
+                    "defaultCustomerFrameId" to config.defaultCustomerFrameId.ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID },
+                    "defaultCustomerIconId" to config.defaultCustomerIconId,
+                    "defaultCustomerIconUrl" to config.defaultCustomerIconUrl,
                     "updatedAt" to now,
                     "updatedByUid" to admin.uid
                 ),
@@ -1618,8 +1657,8 @@ class UserRepositoryImpl @Inject constructor(
             results[u.uid] = u
         }
 
-        // 2. Numeric WESAL ID (10000..1000000)
-        val numQ = WesalIdUtils.extractNumericIdQuery(q)
+        // 2. Numeric WESAL ID (10000..1000000 + 1001)
+        val numQ = WesalIdUtils.extractSearchNumericIdQuery(q)
         if (numQ.isNotBlank()) {
             getQueryCachedOrServer(usersCol.whereEqualTo("numericId", numQ).limit(5))?.documents?.forEach {
                 val u = it.toWesalUser(includePrivateUnredacted = true)
@@ -1846,19 +1885,48 @@ class UserRepositoryImpl @Inject constructor(
         return snap?.getBoolean("globalCustomerFrameEnabled") ?: true
     }
 
-    override suspend fun setGlobalCustomerFrameEnabled(enabled: Boolean): Result<Int> = runCatching {
+    override suspend fun setGlobalCustomerFrameEnabled(enabled: Boolean): Result<Int> {
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG).document("global_appearance").get().await()
+        }.getOrNull()
+        val currentFrame = snap?.getString("defaultFrameId").orEmpty()
+            .ifBlank { snap?.getString("defaultCustomerFrameId").orEmpty() }
+            .ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID }
+        val currentIconId = snap?.getString("defaultCustomerIconId").orEmpty()
+        val currentIconUrl = snap?.getString("defaultCustomerIconUrl").orEmpty()
+        return setGlobalCustomerDefaults(enabled, currentFrame, currentIconId, currentIconUrl)
+    }
+
+    override suspend fun setGlobalCustomerDefaults(
+        enabled: Boolean,
+        frameId: String,
+        iconId: String,
+        iconUrl: String
+    ): Result<Int> = runCatching {
         val perms = getCurrentAdminPermissions()
         require(perms.isFullSuperAdmin || perms.canManageFramesAndNeon) { "صلاحية إدارة الإطارات مطلوبة" }
-        firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
-            .document("global_appearance")
-            .set(
-                mapOf(
-                    "globalCustomerFrameEnabled" to enabled,
-                    "defaultFrameId" to WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID,
-                    "updatedAt" to System.currentTimeMillis()
-                ),
-                SetOptions.merge()
-            ).await()
+        val configDocRef = firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG).document("global_appearance")
+        val prevSnap = runCatching { configDocRef.get().await() }.getOrNull()
+        val prevFrameId = prevSnap?.getString("defaultFrameId").orEmpty()
+            .ifBlank { prevSnap?.getString("defaultCustomerFrameId").orEmpty() }
+            .ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID }
+        val prevIconId = prevSnap?.getString("defaultCustomerIconId").orEmpty()
+
+        val chosenFrame = frameId.trim().ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID }
+        val chosenIconId = iconId.trim()
+        val chosenIconUrl = if (chosenIconId.isBlank()) "" else iconUrl.trim().ifBlank { WesalFrameLibrary.resolveIconUrl(chosenIconId) }
+
+        configDocRef.set(
+            mapOf(
+                "globalCustomerFrameEnabled" to enabled,
+                "defaultFrameId" to chosenFrame,
+                "defaultCustomerFrameId" to chosenFrame,
+                "defaultCustomerIconId" to chosenIconId,
+                "defaultCustomerIconUrl" to chosenIconUrl,
+                "updatedAt" to System.currentTimeMillis()
+            ),
+            SetOptions.merge()
+        ).await()
 
         val usersSnap = firestore.collection(Constants.COLLECTION_USERS).limit(500).get().await()
         var updatedCount = 0
@@ -1866,24 +1934,34 @@ class UserRepositoryImpl @Inject constructor(
         for (chunk in chunks) {
             val batch = firestore.batch()
             for (doc in chunk) {
-                val currentFrame = doc.getString("frameId").orEmpty()
                 val numId = doc.getString("numericId").orEmpty()
                 if (Constants.isProtectedAdminNumericId(numId)) continue
+                val currentFrame = doc.getString("frameId").orEmpty()
+                val currentIcon = doc.getString("iconId").orEmpty()
+                val patch = hashMapOf<String, Any>()
+
                 if (enabled) {
-                    if (currentFrame.isBlank()) {
-                        batch.set(
-                            doc.reference,
-                            mapOf("frameId" to WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID, "frameExpiresAt" to 0L),
-                            SetOptions.merge()
-                        )
-                        updatedCount++
+                    if (currentFrame.isBlank() || currentFrame == prevFrameId || currentFrame == WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID) {
+                        patch["frameId"] = chosenFrame
+                        patch["frameExpiresAt"] = 0L
                     }
-                } else if (currentFrame == WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID) {
-                    batch.set(
-                        doc.reference,
-                        mapOf("frameId" to "", "frameExpiresAt" to 0L),
-                        SetOptions.merge()
-                    )
+                    if (chosenIconId.isNotBlank() && (currentIcon.isBlank() || currentIcon == prevIconId)) {
+                        patch["iconId"] = chosenIconId
+                        patch["iconUrl"] = chosenIconUrl
+                    }
+                } else {
+                    if (currentFrame == prevFrameId || currentFrame == chosenFrame || currentFrame == WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID) {
+                        patch["frameId"] = ""
+                        patch["frameExpiresAt"] = 0L
+                    }
+                    if (prevIconId.isNotBlank() && currentIcon == prevIconId) {
+                        patch["iconId"] = ""
+                        patch["iconUrl"] = ""
+                    }
+                }
+
+                if (patch.isNotEmpty()) {
+                    batch.set(doc.reference, patch, SetOptions.merge())
                     updatedCount++
                 }
             }
@@ -1892,7 +1970,7 @@ class UserRepositoryImpl @Inject constructor(
 
         writeAdminActionLog(
             action = if (enabled) "GLOBAL_FRAME_ENABLED" else "GLOBAL_FRAME_DISABLED",
-            details = "تحديث إطار جميع العملاء ($updatedCount حساب)"
+            details = "تطبيق الإطار/الأيقونة الافتراضية على العملاء ($chosenFrame • $updatedCount حساب)"
         )
         updatedCount
     }
@@ -2165,6 +2243,16 @@ class UserRepositoryImpl @Inject constructor(
             runCatching { batch.commit().await() }
         }
 
+        val officialChatRef = firestore.collection(Constants.COLLECTION_CHATS)
+            .document("${Constants.OFFICIAL_CHAT_PREFIX}$targetUid")
+        val officialMsgs = runCatching { officialChatRef.collection(Constants.COLLECTION_MESSAGES).limit(200).get().await() }.getOrNull()
+        if (officialMsgs != null && !officialMsgs.isEmpty) {
+            val msgBatch = firestore.batch()
+            officialMsgs.documents.forEach { msgBatch.delete(it.reference) }
+            runCatching { msgBatch.commit().await() }
+        }
+        runCatching { officialChatRef.delete().await() }
+
         ref.delete().await()
 
         writeAdminActionLog(
@@ -2338,7 +2426,9 @@ class UserRepositoryImpl @Inject constructor(
                             details = doc.getString("details").orEmpty(),
                             timestamp = doc.getLong("timestamp") ?: 0L
                         )
-                    }.orEmpty().distinctBy { it.operationId.ifBlank { it.logId } }
+                    }.orEmpty().distinctBy { log ->
+                        log.targetUid.ifBlank { log.operationId.ifBlank { log.logId } }
+                    }
                     trySend(logs)
                 }
             awaitClose { reg.remove() }
@@ -2773,14 +2863,33 @@ class UserRepositoryImpl @Inject constructor(
         return snap != null && snap.exists() && snap.getString("status") == ContactRequestStatus.ACCEPTED.raw
     }
 
-    override suspend fun setGlobalCustomerDefaults(
-        enabled: Boolean,
-        frameId: String,
-        iconId: String,
-        iconUrl: String
-    ): Result<Int> {
-        // TODO: placeholder so the build compiles
-        return Result.success(0)
+    override suspend fun deleteAuditLog(collectionName: String, logId: String): Result<Unit> = runCatching {
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin) { "صلاحية المشرف الأعلى مطلوبة لحذف السجل" }
+        val allowedCollections = setOf(
+            Constants.COLLECTION_VERIFICATION_LOGS,
+            Constants.COLLECTION_ADMIN_LOGS,
+            Constants.COLLECTION_HIDDEN_LOGS
+        )
+        require(collectionName in allowedCollections && logId.isNotBlank()) { "معرف سجل غير صالح" }
+        firestore.collection(collectionName).document(logId).delete().await()
+    }
+
+    override suspend fun clearAuditLogs(collectionName: String): Result<Unit> = runCatching {
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin) { "صلاحية المشرف الأعلى مطلوبة لتصفية السجل" }
+        val allowedCollections = setOf(
+            Constants.COLLECTION_VERIFICATION_LOGS,
+            Constants.COLLECTION_ADMIN_LOGS,
+            Constants.COLLECTION_HIDDEN_LOGS
+        )
+        require(collectionName in allowedCollections) { "سجل غير صالح" }
+        val snap = firestore.collection(collectionName).limit(400).get().await()
+        snap.documents.chunked(380).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { batch.delete(it.reference) }
+            batch.commit().await()
+        }
     }
 
     override suspend fun deleteAuditLog(collectionName: String, logId: String): Result<Unit> {

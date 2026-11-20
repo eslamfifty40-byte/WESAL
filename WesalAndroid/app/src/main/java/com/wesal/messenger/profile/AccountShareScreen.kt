@@ -54,7 +54,7 @@ fun AccountShareScreen(
     val numericId = user?.numericId.orEmpty()
     val publicId = user?.publicId.orEmpty()
     val primaryId = numericId.ifBlank { publicId }
-    val deepLink = if (primaryId.isNotBlank()) "wesal://join?id=$primaryId" else ""
+    val deepLink = if (primaryId.isNotBlank()) "${com.wesal.messenger.core.util.Constants.WEB_BASE_URL}/join?id=$primaryId" else ""
     val shareMessage = WesalShareUtils.buildInviteMessage(
         myWesalId = primaryId,
         senderName = user?.displayName.orEmpty(),

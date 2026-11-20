@@ -45,7 +45,7 @@ object PhoneContactsHelper {
                 if (rawPhone.isBlank()) continue
 
                 val e164 = PhoneUtils.normalizeToE164(rawPhone, defaultCountryDialCode)
-                val dedupKey = e164 ?: rawPhone.filter { it.isDigit() }
+                val dedupKey = e164 ?: PhoneUtils.normalizeAsciiDigits(rawPhone).filter { it.isDigit() }
                 if (dedupKey.isBlank() || resultMap.containsKey(dedupKey)) continue
 
                 val hash = e164?.let { PhoneUtils.sha256Hash(it) }

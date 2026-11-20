@@ -72,6 +72,7 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalVerifiedBadge
 import com.wesal.messenger.presentation.components.wesalImageModel
+import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
@@ -427,43 +428,78 @@ fun SettingsScreen(
             }
         }
 
-        // User Profile Card
+        // User Profile Card (Centered portrait on top, neon Name, ID & @username underneath)
         item {
             Surface(
                 color = palette.surface,
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(18.dp),
+                border = BorderStroke(1.dp, palette.border),
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onOpenProfile)
             ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    WesalAvatar(
-                        imageUrl = user?.photoUrl.orEmpty(),
-                        name = user?.displayName ?: "WESAL",
-                        size = 64.dp,
-                        frameId = user?.frameId.orEmpty(),
-                        frameExpiresAt = user?.frameExpiresAt ?: 0L,
-                        isCutout = user?.photoRemovedBg == true,
-                        iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
-                        neonColor = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
-                        neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
+                Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
+                    IconButton(
+                        onClick = onOpenAccountShare,
+                        modifier = Modifier.align(Alignment.TopStart).size(34.dp)
+                    ) {
+                        Icon(Icons.Default.QrCode2, contentDescription = strings.shareAccountQr, tint = palette.iconTint)
+                    }
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = strings.edit,
+                        tint = palette.iconTint,
+                        modifier = Modifier.align(Alignment.TopEnd).size(20.dp)
                     )
-                    Column(modifier = Modifier.weight(1f)) {
+
+                    val isNeonOn = user?.neonEnabled != false
+                    val activeNeonColor = if (isNeonOn) user?.neonColor.orEmpty() else ""
+                    val activeGlow = user?.neonGlowIntensity ?: 0.7f
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        WesalAvatar(
+                            imageUrl = user?.photoUrl.orEmpty(),
+                            name = user?.displayName ?: "WESAL",
+                            size = 76.dp,
+                            frameId = user?.frameId.orEmpty(),
+                            frameExpiresAt = user?.frameExpiresAt ?: 0L,
+                            isCutout = user?.photoRemovedBg == true,
+                            iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
+                            neonColor = activeNeonColor,
+                            neonGlowIntensity = activeGlow
+                        )
                         WesalNameWithBadge(
                             name = user?.displayName?.ifBlank { if (strings.isEnglish) "Complete your name" else "أكمل اسمك" }
                                 ?: strings.loading,
                             isVerified = user?.isVerified == true,
                             style = MaterialTheme.typography.titleLarge,
                             color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold,
                             verificationType = user?.verificationType ?: "BLUE",
-                            neonColor = user?.neonColor.orEmpty(),
-                            neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f,
-                            neonEnabled = user?.neonEnabled != false
+                            neonColor = activeNeonColor,
+                            neonGlowIntensity = activeGlow,
+                            neonEnabled = isNeonOn
                         )
+                        val numericLabel = user?.numericId?.takeIf { it.isNotBlank() }?.let { "ID: $it" }
+                        val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }
+                        val idLine = listOfNotNull(numericLabel, idLabel).joinToString("  •  ")
+                        if (idLine.isNotBlank()) {
+                            Text(
+                                text = idLine,
+                                style = wesalNeonTextStyle(
+                                    baseStyle = MaterialTheme.typography.labelLarge,
+                                    neonColorKey = activeNeonColor,
+                                    glowIntensity = activeGlow,
+                                    fallbackColor = palette.turquoise
+                                ),
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                         val hiddenPhone = user?.privacySettings?.hidePhoneNumber == true
                         val contactLine = if (hiddenPhone) {
                             user?.email?.takeIf { it.isNotBlank() }
@@ -471,22 +507,25 @@ fun SettingsScreen(
                             user?.phoneNumber?.takeIf { it.isNotBlank() }
                                 ?: user?.email?.takeIf { it.isNotBlank() }
                         }
-                        val numericLabel = user?.numericId?.takeIf { it.isNotBlank() }?.let { "ID: $it" }
-                        val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }
-                        Text(
-                            text = listOfNotNull(numericLabel, idLabel, contactLine).joinToString(" • "),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = palette.turquoise
-                        )
-                        Text(
-                            text = user?.bio.orEmpty(),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = palette.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        if (!contactLine.isNullOrBlank()) {
+                            Text(
+                                text = contactLine,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (!user?.bio.isNullOrBlank()) {
+                            Text(
+                                text = user?.bio.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
-                    Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise)
                 }
             }
             Spacer(Modifier.height(10.dp))
@@ -1417,7 +1456,7 @@ private fun SettingsRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
     subtitle: String,
-    tint: Color = WesalColors.current.turquoise,
+    tint: Color = WesalColors.current.iconTint,
     trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit = {}
 ) {

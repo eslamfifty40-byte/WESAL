@@ -381,7 +381,8 @@ fun ChatDetailScreen(
                             isCutout = !isOfficialReadOnly && chat?.isGroup == false && (chat?.peerPhotoRemovedBg == true),
                             iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) chat?.peerIconUrl.orEmpty() else "",
                             neonColor = if (!isOfficialReadOnly && chat?.isGroup == false && (chat?.peerNeonEnabled == true)) chat?.peerNeonColor.orEmpty() else "",
-                            neonGlowIntensity = chat?.peerNeonGlowIntensity ?: 0.7f
+                            neonGlowIntensity = chat?.peerNeonGlowIntensity ?: 0.7f,
+                            fallbackResId = if (isOfficialReadOnly) com.wesal.messenger.R.drawable.wesal_brand_logo else null
                         )
                         Column {
                             WesalNameWithBadge(

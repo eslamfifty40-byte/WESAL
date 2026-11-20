@@ -2,7 +2,7 @@
 
 المشروع المصدري الكامل لتطبيق **وصال (WESAL)** بباكج `com.wesal.messenger`، مبني بلغة **Kotlin** وواجهة **Jetpack Compose (Material 3)** مع دعم كامل للغة العربية **RTL**، والحد الأدنى للإصدار **Android 8.0 (API 26)**، ومهيأ للعمل على **خطة Firebase Spark المجانية بالكامل** دون الحاجة لخطة Blaze أو رسائل SMS مدفوعة.
 
-> **ملاحظة شفافة مهمة:** تم إعداد وتحديث الشيفرة المصدرية الكاملة للمشروع وأيقونات الـ `mipmap` وقواعد Firebase هنا، ولم يتم تشغيل `Gradle Sync` أو بناء APK أو اختبار Firebase فعلياً داخل هذه البيئة لعدم توفر Android SDK / JDK / ADB. يجب فتح مجلد `WesalAndroid` داخل **Android Studio** وإتمام خطوات الربط والبناء والاختبار الموضحة أدناه قبل النشر.
+> **حالة البناء والتشليم:** يتضمن المشروع المصدري الكامل ملفات Gradle Wrapper (`gradlew`، `gradlew.bat`، `gradle/wrapper/`) وسير عمل البناء التلقائي `.github/workflows/build-apk.yml` (JDK 17 + Android SDK 35 + اختبارات الوحدة + `assembleDebug`). تأكد فقط من نشر قواعد `firestore.rules` و`storage.rules` إلى Firebase Console عند أول تهيئة.
 
 ---
 
@@ -96,17 +96,18 @@ WesalAndroid/
 
 ## 5. البناء، التوقيع، وقائمة الاختبار على جهازين حقيقيين
 
-1. افتح مجلد `WesalAndroid` في **Android Studio** (إصدار Ladybug / Meerkat أو أحدث).
-2. نفّذ **Sync Project with Gradle Files** وانتظر تحميل الاعتماديات (`androidx.credentials`, `googleid`, Firebase BOM, Jetpack Compose, WebRTC, CameraX, uCrop).
-3. شغّل اختبارات الوحدة:
+1. افتح مجلد `WesalAndroid` في **Android Studio** (إصدار Ladybug / Meerkat أو أحدث) أو ابنِ مباشرة من الطرفية عبر **Gradle Wrapper**.
+2. لتنفيذ بناء نظيف وتشغيل اختبارات الوحدة وبناء ملف Debug APK (`app/build/outputs/apk/debug/app-debug.apk`):
    ```bash
+   chmod +x gradlew
+   ./gradlew clean
    ./gradlew testDebugUnitTest
-   ```
-4. بناء **Debug APK** للاختبار على هاتف فعلي:
-   ```bash
    ./gradlew assembleDebug
    ```
-5. إنشاء مفتاح توقيع Release آمن وبناء النسخة النهائية:
+3. **البناء التلقائي عبر GitHub Actions**:
+   - يحتوي المستودع على ملف `.github/workflows/build-apk.yml`.
+   - بمجرد رفع المشروع إلى فرع `main` أو `master` أو تشغيل الـ Workflow يدوياً من تبويب **Actions**، يقوم تلقائياً بإعداد **JDK 17** و**Android SDK 35**، وتنفيذ `./gradlew clean` ثم `./gradlew testDebugUnitTest` ثم `./gradlew assembleDebug`، ورفع `app-debug.apk` وتقارير الاختبارات كـ **Artifacts**.
+4. إنشاء مفتاح توقيع Release آمن وبناء النسخة النهائية:
    ```bash
    keytool -genkey -v -keystore wesal-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias wesal
    ./gradlew assembleRelease bundleRelease

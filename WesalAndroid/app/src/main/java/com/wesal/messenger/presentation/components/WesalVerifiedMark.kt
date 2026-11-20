@@ -56,17 +56,21 @@ fun WesalVerifiedMark(
     Canvas(modifier.size(badgeSize)) {
         val s = this.size.minDimension
         val c = Offset(s / 2f, s / 2f)
-        if (glowColor != null) {
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(glowColor.copy(alpha = 0.42f), glowColor.copy(alpha = 0.14f), Color.Transparent),
-                    center = c,
-                    radius = s * 0.72f
+        val innerAlpha = if (glowColor != null) 0.62f else 0.34f
+        val midAlpha = if (glowColor != null) 0.28f else 0.14f
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    halo.copy(alpha = innerAlpha),
+                    halo.copy(alpha = midAlpha),
+                    Color.Transparent
                 ),
-                radius = s * 0.72f,
-                center = c
-            )
-        }
+                center = c,
+                radius = s * 0.85f
+            ),
+            radius = s * 0.85f,
+            center = c
+        )
         val star = Path()
         val n = 24
         for (i in 0 until n) {
