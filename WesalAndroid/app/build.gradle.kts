@@ -13,6 +13,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
+        multiDexEnabled = true
         applicationId = "com.wesal.messenger"
         minSdk = 26
         targetSdk = 35
