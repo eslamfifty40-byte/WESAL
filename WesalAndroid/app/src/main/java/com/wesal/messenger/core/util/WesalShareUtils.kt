@@ -30,7 +30,7 @@ object WesalShareUtils {
         isEnglish: Boolean = false,
         senderName: String? = null
     ): String {
-        val cleanId = myWesalId?.trim()?.removePrefix("@").orEmpty()
+        val cleanId = myWesalId?.trim().orEmpty().removePrefix("@").let { if (it.isBlank()) "" else "@$it" }
         val cleanSenderName = senderName?.trim().orEmpty()
         val directApkUrl = Constants.APK_DOWNLOAD_URL.trim().ifBlank { "https://tinyurl.com/wesal-Messenger" }
         val cleanTarget = targetContactName?.trim().orEmpty()
@@ -49,7 +49,7 @@ object WesalShareUtils {
                 else "انضم إليّ في تطبيق WESAL للمراسلة الفورية."
             )
             if (cleanId.isNotBlank()) {
-                append(if (isEnglish) "\nMy ID: $cleanId" else "\nمعرفي: $cleanId")
+                append(if (isEnglish) "\nMy ID: $cleanId" else "\nمعرّفي $cleanId")
             }
             if (cleanSenderName.isNotBlank()) {
                 append("\n$cleanSenderName")
