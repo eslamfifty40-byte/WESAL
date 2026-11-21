@@ -2891,13 +2891,4 @@ class UserRepositoryImpl @Inject constructor(
             batch.commit().await()
         }
     }
-
-    override suspend fun deleteAuditLog(collectionName: String, logId: String): Result<Unit> {
-        // TODO: placeholder so the build compiles
-        return Result.success(Unit)
-    }
-
-    override suspend fun clearAuditLogs(collectionName: String): Result<Unit> {
-        return Result.success(Unit)
-    }
 }

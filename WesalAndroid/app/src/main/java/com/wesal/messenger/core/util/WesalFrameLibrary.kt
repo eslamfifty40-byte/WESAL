@@ -36,6 +36,8 @@ data class FrameDoc(
     val glowColor: Long = 0L,
     val animated: Boolean = false,
     val animationStyle: String = "PULSE_GLOW", // PULSE_GLOW | ROTATE_AURA | SHIMMER | SPARKLE
+    val hasAnimatedOverride: Boolean = false,
+    val hasAnimationStyleOverride: Boolean = false,
     val hidden: Boolean = false,
     val deleted: Boolean = false,
     val builtin: Boolean = false,
@@ -50,7 +52,9 @@ data class ResolvedFrame(
     val imageUrl: String,
     val glow: Color,
     val animated: Boolean = false,
-    val animationStyle: String = "PULSE_GLOW"
+    val animationStyle: String = "PULSE_GLOW",
+    val apertureCenterYFraction: Float = 0.50f,
+    val apertureDiameterFraction: Float = 0.62f
 )
 
 /** One row in an admin/user picker. */
@@ -114,6 +118,8 @@ object WesalFrameLibrary {
                             glowColor = d.getLong("glowColor") ?: 0L,
                             animated = d.getBoolean("animated") ?: false,
                             animationStyle = d.getString("animationStyle") ?: "PULSE_GLOW",
+                            hasAnimatedOverride = d.contains("animated"),
+                            hasAnimationStyleOverride = !d.getString("animationStyle").isNullOrBlank(),
                             hidden = d.getBoolean("hidden") ?: false,
                             deleted = d.getBoolean("deleted") ?: false,
                             builtin = d.getBoolean("builtin") ?: false,
@@ -158,13 +164,23 @@ object WesalFrameLibrary {
         if (expiresAt > 0L && System.currentTimeMillis() > expiresAt) return null
         val doc = docs[frameId]
         val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
-        val isAnimated = doc?.animated == true
-        val animStyle = doc?.animationStyle?.takeIf { it.isNotBlank() } ?: "PULSE_GLOW"
+        val isAnimated = if (doc != null && doc.hasAnimatedOverride) {
+            doc.animated
+        } else {
+            builtin?.defaultAnimated == true
+        }
+        val animStyle = if (doc != null && doc.hasAnimationStyleOverride) {
+            doc.animationStyle
+        } else {
+            builtin?.defaultAnimationStyle ?: "PULSE_GLOW"
+        }
+        val cy = builtin?.apertureCenterYFraction ?: 0.50f
+        val dFrac = builtin?.apertureDiameterFraction ?: 0.62f
         if (doc != null && doc.imageUrl.isNotBlank()) {
-            return ResolvedFrame(frameId, 0, doc.imageUrl, glowOf(frameId, doc), isAnimated, animStyle)
+            return ResolvedFrame(frameId, 0, doc.imageUrl, glowOf(frameId, doc), isAnimated, animStyle, cy, dFrac)
         }
         if (builtin != null) {
-            return ResolvedFrame(frameId, builtin.resId, "", glowOf(frameId, doc), isAnimated, animStyle)
+            return ResolvedFrame(frameId, builtin.resId, "", glowOf(frameId, doc), isAnimated, animStyle, cy, dFrac)
         }
         return null
     }
@@ -211,8 +227,8 @@ object WesalFrameLibrary {
                 deleted = deleted,
                 builtin = true,
                 kind = "FRAME",
-                animated = doc?.animated == true,
-                animationStyle = doc?.animationStyle ?: "PULSE_GLOW"
+                animated = if (doc != null && doc.hasAnimatedOverride) doc.animated else spec.defaultAnimated,
+                animationStyle = if (doc != null && doc.hasAnimationStyleOverride) doc.animationStyle else spec.defaultAnimationStyle
             )
         }
         val builtinIds = WesalFrameCatalog.allFrames.map { it.id }.toSet()

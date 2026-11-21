@@ -3141,11 +3141,28 @@ private fun AdminFrameAndNeonDialog(
                     }) { Text("تعديل الاسم") }
                     OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
                         runOp(
-                            { WesalFrameLibrary.setAnimated(item.id, !item.animated, item.animationStyle) },
-                            if (item.animated) "تم إيقاف حركة العنصر" else "تم تفعيل الحركة النابضة للعنصر ✓"
+                            { WesalFrameLibrary.setAnimated(item.id, true, "ROTATE_AURA") },
+                            "تم تفعيل حركة دوران المروحة الثابت ✓"
                         )
                         menuFor = null
-                    }) { Text(if (item.animated) "إيقاف الحركة (Animated)" else "تفعيل الحركة (Animated)") }
+                    }) { Text("تفعيل دوران المروحة الثابت (مروحة دوّارة)") }
+                    OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                        val nextStyle = if (item.animated && item.animationStyle == "PULSE_GLOW") "SHIMMER" else "PULSE_GLOW"
+                        runOp(
+                            { WesalFrameLibrary.setAnimated(item.id, true, nextStyle) },
+                            if (nextStyle == "SHIMMER") "تم تفعيل التوهج المتلألئ ✓" else "تم تفعيل النبض المتوهج ✓"
+                        )
+                        menuFor = null
+                    }) { Text(if (item.animated && item.animationStyle == "PULSE_GLOW") "تبديل إلى التوهج المتلألئ (SHIMMER)" else "تفعيل النبض المتوهج (PULSE_GLOW)") }
+                    if (item.animated) {
+                        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                            runOp(
+                                { WesalFrameLibrary.setAnimated(item.id, false, item.animationStyle) },
+                                "تم إيقاف حركة العنصر"
+                            )
+                            menuFor = null
+                        }) { Text("إيقاف الحركة (ثابت بدون حركة)") }
+                    }
                     OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
                         runOp({ WesalFrameLibrary.setHidden(item.id, !item.hidden) }, if (item.hidden) "تم الإظهار" else "تم الإخفاء")
                         menuFor = null

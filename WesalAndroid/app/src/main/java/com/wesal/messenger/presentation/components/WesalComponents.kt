@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,17 +34,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
-import androidx.compose.ui.graphics.Brush
-import com.wesal.messenger.core.util.ResolvedFrame
-import com.wesal.messenger.core.util.WesalFrameLibrary
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import com.wesal.messenger.core.util.ResolvedFrame
+import com.wesal.messenger.core.util.WesalFrameLibrary
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -126,9 +130,10 @@ fun WesalAvatar(
 
     val isAnimatedFrame = activeFrame?.animated == true
     val infiniteTransition = if (isAnimatedFrame) rememberInfiniteTransition(label = "wesal_frame_anim") else null
+    val isRotateFanStyle = activeFrame?.animationStyle == "ROTATE_AURA" || activeFrame?.animationStyle == "ROTATE_FAN"
     val animPulse by (infiniteTransition?.animateFloat(
-        initialValue = 0.97f,
-        targetValue = 1.045f,
+        initialValue = 0.985f,
+        targetValue = 1.025f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1500),
             repeatMode = RepeatMode.Reverse
@@ -136,7 +141,7 @@ fun WesalAvatar(
         label = "pulse"
     ) ?: remember { mutableStateOf(1f) })
     val animAlpha by (infiniteTransition?.animateFloat(
-        initialValue = 0.78f,
+        initialValue = 0.80f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1300),
@@ -148,43 +153,110 @@ fun WesalAvatar(
         initialValue = 0f,
         targetValue = 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 7000, easing = LinearEasing),
+            animation = tween(durationMillis = 2800, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "rotate"
     ) ?: remember { mutableStateOf(0f) })
 
-    val containerSize = if (activeFrame != null) size * 1.24f else size
-    // Portrait fits cleanly inside the circular inner ring aperture of the frame (matching reference crest layout)
-    val innerAvatarSize = if (activeFrame == null) size else size * 0.84f
-    val avatarGlowAlpha = (baseGlowAlpha * animAlpha).coerceIn(0.1f, 0.95f)
+    val containerSize = if (activeFrame != null) size * 1.28f else size
+    // Portrait fits squarely inside the circular aperture of the crest frame (no overflow over lower shield/banner)
+    val innerAvatarSize = if (activeFrame == null) {
+        size
+    } else {
+        containerSize * activeFrame.apertureDiameterFraction.coerceIn(0.42f, 0.78f)
+    }
+    val apertureOffsetY = if (activeFrame == null) {
+        0.dp
+    } else {
+        containerSize * (activeFrame.apertureCenterYFraction - 0.50f)
+    }
+    val avatarGlowAlpha = if (isRotateFanStyle) {
+        baseGlowAlpha.coerceIn(0.25f, 0.92f)
+    } else {
+        (baseGlowAlpha * animAlpha).coerceIn(0.1f, 0.95f)
+    }
+
+    @Composable
+    fun FanAuraSpinner(
+        frame: ResolvedFrame,
+        spinnerSize: Dp,
+        centerOffsetY: Dp,
+        includeBlades: Boolean
+    ) {
+        val goldTint = Color(0xFFFFD54F)
+        Canvas(
+            modifier = Modifier
+                .size(spinnerSize)
+                .offset(y = centerOffsetY)
+                .graphicsLayer {
+                    rotationZ = animRotation
+                    transformOrigin = TransformOrigin.Center
+                    translationX = 0f
+                    translationY = 0f
+                }
+        ) {
+            val r = this.size.minDimension / 2f
+            val arcRadius = r * 0.92f
+            val arcTopLeft = Offset(center.x - arcRadius, center.y - arcRadius)
+            val arcSize = Size(arcRadius * 2f, arcRadius * 2f)
+
+            // 6 curved turbine/fan blades spinning smoothly in-place around the exact center
+            for (blade in 0 until 6) {
+                val startDeg = blade * 60f
+                if (includeBlades) {
+                    drawArc(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                frame.glow.copy(alpha = 0.48f),
+                                goldTint.copy(alpha = 0.36f),
+                                Color.Transparent
+                            ),
+                            center = center,
+                            radius = r
+                        ),
+                        startAngle = startDeg,
+                        sweepAngle = 28f,
+                        useCenter = true
+                    )
+                }
+                drawArc(
+                    color = if (blade % 2 == 0) frame.glow.copy(alpha = 0.92f) else goldTint.copy(alpha = 0.88f),
+                    startAngle = startDeg + 4f,
+                    sweepAngle = 36f,
+                    useCenter = false,
+                    topLeft = arcTopLeft,
+                    size = arcSize,
+                    style = Stroke(width = (r * 0.085f).coerceIn(2.2f, 7f), cap = StrokeCap.Round)
+                )
+            }
+        }
+    }
 
     @Composable
     fun FrameLayer(frame: ResolvedFrame) {
         val animModifier = when {
             !frame.animated -> Modifier.fillMaxSize()
-            frame.animationStyle == "ROTATE_AURA" -> Modifier.fillMaxSize().scale(animPulse)
-            frame.animationStyle == "SHIMMER" -> Modifier.fillMaxSize().alpha(animAlpha).scale(animPulse)
-            else -> Modifier.fillMaxSize().scale(animPulse)
+            isRotateFanStyle -> Modifier.fillMaxSize() // Frame crest remains stationary in-place without scaling/bouncing
+            frame.animationStyle == "SHIMMER" -> Modifier.fillMaxSize().alpha(animAlpha).graphicsLayer {
+                scaleX = animPulse
+                scaleY = animPulse
+                transformOrigin = TransformOrigin.Center
+            }
+            else -> Modifier.fillMaxSize().graphicsLayer {
+                scaleX = animPulse
+                scaleY = animPulse
+                transformOrigin = TransformOrigin.Center
+            }
         }
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (frame.animated && frame.animationStyle == "ROTATE_AURA") {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize(0.94f)
-                        .rotate(animRotation)
-                        .border(
-                            width = 2.dp,
-                            brush = Brush.sweepGradient(
-                                listOf(
-                                    frame.glow.copy(alpha = 0.85f),
-                                    Color.Transparent,
-                                    frame.glow.copy(alpha = 0.45f),
-                                    Color.Transparent
-                                )
-                            ),
-                            shape = CircleShape
-                        )
+            if (frame.animated && isRotateFanStyle) {
+                FanAuraSpinner(
+                    frame = frame,
+                    spinnerSize = (innerAvatarSize * 1.12f).coerceAtMost(containerSize),
+                    centerOffsetY = apertureOffsetY,
+                    includeBlades = false
                 )
             }
             if (frame.imageUrl.isNotBlank()) {
@@ -225,9 +297,9 @@ fun WesalAvatar(
                                     Color.Transparent
                                 ),
                                 center = center,
-                                radius = this.size.minDimension * 0.64f
+                                radius = this.size.minDimension * 0.62f
                             ),
-                            radius = this.size.minDimension * 0.64f,
+                            radius = this.size.minDimension * 0.62f,
                             center = center
                         )
                     }
@@ -235,18 +307,30 @@ fun WesalAvatar(
             ),
         contentAlignment = Alignment.Center
     ) {
-        val innerBackdropColor = avatarGlowColor ?: palette.turquoise
+        if (activeFrame != null && activeFrame.animated && isRotateFanStyle) {
+            FanAuraSpinner(
+                frame = activeFrame,
+                spinnerSize = containerSize * 0.96f,
+                centerOffsetY = apertureOffsetY,
+                includeBlades = true
+            )
+        }
+        val innerBackdropColor = when {
+            activeFrame?.id == "admin_39" -> Color(0xFFFF1744)
+            else -> avatarGlowColor ?: palette.turquoise
+        }
         Box(
             modifier = Modifier
                 .size(innerAvatarSize)
+                .offset(y = apertureOffsetY)
                 .clip(CircleShape)
                 .then(
                     if (detectedCutout || activeFrame != null || neonPreset != NeonColorPreset.NONE) {
                         Modifier.background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    innerBackdropColor.copy(alpha = 0.34f),
-                                    palette.surfaceElevated.copy(alpha = 0.92f),
+                                    innerBackdropColor.copy(alpha = 0.56f),
+                                    innerBackdropColor.copy(alpha = 0.24f),
                                     palette.surface.copy(alpha = 0.98f)
                                 )
                             )

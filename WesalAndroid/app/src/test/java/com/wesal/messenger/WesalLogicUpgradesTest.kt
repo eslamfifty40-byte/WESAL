@@ -52,4 +52,18 @@ class WesalLogicUpgradesTest {
         assertEquals(64, hashA.length)
         assertEquals(hashA, hashB)
     }
+
+    @Test
+    fun frameCatalog_royalCrestsHaveAlignedApertureAndFanRotationDefault() {
+        val admin39 = com.wesal.messenger.core.util.WesalFrameCatalog.adminFrames.first { it.id == "admin_39" }
+        assertTrue(admin39.defaultAnimated)
+        assertEquals("ROTATE_AURA", admin39.defaultAnimationStyle)
+        assertTrue(admin39.apertureCenterYFraction < 0.45f)
+        assertTrue(admin39.apertureDiameterFraction in 0.42f..0.58f)
+
+        val admin02 = com.wesal.messenger.core.util.WesalFrameCatalog.adminFrames.first { it.id == "admin_02" }
+        assertTrue(admin02.defaultAnimated)
+        assertEquals("ROTATE_AURA", admin02.defaultAnimationStyle)
+        assertTrue(admin02.apertureCenterYFraction < 0.45f)
+    }
 }

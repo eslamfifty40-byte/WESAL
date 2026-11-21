@@ -36,7 +36,7 @@ function resolvePort(isDevMode: boolean): number {
 }
 
 const isDevMode =
-  process.env.NODE_ENV === "development" && !process.env.CLOUD_RUN_JOB;
+  process.env.NODE_ENV !== "production" && !process.env.CLOUD_RUN_JOB;
 const PORT = resolvePort(isDevMode);
 const HOST = "0.0.0.0";
 const distPath = path.resolve(__dirname, "dist");

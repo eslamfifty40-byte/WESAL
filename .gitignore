@@ -7,3 +7,20 @@ coverage/
 .env*
 !.env.example
 CAMORA/
+
+# Android / Gradle build outputs & local caches
+WesalAndroid/.gradle/
+WesalAndroid/build/
+WesalAndroid/app/build/
+WesalAndroid/.cxx/
+WesalAndroid/.idea/
+WesalAndroid/local.properties
+*.apk
+*.ap_
+*.aab
+*.dex
+*.zip
+*.jks
+!wesal-debug.keystore
+!WesalAndroid/app/wesal-debug.keystore
+
