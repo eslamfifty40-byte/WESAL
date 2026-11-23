@@ -105,7 +105,7 @@ fun HomeScreen(
                         )
                     },
                     actions = {
-                        if (hasAdminAccess) {
+                        if (hasAdminAccess || com.wesal.messenger.core.util.Constants.isSuperAdminEmail(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email)) {
                             IconButton(onClick = onOpenAdminVerification) {
                                 Icon(
                                     imageVector = Icons.Default.Verified,
@@ -141,7 +141,7 @@ fun HomeScreen(
                                         ctxHome.startActivity(Intent(ctxHome, ContactsInviteActivity::class.java))
                                     }
                                 )
-                                if (hasAdminAccess) {
+                                if (hasAdminAccess || com.wesal.messenger.core.util.Constants.isSuperAdminEmail(com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.email)) {
                                     DropdownMenuItem(
                                         text = { Text(strings.adminVerificationTitle, color = palette.verifiedBlue) },
                                         onClick = { menuOpen = false; onOpenAdminVerification() }

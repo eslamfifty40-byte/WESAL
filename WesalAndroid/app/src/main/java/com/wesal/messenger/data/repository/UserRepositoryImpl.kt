@@ -454,6 +454,7 @@ class UserRepositoryImpl @Inject constructor(
                     .limit(5)
             )
             exactNumSnap?.documents?.forEach { consider(it.toWesalUser()) }
+            numericQuery.toLongOrNull()?.let { n -> getQueryCachedOrServer(usersCollection.whereEqualTo("numericId", n).limit(5))?.documents?.forEach { consider(it.toWesalUser()) } }
 
             val prefixSnap = getQueryCachedOrServer(
                 usersCollection
@@ -515,7 +516,6 @@ class UserRepositoryImpl @Inject constructor(
             val user = doc.toWesalUser()
             if (
                 user.uid != currentUid &&
-                !user.privacySettings.hidePhoneNumber &&
                 !user.hiddenFromSearch &&
                 user.numericId != Constants.SECONDARY_ADMIN_NUMERIC_ID &&
                 !Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true) &&
