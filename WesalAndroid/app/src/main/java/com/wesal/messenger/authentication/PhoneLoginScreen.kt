@@ -54,6 +54,7 @@ import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.wesal.messenger.R
 import com.wesal.messenger.core.util.LocalWesalStrings
@@ -146,7 +147,15 @@ fun PhoneLoginScreen(
                     .addCredentialOption(googleIdOption)
                     .build()
 
-                val result = credentialManager.getCredential(activity, request)
+                val result = try {
+                    credentialManager.getCredential(activity, request)
+                } catch (_: NoCredentialException) {
+                    val signInOption = GetSignInWithGoogleOption.Builder(serverClientId).build()
+                    val fallbackRequest = GetCredentialRequest.Builder()
+                        .addCredentialOption(signInOption)
+                        .build()
+                    credentialManager.getCredential(activity, fallbackRequest)
+                }
                 val googleCred = GoogleIdTokenCredential.createFrom(result.credential.data)
                 viewModel.signInWithGoogleIdToken(googleCred.idToken)
             } catch (_: GetCredentialCancellationException) {

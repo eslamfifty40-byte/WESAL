@@ -147,6 +147,7 @@ data class GlobalAppearanceConfig(
     val surfaceHex: Long = 0L,
     val textPrimaryHex: Long = 0L,
     val iconTintHex: Long = 0L,
+    val iconPack: String = "DEFAULT",
     val globalCustomerFrameEnabled: Boolean = true,
     val defaultCustomerFrameId: String = "cust_01",
     val defaultCustomerIconId: String = "",
@@ -193,7 +194,9 @@ data class WesalUser(
     val phoneNumber: String = "",
     val isPhoneVerified: Boolean = false,
     val isVerified: Boolean = false,
-    val verificationType: String = "BLUE", // BLUE, BLACK, GREEN
+    val verificationType: String = "BLUE", // 30 seal presets in VerificationSealType
+    val verificationGlowEnabled: Boolean = true,
+    val verificationGlowIntensity: Float = 0.7f,
     val verificationExpiresAt: Long = 0L, // 0 = permanent
     val verifiedByUid: String = "",
     val verifiedAt: Long = 0L,
@@ -252,11 +255,12 @@ data class WesalUser(
 enum class ContactRequestStatus(val raw: String) {
     PENDING("PENDING"),
     ACCEPTED("ACCEPTED"),
-    REJECTED("REJECTED");
+    REJECTED("REJECTED"),
+    HELD("HELD");
 
     companion object {
         fun fromRaw(raw: String?): ContactRequestStatus =
-            entries.firstOrNull { it.raw == raw } ?: PENDING
+            entries.firstOrNull { it.raw.equals(raw, ignoreCase = true) } ?: PENDING
     }
 }
 
@@ -379,11 +383,25 @@ enum class MessageType(val raw: String) {
     AUDIO("AUDIO"),
     DOCUMENT("DOCUMENT"),
     LOCATION("LOCATION"),
+    LIVE_LOCATION("LIVE_LOCATION"),
+    CALL_LOG("CALL_LOG"),
     SYSTEM("SYSTEM");
 
     companion object {
         fun fromRaw(raw: String?): MessageType =
             entries.firstOrNull { it.raw == raw } ?: TEXT
+    }
+}
+
+enum class DisappearingTimer(val seconds: Long, val labelAr: String, val labelEn: String) {
+    OFF(0L, "إيقاف", "Off"),
+    HOURS_24(86_400L, "24 ساعة", "24 Hours"),
+    DAYS_7(604_800L, "7 أيام", "7 Days"),
+    DAYS_90(7_776_000L, "90 يوماً", "90 Days");
+
+    companion object {
+        fun fromSeconds(sec: Long): DisappearingTimer =
+            entries.firstOrNull { it.seconds == sec } ?: OFF
     }
 }
 
@@ -422,6 +440,8 @@ data class WesalMessage(
     val latitude: Double? = null,
     val longitude: Double? = null,
     val locationAddress: String = "",
+    val liveLocationExpiresAt: Long = 0L,
+    val disappearingExpiresAt: Long = 0L,
     val replyToMessageId: String? = null,
     val replyToPreview: String? = null,
     val forwardedFromName: String? = null,
@@ -446,6 +466,8 @@ data class ChatPreview(
     val peerLastSeen: Long = 0L,
     val peerVerified: Boolean = false,
     val peerVerificationType: String = "BLUE",
+    val peerVerificationGlowEnabled: Boolean = true,
+    val peerVerificationGlowIntensity: Float = 0.7f,
     val peerFrameId: String = "",
     val peerFrameUrl: String = "",
     val peerFrameExpiresAt: Long = 0L,
@@ -464,6 +486,9 @@ data class ChatPreview(
     val isMuted: Boolean = false,
     val isSupportChat: Boolean = false,
     val isOfficialWesalChat: Boolean = false,
+    val isMessageRequest: Boolean = false,
+    val requestStatus: String = "ACCEPTED",
+    val disappearingDurationSec: Long = 0L,
     val deletedForUsers: List<String> = emptyList(),
     val typingUsers: List<String> = emptyList()
 )
@@ -675,4 +700,38 @@ data class CountryCode(
     val iso: String,
     val dialCode: String,
     val flagEmoji: String
+)
+
+data class ContactLabelList(
+    val listId: String = "",
+    val ownerUid: String = "",
+    val name: String = "",
+    val memberUids: List<String> = emptyList(),
+    val isDefaultPreset: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class AppEventItem(
+    val eventId: String = "",
+    val creatorUid: String = "",
+    val creatorName: String = "",
+    val title: String = "",
+    val description: String = "",
+    val locationName: String = "",
+    val eventTime: Long = System.currentTimeMillis(),
+    val participantUids: List<String> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class ScheduledCallRecord(
+    val scheduleId: String = "",
+    val creatorUid: String = "",
+    val peerUid: String = "",
+    val peerName: String = "",
+    val peerAvatarUrl: String = "",
+    val isVideo: Boolean = false,
+    val scheduledAt: Long = System.currentTimeMillis(),
+    val note: String = "",
+    val createdAt: Long = System.currentTimeMillis()
 )

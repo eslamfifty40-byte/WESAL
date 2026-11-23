@@ -61,6 +61,10 @@ private fun safeArgbColor(hex: Long): Color? {
     return Color(normalized)
 }
 
+private fun Color.relativeLuminance(): Float {
+    return 0.2126f * red + 0.7152f * green + 0.0722f * blue
+}
+
 @Composable
 fun WesalTheme(
     darkTheme: Boolean = true,
@@ -73,9 +77,30 @@ fun WesalTheme(
     val palette = if (globalAppearance.enabled) {
         val customEmerald = safeArgbColor(globalAppearance.emeraldHex) ?: basePalette.emerald
         val customTurquoise = safeArgbColor(globalAppearance.turquoiseHex) ?: basePalette.turquoise
-        val customBg = safeArgbColor(globalAppearance.backgroundHex) ?: basePalette.background
-        val customSurface = safeArgbColor(globalAppearance.surfaceHex) ?: basePalette.surface
-        val customText = safeArgbColor(globalAppearance.textPrimaryHex) ?: basePalette.textPrimary
+        val rawBg = safeArgbColor(globalAppearance.backgroundHex)
+        val customBg = if (rawBg != null) {
+            val lum = rawBg.relativeLuminance()
+            if ((darkTheme && lum < 0.45f) || (!darkTheme && lum > 0.55f)) rawBg else basePalette.background
+        } else {
+            basePalette.background
+        }
+        val rawSurface = safeArgbColor(globalAppearance.surfaceHex)
+        val customSurface = if (rawSurface != null) {
+            val lum = rawSurface.relativeLuminance()
+            if ((darkTheme && lum < 0.45f) || (!darkTheme && lum > 0.55f)) rawSurface else basePalette.surface
+        } else {
+            basePalette.surface
+        }
+        val surfaceLum = customSurface.relativeLuminance()
+        val rawText = safeArgbColor(globalAppearance.textPrimaryHex)
+        val customText = if (rawText != null) {
+            val textLum = rawText.relativeLuminance()
+            val validContrast = kotlin.math.abs(textLum - surfaceLum) >= 0.35f
+            if (validContrast) rawText else if (surfaceLum < 0.5f) Color.White else Color(0xFF0A1116)
+        } else {
+            if (surfaceLum < 0.5f) Color.White else Color(0xFF0A1116)
+        }
+        val textSecondary = if (surfaceLum < 0.5f) Color(0xFFB6C2CF) else Color(0xFF334155)
         val customIconTint = safeArgbColor(globalAppearance.iconTintHex) ?: customTurquoise
         basePalette.copy(
             emerald = customEmerald,
@@ -84,6 +109,7 @@ fun WesalTheme(
             background = customBg,
             surface = customSurface,
             textPrimary = customText,
+            textSecondary = textSecondary,
             iconTint = customIconTint
         )
     } else {
@@ -97,7 +123,8 @@ fun WesalTheme(
             background = palette.background,
             onBackground = palette.textPrimary,
             surface = palette.surface,
-            onSurface = palette.textPrimary
+            onSurface = palette.textPrimary,
+            onSurfaceVariant = palette.textSecondary
         )
     } else {
         baseColorScheme

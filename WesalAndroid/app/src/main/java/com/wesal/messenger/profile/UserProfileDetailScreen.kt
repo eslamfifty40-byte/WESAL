@@ -1,5 +1,6 @@
 package com.wesal.messenger.profile
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -11,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -24,7 +26,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -33,15 +37,26 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.wesal.messenger.calls.CallActivity
+import com.wesal.messenger.contacts.PhoneContactsHelper
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.PhoneUtils
+import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.domain.model.BusinessHoursSchedule
+import com.wesal.messenger.domain.model.ChatPreview
+import com.wesal.messenger.domain.model.ContactLabelList
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.ContactRequestStatus
+import com.wesal.messenger.domain.model.DisappearingTimer
+import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.PrivacyVisibility
+import com.wesal.messenger.domain.model.WesalMessage
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
@@ -49,9 +64,12 @@ import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.media.FullscreenImageViewer
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalQrCodeBox
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.time.DayOfWeek
@@ -63,6 +81,7 @@ import javax.inject.Inject
 @HiltViewModel
 class UserProfileDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
+    @ApplicationContext private val context: Context,
     private val userRepository: UserRepository,
     private val chatRepository: ChatRepository,
     private val authRepository: AuthRepository
@@ -82,6 +101,24 @@ class UserProfileDetailViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val contactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val contactLists: StateFlow<List<ContactLabelList>> = userRepository.observeContactLists()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val directChat: StateFlow<ChatPreview?> = chatRepository.observeChats()
+        .map { list -> list.firstOrNull { !it.isGroup && !it.isOfficialWesalChat && it.peerUid == targetUid } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    val mutualGroups: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
+        .map { list -> list.filter { it.isGroup && targetUid in it.participantIds } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val sharedMessages: StateFlow<List<WesalMessage>> = directChat
+        .flatMapLatest { chat ->
+            if (chat == null) flowOf(emptyList()) else chatRepository.observeMessages(chat.chatId)
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _statusMessage = MutableStateFlow<String?>(null)
@@ -126,6 +163,98 @@ class UserProfileDetailViewModel @Inject constructor(
         }
     }
 
+    fun toggleMuteDirectChat() {
+        val chat = directChat.value ?: return
+        viewModelScope.launch {
+            chatRepository.toggleMuteChat(chat.chatId, !chat.isMuted)
+                .onSuccess {
+                    _statusMessage.value = if (!chat.isMuted) "تم كتم إشعارات المحادثة" else "تم تفعيل إشعارات المحادثة"
+                }
+        }
+    }
+
+    fun setDisappearingTimer(timer: DisappearingTimer) {
+        val chat = directChat.value ?: return
+        viewModelScope.launch {
+            chatRepository.setChatDisappearingTimer(chat.chatId, timer.seconds)
+                .onSuccess {
+                    _statusMessage.value = if (timer == DisappearingTimer.OFF) {
+                        "تم إيقاف مؤقت اختفاء الرسائل"
+                    } else {
+                        "تم تفعيل مؤقت ${timer.labelAr}"
+                    }
+                }
+        }
+    }
+
+    fun clearDirectChatMessages() {
+        val chat = directChat.value ?: return
+        viewModelScope.launch {
+            chatRepository.clearChatMessagesForMe(chat.chatId)
+                .onSuccess { _statusMessage.value = "تم مسح سجل الرسائل لديك ✓" }
+                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر مسح المحادثة" }
+        }
+    }
+
+    fun toggleFavoriteInList(favoriteList: ContactLabelList?) {
+        viewModelScope.launch {
+            if (favoriteList == null) {
+                userRepository.upsertContactList(null, "المفضلة", listOf(targetUid))
+                    .onSuccess { _statusMessage.value = "تمت الإضافة إلى المفضلة ✓" }
+            } else if (targetUid in favoriteList.memberUids) {
+                userRepository.removeUidFromContactList(favoriteList.listId, targetUid)
+                    .onSuccess { _statusMessage.value = "تمت الإزالة من المفضلة" }
+            } else {
+                userRepository.addUidToContactList(favoriteList.listId, targetUid)
+                    .onSuccess { _statusMessage.value = "تمت الإضافة إلى المفضلة ✓" }
+            }
+        }
+    }
+
+    fun addOrRemoveCustomList(list: ContactLabelList) {
+        viewModelScope.launch {
+            if (targetUid in list.memberUids) {
+                userRepository.removeUidFromContactList(list.listId, targetUid)
+                    .onSuccess { _statusMessage.value = "تمت الإزالة من قائمة ${list.name}" }
+            } else {
+                userRepository.addUidToContactList(list.listId, targetUid)
+                    .onSuccess { _statusMessage.value = "تمت الإضافة إلى قائمة ${list.name} ✓" }
+            }
+        }
+    }
+
+    fun createListAndAdd(name: String) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            userRepository.upsertContactList(null, clean, listOf(targetUid))
+                .onSuccess { _statusMessage.value = "تم إنشاء قائمة $clean وإضافة الحساب ✓" }
+                .onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun editPhonebookContact(rawPhone: String, newName: String) {
+        viewModelScope.launch {
+            val contactId = PhoneContactsHelper.findContactIdByPhone(context, rawPhone)
+            PhoneContactsHelper.upsertDeviceContact(context, newName, rawPhone, contactId)
+                .onSuccess { _statusMessage.value = "تم تحديث الاسم في دفتر الهاتف ✓" }
+                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر تحديث دفتر الهاتف" }
+        }
+    }
+
+    fun deletePhonebookContact(rawPhone: String) {
+        viewModelScope.launch {
+            val contactId = PhoneContactsHelper.findContactIdByPhone(context, rawPhone)
+            if (contactId.isNullOrBlank()) {
+                _statusMessage.value = "هذا الرقم غير محفوظ في دفتر الهاتف"
+                return@launch
+            }
+            PhoneContactsHelper.deleteDeviceContact(context, contactId)
+                .onSuccess { _statusMessage.value = "تم حذف جهة الاتصال من دفتر الهاتف ✓" }
+                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر حذف جهة الاتصال" }
+        }
+    }
+
     fun toggleBlock(currentlyBlocked: Boolean, isEn: Boolean) {
         viewModelScope.launch {
             val res = if (currentlyBlocked) userRepository.unblockUser(targetUid) else userRepository.blockUser(targetUid)
@@ -152,7 +281,7 @@ class UserProfileDetailViewModel @Inject constructor(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
 fun UserProfileDetailScreen(
     onBack: () -> Unit,
@@ -166,10 +295,26 @@ fun UserProfileDetailScreen(
     val me by viewModel.currentUser.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val requests by viewModel.contactRequests.collectAsStateWithLifecycle()
+    val contactLists by viewModel.contactLists.collectAsStateWithLifecycle()
+    val directChat by viewModel.directChat.collectAsStateWithLifecycle()
+    val mutualGroups by viewModel.mutualGroups.collectAsStateWithLifecycle()
+    val sharedMessages by viewModel.sharedMessages.collectAsStateWithLifecycle()
     val statusMsg by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     var fullscreenMediaUrl by remember { mutableStateOf<String?>(null) }
     var showReportDialog by remember { mutableStateOf(false) }
+    var showTopMenu by remember { mutableStateOf(false) }
+    var showSecurityCodeDialog by remember { mutableStateOf(false) }
+    var showListsDialog by remember { mutableStateOf(false) }
+    var showEditContactDialog by remember { mutableStateOf(false) }
+    var showDeleteContactDialog by remember { mutableStateOf(false) }
+    var showDisappearingDialog by remember { mutableStateOf(false) }
+    var showClearChatDialog by remember { mutableStateOf(false) }
+    var mediaTabIndex by remember { mutableIntStateOf(0) } // 0 = Media, 1 = Links, 2 = Docs
+
+    val contactsWritePermissions = rememberMultiplePermissionsState(
+        listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
+    )
 
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(statusMsg) {
@@ -203,6 +348,34 @@ fun UserProfileDetailScreen(
         }
     }
 
+    val sharedMedia = remember(sharedMessages) {
+        sharedMessages.filter {
+            !it.isDeletedForEveryone && !it.isViewOnce &&
+                (it.type == MessageType.IMAGE || it.type == MessageType.VIDEO) &&
+                it.mediaUrl.isNotBlank()
+        }
+    }
+    val sharedLinks = remember(sharedMessages) {
+        sharedMessages.filter {
+            !it.isDeletedForEveryone &&
+                (it.text.contains("http://", ignoreCase = true) ||
+                    it.text.contains("https://", ignoreCase = true) ||
+                    it.text.contains("www.", ignoreCase = true))
+        }
+    }
+    val sharedDocs = remember(sharedMessages) {
+        sharedMessages.filter {
+            !it.isDeletedForEveryone &&
+                (it.type == MessageType.DOCUMENT || it.type == MessageType.AUDIO) &&
+                it.mediaUrl.isNotBlank()
+        }
+    }
+
+    val favoriteList = remember(contactLists) {
+        contactLists.firstOrNull { it.name == "المفضلة" || it.name.equals("Favorites", ignoreCase = true) }
+    }
+    val isFavorite = favoriteList?.memberUids?.contains(target?.uid) == true
+
     fun openExternalUrl(rawUrl: String) {
         val clean = rawUrl.trim().let {
             if (it.startsWith("http://", true) || it.startsWith("https://", true)) it else "https://$it"
@@ -223,6 +396,82 @@ fun UserProfileDetailScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.back, tint = palette.textPrimary)
                     }
                 },
+                actions = {
+                    if (target != null && target.uid != viewModel.myUid) {
+                        IconButton(onClick = { viewModel.toggleFavoriteInList(favoriteList) }) {
+                            Icon(
+                                imageVector = if (isFavorite) Icons.Default.Star else Icons.Default.StarBorder,
+                                contentDescription = null,
+                                tint = if (isFavorite) palette.warning else palette.textSecondary
+                            )
+                        }
+                        Box {
+                            IconButton(onClick = { showTopMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = strings.more, tint = palette.textPrimary)
+                            }
+                            DropdownMenu(
+                                expanded = showTopMenu,
+                                onDismissRequest = { showTopMenu = false },
+                                containerColor = palette.surface
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Share Contact" else "مشاركة جهة الاتصال", color = palette.textPrimary) },
+                                    leadingContent = { Icon(Icons.Default.Share, contentDescription = null, tint = palette.turquoise) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        val shareText = buildString {
+                                            append(target.displayName.ifBlank { "WESAL User" })
+                                            if (target.numericId.isNotBlank()) append("\nID: ${target.numericId}")
+                                            if (target.publicId.isNotBlank()) append("\n@${target.publicId}")
+                                            append("\n${WesalShareUtils.buildSingleInviteLink(target.publicId)}")
+                                        }
+                                        WesalShareUtils.shareGeneral(context, shareText)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Edit Name in Phonebook" else "تعديل الاسم في دفتر الهاتف", color = palette.textPrimary) },
+                                    leadingContent = { Icon(Icons.Default.Edit, contentDescription = null, tint = palette.emerald) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        if (!contactsWritePermissions.allPermissionsGranted) {
+                                            contactsWritePermissions.launchMultiplePermissionRequest()
+                                        } else {
+                                            showEditContactDialog = true
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Delete from Address Book" else "حذف من دفتر العناوين", color = palette.error) },
+                                    leadingContent = { Icon(Icons.Default.PersonRemove, contentDescription = null, tint = palette.error) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        if (!contactsWritePermissions.allPermissionsGranted) {
+                                            contactsWritePermissions.launchMultiplePermissionRequest()
+                                        } else {
+                                            showDeleteContactDialog = true
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Verify Security Code" else "التحقق من رمز الأمان (E2EE)", color = palette.textPrimary) },
+                                    leadingContent = { Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = palette.turquoise) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showSecurityCodeDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Add to List" else "إضافة إلى القائمة", color = palette.textPrimary) },
+                                    leadingContent = { Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = palette.emerald) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showListsDialog = true
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
             )
         }
@@ -232,7 +481,6 @@ fun UserProfileDetailScreen(
                 CircularProgressIndicator(color = palette.turquoise)
             }
         } else if ((target.hiddenFromSearch && !isSuperAdmin && target.uid != viewModel.myUid) || target.deletedAt > 0L) {
-            // Section 14 & Section 40 privacy/deleted safeguard
             Box(Modifier.fillMaxSize().padding(padding).padding(24.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Default.PersonOff, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(56.dp))
@@ -268,7 +516,6 @@ fun UserProfileDetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // 16:9 Cover + Avatar Header
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         if (target.coverUrl.isNotBlank()) {
@@ -314,7 +561,9 @@ fun UserProfileDetailScreen(
                         verificationType = target.verificationType,
                         neonColor = neonColor,
                         neonGlowIntensity = neonGlow,
-                        neonEnabled = target.neonEnabled
+                        neonEnabled = target.neonEnabled,
+                        verificationGlowEnabled = target.verificationGlowEnabled,
+                        verificationGlowIntensity = target.verificationGlowIntensity
                     )
                     if (target.numericId.isNotBlank()) {
                         Surface(
@@ -366,7 +615,6 @@ fun UserProfileDetailScreen(
                     )
                 }
 
-                // Action Buttons (Sec 32: Clean horizontal non-wrapping buttons; Sec 24/25: Support 10001 / Admin bypass)
                 if (target.uid != viewModel.myUid) {
                     when {
                         canMessageDirectly -> {
@@ -380,13 +628,7 @@ fun UserProfileDetailScreen(
                                 ) {
                                     Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text(
-                                        text = if (strings.isEnglish) "Message" else "مراسلة",
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Text(if (strings.isEnglish) "Message" else "مراسلة", fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                                 OutlinedButton(
                                     onClick = { context.startActivity(CallActivity.createOutgoingIntent(context, target, isVideo = false)) },
@@ -396,13 +638,7 @@ fun UserProfileDetailScreen(
                                 ) {
                                     Icon(Icons.Default.Call, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text(
-                                        text = if (strings.isEnglish) "Call" else "اتصال",
-                                        color = palette.textPrimary,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Text(if (strings.isEnglish) "Call" else "اتصال", color = palette.textPrimary, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                                 OutlinedButton(
                                     onClick = { context.startActivity(CallActivity.createOutgoingIntent(context, target, isVideo = true)) },
@@ -412,13 +648,7 @@ fun UserProfileDetailScreen(
                                 ) {
                                     Icon(Icons.Default.Videocam, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text(
-                                        text = if (strings.isEnglish) "Video" else "فيديو",
-                                        color = palette.textPrimary,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    Text(if (strings.isEnglish) "Video" else "فيديو", color = palette.textPrimary, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis)
                                 }
                             }
                         }
@@ -459,7 +689,7 @@ fun UserProfileDetailScreen(
                     }
                 }
 
-                // Public Info Card (Never displays email; strictly honors hidePhoneNumber & hideBirthDate)
+                // Public Info Card
                 Surface(
                     color = palette.surface,
                     shape = RoundedCornerShape(14.dp),
@@ -493,7 +723,132 @@ fun UserProfileDetailScreen(
                     }
                 }
 
-                // Social Links (Sec 28)
+                // Strictly Filtered Shared Media / Links / Docs Section
+                if (directChat != null) {
+                    Surface(
+                        color = palette.surface,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, palette.border),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text(
+                                text = if (strings.isEnglish) "Shared Content" else "الوسائط والروابط والمستندات",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.turquoise,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf(
+                                    0 to "${if (strings.isEnglish) "Media" else "الوسائط"} (${sharedMedia.size})",
+                                    1 to "${if (strings.isEnglish) "Links" else "الروابط"} (${sharedLinks.size})",
+                                    2 to "${if (strings.isEnglish) "Docs" else "المستندات"} (${sharedDocs.size})"
+                                ).forEach { (idx, title) ->
+                                    FilterChip(
+                                        selected = mediaTabIndex == idx,
+                                        onClick = { mediaTabIndex = idx },
+                                        label = { Text(title, maxLines = 1) }
+                                    )
+                                }
+                            }
+                            when (mediaTabIndex) {
+                                0 -> {
+                                    if (sharedMedia.isEmpty()) {
+                                        Text(
+                                            if (strings.isEnglish) "No shared photos or videos yet." else "لا توجد صور أو فيديوهات مشتركة بعد.",
+                                            color = palette.textMuted,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    } else {
+                                        sharedMedia.takeLast(6).reversed().forEach { item ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable { onOpenChat(directChat!!.chatId) }
+                                                    .padding(vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (item.type == MessageType.VIDEO) Icons.Default.Videocam else Icons.Default.Image,
+                                                    contentDescription = null,
+                                                    tint = palette.emerald
+                                                )
+                                                Text(
+                                                    text = item.mediaFileName.ifBlank { item.text.ifBlank { item.type.raw } },
+                                                    color = palette.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Text(
+                                                    DateTimeUtils.formatChatListTime(item.timestamp),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = palette.textSecondary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                1 -> {
+                                    if (sharedLinks.isEmpty()) {
+                                        Text(
+                                            if (strings.isEnglish) "No shared links yet." else "لا توجد روابط مشتركة بعد.",
+                                            color = palette.textMuted,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    } else {
+                                        sharedLinks.takeLast(6).reversed().forEach { item ->
+                                            Text(
+                                                text = item.text,
+                                                color = palette.turquoise,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { openExternalUrl(item.text.trim()) }
+                                                    .padding(vertical = 4.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                else -> {
+                                    if (sharedDocs.isEmpty()) {
+                                        Text(
+                                            if (strings.isEnglish) "No shared documents yet." else "لا توجد مستندات مشتركة بعد.",
+                                            color = palette.textMuted,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    } else {
+                                        sharedDocs.takeLast(6).reversed().forEach { item ->
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { onOpenChat(directChat!!.chatId) }
+                                                    .padding(vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(Icons.Default.InsertDriveFile, contentDescription = null, tint = palette.turquoise)
+                                                Text(
+                                                    text = item.mediaFileName.ifBlank { "Document" },
+                                                    color = palette.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Social Links
                 if (target.facebookUrl.isNotBlank() || target.instagramUrl.isNotBlank()) {
                     Surface(
                         color = palette.surface,
@@ -535,7 +890,7 @@ fun UserProfileDetailScreen(
                     }
                 }
 
-                // Business Hours Display (Sec 29)
+                // Business Hours Display
                 if (target.businessHours.enabled) {
                     val isOpenNow = remember(target.businessHours) { computeIsOpenNow(target.businessHours) }
                     Surface(
@@ -599,7 +954,41 @@ fun UserProfileDetailScreen(
                     }
                 }
 
-                // Safety Controls ONLY (Block / Report) — E2EE Fingerprint removed per Sec 34
+                // Mutual Groups
+                if (mutualGroups.isNotEmpty()) {
+                    Surface(
+                        color = palette.surface,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, palette.border),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = if (strings.isEnglish) "${mutualGroups.size} Mutual Groups" else "${mutualGroups.size} مجموعات مشتركة",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.turquoise,
+                                fontWeight = FontWeight.Bold
+                            )
+                            mutualGroups.forEach { grp ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { onOpenChat(grp.chatId) }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    WesalAvatar(imageUrl = grp.avatarUrl, name = grp.title, size = 36.dp)
+                                    Text(grp.title, color = palette.textPrimary, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = palette.textSecondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Chat Controls & Safety Controls (Mute, Disappearing, Clear, Block, Report)
                 if (target.uid != viewModel.myUid) {
                     Surface(
                         color = palette.surface,
@@ -608,6 +997,46 @@ fun UserProfileDetailScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column {
+                            if (directChat != null) {
+                                ListItem(
+                                    headlineContent = {
+                                        Text(
+                                            if (directChat!!.isMuted) {
+                                                if (strings.isEnglish) "Unmute Notifications" else "إلغاء كتم الإشعارات"
+                                            } else {
+                                                if (strings.isEnglish) "Mute Notifications" else "كتم الإشعارات"
+                                            },
+                                            color = palette.textPrimary
+                                        )
+                                    },
+                                    leadingContent = {
+                                        Icon(
+                                            if (directChat!!.isMuted) Icons.Default.NotificationsOff else Icons.Default.NotificationsActive,
+                                            contentDescription = null,
+                                            tint = palette.turquoise
+                                        )
+                                    },
+                                    modifier = Modifier.clickable { viewModel.toggleMuteDirectChat() },
+                                    colors = ListItemDefaults.colors(containerColor = palette.surface)
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                                val currentTimer = DisappearingTimer.fromSeconds(directChat!!.disappearingDurationSec)
+                                ListItem(
+                                    headlineContent = { Text(if (strings.isEnglish) "Disappearing Messages" else "الرسائل ذاتية الاختفاء", color = palette.textPrimary) },
+                                    supportingContent = { Text(if (strings.isEnglish) currentTimer.labelEn else currentTimer.labelAr, color = palette.textSecondary) },
+                                    leadingContent = { Icon(Icons.Default.Timer, contentDescription = null, tint = palette.emerald) },
+                                    modifier = Modifier.clickable { showDisappearingDialog = true },
+                                    colors = ListItemDefaults.colors(containerColor = palette.surface)
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                                ListItem(
+                                    headlineContent = { Text(if (strings.isEnglish) "Clear Chat History" else "مسح سجل الدردشة لدي", color = palette.warning) },
+                                    leadingContent = { Icon(Icons.Default.CleaningServices, contentDescription = null, tint = palette.warning) },
+                                    modifier = Modifier.clickable { showClearChatDialog = true },
+                                    colors = ListItemDefaults.colors(containerColor = palette.surface)
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
                             ListItem(
                                 headlineContent = {
                                     Text(
@@ -631,6 +1060,232 @@ fun UserProfileDetailScreen(
                 }
             }
         }
+    }
+
+    if (showSecurityCodeDialog && target != null) {
+        val rawDigest = remember(viewModel.myUid, target.uid, target.publicKey) {
+            val pair = listOf(viewModel.myUid, target.uid).sorted().joinToString("|") + "|" + target.publicKey
+            PhoneUtils.sha256Hash(pair)
+        }
+        val numericBlocks = remember(rawDigest) {
+            val digits = rawDigest.map { (it.code % 10).digitToChar() }.joinToString("")
+                .padEnd(60, '0')
+                .take(60)
+            digits.chunked(5).chunked(4).joinToString("\n") { it.joinToString("  ") }
+        }
+        AlertDialog(
+            onDismissRequest = { showSecurityCodeDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    if (strings.isEnglish) "Verify Security Code" else "التحقق من رمز الأمان",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    WesalQrCodeBox(payload = "WESAL-E2EE:${rawDigest.take(36)}", size = 180.dp)
+                    Text(
+                        text = numericBlocks,
+                        fontFamily = FontFamily.Monospace,
+                        color = palette.turquoise,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center
+                    )
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Compare this SHA-256 fingerprint or scan the QR with your contact to verify end-to-end encryption."
+                        } else {
+                            "قارن هذا الرمز أو امسح كود QR مع الطرف الآخر للتحقق من تشفير المحادثة من طرف إلى طرف."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSecurityCodeDialog = false }) { Text(strings.close) }
+            }
+        )
+    }
+
+    if (showListsDialog && target != null) {
+        var newListName by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showListsDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    if (strings.isEnglish) "Add to Custom List" else "إضافة إلى القوائم المخصصة",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = newListName,
+                            onValueChange = { newListName = it },
+                            label = { Text(if (strings.isEnglish) "New list name" else "اسم قائمة جديدة") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Button(
+                            onClick = {
+                                viewModel.createListAndAdd(newListName)
+                                newListName = ""
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                        ) { Text(if (strings.isEnglish) "Add" else "إضافة") }
+                    }
+                    contactLists.forEach { list ->
+                        val isIn = target.uid in list.memberUids
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { viewModel.addOrRemoveCustomList(list) }
+                                .padding(horizontal = 8.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(list.name, color = palette.textPrimary, fontWeight = FontWeight.Medium)
+                            Checkbox(checked = isIn, onCheckedChange = { viewModel.addOrRemoveCustomList(list) })
+                        }
+                    }
+                    if (contactLists.isEmpty()) {
+                        listOf("المفضلة", "العائلة", "الأصدقاء", "العمل").forEach { preset ->
+                            OutlinedButton(
+                                onClick = { viewModel.createListAndAdd(preset) },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("+ $preset", color = palette.turquoise)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showListsDialog = false }) { Text(strings.close) }
+            }
+        )
+    }
+
+    if (showEditContactDialog && target != null) {
+        var nameInput by remember { mutableStateOf(target.displayName) }
+        AlertDialog(
+            onDismissRequest = { showEditContactDialog = false },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Edit Phonebook Name" else "تعديل الاسم في دفتر الهاتف", color = palette.textPrimary) },
+            text = {
+                OutlinedTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    label = { Text(if (strings.isEnglish) "Contact Name" else "اسم جهة الاتصال") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.editPhonebookContact(target.phoneNumber, nameInput)
+                        showEditContactDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                ) { Text(strings.save) }
+            },
+            dismissButton = { TextButton(onClick = { showEditContactDialog = false }) { Text(strings.cancel) } }
+        )
+    }
+
+    if (showDeleteContactDialog && target != null) {
+        AlertDialog(
+            onDismissRequest = { showDeleteContactDialog = false },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Delete Contact" else "حذف من دفتر العناوين", color = palette.error) },
+            text = {
+                Text(
+                    if (strings.isEnglish) "Remove ${target.displayName} from your phone address book?" else "هل تريد حذف ${target.displayName} من دفتر العناوين على جهازك؟",
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deletePhonebookContact(target.phoneNumber)
+                        showDeleteContactDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.error)
+                ) { Text(strings.delete) }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteContactDialog = false }) { Text(strings.cancel) } }
+        )
+    }
+
+    if (showDisappearingDialog && directChat != null) {
+        AlertDialog(
+            onDismissRequest = { showDisappearingDialog = false },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Disappearing Messages" else "مؤقت اختفاء الرسائل", color = palette.textPrimary) },
+            text = {
+                Column {
+                    DisappearingTimer.entries.forEach { timer ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    viewModel.setDisappearingTimer(timer)
+                                    showDisappearingDialog = false
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RadioButton(
+                                selected = directChat!!.disappearingDurationSec == timer.seconds,
+                                onClick = {
+                                    viewModel.setDisappearingTimer(timer)
+                                    showDisappearingDialog = false
+                                }
+                            )
+                            Text(if (strings.isEnglish) timer.labelEn else timer.labelAr, color = palette.textPrimary)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showDisappearingDialog = false }) { Text(strings.close) } }
+        )
+    }
+
+    if (showClearChatDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearChatDialog = false },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Clear Chat" else "مسح سجل الدردشة", color = palette.warning) },
+            text = {
+                Text(
+                    if (strings.isEnglish) "Clear all messages in this chat from your view?" else "هل تريد مسح جميع الرسائل من هذه المحادثة لديك؟",
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.clearDirectChatMessages()
+                        showClearChatDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.warning, contentColor = palette.onPrimary)
+                ) { Text(strings.clear) }
+            },
+            dismissButton = { TextButton(onClick = { showClearChatDialog = false }) { Text(strings.cancel) } }
+        )
     }
 
     if (showReportDialog) {
@@ -699,3 +1354,4 @@ private fun computeIsOpenNow(schedule: BusinessHoursSchedule): Boolean {
         }
     }.getOrDefault(false)
 }
+

@@ -128,7 +128,9 @@ interface UserRepository {
         note: String = "",
         verificationType: String = "BLUE",
         expiresAt: Long = 0L,
-        durationLabel: String = ""
+        durationLabel: String = "",
+        glowEnabled: Boolean = true,
+        glowIntensity: Float = 0.7f
     ): Result<Unit>
     suspend fun setAccountFrame(
         targetUid: String,
@@ -177,13 +179,23 @@ interface UserRepository {
     suspend fun publishOfficialAnnouncement(title: String, body: String): Result<Unit>
     fun observeOfficialAnnouncements(): Flow<List<OfficialAnnouncement>>
 
-    // Contact Requests & Friendship Gating
+    // Contact Requests, Friendship Gating, Custom Lists & Events
     fun observeContactRequests(): Flow<List<ContactRequest>>
     suspend fun sendContactRequest(targetUid: String): Result<ContactRequest>
     suspend fun acceptContactRequest(requestId: String): Result<Unit>
     suspend fun rejectContactRequest(requestId: String): Result<Unit>
+    suspend fun holdContactRequest(requestId: String): Result<Unit>
     suspend fun cancelOrRemoveContactRequest(requestId: String): Result<Unit>
     suspend fun areContactsAccepted(peerUid: String): Boolean
+    fun observeContactLists(): Flow<List<ContactLabelList>>
+    suspend fun upsertContactList(listId: String?, name: String, memberUids: List<String>): Result<ContactLabelList>
+    suspend fun addUidToContactList(listId: String, uid: String): Result<Unit>
+    suspend fun removeUidFromContactList(listId: String, uid: String): Result<Unit>
+    suspend fun deleteContactList(listId: String): Result<Unit>
+    fun observeAppEvents(): Flow<List<AppEventItem>>
+    suspend fun createAppEvent(title: String, description: String, locationName: String, eventTime: Long): Result<AppEventItem>
+    suspend fun deleteAppEvent(eventId: String): Result<Unit>
+    suspend fun rsvpAppEvent(eventId: String, join: Boolean): Result<Unit>
 }
 
 interface ChatRepository {
@@ -216,8 +228,15 @@ interface ChatRepository {
         chatId: String,
         latitude: Double,
         longitude: Double,
-        address: String
+        address: String,
+        liveDurationMinutes: Int = 0
     ): Result<Unit>
+    suspend fun setChatDisappearingTimer(chatId: String, durationSeconds: Long): Result<Unit>
+    suspend fun setMessageRequestDecision(chatId: String, peerUid: String, decision: String): Result<Unit>
+    suspend fun sendBusinessBroadcast(
+        recipientUids: List<String>,
+        text: String
+    ): Result<Map<String, Boolean>>
     suspend fun setTyping(chatId: String, isTyping: Boolean)
     suspend fun markChatAsRead(chatId: String)
     suspend fun editMessage(chatId: String, messageId: String, newText: String): Result<Unit>
@@ -226,6 +245,7 @@ interface ChatRepository {
     suspend fun togglePinChat(chatId: String, pinned: Boolean): Result<Unit>
     suspend fun toggleMuteChat(chatId: String, muted: Boolean): Result<Unit>
     suspend fun deleteChat(chatId: String, forEveryone: Boolean = false): Result<Unit>
+    suspend fun clearChatMessagesForMe(chatId: String): Result<Unit>
     suspend fun decryptMediaToCache(message: WesalMessage): Result<java.io.File>
 }
 
@@ -326,7 +346,8 @@ interface StoryRepository {
         visibility: PrivacyVisibility,
         audienceMode: StoryAudienceMode = StoryAudienceMode.CONTACTS,
         allowedViewerIds: List<String> = emptyList(),
-        excludedViewerIds: List<String> = emptyList()
+        excludedViewerIds: List<String> = emptyList(),
+        backgroundColorHex: Long = 0xFF064E3B
     ): Flow<StoryPublishEvent>
     fun publishAudioStory(
         audioUri: Uri,
@@ -335,7 +356,8 @@ interface StoryRepository {
         visibility: PrivacyVisibility,
         audienceMode: StoryAudienceMode = StoryAudienceMode.CONTACTS,
         allowedViewerIds: List<String> = emptyList(),
-        excludedViewerIds: List<String> = emptyList()
+        excludedViewerIds: List<String> = emptyList(),
+        backgroundColorHex: Long = 0xFF064E3B
     ): Flow<StoryPublishEvent>
     suspend fun markStoryViewed(storyId: String)
     suspend fun deleteStory(storyId: String): Result<Unit>
@@ -354,4 +376,7 @@ interface CallRepository {
     suspend fun deleteCallForMe(callId: String): Result<Unit>
     suspend fun deleteCallsForMe(callIds: List<String>): Result<Unit>
     suspend fun clearCallHistoryForMe(): Result<Unit>
+    fun observeScheduledCalls(): Flow<List<ScheduledCallRecord>>
+    suspend fun scheduleCall(peer: WesalUser, isVideo: Boolean, scheduledAt: Long, note: String): Result<ScheduledCallRecord>
+    suspend fun deleteScheduledCall(scheduleId: String): Result<Unit>
 }

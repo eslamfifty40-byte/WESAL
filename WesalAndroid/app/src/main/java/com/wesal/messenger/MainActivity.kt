@@ -21,6 +21,7 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wesal.messenger.calls.IncomingCallActivity
 import com.wesal.messenger.core.theme.WesalTheme
+import com.wesal.messenger.core.util.LocaleManager
 import com.wesal.messenger.presentation.MainViewModel
 import com.wesal.messenger.presentation.StartDestination
 import com.wesal.messenger.presentation.WesalNavHost
@@ -39,9 +40,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
-        splashScreen.setKeepOnScreenCondition {
-            mainViewModel.startDestination.value is StartDestination.Loading
-        }
+        splashScreen.setKeepOnScreenCondition { false }
         enableEdgeToEdge()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -81,10 +80,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            val layoutDirection = if (settings.languageTag == "en") {
-                LayoutDirection.Ltr
-            } else {
+            val layoutDirection = if (LocaleManager.isRtlLanguage(settings.languageTag)) {
                 LayoutDirection.Rtl
+            } else {
+                LayoutDirection.Ltr
             }
 
             WesalTheme(

@@ -267,36 +267,20 @@ class AuthRepositoryImpl @Inject constructor(
 
     override suspend fun signInGuestForSupport(): Result<String> {
         return try {
-            val currentUid = auth.currentUser?.uid
-            if (!currentUid.isNullOrBlank()) {
-                return Result.success(currentUid)
+            val currentUser = auth.currentUser
+            if (currentUser != null && !currentUser.isAnonymous && currentUser.uid.isNotBlank()) {
+                return Result.success(currentUser.uid)
             }
-            val anonResult = auth.signInAnonymously().await()
-            val uid = anonResult.user?.uid ?: error("تعذر فتح جلسة التواصل السريعة")
-            val pubKey = cryptoManager.getOrCreateIdentityPublicKeyBase64(uid)
-            firestore.collection(Constants.COLLECTION_USERS).document(uid).set(
-                mapOf(
-                    "uid" to uid,
-                    "displayName" to "زائر دعم WESAL",
-                    "publicId" to "guest_${uid.take(6).lowercase()}",
-                    "bio" to "تواصل مع إدارة WESAL",
-                    "isGuestSupport" to true,
-                    "hiddenFromSearch" to true,
-                    "isOnline" to true,
-                    "publicKey" to pubKey,
-                    "createdAt" to System.currentTimeMillis(),
-                    "lastSeen" to FieldValue.serverTimestamp()
-                ),
-                SetOptions.merge()
-            ).await()
-            Result.success(uid)
+            if (currentUser?.isAnonymous == true) {
+                runCatching { auth.signOut() }
+            }
+            Result.failure(
+                IllegalStateException("يرجى تسجيل الدخول بحساب Google أو البريد الإلكتروني للتواصل المباشر مع إدارة WESAL (10001)")
+            )
         } catch (e: Exception) {
-            val msg = if (e is FirebaseAuthException && e.errorCode == "ERROR_OPERATION_NOT_ALLOWED") {
-                "يرجى تسجيل الدخول بحساب Google أو البريد الإلكتروني أولاً للتواصل المباشر مع حساب الإدارة 10001 داخل WESAL."
-            } else {
-                mapSparkAuthMessage(e, "سجّل الدخول بحسابك لبدء المحادثة المباشرة مع إدارة WESAL (10001)")
-            }
-            Result.failure(Exception(msg, e))
+            Result.failure(
+                Exception(mapSparkAuthMessage(e, "سجّل الدخول بحسابك لبدء المحادثة المباشرة مع إدارة WESAL (10001)"), e)
+            )
         }
     }
 
@@ -1002,6 +986,91 @@ class AuthRepositoryImpl @Inject constructor(
             }.getOrNull()
             sessions?.documents?.forEach { doc ->
                 runCatching { doc.reference.delete().await() }
+            }
+
+            // Delete contact requests involving this user
+            runCatching {
+                val reqs = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
+                    .whereArrayContains("participants", uid)
+                    .get()
+                    .await()
+                reqs.documents.forEach { d -> runCatching { d.reference.delete().await() } }
+            }
+
+            // Delete active stories created by this user
+            runCatching {
+                val stories = firestore.collection(Constants.COLLECTION_STORIES)
+                    .whereEqualTo("ownerUid", uid)
+                    .get()
+                    .await()
+                stories.documents.forEach { d -> runCatching { d.reference.delete().await() } }
+            }
+
+            // Remove user from groups
+            runCatching {
+                val groups = firestore.collection(Constants.COLLECTION_GROUPS)
+                    .whereArrayContains("memberIds", uid)
+                    .get()
+                    .await()
+                groups.documents.forEach { d ->
+                    runCatching {
+                        d.reference.update(
+                            mapOf(
+                                "memberIds" to FieldValue.arrayRemove(uid),
+                                "adminIds" to FieldValue.arrayRemove(uid)
+                            )
+                        ).await()
+                    }
+                }
+            }
+
+            // Unsubscribe user from channels
+            runCatching {
+                val channels = firestore.collection(Constants.COLLECTION_CHANNELS)
+                    .whereArrayContains("subscriberIds", uid)
+                    .get()
+                    .await()
+                channels.documents.forEach { d ->
+                    if (d.getString("ownerUid") != uid) {
+                        runCatching {
+                            d.reference.update(
+                                mapOf(
+                                    "subscriberIds" to FieldValue.arrayRemove(uid),
+                                    "moderatorIds" to FieldValue.arrayRemove(uid)
+                                )
+                            ).await()
+                        }
+                    }
+                }
+            }
+
+            // Delete custom contact lists & scheduled calls created by user
+            runCatching {
+                val lists = firestore.collection(Constants.COLLECTION_CONTACT_LISTS)
+                    .whereEqualTo("ownerUid", uid)
+                    .get()
+                    .await()
+                lists.documents.forEach { d -> runCatching { d.reference.delete().await() } }
+            }
+            runCatching {
+                val scheds = firestore.collection(Constants.COLLECTION_SCHEDULED_CALLS)
+                    .whereEqualTo("creatorUid", uid)
+                    .get()
+                    .await()
+                scheds.documents.forEach { d -> runCatching { d.reference.delete().await() } }
+            }
+
+            // Hide user's chats cleanly from deleted account side
+            runCatching {
+                val chats = firestore.collection(Constants.COLLECTION_CHATS)
+                    .whereArrayContains("participantIds", uid)
+                    .get()
+                    .await()
+                chats.documents.forEach { d ->
+                    runCatching {
+                        d.reference.update("deletedForUsers", FieldValue.arrayUnion(uid)).await()
+                    }
+                }
             }
 
             val now = System.currentTimeMillis()

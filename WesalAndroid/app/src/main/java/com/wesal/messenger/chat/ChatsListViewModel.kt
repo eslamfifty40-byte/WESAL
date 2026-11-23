@@ -4,8 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatPreview
+import com.wesal.messenger.domain.model.ContactRequest
+import com.wesal.messenger.domain.model.ContactRequestStatus
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
+import com.wesal.messenger.domain.repository.UserRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -14,6 +17,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ChatsListViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
+    private val userRepository: UserRepository,
     private val authRepository: AuthRepository,
     private val prefs: UserPreferencesDataStore
 ) : ViewModel() {
@@ -34,6 +38,30 @@ class ChatsListViewModel @Inject constructor(
         .map { it.hiddenChatIds }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
+    val lockedChatIds: StateFlow<Set<String>> = prefs.settingsFlow
+        .map { it.lockedChatIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    val messageRequestChats: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
+        .map { allChats ->
+            allChats.filter { chat ->
+                !chat.isOfficialWesalChat && !chat.isSupportChat && !chat.isGroup &&
+                    (chat.isMessageRequest || chat.requestStatus == "PENDING" || chat.requestStatus == "HELD") &&
+                    chat.requestStatus != "REJECTED"
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val incomingContactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
+        .map { list ->
+            val uid = currentUid
+            list.filter { req ->
+                req.receiverUid == uid &&
+                    (req.status == ContactRequestStatus.PENDING || req.status == ContactRequestStatus.HELD)
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val chats: StateFlow<List<ChatPreview>> = combine(
         chatRepository.observeChats(),
         _searchQuery,
@@ -41,6 +69,9 @@ class ChatsListViewModel @Inject constructor(
         showHiddenChats
     ) { allChats, query, hiddenIds, showingHidden ->
         allChats.filter { chat ->
+            val isRequest = !chat.isOfficialWesalChat && !chat.isSupportChat && !chat.isGroup &&
+                (chat.isMessageRequest || chat.requestStatus == "PENDING" || chat.requestStatus == "HELD" || chat.requestStatus == "REJECTED")
+            if (isRequest) return@filter false
             val isHidden = chat.chatId in hiddenIds
             val visibilityMatch = if (showingHidden) isHidden else !isHidden
             val queryMatch = query.isBlank() ||
@@ -63,6 +94,12 @@ class ChatsListViewModel @Inject constructor(
 
     fun verifyHiddenPassword(candidate: String): Boolean =
         prefs.verifyHiddenChatsPassword(currentUid, candidate)
+
+    fun verifyTwoFactorOrHiddenPin(candidate: String): Boolean =
+        prefs.verifyTwoFactorPin(currentUid, candidate) || prefs.verifyHiddenChatsPassword(currentUid, candidate)
+
+    fun hasAnyPinConfigured(): Boolean =
+        prefs.hasHiddenChatsPassword(currentUid)
 
     fun verifyHiddenRecoveryAnswer(answer: String): Boolean =
         prefs.verifyHiddenChatsRecoveryAnswer(currentUid, answer)
@@ -111,6 +148,75 @@ class ChatsListViewModel @Inject constructor(
         }
     }
 
+    fun toggleLockChat(chat: ChatPreview, lock: Boolean) {
+        viewModelScope.launch {
+            prefs.toggleLockedChat(chat.chatId, lock)
+            _toastMessage.value = if (lock) "تم قفل المحادثة بنجاح" else "تم إلغاء قفل المحادثة"
+        }
+    }
+
+    fun decideMessageRequest(chatId: String, peerUid: String, decision: String) {
+        viewModelScope.launch {
+            chatRepository.setMessageRequestDecision(chatId, peerUid, decision)
+                .onSuccess {
+                    _toastMessage.value = when (decision.uppercase()) {
+                        "ACCEPTED" -> "تم قبول طلب المراسلة ونقل المحادثة إلى الرئيسية"
+                        "HELD" -> "تم تعليق الطلب مؤقتاً"
+                        else -> "تم رفض الطلب وحذفه"
+                    }
+                }
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الطلب" }
+        }
+    }
+
+    fun acceptContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.acceptContactRequest(requestId)
+                .onSuccess { _toastMessage.value = "تم قبول طلب التعارف" }
+                .onFailure { _toastMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun holdContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.holdContactRequest(requestId)
+                .onSuccess { _toastMessage.value = "تم تعليق الطلب في قائمة الانتظار" }
+                .onFailure { _toastMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun rejectContactRequest(requestId: String) {
+        viewModelScope.launch {
+            userRepository.rejectContactRequest(requestId)
+                .onSuccess { _toastMessage.value = "تم رفض الطلب" }
+                .onFailure { _toastMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun blockAndRejectRequest(chatId: String?, peerUid: String, requestId: String?) {
+        viewModelScope.launch {
+            if (peerUid.isNotBlank()) userRepository.blockUser(peerUid)
+            if (!chatId.isNullOrBlank()) chatRepository.setMessageRequestDecision(chatId, peerUid, "REJECTED")
+            if (!requestId.isNullOrBlank()) userRepository.rejectContactRequest(requestId)
+            _toastMessage.value = "تم حظر المستخدم ورفض الطلب"
+        }
+    }
+
+    fun reportRequestSender(peerUid: String, chatId: String?, reason: String) {
+        viewModelScope.launch {
+            userRepository.reportUser(
+                targetUid = peerUid,
+                reason = reason.ifBlank { "طلب مراسلة مزعج" },
+                targetType = "CHAT",
+                targetChatId = chatId.orEmpty()
+            ).onSuccess {
+                _toastMessage.value = "تم إرسال البلاغ للإدارة"
+            }.onFailure {
+                _toastMessage.value = it.localizedMessage ?: "تعذر إرسال البلاغ"
+            }
+        }
+    }
+
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
     }
@@ -132,6 +238,7 @@ class ChatsListViewModel @Inject constructor(
             chatRepository.deleteChat(chat.chatId, forEveryone)
                 .onSuccess {
                     prefs.toggleHiddenChat(chat.chatId, false)
+                    prefs.toggleLockedChat(chat.chatId, false)
                     _toastMessage.value = if (forEveryone) {
                         "تم حذف المحادثة لدى الطرفين"
                     } else {

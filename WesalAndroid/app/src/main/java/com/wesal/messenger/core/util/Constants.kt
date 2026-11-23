@@ -34,6 +34,9 @@ object Constants {
     const val COLLECTION_MODERATORS = "moderators"
     const val COLLECTION_FRAME_LIBRARY = "frame_library"
     const val COLLECTION_SUBSCRIPTION_REQUESTS = "subscription_requests"
+    const val COLLECTION_CONTACT_LISTS = "contact_lists"
+    const val COLLECTION_EVENTS = "events"
+    const val COLLECTION_SCHEDULED_CALLS = "scheduled_calls"
 
     const val CHANNEL_MESSAGES = "wesal_messages"
     const val CHANNEL_CALLS = "wesal_calls"

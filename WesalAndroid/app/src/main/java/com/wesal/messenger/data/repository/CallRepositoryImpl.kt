@@ -7,6 +7,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.CallRecord
 import com.wesal.messenger.domain.model.CallStatus
+import com.wesal.messenger.domain.model.ScheduledCallRecord
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.CallRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -313,5 +314,88 @@ class CallRepositoryImpl @Inject constructor(
             }
             batch.commit().await()
         }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeScheduledCalls(): Flow<List<ScheduledCallRecord>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) {
+            flowOf(emptyList())
+        } else {
+            callbackFlow {
+                val reg = firestore.collection(Constants.COLLECTION_SCHEDULED_CALLS)
+                    .whereArrayContains("participants", uid)
+                    .addSnapshotListener { snap, err ->
+                        if (err != null) return@addSnapshotListener
+                        val list = snap?.documents?.map { d ->
+                            ScheduledCallRecord(
+                                scheduleId = d.getString("scheduleId") ?: d.id,
+                                creatorUid = d.getString("creatorUid").orEmpty(),
+                                peerUid = d.getString("peerUid").orEmpty(),
+                                peerName = d.getString("peerName").orEmpty(),
+                                peerAvatarUrl = d.getString("peerAvatarUrl").orEmpty(),
+                                isVideo = d.getBoolean("isVideo") ?: false,
+                                scheduledAt = d.getLong("scheduledAt") ?: 0L,
+                                note = d.getString("note").orEmpty(),
+                                createdAt = d.getLong("createdAt") ?: 0L
+                            )
+                        }.orEmpty().sortedBy { it.scheduledAt }
+                        trySend(list)
+                    }
+                awaitClose { reg.remove() }
+            }
+        }
+    }
+
+    override suspend fun scheduleCall(
+        peer: WesalUser,
+        isVideo: Boolean,
+        scheduledAt: Long,
+        note: String
+    ): Result<ScheduledCallRecord> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        require(peer.uid.isNotBlank() && peer.uid != uid) { "يرجى اختيار جهة اتصال صالحة" }
+        val scheduleId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val record = ScheduledCallRecord(
+            scheduleId = scheduleId,
+            creatorUid = uid,
+            peerUid = peer.uid,
+            peerName = peer.displayName.ifBlank { peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User" },
+            peerAvatarUrl = peer.photoUrl,
+            isVideo = isVideo,
+            scheduledAt = scheduledAt,
+            note = note.trim(),
+            createdAt = now
+        )
+        firestore.collection(Constants.COLLECTION_SCHEDULED_CALLS)
+            .document(scheduleId)
+            .set(
+                mapOf(
+                    "scheduleId" to scheduleId,
+                    "creatorUid" to uid,
+                    "peerUid" to peer.uid,
+                    "participants" to listOf(uid, peer.uid).distinct(),
+                    "peerName" to record.peerName,
+                    "peerAvatarUrl" to record.peerAvatarUrl,
+                    "isVideo" to isVideo,
+                    "scheduledAt" to scheduledAt,
+                    "note" to record.note,
+                    "createdAt" to now
+                )
+            )
+            .await()
+        record
+    }
+
+    override suspend fun deleteScheduledCall(scheduleId: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val ref = firestore.collection(Constants.COLLECTION_SCHEDULED_CALLS).document(scheduleId)
+        val snap = ref.get().await()
+        @Suppress("UNCHECKED_CAST")
+        val participants = (snap.get("participants") as? List<String>).orEmpty()
+        require(!snap.exists() || snap.getString("creatorUid") == uid || participants.contains(uid)) {
+            "لا تملك صلاحية حذف هذه المكالمة المجدولة"
+        }
+        ref.delete().await()
     }
 }

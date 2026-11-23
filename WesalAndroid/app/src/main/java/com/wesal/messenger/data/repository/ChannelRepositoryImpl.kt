@@ -631,36 +631,49 @@ class ChannelRepositoryImpl @Inject constructor(
                 val me = userRepository.getUserOnce(uid)
                 var mediaUrl = ""
                 if (mediaUri != null) {
-                    trySend(Result.success(0.12f))
-                    val safeName = fileName.ifBlank { "media" }.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-                    val storageResult = withContext(Dispatchers.IO) {
-                        uploadFileToFirebaseStorage(
-                            storagePath = "channels/$channelId/posts/${postId}_$safeName",
-                            uri = mediaUri,
-                            onProgress = { fraction -> trySend(Result.success(fraction)) }
-                        )
-                    }
-                    mediaUrl = storageResult.getOrElse { storageErr ->
-                        when (type) {
-                            ChannelPostType.IMAGE -> {
-                                val b64 = withContext(Dispatchers.IO) {
-                                    uriToBase64Smart(context, mediaUri, maxSide = 720, quality = 72)
-                                }
-                                require(b64.isNotBlank()) { "تعذر رفع أو ضغط الصورة المحددة" }
-                                b64
-                            }
-                            ChannelPostType.AUDIO -> {
-                                withContext(Dispatchers.IO) {
-                                    uriToBase64Audio(context, mediaUri, maxBytes = 420_000)
-                                } ?: throw IllegalStateException(
-                                    storageErr.message ?: "تعذر رفع المقطع الصوتي الكبير عبر Firebase Storage"
+                    trySend(Result.success(0.18f))
+                    mediaUrl = when (type) {
+                        ChannelPostType.IMAGE -> {
+                            val b64 = withContext(Dispatchers.IO) {
+                                uriToBase64Smart(
+                                    ctx = context,
+                                    uri = mediaUri,
+                                    maxSide = 760,
+                                    quality = 78,
+                                    preserveAlphaIfPng = true
                                 )
                             }
-                            else -> {
-                                throw IllegalStateException(
-                                    storageErr.message ?: "تعذر رفع الملف عبر Firebase Storage"
-                                )
+                            require(b64.isNotBlank()) { "تعذر ضغط الصورة المحددة" }
+                            trySend(Result.success(0.85f))
+                            b64
+                        }
+                        ChannelPostType.AUDIO -> {
+                            trySend(Result.success(0.45f))
+                            val audioB64 = withContext(Dispatchers.IO) {
+                                uriToBase64Audio(context, mediaUri, maxBytes = 520_000)
                             }
+                            require(!audioB64.isNullOrBlank()) {
+                                "حجم المقطع الصوتي يتجاوز الحد المباشر (520 KB) المتاح بدون Firebase Storage"
+                            }
+                            trySend(Result.success(0.85f))
+                            audioB64
+                        }
+                        else -> {
+                            trySend(Result.success(0.45f))
+                            val bytes = withContext(Dispatchers.IO) {
+                                context.contentResolver.openInputStream(mediaUri)?.use { it.readBytes() }
+                                    ?: error("تعذر قراءة الملف المحدد")
+                            }
+                            require(bytes.isNotEmpty()) { "الملف المحدد فارغ" }
+                            require(bytes.size <= 540_000) {
+                                "حجم الملف يتجاوز الحد المباشر (540 KB) المتاح بدون Firebase Storage"
+                            }
+                            val resolvedMime = mimeType.ifBlank {
+                                runCatching { context.contentResolver.getType(mediaUri) }.getOrNull().orEmpty()
+                                    .ifBlank { "application/octet-stream" }
+                            }
+                            trySend(Result.success(0.85f))
+                            "data:$resolvedMime;base64," + android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
                         }
                     }
                 } else {

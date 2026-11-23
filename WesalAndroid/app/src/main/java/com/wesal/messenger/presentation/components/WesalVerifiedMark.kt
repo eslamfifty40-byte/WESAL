@@ -23,54 +23,40 @@ fun WesalVerifiedMark(
     modifier: Modifier = Modifier,
     badgeColor: Color = Color(0xFF1D9BF0),
     verificationType: String = "BLUE",
-    glowColor: Color? = null
+    glowColor: Color? = null,
+    glowEnabled: Boolean = true,
+    glowIntensity: Float = 0.7f
 ) {
     val sealType = VerificationSealType.fromKey(verificationType)
-    val resolvedFill = when (sealType) {
-        VerificationSealType.BLUE -> if (badgeColor == Color(0xFF1D9BF0)) Color(0xFF1D9BF0) else badgeColor
-        VerificationSealType.BLACK -> Color(0xFF0B0E11)
-        VerificationSealType.GREEN -> Color(0xFF00D66B)
-        VerificationSealType.GOLD -> Color(0xFFE5A100)
-        VerificationSealType.CYAN -> Color(0xFF00B8D4)
-        VerificationSealType.PURPLE -> Color(0xFF7C3AED)
-        VerificationSealType.RED -> Color(0xFFDC2626)
-        VerificationSealType.SILVER -> Color(0xFF64748B)
-        VerificationSealType.ROSE -> Color(0xFFDB2777)
-        VerificationSealType.ORANGE -> Color(0xFFEA580C)
+    val resolvedFill = if (sealType == VerificationSealType.BLUE && badgeColor != Color(0xFF1D9BF0)) {
+        badgeColor
+    } else {
+        Color(sealType.primaryHex)
     }
-    val borderStrokeColor = when (sealType) {
-        VerificationSealType.BLACK -> Color(0xFFE2E8F0)
-        VerificationSealType.SILVER -> Color(0xFFCBD5E1)
-        VerificationSealType.GOLD -> Color(0xFFFDE68A)
-        else -> resolvedFill
-    }
-
-    // Same badge shape + check mark as before; only a neon halo is added behind it.
-    val halo = glowColor ?: when (sealType) {
-        VerificationSealType.BLACK -> Color(0xFF9FB4C7)
-        VerificationSealType.SILVER -> Color(0xFF94A3B8)
-        VerificationSealType.GOLD -> Color(0xFFFBBF24)
-        else -> resolvedFill
-    }
+    val borderStrokeColor = Color(sealType.secondaryHex)
+    val halo = glowColor ?: Color(sealType.glowHex)
+    val effectiveGlow = glowIntensity.coerceIn(0.15f, 1.0f)
 
     Canvas(modifier.size(badgeSize)) {
         val s = this.size.minDimension
         val c = Offset(s / 2f, s / 2f)
-        val innerAlpha = if (glowColor != null) 0.62f else 0.34f
-        val midAlpha = if (glowColor != null) 0.28f else 0.14f
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    halo.copy(alpha = innerAlpha),
-                    halo.copy(alpha = midAlpha),
-                    Color.Transparent
+        if (glowEnabled) {
+            val innerAlpha = ((if (glowColor != null) 0.62f else 0.42f) * effectiveGlow).coerceIn(0.1f, 0.92f)
+            val midAlpha = ((if (glowColor != null) 0.28f else 0.18f) * effectiveGlow).coerceIn(0.05f, 0.50f)
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        halo.copy(alpha = innerAlpha),
+                        halo.copy(alpha = midAlpha),
+                        Color.Transparent
+                    ),
+                    center = c,
+                    radius = s * 0.90f
                 ),
-                center = c,
-                radius = s * 0.85f
-            ),
-            radius = s * 0.85f,
-            center = c
-        )
+                radius = s * 0.90f,
+                center = c
+            )
+        }
         val star = Path()
         val n = 24
         for (i in 0 until n) {
@@ -85,15 +71,20 @@ fun WesalVerifiedMark(
         drawPath(
             path = star,
             color = borderStrokeColor,
-            style = Stroke(width = if (sealType == VerificationSealType.BLACK) s * 0.065f else s * 0.05f, join = StrokeJoin.Round)
+            style = Stroke(width = s * 0.055f, join = StrokeJoin.Round)
         )
         val check = Path()
         check.moveTo(s * 0.29f, s * 0.52f)
         check.lineTo(s * 0.44f, s * 0.67f)
         check.lineTo(s * 0.72f, s * 0.36f)
+        val checkColor = if (sealType == VerificationSealType.PLATINUM || sealType == VerificationSealType.PEARL || sealType == VerificationSealType.NEON_YELLOW) {
+            Color(0xFF0A1116)
+        } else {
+            Color.White
+        }
         drawPath(
             path = check,
-            color = Color.White,
+            color = checkColor,
             style = Stroke(width = s * 0.105f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
     }

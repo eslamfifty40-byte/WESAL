@@ -63,6 +63,7 @@ import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.crop.CropActivity
+import com.wesal.messenger.domain.model.DisappearingTimer
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.WesalMessage
 import com.wesal.messenger.media.CameraCaptureScreen
@@ -140,6 +141,8 @@ fun ChatDetailScreen(
     var showMenu by remember { mutableStateOf(false) }
     var showWallpaperDialog by remember { mutableStateOf(false) }
     var showDeleteChatDialog by remember { mutableStateOf(false) }
+    var showDisappearingDialog by remember { mutableStateOf(false) }
+    var showLiveLocationDialog by remember { mutableStateOf(false) }
     var reportTarget by remember { mutableStateOf<WesalMessage?>(null) }
     var showReportChatDialog by remember { mutableStateOf(false) }
 
@@ -382,7 +385,7 @@ fun ChatDetailScreen(
                             iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) chat?.peerIconUrl.orEmpty() else "",
                             neonColor = if (!isOfficialReadOnly && chat?.isGroup == false && (chat?.peerNeonEnabled == true)) chat?.peerNeonColor.orEmpty() else "",
                             neonGlowIntensity = chat?.peerNeonGlowIntensity ?: 0.7f,
-                            fallbackResId = if (isOfficialReadOnly) com.wesal.messenger.R.drawable.wesal_brand_logo else null
+                            fallbackResId = if (isOfficialReadOnly || chat?.isSupportChat == true) com.wesal.messenger.R.drawable.wesal_brand_logo else null
                         )
                         Column {
                             WesalNameWithBadge(
@@ -392,9 +395,15 @@ fun ChatDetailScreen(
                                 neonColor = peerUser?.neonColor ?: chat?.peerNeonColor.orEmpty(),
                                 neonGlowIntensity = peerUser?.neonGlowIntensity ?: (chat?.peerNeonGlowIntensity ?: 0.7f),
                                 neonEnabled = if (isOfficialReadOnly || chat?.isGroup == true) false else (peerUser?.neonEnabled ?: (chat?.peerNeonEnabled == true)),
+                                verificationGlowEnabled = peerUser?.verificationGlowEnabled ?: (chat?.peerVerificationGlowEnabled ?: true),
+                                verificationGlowIntensity = peerUser?.verificationGlowIntensity ?: (chat?.peerVerificationGlowIntensity ?: 0.7f),
                                 style = MaterialTheme.typography.titleMedium,
                                 color = palette.textPrimary
                             )
+                            val activeTimer = DisappearingTimer.fromSeconds(chat?.disappearingDurationSec ?: 0L)
+                            val timerSuffix = if (activeTimer != DisappearingTimer.OFF) {
+                                " • ⏱ ${if (strings.isEnglish) activeTimer.labelEn else activeTimer.labelAr}"
+                            } else ""
                             val subtitle = when {
                                 isOfficialReadOnly -> if (strings.isEnglish) "Official WESAL Channel • Read Only" else "إشعارات وصال الرسمية • للقراءة فقط"
                                 chat?.typingUsers?.isNotEmpty() == true -> strings.typingNow
@@ -404,7 +413,7 @@ fun ChatDetailScreen(
                                     if (strings.isEnglish) "Last seen ${DateTimeUtils.formatChatListTime(chat!!.peerLastSeen)}"
                                     else "آخر ظهور ${DateTimeUtils.formatChatListTime(chat!!.peerLastSeen)}"
                                 else -> "WESAL Messenger"
-                            }
+                            } + timerSuffix
                             Text(
                                 text = subtitle,
                                 style = MaterialTheme.typography.labelSmall,
@@ -466,6 +475,10 @@ fun ChatDetailScreen(
                                 DropdownMenuItem(
                                     text = { Text(if (strings.isEnglish) "Quick Replies" else "الردود السريعة", color = palette.textPrimary) },
                                     onClick = { showQuickRepliesBar = !showQuickRepliesBar; showMenu = false }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Disappearing Messages" else "الرسائل ذاتية الاختفاء", color = palette.textPrimary) },
+                                    onClick = { showDisappearingDialog = true; showMenu = false }
                                 )
                             }
                             DropdownMenuItem(
@@ -532,6 +545,42 @@ fun ChatDetailScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
+                if (chat?.isMessageRequest == true || chat?.requestStatus == "PENDING" || chat?.requestStatus == "HELD") {
+                    Surface(
+                        color = palette.surfaceElevated,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = if (strings.isEnglish) "Message request" else "طلب مراسلة",
+                                color = palette.turquoise,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = { viewModel.decideMessageRequest("ACCEPTED") },
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) { Text(if (strings.isEnglish) "Accept" else "قبول") }
+                            OutlinedButton(
+                                onClick = { viewModel.decideMessageRequest("HELD") },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) { Text(if (strings.isEnglish) "Hold" else "تعليق", color = palette.warning) }
+                            OutlinedButton(
+                                onClick = { viewModel.decideMessageRequest("REJECTED", onRejectedDone = onBack) },
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                            ) { Text(if (strings.isEnglish) "Reject" else "رفض", color = palette.error) }
+                        }
+                    }
+                }
+
                 if (showSearchBar) {
                     OutlinedTextField(
                         value = searchQuery,
@@ -1084,6 +1133,24 @@ fun ChatDetailScreen(
                         }
                     }
                 )
+                ListItem(
+                    headlineContent = {
+                        Text(
+                            if (strings.isEnglish) "Share Live Location" else "مشاركة الموقع المباشر (مؤقت)",
+                            color = palette.textPrimary
+                        )
+                    },
+                    leadingContent = { Icon(Icons.Default.ShareLocation, contentDescription = null, tint = palette.emerald) },
+                    colors = sheetItemColors,
+                    modifier = Modifier.clickable {
+                        showAttachSheet = false
+                        if (locationPermissions.allPermissionsGranted) {
+                            showLiveLocationDialog = true
+                        } else {
+                            locationPermissions.launchMultiplePermissionRequest()
+                        }
+                    }
+                )
                 Spacer(Modifier.height(14.dp))
             }
         }
@@ -1312,6 +1379,17 @@ fun ChatDetailScreen(
                             }
                         )
                     }
+                    if (msg.text.isNotBlank() || msg.mediaUrl.isNotBlank()) {
+                        ListItem(
+                            headlineContent = { Text(if (strings.isEnglish) "Star Message" else "تمييز الرسالة بنجمة") },
+                            leadingContent = { Icon(Icons.Default.Star, contentDescription = null, tint = palette.warning) },
+                            colors = actionItemColors,
+                            modifier = Modifier.clickable {
+                                viewModel.toggleStarMessage(msg)
+                                selectedMessageForActions = null
+                            }
+                        )
+                    }
                     if (msg.text.isNotBlank()) {
                         ListItem(
                             headlineContent = { Text(strings.copy) },
@@ -1383,6 +1461,105 @@ fun ChatDetailScreen(
             },
             confirmButton = {
                 TextButton(onClick = { forwardingMessage = null }) { Text(strings.cancel) }
+            }
+        )
+    }
+
+    if (showDisappearingDialog) {
+        val currentSec = chat?.disappearingDurationSec ?: 0L
+        AlertDialog(
+            onDismissRequest = { showDisappearingDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    if (strings.isEnglish) "Disappearing Messages" else "مؤقت اختفاء الرسائل",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DisappearingTimer.entries.forEach { timer ->
+                        val selected = currentSec == timer.seconds
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable {
+                                    viewModel.setDisappearingTimer(timer)
+                                    showDisappearingDialog = false
+                                }
+                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            RadioButton(selected = selected, onClick = {
+                                viewModel.setDisappearingTimer(timer)
+                                showDisappearingDialog = false
+                            })
+                            Text(
+                                text = if (strings.isEnglish) timer.labelEn else timer.labelAr,
+                                color = palette.textPrimary,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDisappearingDialog = false }) { Text(strings.close) }
+            }
+        )
+    }
+
+    if (showLiveLocationDialog) {
+        AlertDialog(
+            onDismissRequest = { showLiveLocationDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    if (strings.isEnglish) "Share Live Location" else "مشاركة الموقع المباشر",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        15 to (if (strings.isEnglish) "15 minutes" else "15 دقيقة"),
+                        60 to (if (strings.isEnglish) "1 hour" else "ساعة واحدة"),
+                        480 to (if (strings.isEnglish) "8 hours" else "8 ساعات")
+                    ).forEach { (mins, label) ->
+                        OutlinedButton(
+                            onClick = {
+                                showLiveLocationDialog = false
+                                val client = LocationServices.getFusedLocationProviderClient(context)
+                                client.lastLocation.addOnSuccessListener { loc ->
+                                    if (loc != null) {
+                                        viewModel.sendLocation(
+                                            loc.latitude,
+                                            loc.longitude,
+                                            if (strings.isEnglish) {
+                                                "Live Location (${String.format("%.4f", loc.latitude)}, ${String.format("%.4f", loc.longitude)})"
+                                            } else {
+                                                "موقع مباشر (${String.format("%.4f", loc.latitude)}, ${String.format("%.4f", loc.longitude)})"
+                                            },
+                                            liveDurationMinutes = mins
+                                        )
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.ShareLocation, contentDescription = null, tint = palette.emerald)
+                            Spacer(Modifier.width(8.dp))
+                            Text(label, color = palette.textPrimary)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showLiveLocationDialog = false }) { Text(strings.cancel) }
             }
         )
     }
@@ -1911,7 +2088,9 @@ private fun MessageBubble(
                             }
                         }
 
-                        MessageType.LOCATION -> {
+                        MessageType.LOCATION, MessageType.LIVE_LOCATION -> {
+                            val isLive = message.type == MessageType.LIVE_LOCATION
+                            val isLiveActive = isLive && message.liveLocationExpiresAt > System.currentTimeMillis()
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1922,11 +2101,43 @@ private fun MessageBubble(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Icon(Icons.Default.LocationOn, contentDescription = null, tint = palette.emerald)
+                                Icon(
+                                    imageVector = if (isLive) Icons.Default.ShareLocation else Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    tint = if (isLiveActive || !isLive) palette.emerald else palette.textMuted
+                                )
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(if (strings.isEnglish) "Location" else "موقع جغرافي", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = when {
+                                            isLive && isLiveActive -> if (strings.isEnglish) "Live Location • Active" else "موقع مباشر • نشط الآن"
+                                            isLive -> if (strings.isEnglish) "Live Location • Ended" else "موقع مباشر • انتهت المشاركة"
+                                            else -> if (strings.isEnglish) "Location" else "موقع جغرافي"
+                                        },
+                                        color = palette.textPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                     Text(message.locationAddress, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
                                 }
+                            }
+                        }
+
+                        MessageType.CALL_LOG -> {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(palette.surface.copy(alpha = 0.65f))
+                                    .padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(Icons.Default.Call, contentDescription = null, tint = palette.turquoise)
+                                Text(
+                                    text = message.text.ifBlank { if (strings.isEnglish) "Call log" else "سجل مكالمة" },
+                                    color = palette.textPrimary,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
                             }
                         }
 

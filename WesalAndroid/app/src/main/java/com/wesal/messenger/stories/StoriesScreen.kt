@@ -15,9 +15,11 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,9 +43,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
+import com.wesal.messenger.channels.ChannelsViewModel
+import com.wesal.messenger.channels.CreateChannelDialog
+import com.wesal.messenger.channels.JoinChannelCodeDialog
+import com.wesal.messenger.channels.channelsDirectorySection
 import com.wesal.messenger.core.theme.*
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.crop.CropActivity
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.PrivacyVisibility
@@ -53,6 +60,7 @@ import com.wesal.messenger.domain.model.StoryType
 import com.wesal.messenger.domain.model.StoryViewer
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
+import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.StoryPublishEvent
 import com.wesal.messenger.domain.repository.StoryRepository
 import com.wesal.messenger.domain.repository.UserRepository
@@ -71,9 +79,28 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.net.URL
 import javax.inject.Inject
+
+private val STORY_BG_COLORS = listOf(
+    0xFF064E3BL,
+    0xFF0E7490L,
+    0xFF312E81L,
+    0xFF831843L,
+    0xFF1E293BL,
+    0xFF7C2D12L,
+    0xFF14532DL,
+    0xFF4C1D95L
+)
+
+data class StarredMessageEntry(
+    val rawKey: String,
+    val chatId: String,
+    val messageId: String,
+    val summary: String
+)
 
 data class PendingStoryMedia(
     val uri: Uri,
@@ -82,7 +109,8 @@ data class PendingStoryMedia(
     val visibility: PrivacyVisibility,
     val audienceMode: StoryAudienceMode,
     val allowedViewerIds: List<String>,
-    val excludedViewerIds: List<String>
+    val excludedViewerIds: List<String>,
+    val backgroundColorHex: Long = 0xFF064E3BL
 )
 
 data class StoriesUploadUiState(
@@ -98,13 +126,22 @@ class StoriesViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val storyRepository: StoryRepository,
     private val userRepository: UserRepository,
+    private val chatRepository: ChatRepository,
     private val voiceRecorder: VoiceRecorderManager,
     private val voicePlayer: VoicePlayerManager,
     private val prefs: UserPreferencesDataStore,
     authRepository: AuthRepository
 ) : ViewModel() {
 
-    val myUid: StateFlow<String> = authRepository.observeAuthState()
+    val myUid: String = authRepository.observeAuthState()
+        .map { it.orEmpty() }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, authRepository.currentUserId.orEmpty())
+        .let { state ->
+            // Expose as StateFlow<String>
+            state
+        }
+
+    val myUidFlow: StateFlow<String> = authRepository.observeAuthState()
         .map { it.orEmpty() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, authRepository.currentUserId.orEmpty())
 
@@ -115,8 +152,37 @@ class StoriesViewModel @Inject constructor(
         .map { StoryAudienceMode.fromRaw(it.lastStoryAudienceMode) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, StoryAudienceMode.CONTACTS)
 
+    val cameraEffectsEnabled: StateFlow<Boolean> = prefs.settingsFlow
+        .map { it.cameraEffectsEnabled }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val archivedStoryIds: StateFlow<Set<String>> = prefs.settingsFlow
+        .map { it.archivedStoryIds }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    val archiveKeepMutedChats: StateFlow<Boolean> = prefs.settingsFlow
+        .map { it.archiveKeepMutedChats }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val starredMessages: StateFlow<List<StarredMessageEntry>> = prefs.settingsFlow
+        .map { settings ->
+            val rawList = runCatching {
+                Json.decodeFromString<List<String>>(settings.starredMessagesJson)
+            }.getOrDefault(emptyList())
+            rawList.map { raw ->
+                val parts = raw.split("|", limit = 3)
+                StarredMessageEntry(
+                    rawKey = raw,
+                    chatId = parts.getOrElse(0) { "" },
+                    messageId = parts.getOrElse(1) { "" },
+                    summary = parts.getOrElse(2) { raw }
+                )
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val acceptedContacts: StateFlow<List<WesalUser>> = combine(
-        myUid,
+        myUidFlow,
         userRepository.observeContactRequests()
     ) { uid, requests ->
         uid to requests.filter { it.status.raw == "ACCEPTED" }
@@ -141,6 +207,71 @@ class StoriesViewModel @Inject constructor(
 
     fun persistAudienceMode(mode: StoryAudienceMode) {
         viewModelScope.launch { prefs.setLastStoryAudienceMode(mode.raw) }
+    }
+
+    fun toggleCameraEffects(enabled: Boolean) {
+        viewModelScope.launch {
+            prefs.setCameraEffectsEnabled(enabled)
+            _uploadState.update {
+                it.copy(statusBanner = if (enabled) "تم تفعيل تأثيرات الكاميرا" else "تم إيقاف تأثيرات الكاميرا")
+            }
+        }
+    }
+
+    fun toggleArchiveStory(storyId: String, archived: Boolean) {
+        viewModelScope.launch {
+            prefs.toggleArchivedStory(storyId, archived)
+            _uploadState.update {
+                it.copy(statusBanner = if (archived) "تم نقل الحالة إلى الأرشيف" else "تمت استعادة الحالة من الأرشيف")
+            }
+        }
+    }
+
+    fun setArchiveKeepMuted(keep: Boolean) {
+        viewModelScope.launch { prefs.setArchiveKeepMutedChats(keep) }
+    }
+
+    fun removeStarredEntry(rawKey: String) {
+        viewModelScope.launch { prefs.toggleStarredMessage(rawKey) }
+    }
+
+    fun promoteStoryToContacts(story: StoryItem, recipientUids: List<String>, note: String) {
+        if (recipientUids.isEmpty()) return
+        viewModelScope.launch {
+            val contentPreview = when (story.type) {
+                StoryType.TEXT -> story.textContent
+                StoryType.AUDIO -> story.caption.ifBlank { "حالة صوتية" }
+                StoryType.VIDEO -> story.caption.ifBlank { "حالة فيديو" }
+                StoryType.IMAGE -> story.caption.ifBlank { "حالة مصورة" }
+            }
+            val promoText = buildString {
+                append("📣 ترويج حالة على WESAL")
+                if (note.isNotBlank()) {
+                    append("\n")
+                    append(note.trim())
+                }
+                if (contentPreview.isNotBlank()) {
+                    append("\n«")
+                    append(contentPreview.take(280))
+                    append("»")
+                }
+            }
+            var sentCount = 0
+            recipientUids.forEach { uid ->
+                val chatId = chatRepository.getOrCreateDirectChat(uid).getOrNull()
+                if (!chatId.isNullOrBlank()) {
+                    chatRepository.sendTextMessage(chatId, promoText)
+                        .onSuccess { sentCount++ }
+                }
+            }
+            _uploadState.update {
+                if (sentCount > 0) {
+                    it.copy(statusBanner = "تم ترويج الحالة وإرسالها إلى $sentCount من جهات الاتصال")
+                } else {
+                    it.copy(errorMessage = "تعذر إرسال الترويج لجهات الاتصال المحددة")
+                }
+            }
+        }
     }
 
     fun publishTextStory(
@@ -172,13 +303,28 @@ class StoriesViewModel @Inject constructor(
         caption: String,
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
-        excludedViewerIds: List<String>
+        excludedViewerIds: List<String>,
+        backgroundColorHex: Long = 0xFF064E3BL
     ) {
         val visibility = if (audienceMode == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
-        val request = PendingStoryMedia(uri, isVideo, caption, visibility, audienceMode, allowedViewerIds, excludedViewerIds)
+        val request = PendingStoryMedia(uri, isVideo, caption, visibility, audienceMode, allowedViewerIds, excludedViewerIds, backgroundColorHex)
         viewModelScope.launch {
             _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = 0.02f)
-            storyRepository.publishMediaStory(uri, isVideo, caption, visibility, audienceMode, allowedViewerIds, excludedViewerIds).collect { event ->
+            storyRepository.publishMediaStory(
+                uri = uri,
+                isVideo = isVideo,
+                caption = caption,
+                visibility = visibility,
+                audienceMode = audienceMode,
+                allowedViewerIds = allowedViewerIds,
+                excludedViewerIds = excludedViewerIds,
+                backgroundColorHex = backgroundColorHex
+            ).catch { err ->
+                _uploadState.value = StoriesUploadUiState(
+                    errorMessage = err.localizedMessage ?: "تعذر نشر الحالة",
+                    failedRequest = request
+                )
+            }.collect { event ->
                 when (event) {
                     is StoryPublishEvent.Progress -> {
                         _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = event.fraction)
@@ -221,12 +367,26 @@ class StoriesViewModel @Inject constructor(
         caption: String,
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
-        excludedViewerIds: List<String>
+        excludedViewerIds: List<String>,
+        backgroundColorHex: Long = 0xFF064E3BL
     ) {
         val visibility = if (audienceMode == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
         viewModelScope.launch {
             _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = 0.08f)
-            storyRepository.publishAudioStory(audioUri, durationMs, caption, visibility, audienceMode, allowedViewerIds, excludedViewerIds).collect { event ->
+            storyRepository.publishAudioStory(
+                audioUri = audioUri,
+                durationMs = durationMs,
+                caption = caption,
+                visibility = visibility,
+                audienceMode = audienceMode,
+                allowedViewerIds = allowedViewerIds,
+                excludedViewerIds = excludedViewerIds,
+                backgroundColorHex = backgroundColorHex
+            ).catch { err ->
+                _uploadState.value = StoriesUploadUiState(
+                    errorMessage = err.localizedMessage ?: "تعذر نشر الحالة الصوتية"
+                )
+            }.collect { event ->
                 when (event) {
                     is StoryPublishEvent.Progress -> {
                         _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = event.fraction)
@@ -258,6 +418,9 @@ class StoriesViewModel @Inject constructor(
                             val bytes = Base64.decode(mediaUrl.substring(idx + 7), Base64.DEFAULT)
                             out.writeBytes(bytes)
                         }
+                    } else if (mediaUrl.startsWith("wesal-plain://", ignoreCase = true)) {
+                        val bytes = Base64.decode(mediaUrl.removePrefix("wesal-plain://"), Base64.DEFAULT)
+                        out.writeBytes(bytes)
                     } else if (mediaUrl.startsWith("http", ignoreCase = true)) {
                         URL(mediaUrl).openStream().use { input ->
                             out.outputStream().use { output -> input.copyTo(output) }
@@ -281,7 +444,15 @@ class StoriesViewModel @Inject constructor(
 
     fun retryFailedUpload() {
         val req = _uploadState.value.failedRequest ?: return
-        publishMediaStory(req.uri, req.isVideo, req.caption, req.audienceMode, req.allowedViewerIds, req.excludedViewerIds)
+        publishMediaStory(
+            req.uri,
+            req.isVideo,
+            req.caption,
+            req.audienceMode,
+            req.allowedViewerIds,
+            req.excludedViewerIds,
+            req.backgroundColorHex
+        )
     }
 
     fun clearError() {
@@ -296,7 +467,7 @@ class StoriesViewModel @Inject constructor(
         storyRepository.observeStoryViewers(storyId)
 
     fun markViewed(story: StoryItem) {
-        val uid = myUid.value
+        val uid = myUidFlow.value
         if (uid.isNotBlank() && story.ownerUid != uid && !story.viewerIds.contains(uid)) {
             viewModelScope.launch { storyRepository.markStoryViewed(story.storyId) }
         }
@@ -321,24 +492,46 @@ class StoriesViewModel @Inject constructor(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
+fun StoriesScreen(
+    onOpenChannel: (String) -> Unit = {},
+    onOpenChat: (String) -> Unit = {},
+    viewModel: StoriesViewModel = hiltViewModel(),
+    channelsViewModel: ChannelsViewModel = hiltViewModel()
+) {
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val activity = context as? Activity
-    val myUid by viewModel.myUid.collectAsStateWithLifecycle()
+    val myUid by viewModel.myUidFlow.collectAsStateWithLifecycle()
     val stories by viewModel.stories.collectAsStateWithLifecycle()
     val uploadState by viewModel.uploadState.collectAsStateWithLifecycle()
     val recordingState by viewModel.recordingState.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val savedAudience by viewModel.savedAudienceMode.collectAsStateWithLifecycle()
     val contacts by viewModel.acceptedContacts.collectAsStateWithLifecycle()
+    val cameraEffectsEnabled by viewModel.cameraEffectsEnabled.collectAsStateWithLifecycle()
+    val archivedStoryIds by viewModel.archivedStoryIds.collectAsStateWithLifecycle()
+    val archiveKeepMuted by viewModel.archiveKeepMutedChats.collectAsStateWithLifecycle()
+    val starredMessages by viewModel.starredMessages.collectAsStateWithLifecycle()
+
+    val myChannels by channelsViewModel.myChannels.collectAsStateWithLifecycle()
+    val publicChannels by channelsViewModel.publicChannels.collectAsStateWithLifecycle()
+    val channelSearchQuery by channelsViewModel.searchQuery.collectAsStateWithLifecycle()
+    val channelMessage by channelsViewModel.message.collectAsStateWithLifecycle()
 
     var showTextDialog by remember { mutableStateOf(false) }
     var showAudioDialog by remember { mutableStateOf(false) }
     var showInlineCamera by remember { mutableStateOf(false) }
     var activeStory by remember { mutableStateOf<StoryItem?>(null) }
     var viewersSheetStory by remember { mutableStateOf<StoryItem?>(null) }
+    var promoteTargetStory by remember { mutableStateOf<StoryItem?>(null) }
+    var showUpdatesMenu by remember { mutableStateOf(false) }
+    var showArchivedDialog by remember { mutableStateOf(false) }
+    var showArchiveSettingsDialog by remember { mutableStateOf(false) }
+    var showStarredDialog by remember { mutableStateOf(false) }
+    var showStoryPrivacyDialog by remember { mutableStateOf(false) }
+    var showCreateChannelDialog by remember { mutableStateOf(false) }
+    var showJoinChannelDialog by remember { mutableStateOf(false) }
 
     var selectedAudience by remember(savedAudience) { mutableStateOf(savedAudience) }
     var selectedContactIds by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -346,7 +539,26 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
 
     var draftMedia by remember { mutableStateOf<Pair<Uri, Boolean>?>(null) }
     var draftCaption by remember { mutableStateOf("") }
+    var draftBgHex by remember { mutableLongStateOf(0xFF064E3BL) }
     var recordedAudioDraft by remember { mutableStateOf<Pair<File, Long>?>(null) }
+
+    val filteredMyChannels = remember(myChannels, channelSearchQuery) {
+        if (channelSearchQuery.isBlank()) myChannels
+        else myChannels.filter {
+            it.title.contains(channelSearchQuery, true) || it.description.contains(channelSearchQuery, true)
+        }
+    }
+    val myChannelIds = remember(myChannels) { myChannels.map { it.channelId }.toSet() }
+    val filteredPublicChannels = remember(publicChannels, channelSearchQuery, myChannelIds) {
+        publicChannels
+            .filter { it.isPublic && !it.isSuspended }
+            .filterNot { it.channelId in myChannelIds }
+            .filter {
+                channelSearchQuery.isBlank() ||
+                    it.title.contains(channelSearchQuery, true) ||
+                    it.description.contains(channelSearchQuery, true)
+            }
+    }
 
     val cropLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -383,9 +595,18 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
         return
     }
 
-    // Story preview screen before uploading (supports crop, caption & audience selection)
+    // Story preview screen before uploading (supports crop, background gradient, caption & audience selection)
     draftMedia?.let { (uri, isVideo) ->
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color(draftBgHex), Color.Black)
+                    )
+                )
+                .systemBarsPadding()
+        ) {
             if (isVideo) {
                 VideoPlayerBox(uri = uri, modifier = Modifier.fillMaxSize())
             } else {
@@ -408,16 +629,37 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                 IconButton(onClick = { draftMedia = null }) {
                     Icon(Icons.Default.Close, contentDescription = "إلغاء", tint = Color.White)
                 }
-                if (!isVideo) {
-                    OutlinedButton(
-                        onClick = {
-                            cropLauncher.launch(CropActivity.createIntent(context, uri, CropActivity.MODE_SQUARE))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(
+                        selected = cameraEffectsEnabled,
+                        onClick = { viewModel.toggleCameraEffects(!cameraEffectsEnabled) },
+                        label = {
+                            Text(
+                                text = if (strings.isEnglish) "Effects" else "تأثيرات",
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall
+                            )
                         },
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Icon(Icons.Default.Crop, contentDescription = null, tint = WesalTurquoise, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("قص الصورة", color = WesalTurquoise)
+                        leadingIcon = {
+                            Icon(
+                                Icons.Default.AutoFixHigh,
+                                contentDescription = null,
+                                tint = if (cameraEffectsEnabled) WesalTurquoise else Color.White.copy(alpha = 0.7f),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    )
+                    if (!isVideo) {
+                        OutlinedButton(
+                            onClick = {
+                                cropLauncher.launch(CropActivity.createIntent(context, uri, CropActivity.MODE_SQUARE))
+                            },
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Icon(Icons.Default.Crop, contentDescription = null, tint = WesalTurquoise, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("قص الصورة", color = WesalTurquoise)
+                        }
                     }
                 }
             }
@@ -432,6 +674,12 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    if (!isVideo) {
+                        StoryBackgroundColorRow(
+                            selectedHex = draftBgHex,
+                            onSelect = { draftBgHex = it }
+                        )
+                    }
                     StoryAudienceSummaryRow(
                         audienceMode = selectedAudience,
                         selectedCount = selectedContactIds.size,
@@ -471,7 +719,15 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                             onClick = {
                                 val allowed = if (selectedAudience == StoryAudienceMode.ONLY_WITH) selectedContactIds.toList() else emptyList()
                                 val excluded = if (selectedAudience == StoryAudienceMode.CONTACTS_EXCEPT) selectedContactIds.toList() else emptyList()
-                                viewModel.publishMediaStory(uri, isVideo, draftCaption.trim(), selectedAudience, allowed, excluded)
+                                viewModel.publishMediaStory(
+                                    uri = uri,
+                                    isVideo = isVideo,
+                                    caption = draftCaption.trim(),
+                                    audienceMode = selectedAudience,
+                                    allowedViewerIds = allowed,
+                                    excludedViewerIds = excluded,
+                                    backgroundColorHex = draftBgHex
+                                )
                                 draftMedia = null
                                 draftCaption = ""
                             },
@@ -506,6 +762,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
     val currentActiveStory = activeStory?.let { cur -> stories.firstOrNull { it.storyId == cur.storyId } ?: cur }
     currentActiveStory?.let { story ->
         val isOwner = story.ownerUid == myUid
+        val isArchived = story.storyId in archivedStoryIds
         LaunchedEffect(story.storyId) { viewModel.markViewed(story) }
         DisposableEffect(story.storyId, isOwner) {
             if (!isOwner) {
@@ -520,15 +777,17 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
         }
 
         val currentIdx = stories.indexOfFirst { it.storyId == story.storyId }
+        val resolvedBgHex = if (story.backgroundColorHex == 0L) 0xFF064E3BL else story.backgroundColorHex
 
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     when (story.type) {
-                        StoryType.TEXT -> Color(story.backgroundColorHex)
-                        StoryType.AUDIO -> WesalDeepBlack
-                        else -> Color.Black
+                        StoryType.TEXT -> Brush.verticalGradient(listOf(Color(resolvedBgHex), Color(resolvedBgHex).copy(alpha = 0.78f)))
+                        StoryType.IMAGE -> Brush.verticalGradient(listOf(Color(resolvedBgHex), Color.Black))
+                        StoryType.AUDIO -> Brush.verticalGradient(listOf(WesalDeepBlack, Color(resolvedBgHex).copy(alpha = 0.75f), WesalDeepBlack))
+                        StoryType.VIDEO -> Brush.verticalGradient(listOf(Color.Black, Color.Black))
                     }
                 )
         ) {
@@ -562,7 +821,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                             .fillMaxSize()
                             .background(
                                 Brush.verticalGradient(
-                                    listOf(WesalDeepBlack, WesalEmerald.copy(alpha = 0.25f), WesalDeepBlack)
+                                    listOf(WesalDeepBlack, Color(resolvedBgHex).copy(alpha = 0.55f), WesalDeepBlack)
                                 )
                             ),
                         contentAlignment = Alignment.Center
@@ -692,8 +951,20 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     }
                 }
                 Row {
-                    // Only the owner can delete or manage; viewers NEVER see download/save/share/forward
+                    // Only the owner can promote, archive, or delete; viewers NEVER see download/save/share/forward
                     if (isOwner) {
+                        IconButton(onClick = { promoteTargetStory = story }) {
+                            Icon(Icons.Default.Campaign, contentDescription = if (strings.isEnglish) "Promote" else "ترويج", tint = WesalTurquoise)
+                        }
+                        IconButton(onClick = {
+                            viewModel.toggleArchiveStory(story.storyId, !isArchived)
+                        }) {
+                            Icon(
+                                imageVector = if (isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
+                                contentDescription = if (strings.isEnglish) "Archive" else "أرشفة",
+                                tint = Color.White
+                            )
+                        }
                         IconButton(onClick = {
                             viewModel.stopAudioPlayback()
                             viewModel.deleteStory(story.storyId)
@@ -728,19 +999,35 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     }
                 }
                 if (isOwner) {
-                    Surface(
-                        color = Color.Black.copy(alpha = 0.72f),
-                        shape = RoundedCornerShape(20.dp),
-                        modifier = Modifier.clickable { viewersSheetStory = story }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.clickable { viewersSheetStory = story }
                         ) {
-                            Icon(Icons.Default.Visibility, contentDescription = "عرض المشاهدين", tint = WesalTurquoise, modifier = Modifier.size(18.dp))
-                            Text("${story.viewerIds.size} مشاهدة", color = Color.White, fontWeight = FontWeight.Bold)
-                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(18.dp))
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Visibility, contentDescription = "عرض المشاهدين", tint = WesalTurquoise, modifier = Modifier.size(18.dp))
+                                Text("${story.viewerIds.size} مشاهدة", color = Color.White, fontWeight = FontWeight.Bold)
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.White.copy(alpha = 0.8f), modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Surface(
+                            color = WesalEmerald.copy(alpha = 0.88f),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier.clickable { promoteTargetStory = story }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(Icons.Default.Campaign, contentDescription = null, tint = WesalDeepBlack, modifier = Modifier.size(18.dp))
+                                Text(if (strings.isEnglish) "Promote" else "ترويج", color = WesalDeepBlack, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -754,11 +1041,23 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     onDismiss = { viewersSheetStory = null }
                 )
             }
+            promoteTargetStory?.let { targetStory ->
+                PromoteStoryDialog(
+                    story = targetStory,
+                    contacts = contacts,
+                    onDismiss = { promoteTargetStory = null },
+                    onPromote = { recipientIds, note ->
+                        viewModel.promoteStoryToContacts(targetStory, recipientIds, note)
+                        promoteTargetStory = null
+                    }
+                )
+            }
         }
         return
     }
 
-    val myStories = stories.filter { it.ownerUid == myUid }
+    val myStories = stories.filter { it.ownerUid == myUid && it.storyId !in archivedStoryIds }
+    val archivedMyStories = stories.filter { it.ownerUid == myUid && it.storyId in archivedStoryIds }
     val friendsStories = stories.filter { it.ownerUid != myUid }
 
     Box(modifier = Modifier.fillMaxSize().background(palette.background)) {
@@ -845,11 +1144,96 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
             }
 
             item {
-                Text(
-                    text = if (strings.isEnglish) "My Story (expires after 24h)" else "حالتي (تنتهي بعد 24 ساعة)",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = palette.turquoise
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (strings.isEnglish) "Updates • Stories & Channels" else "التحديثات • الحالات والقنوات",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = palette.turquoise,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (strings.isEnglish) "Stories expire after 24h • Channels stay pinned below" else "تنتهي الحالات خلال 24 ساعة • القنوات بالأسفل",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textMuted
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        IconButton(onClick = { viewModel.toggleCameraEffects(!cameraEffectsEnabled) }) {
+                            Icon(
+                                imageVector = Icons.Default.AutoFixHigh,
+                                contentDescription = if (strings.isEnglish) "Camera Effects" else "تأثيرات الكاميرا",
+                                tint = if (cameraEffectsEnabled) palette.emerald else palette.textMuted
+                            )
+                        }
+                        if (starredMessages.isNotEmpty()) {
+                            BadgedBox(badge = { Badge { Text("${starredMessages.size}") } }) {
+                                IconButton(onClick = { showStarredDialog = true }) {
+                                    Icon(Icons.Default.Star, contentDescription = if (strings.isEnglish) "Starred" else "المميزة بنجمة", tint = palette.turquoise)
+                                }
+                            }
+                        }
+                        Box {
+                            IconButton(onClick = { showUpdatesMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = strings.more, tint = palette.textPrimary)
+                            }
+                            DropdownMenu(
+                                expanded = showUpdatesMenu,
+                                onDismissRequest = { showUpdatesMenu = false },
+                                containerColor = palette.surface
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(strings.createChannel, color = palette.textPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Campaign, contentDescription = null, tint = palette.emerald) },
+                                    onClick = { showUpdatesMenu = false; showCreateChannelDialog = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Join Channel by Code" else "انضمام لقناة برمز", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.QrCode2, contentDescription = null, tint = palette.turquoise) },
+                                    onClick = { showUpdatesMenu = false; showJoinChannelDialog = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Story Privacy" else "خصوصية الحالة", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = palette.turquoise) },
+                                    onClick = { showUpdatesMenu = false; showStoryPrivacyDialog = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Archived Stories (${archivedMyStories.size})" else "الحالات المؤرشفة (${archivedMyStories.size})", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null, tint = palette.emerald) },
+                                    onClick = { showUpdatesMenu = false; showArchivedDialog = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Archive Settings" else "إعدادات الأرشفة", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null, tint = palette.textSecondary) },
+                                    onClick = { showUpdatesMenu = false; showArchiveSettingsDialog = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Starred Messages (${starredMessages.size})" else "الرسائل المميزة بنجمة (${starredMessages.size})", color = palette.textPrimary) },
+                                    leadingIcon = { Icon(Icons.Default.Star, contentDescription = null, tint = palette.turquoise) },
+                                    onClick = { showUpdatesMenu = false; showStarredDialog = true }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (cameraEffectsEnabled) {
+                                                if (strings.isEnglish) "Disable Camera Effects" else "إيقاف تأثيرات الكاميرا"
+                                            } else {
+                                                if (strings.isEnglish) "Enable Camera Effects" else "تفعيل تأثيرات الكاميرا"
+                                            },
+                                            color = palette.textPrimary
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = palette.emerald) },
+                                    onClick = { showUpdatesMenu = false; viewModel.toggleCameraEffects(!cameraEffectsEnabled) }
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             item {
@@ -957,7 +1341,6 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
 
                         HorizontalDivider(color = palette.border)
 
-                        // Sec 21: "من يستطيع مشاهدة حالتي؟" selector directly beneath Story Box
                         StoryAudienceSummaryRow(
                             audienceMode = selectedAudience,
                             selectedCount = selectedContactIds.size,
@@ -975,12 +1358,14 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
             }
 
             if (myStories.isNotEmpty()) {
-                items(myStories, key = { it.storyId }) { story ->
+                items(myStories, key = { "my_story_${it.storyId}" }) { story ->
                     StoryRowCard(
                         story = story,
                         isMine = true,
                         onClick = { activeStory = story },
-                        onShowViewers = { viewersSheetStory = story }
+                        onShowViewers = { viewersSheetStory = story },
+                        onPromote = { promoteTargetStory = story },
+                        onArchive = { viewModel.toggleArchiveStory(story.storyId, true) }
                     )
                 }
             }
@@ -1001,10 +1386,32 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                     )
                 }
             } else {
-                items(friendsStories, key = { it.storyId }) { story ->
+                items(friendsStories, key = { "friend_story_${it.storyId}" }) { story ->
                     StoryRowCard(story = story, isMine = false, onClick = { activeStory = story })
                 }
             }
+
+            item(key = "updates_channels_divider") {
+                HorizontalDivider(
+                    color = palette.border,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+            }
+
+            channelsDirectorySection(
+                myUid = channelsViewModel.myUid,
+                searchQuery = channelSearchQuery,
+                message = channelMessage,
+                filteredMy = filteredMyChannels,
+                filteredPublic = filteredPublicChannels,
+                onSearchChange = channelsViewModel::updateSearch,
+                onClearMessage = channelsViewModel::clearMessage,
+                onOpenCreate = { showCreateChannelDialog = true },
+                onOpenJoinByCode = { showJoinChannelDialog = true },
+                onOpenChannel = onOpenChannel,
+                onSubscribe = channelsViewModel::subscribe,
+                showSectionTitle = true
+            )
         }
 
         Column(
@@ -1053,6 +1460,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
 
     if (showAudioDialog) {
         var audioCaption by remember { mutableStateOf("") }
+        var audioBgHex by remember { mutableLongStateOf(0xFF064E3BL) }
         AlertDialog(
             onDismissRequest = {
                 viewModel.stopAudioPlayback()
@@ -1142,6 +1550,10 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    StoryBackgroundColorRow(
+                        selectedHex = audioBgHex,
+                        onSelect = { audioBgHex = it }
+                    )
                     StoryAudienceSummaryRow(
                         audienceMode = selectedAudience,
                         selectedCount = selectedContactIds.size,
@@ -1170,7 +1582,8 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                                 caption = audioCaption.trim(),
                                 audienceMode = selectedAudience,
                                 allowedViewerIds = allowed,
-                                excludedViewerIds = excluded
+                                excludedViewerIds = excluded,
+                                backgroundColorHex = audioBgHex
                             )
                         }
                         recordedAudioDraft = null
@@ -1196,7 +1609,7 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
 
     if (showTextDialog) {
         var storyText by remember { mutableStateOf("") }
-        var bgHex by remember { mutableLongStateOf(0xFF064E3B) }
+        var bgHex by remember { mutableLongStateOf(0xFF064E3BL) }
         AlertDialog(
             onDismissRequest = { showTextDialog = false },
             containerColor = palette.surface,
@@ -1215,22 +1628,10 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
                         maxLines = 4,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        listOf(0xFF064E3B, 0xFF0E7490, 0xFF312E81, 0xFF831843).forEach { colorHex ->
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(colorHex))
-                                    .border(
-                                        width = if (bgHex == colorHex) 2.dp else 0.dp,
-                                        color = Color.White,
-                                        shape = CircleShape
-                                    )
-                                    .clickable { bgHex = colorHex }
-                            )
-                        }
-                    }
+                    StoryBackgroundColorRow(
+                        selectedHex = bgHex,
+                        onSelect = { bgHex = it }
+                    )
                     StoryAudienceSummaryRow(
                         audienceMode = selectedAudience,
                         selectedCount = selectedContactIds.size,
@@ -1271,6 +1672,106 @@ fun StoriesScreen(viewModel: StoriesViewModel = hiltViewModel()) {
             story = targetStory,
             viewersFlow = viewModel.observeViewers(targetStory.storyId),
             onDismiss = { viewersSheetStory = null }
+        )
+    }
+
+    promoteTargetStory?.let { targetStory ->
+        PromoteStoryDialog(
+            story = targetStory,
+            contacts = contacts,
+            onDismiss = { promoteTargetStory = null },
+            onPromote = { recipientIds, note ->
+                viewModel.promoteStoryToContacts(targetStory, recipientIds, note)
+                promoteTargetStory = null
+            }
+        )
+    }
+
+    if (showArchivedDialog) {
+        ArchivedStoriesDialog(
+            archivedStories = archivedMyStories,
+            onDismiss = { showArchivedDialog = false },
+            onOpenStory = { story ->
+                showArchivedDialog = false
+                activeStory = story
+            },
+            onUnarchive = { storyId -> viewModel.toggleArchiveStory(storyId, false) }
+        )
+    }
+
+    if (showArchiveSettingsDialog) {
+        ArchiveSettingsDialog(
+            keepMutedChatsArchived = archiveKeepMuted,
+            archivedStoriesCount = archivedMyStories.size,
+            onToggleKeepMuted = { viewModel.setArchiveKeepMuted(it) },
+            onDismiss = { showArchiveSettingsDialog = false }
+        )
+    }
+
+    if (showStarredDialog) {
+        StarredMessagesDialog(
+            entries = starredMessages,
+            onDismiss = { showStarredDialog = false },
+            onOpenChat = { chatId ->
+                showStarredDialog = false
+                if (chatId.isNotBlank()) onOpenChat(chatId)
+            },
+            onRemoveStar = { rawKey -> viewModel.removeStarredEntry(rawKey) }
+        )
+    }
+
+    if (showStoryPrivacyDialog) {
+        AlertDialog(
+            onDismissRequest = { showStoryPrivacyDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Story Privacy" else "خصوصية الحالة",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                StoryAudienceSummaryRow(
+                    audienceMode = selectedAudience,
+                    selectedCount = selectedContactIds.size,
+                    totalContactsCount = contacts.size,
+                    onSelectMode = { mode ->
+                        selectedAudience = mode
+                        viewModel.persistAudienceMode(mode)
+                        if (mode == StoryAudienceMode.CONTACTS_EXCEPT || mode == StoryAudienceMode.ONLY_WITH) {
+                            showContactsPickerForMode = mode
+                        }
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showStoryPrivacyDialog = false }) { Text(strings.doneLabel(strings.isEnglish)) }
+            }
+        )
+    }
+
+    if (showCreateChannelDialog) {
+        CreateChannelDialog(
+            onDismiss = { showCreateChannelDialog = false },
+            onCreate = { title, desc, isPublic, avatarUri ->
+                channelsViewModel.createChannel(title, desc, isPublic, avatarUri) { newChannelId ->
+                    showCreateChannelDialog = false
+                    onOpenChannel(newChannelId)
+                }
+            }
+        )
+    }
+
+    if (showJoinChannelDialog) {
+        JoinChannelCodeDialog(
+            onDismiss = { showJoinChannelDialog = false },
+            onJoin = { code ->
+                channelsViewModel.joinByInviteCode(code) { chId ->
+                    showJoinChannelDialog = false
+                    onOpenChannel(chId)
+                }
+            }
         )
     }
 }
@@ -1543,7 +2044,9 @@ private fun StoryRowCard(
     story: StoryItem,
     isMine: Boolean,
     onClick: () -> Unit,
-    onShowViewers: (() -> Unit)? = null
+    onShowViewers: (() -> Unit)? = null,
+    onPromote: (() -> Unit)? = null,
+    onArchive: (() -> Unit)? = null
 ) {
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
@@ -1590,31 +2093,385 @@ private fun StoryRowCard(
                 color = palette.textSecondary
             )
         }
-        if (isMine && onShowViewers != null) {
-            Surface(
-                color = palette.surfaceElevated,
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.clickable(onClick = onShowViewers)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Visibility,
-                        contentDescription = null,
-                        tint = palette.turquoise,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Text(
-                        text = "${story.viewerIds.size}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.Bold
-                    )
+        if (isMine) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (onPromote != null) {
+                    IconButton(onClick = onPromote, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            Icons.Default.Campaign,
+                            contentDescription = if (strings.isEnglish) "Promote" else "ترويج",
+                            tint = palette.emerald,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                if (onArchive != null) {
+                    IconButton(onClick = onArchive, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            Icons.Default.Archive,
+                            contentDescription = if (strings.isEnglish) "Archive" else "أرشفة",
+                            tint = palette.textSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                if (onShowViewers != null) {
+                    Surface(
+                        color = palette.surfaceElevated,
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.clickable(onClick = onShowViewers)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Visibility,
+                                contentDescription = null,
+                                tint = palette.turquoise,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "${story.viewerIds.size}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+private fun com.wesal.messenger.core.util.WesalStrings.doneLabel(isEn: Boolean): String =
+    if (isEn) "Done" else "تم"
+
+@Composable
+private fun StoryBackgroundColorRow(
+    selectedHex: Long,
+    onSelect: (Long) -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = if (strings.isEnglish) "Story Background Color" else "لون خلفية الحالة",
+            style = MaterialTheme.typography.labelMedium,
+            color = palette.textSecondary
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            STORY_BG_COLORS.forEach { colorHex ->
+                val isSelected = selectedHex == colorHex
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color(colorHex))
+                        .border(
+                            width = if (isSelected) 2.5.dp else 1.dp,
+                            color = if (isSelected) palette.turquoise else Color.White.copy(alpha = 0.35f),
+                            shape = CircleShape
+                        )
+                        .clickable { onSelect(colorHex) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PromoteStoryDialog(
+    story: StoryItem,
+    contacts: List<WesalUser>,
+    onDismiss: () -> Unit,
+    onPromote: (List<String>, String) -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    val context = LocalContext.current
+    var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var note by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = {
+            Text(
+                text = if (strings.isEnglish) "Promote Story" else "ترويج الحالة",
+                color = palette.textPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text(if (strings.isEnglish) "Promotion note (optional)" else "رسالة الترويج (اختياري)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(onClick = { selectedIds = contacts.map { it.uid }.toSet() }) {
+                        Text(if (strings.isEnglish) "Select All" else "تحديد الكل", color = palette.emerald)
+                    }
+                    TextButton(onClick = {
+                        val shareTxt = buildString {
+                            append("📣 ")
+                            if (note.isNotBlank()) append(note.trim()).append("\n")
+                            append(story.caption.ifBlank { story.textContent.ifBlank { "حالة على WESAL Messenger" } })
+                            append("\nhttps://tinyurl.com/wesal-Messenger")
+                        }
+                        WesalShareUtils.shareViaWhatsApp(context, shareTxt)
+                    }) {
+                        Text(if (strings.isEnglish) "Share External" else "مشاركة خارجية", color = palette.turquoise)
+                    }
+                }
+                if (contacts.isEmpty()) {
+                    Text(
+                        text = if (strings.isEnglish) "No approved contacts yet" else "لا توجد جهات اتصال معتمدة حالياً",
+                        color = palette.textMuted
+                    )
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
+                        items(contacts, key = { it.uid }) { user ->
+                            val checked = user.uid in selectedIds
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedIds = if (checked) selectedIds - user.uid else selectedIds + user.uid
+                                    }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Checkbox(
+                                    checked = checked,
+                                    onCheckedChange = { isChecked ->
+                                        selectedIds = if (isChecked) selectedIds + user.uid else selectedIds - user.uid
+                                    }
+                                )
+                                WesalAvatar(imageUrl = user.photoUrl, name = user.displayName, size = 34.dp)
+                                WesalNameWithBadge(
+                                    name = user.displayName.ifBlank { "@${user.publicId}" },
+                                    isVerified = user.isVerified,
+                                    verificationType = user.verificationType,
+                                    neonColor = user.neonColor,
+                                    neonEnabled = user.neonEnabled,
+                                    neonGlowIntensity = user.neonGlowIntensity,
+                                    verificationGlowEnabled = user.verificationGlowEnabled,
+                                    verificationGlowIntensity = user.verificationGlowIntensity,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onPromote(selectedIds.toList(), note) },
+                enabled = selectedIds.isNotEmpty(),
+                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+            ) {
+                Text(if (strings.isEnglish) "Send (${selectedIds.size})" else "ترويج (${selectedIds.size})")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(strings.cancel) }
+        }
+    )
+}
+
+@Composable
+private fun ArchivedStoriesDialog(
+    archivedStories: List<StoryItem>,
+    onDismiss: () -> Unit,
+    onOpenStory: (StoryItem) -> Unit,
+    onUnarchive: (String) -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = {
+            Text(
+                text = if (strings.isEnglish) "Archived Stories" else "الحالات المؤرشفة",
+                color = palette.textPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            if (archivedStories.isEmpty()) {
+                Text(
+                    text = if (strings.isEnglish) "No archived stories yet." else "لا توجد حالات في الأرشيف حالياً.",
+                    color = palette.textSecondary
+                )
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 300.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(archivedStories, key = { it.storyId }) { story ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(palette.surfaceElevated)
+                                .clickable { onOpenStory(story) }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = story.textContent.ifBlank { story.caption.ifBlank { story.type.raw } },
+                                    color = palette.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = DateTimeUtils.formatChatListTime(story.createdAt),
+                                    color = palette.textMuted,
+                                    style = MaterialTheme.typography.labelSmall
+                                )
+                            }
+                            TextButton(onClick = { onUnarchive(story.storyId) }) {
+                                Text(if (strings.isEnglish) "Restore" else "استعادة", color = palette.emerald)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(strings.close) }
+        }
+    )
+}
+
+@Composable
+private fun ArchiveSettingsDialog(
+    keepMutedChatsArchived: Boolean,
+    archivedStoriesCount: Int,
+    onToggleKeepMuted: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = {
+            Text(
+                text = if (strings.isEnglish) "Archive Settings" else "إعدادات الأرشفة",
+                color = palette.textPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (strings.isEnglish) "Keep muted chats archived" else "إبقاء المحادثات المكتومة مؤرشفة",
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = if (strings.isEnglish) "Muted chats stay hidden when new messages arrive." else "تظل المحادثات المكتومة في الأرشيف عند وصول رسائل جديدة.",
+                            color = palette.textSecondary,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    Switch(checked = keepMutedChatsArchived, onCheckedChange = onToggleKeepMuted)
+                }
+                Text(
+                    text = if (strings.isEnglish) "Archived stories: $archivedStoriesCount" else "عدد الحالات المؤرشفة: $archivedStoriesCount",
+                    color = palette.turquoise,
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(strings.close) }
+        }
+    )
+}
+
+@Composable
+private fun StarredMessagesDialog(
+    entries: List<StarredMessageEntry>,
+    onDismiss: () -> Unit,
+    onOpenChat: (String) -> Unit,
+    onRemoveStar: (String) -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = {
+            Text(
+                text = if (strings.isEnglish) "Starred Messages" else "الرسائل المميزة بنجمة",
+                color = palette.textPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            if (entries.isEmpty()) {
+                Text(
+                    text = if (strings.isEnglish) "No starred messages yet. Long-press any message to star it." else "لا توجد رسائل مميزة بنجمة حتى الآن.",
+                    color = palette.textSecondary
+                )
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(entries, key = { it.rawKey }) { entry ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(palette.surfaceElevated)
+                                .clickable { onOpenChat(entry.chatId) }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Star, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                            Text(
+                                text = entry.summary,
+                                color = palette.textPrimary,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { onRemoveStar(entry.rawKey) }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = strings.delete, tint = palette.textMuted, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(strings.close) }
+        }
+    )
 }

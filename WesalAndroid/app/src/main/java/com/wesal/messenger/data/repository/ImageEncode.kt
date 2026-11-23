@@ -8,9 +8,6 @@ import android.media.ExifInterface
 import android.net.Uri
 import android.util.Base64
 import com.google.firebase.FirebaseApp
-import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageMetadata
-import kotlinx.coroutines.tasks.await
 import java.io.ByteArrayOutputStream
 
 fun uriToBase64Jpeg(uri: Uri, maxSide: Int = 720, quality: Int = 78): String {
@@ -167,42 +164,13 @@ suspend fun uploadProfileMediaToStorageOrSmallFallback(
     maxSide: Int = 512,
     quality: Int = 84
 ): String {
-    val bmp = decodeArgbBitmap(ctx, uri, maxSide = maxSide)
-    val isAlpha = bmp != null && (
-        hasTransparency(bmp) ||
-            uri.toString().lowercase().endsWith(".png") ||
-            uri.toString().lowercase().endsWith(".webp") ||
-            ctx.contentResolver.getType(uri).orEmpty().lowercase().let { it.contains("png") || it.contains("webp") }
-        )
-
-    val ext = if (isAlpha) "png" else "jpg"
-    val mime = if (isAlpha) "image/png" else "image/jpeg"
-    val normalizedPath = storagePath.replace(Regex("\\.(jpg|jpeg|png|webp)$", RegexOption.IGNORE_CASE), "") + ".$ext"
-
-    val uploadBytes: ByteArray? = bmp?.let { target ->
-        val bos = ByteArrayOutputStream()
-        if (isAlpha) {
-            target.compress(Bitmap.CompressFormat.PNG, 100, bos)
-        } else {
-            target.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(60, 92), bos)
-        }
-        bos.toByteArray()
-    }
-
-    val storageResult = runCatching {
-        val ref = FirebaseStorage.getInstance().reference.child(normalizedPath)
-        val metadata = StorageMetadata.Builder().setContentType(mime).build()
-        if (uploadBytes != null && uploadBytes.isNotEmpty()) {
-            ref.putBytes(uploadBytes, metadata).await()
-        } else {
-            ref.putFile(uri, metadata).await()
-        }
-        ref.downloadUrl.await().toString()
-    }
-    storageResult.getOrNull()?.let { if (it.isNotBlank()) return it }
-
-    // Safe compact fallback preserving transparency if Storage is unavailable/unconfigured
-    return uriToBase64Smart(ctx, uri, maxSide = maxSide, quality = quality, preserveAlphaIfPng = true)
+    return uriToBase64Smart(
+        ctx = ctx,
+        uri = uri,
+        maxSide = maxSide,
+        quality = quality,
+        preserveAlphaIfPng = true
+    )
 }
 
 suspend fun uploadLibraryImageOrDataUrl(
@@ -211,12 +179,12 @@ suspend fun uploadLibraryImageOrDataUrl(
     uri: Uri,
     maxSide: Int = 512
 ): String {
-    return uploadProfileMediaToStorageOrSmallFallback(
+    return uriToBase64Smart(
         ctx = ctx,
-        storagePath = storagePath,
         uri = uri,
         maxSide = maxSide,
-        quality = 88
+        quality = 88,
+        preserveAlphaIfPng = true
     )
 }
 
@@ -225,17 +193,20 @@ suspend fun uploadFileToFirebaseStorage(
     uri: Uri,
     onProgress: (Float) -> Unit = {}
 ): Result<String> = runCatching {
-    val ref = FirebaseStorage.getInstance().reference.child(storagePath)
-    val task = ref.putFile(uri)
-    task.addOnProgressListener { snap ->
-        val total = snap.totalByteCount
-        if (total > 0L) {
-            onProgress((snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.05f, 0.95f))
-        }
+    val ctx = FirebaseApp.getInstance().applicationContext
+    val mime = runCatching { ctx.contentResolver.getType(uri).orEmpty() }.getOrDefault("application/octet-stream")
+    onProgress(0.25f)
+    if (mime.startsWith("image/", ignoreCase = true)) {
+        val dataUrl = uriToBase64Smart(ctx, uri, maxSide = 760, quality = 80, preserveAlphaIfPng = true)
+        check(dataUrl.isNotBlank()) { "تعذر ضغط الصورة" }
+        onProgress(0.95f)
+        return@runCatching dataUrl
     }
-    task.await()
-    onProgress(0.96f)
-    ref.downloadUrl.await().toString()
+    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        ?: error("تعذر قراءة الملف")
+    check(bytes.size <= 540_000) { "حجم الملف يتجاوز حد التخزين السحابي الحالي (540 KB)" }
+    onProgress(0.95f)
+    "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
 }
 
 fun uriToBase64Audio(ctx: Context, uri: Uri, maxBytes: Int = 450_000): String? {

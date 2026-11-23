@@ -350,7 +350,7 @@ val EnglishWesalStrings = WesalStrings(
     grantVerifiedBadge = "Grant Seal",
     revokeVerifiedBadge = "Revoke Verification",
     verificationNoteLabel = "Verification note (optional)",
-    auditLogsTitle = "سجل تدقيق التوثيق",
+    auditLogsTitle = "Verification Audit Log",
     verifiedUsersTitle = "Verified Accounts",
     newCall = "New Call",
     clearAllCalls = "Clear Call History",
@@ -402,6 +402,10 @@ val EnglishWesalStrings = WesalStrings(
 )
 
 fun wesalStringsForLanguage(languageTag: String): WesalStrings =
-    if (languageTag.equals("en", ignoreCase = true)) EnglishWesalStrings else ArabicWesalStrings
+    if (languageTag.equals("ar", ignoreCase = true) || LocaleManager.isRtlLanguage(languageTag)) {
+        ArabicWesalStrings
+    } else {
+        EnglishWesalStrings
+    }
 
 val LocalWesalStrings = staticCompositionLocalOf { ArabicWesalStrings }

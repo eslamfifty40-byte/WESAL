@@ -32,7 +32,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
-import com.wesal.messenger.channels.ChannelsScreen
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.WesalShareUtils
@@ -241,7 +240,6 @@ fun GroupsScreen(
     val isCreating by viewModel.isCreating.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
-    var selectedSegment by rememberSaveable { mutableIntStateOf(0) } // 0 = Groups, 1 = Channels
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinByCodeDialog by remember { mutableStateOf(false) }
 
@@ -250,26 +248,7 @@ fun GroupsScreen(
             .fillMaxSize()
             .background(palette.background)
     ) {
-        TabRow(
-            selectedTabIndex = selectedSegment,
-            containerColor = palette.surface,
-            contentColor = palette.emerald
-        ) {
-            Tab(
-                selected = selectedSegment == 0,
-                onClick = { selectedSegment = 0 },
-                text = { Text(strings.tabGroups, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            )
-            Tab(
-                selected = selectedSegment == 1,
-                onClick = { selectedSegment = 1 },
-                text = { Text(strings.tabChannels, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-            )
-        }
-
-        if (selectedSegment == 1) {
-            ChannelsScreen(onOpenChannel = onOpenChannel)
-        } else {
+        if (true) {
             Box(modifier = Modifier.fillMaxSize()) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     statusMessage?.let { msg ->
@@ -574,6 +553,9 @@ fun GroupsScreen(
                                     verificationType = user.verificationType,
                                     neonColor = user.neonColor,
                                     neonGlowIntensity = user.neonGlowIntensity,
+                                    neonEnabled = user.neonEnabled,
+                                    verificationGlowEnabled = user.verificationGlowEnabled,
+                                    verificationGlowIntensity = user.verificationGlowIntensity,
                                     modifier = Modifier.weight(1f)
                                 )
                                 Checkbox(checked = isSelected, onCheckedChange = { viewModel.toggleMemberSelection(user) })
@@ -855,6 +837,9 @@ fun GroupInfoScreen(
                                 verificationType = user.verificationType,
                                 neonColor = user.neonColor,
                                 neonGlowIntensity = user.neonGlowIntensity,
+                                neonEnabled = user.neonEnabled,
+                                verificationGlowEnabled = user.verificationGlowEnabled,
+                                verificationGlowIntensity = user.verificationGlowIntensity,
                                 modifier = Modifier.weight(1f)
                             )
                             Icon(Icons.Default.PersonAdd, contentDescription = null, tint = palette.emerald)
@@ -900,7 +885,9 @@ fun GroupInfoScreen(
                                 verificationType = member.verificationType,
                                 neonColor = member.neonColor,
                                 neonGlowIntensity = member.neonGlowIntensity,
-                                neonEnabled = member.neonEnabled
+                                neonEnabled = member.neonEnabled,
+                                verificationGlowEnabled = member.verificationGlowEnabled,
+                                verificationGlowIntensity = member.verificationGlowIntensity
                             )
                             if (memberIsAdmin) {
                                 Text(

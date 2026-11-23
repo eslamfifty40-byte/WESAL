@@ -128,7 +128,7 @@ fun HomeScreen(
                                 )
                                 DropdownMenuItem(
                                     text = { Text(strings.tabChannels) },
-                                    onClick = { menuOpen = false; selectedTab = HomeTab.GROUPS }
+                                    onClick = { menuOpen = false; selectedTab = HomeTab.STORIES }
                                 )
                                 DropdownMenuItem(
                                     text = { Text(strings.newMessage) },
@@ -192,7 +192,10 @@ fun HomeScreen(
                     onOpenChat = onOpenChat,
                     onNewChat = onOpenNewChat
                 )
-                HomeTab.STORIES -> StoriesScreen()
+                HomeTab.STORIES -> StoriesScreen(
+                    onOpenChannel = onOpenChannel,
+                    onOpenChat = onOpenChat
+                )
                 HomeTab.CALLS -> CallHistoryScreen()
                 HomeTab.GROUPS -> GroupsScreen(
                     onOpenChat = onOpenChat,

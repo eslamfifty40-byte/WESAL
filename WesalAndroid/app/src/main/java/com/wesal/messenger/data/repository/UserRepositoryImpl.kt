@@ -135,6 +135,8 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         isPhoneVerified = isPhoneVerified,
         isVerified = isCurrentlyVerified,
         verificationType = getString("verificationType") ?: "BLUE",
+        verificationGlowEnabled = getBoolean("verificationGlowEnabled") ?: true,
+        verificationGlowIntensity = (getDouble("verificationGlowIntensity")?.toFloat()) ?: 0.7f,
         verificationExpiresAt = verificationExpiresAt,
         verifiedByUid = getString("verifiedByUid").orEmpty(),
         verifiedAt = getLong("verifiedAt") ?: 0L,
@@ -1405,6 +1407,7 @@ class UserRepositoryImpl @Inject constructor(
                             surfaceHex = snap.getLong("surfaceHex") ?: 0L,
                             textPrimaryHex = snap.getLong("textPrimaryHex") ?: 0L,
                             iconTintHex = snap.getLong("iconTintHex") ?: 0L,
+                            iconPack = snap.getString("iconPack").orEmpty().ifBlank { "DEFAULT" },
                             globalCustomerFrameEnabled = snap.getBoolean("globalCustomerFrameEnabled") ?: true,
                             defaultCustomerFrameId = snap.getString("defaultFrameId").orEmpty()
                                 .ifBlank { snap.getString("defaultCustomerFrameId").orEmpty() }
@@ -1436,6 +1439,7 @@ class UserRepositoryImpl @Inject constructor(
                     "surfaceHex" to config.surfaceHex,
                     "textPrimaryHex" to config.textPrimaryHex,
                     "iconTintHex" to config.iconTintHex,
+                    "iconPack" to config.iconPack.ifBlank { "DEFAULT" },
                     "globalCustomerFrameEnabled" to config.globalCustomerFrameEnabled,
                     "defaultFrameId" to config.defaultCustomerFrameId.ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID },
                     "defaultCustomerFrameId" to config.defaultCustomerFrameId.ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID },
@@ -1763,7 +1767,9 @@ class UserRepositoryImpl @Inject constructor(
         note: String,
         verificationType: String,
         expiresAt: Long,
-        durationLabel: String
+        durationLabel: String,
+        glowEnabled: Boolean,
+        glowIntensity: Float
     ): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
         val perms = getCurrentAdminPermissions()
@@ -1783,6 +1789,8 @@ class UserRepositoryImpl @Inject constructor(
         val updates = hashMapOf<String, Any>(
             "isVerified" to verified,
             "verificationType" to safeType,
+            "verificationGlowEnabled" to glowEnabled,
+            "verificationGlowIntensity" to glowIntensity.coerceIn(0.15f, 1.0f).toDouble(),
             "verificationExpiresAt" to if (verified) expiresAt else 0L,
             "verifiedByUid" to admin.uid,
             "verifiedAt" to now,
@@ -2253,6 +2261,65 @@ class UserRepositoryImpl @Inject constructor(
         }
         runCatching { officialChatRef.delete().await() }
 
+        // Scrub remaining references across contact_requests, stories, groups, channels, contact_lists, scheduled_calls, chats
+        runCatching {
+            firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
+                .whereArrayContains("participants", targetUid).get().await()
+                .documents.forEach { d -> runCatching { d.reference.delete().await() } }
+        }
+        runCatching {
+            firestore.collection(Constants.COLLECTION_STORIES)
+                .whereEqualTo("ownerUid", targetUid).get().await()
+                .documents.forEach { d -> runCatching { d.reference.delete().await() } }
+        }
+        runCatching {
+            firestore.collection(Constants.COLLECTION_GROUPS)
+                .whereArrayContains("memberIds", targetUid).get().await()
+                .documents.forEach { d ->
+                    runCatching {
+                        d.reference.update(
+                            mapOf(
+                                "memberIds" to FieldValue.arrayRemove(targetUid),
+                                "adminIds" to FieldValue.arrayRemove(targetUid)
+                            )
+                        ).await()
+                    }
+                }
+        }
+        runCatching {
+            firestore.collection(Constants.COLLECTION_CHANNELS)
+                .whereArrayContains("subscriberIds", targetUid).get().await()
+                .documents.forEach { d ->
+                    if (d.getString("ownerUid") != targetUid) {
+                        runCatching {
+                            d.reference.update(
+                                mapOf(
+                                    "subscriberIds" to FieldValue.arrayRemove(targetUid),
+                                    "moderatorIds" to FieldValue.arrayRemove(targetUid)
+                                )
+                            ).await()
+                        }
+                    }
+                }
+        }
+        runCatching {
+            firestore.collection(Constants.COLLECTION_CONTACT_LISTS)
+                .whereEqualTo("ownerUid", targetUid).get().await()
+                .documents.forEach { d -> runCatching { d.reference.delete().await() } }
+        }
+        runCatching {
+            firestore.collection(Constants.COLLECTION_SCHEDULED_CALLS)
+                .whereEqualTo("creatorUid", targetUid).get().await()
+                .documents.forEach { d -> runCatching { d.reference.delete().await() } }
+        }
+        runCatching {
+            firestore.collection(Constants.COLLECTION_CHATS)
+                .whereArrayContains("participantIds", targetUid).get().await()
+                .documents.forEach { d ->
+                    runCatching { d.reference.update("deletedForUsers", FieldValue.arrayUnion(targetUid)).await() }
+                }
+        }
+
         ref.delete().await()
 
         writeAdminActionLog(
@@ -2427,7 +2494,7 @@ class UserRepositoryImpl @Inject constructor(
                             timestamp = doc.getLong("timestamp") ?: 0L
                         )
                     }.orEmpty().distinctBy { log ->
-                        log.targetUid.ifBlank { log.operationId.ifBlank { log.logId } }
+                        "${log.operationId}_${log.targetUid}_${log.action}"
                     }
                     trySend(logs)
                 }
@@ -2890,5 +2957,200 @@ class UserRepositoryImpl @Inject constructor(
             chunk.forEach { batch.delete(it.reference) }
             batch.commit().await()
         }
+    }
+
+    override suspend fun holdContactRequest(requestId: String): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val ref = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS).document(requestId)
+        val snap = ref.get().await()
+        require(snap.exists() && snap.getString("receiverUid") == myUid) { "لا تملك صلاحية تعليق هذا الطلب" }
+        ref.update(mapOf("status" to ContactRequestStatus.HELD.raw, "updatedAt" to System.currentTimeMillis())).await()
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeContactLists(): Flow<List<ContactLabelList>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(emptyList())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_CONTACT_LISTS)
+                .whereEqualTo("ownerUid", uid)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    val list = snap?.documents?.map { d ->
+                        ContactLabelList(
+                            listId = d.getString("listId") ?: d.id,
+                            ownerUid = d.getString("ownerUid").orEmpty(),
+                            name = d.getString("name").orEmpty(),
+                            memberUids = (d.get("memberUids") as? List<String>).orEmpty(),
+                            isDefaultPreset = d.getBoolean("isDefaultPreset") ?: false,
+                            createdAt = d.getLong("createdAt") ?: 0L,
+                            updatedAt = d.getLong("updatedAt") ?: 0L
+                        )
+                    }.orEmpty().sortedBy { it.createdAt }
+                    trySend(list)
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    override suspend fun upsertContactList(
+        listId: String?,
+        name: String,
+        memberUids: List<String>
+    ): Result<ContactLabelList> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanName = name.trim()
+        require(cleanName.isNotBlank()) { "اسم القائمة مطلوب" }
+        val resolvedId = listId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val cleanMembers = memberUids.filter { it.isNotBlank() }.distinct()
+        val payload = mapOf(
+            "listId" to resolvedId,
+            "ownerUid" to myUid,
+            "name" to cleanName,
+            "memberUids" to cleanMembers,
+            "isDefaultPreset" to resolvedId.startsWith("preset_"),
+            "createdAt" to now,
+            "updatedAt" to now
+        )
+        firestore.collection(Constants.COLLECTION_CONTACT_LISTS).document(resolvedId)
+            .set(payload, SetOptions.merge())
+            .await()
+        ContactLabelList(
+            listId = resolvedId,
+            ownerUid = myUid,
+            name = cleanName,
+            memberUids = cleanMembers,
+            isDefaultPreset = resolvedId.startsWith("preset_"),
+            createdAt = now,
+            updatedAt = now
+        )
+    }
+
+    override suspend fun addUidToContactList(listId: String, uid: String): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        require(listId.isNotBlank() && uid.isNotBlank()) { "بيانات غير صالحة" }
+        val ref = firestore.collection(Constants.COLLECTION_CONTACT_LISTS).document(listId)
+        val snap = ref.get().await()
+        require(snap.exists() && snap.getString("ownerUid") == myUid) { "القائمة غير موجودة" }
+        ref.update(
+            mapOf(
+                "memberUids" to FieldValue.arrayUnion(uid),
+                "updatedAt" to System.currentTimeMillis()
+            )
+        ).await()
+    }
+
+    override suspend fun removeUidFromContactList(listId: String, uid: String): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val ref = firestore.collection(Constants.COLLECTION_CONTACT_LISTS).document(listId)
+        val snap = ref.get().await()
+        require(snap.exists() && snap.getString("ownerUid") == myUid) { "القائمة غير موجودة" }
+        ref.update(
+            mapOf(
+                "memberUids" to FieldValue.arrayRemove(uid),
+                "updatedAt" to System.currentTimeMillis()
+            )
+        ).await()
+    }
+
+    override suspend fun deleteContactList(listId: String): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val ref = firestore.collection(Constants.COLLECTION_CONTACT_LISTS).document(listId)
+        val snap = ref.get().await()
+        require(!snap.exists() || snap.getString("ownerUid") == myUid) { "لا تملك صلاحية حذف هذه القائمة" }
+        ref.delete().await()
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeAppEvents(): Flow<List<AppEventItem>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(emptyList())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_EVENTS)
+                .orderBy("eventTime", Query.Direction.ASCENDING)
+                .limit(100)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    val list = snap?.documents?.map { d ->
+                        AppEventItem(
+                            eventId = d.getString("eventId") ?: d.id,
+                            creatorUid = d.getString("creatorUid").orEmpty(),
+                            creatorName = d.getString("creatorName").orEmpty(),
+                            title = d.getString("title").orEmpty(),
+                            description = d.getString("description").orEmpty(),
+                            locationName = d.getString("locationName").orEmpty(),
+                            eventTime = d.getLong("eventTime") ?: 0L,
+                            participantUids = (d.get("participantUids") as? List<String>).orEmpty(),
+                            createdAt = d.getLong("createdAt") ?: 0L
+                        )
+                    }.orEmpty()
+                    trySend(list)
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    override suspend fun createAppEvent(
+        title: String,
+        description: String,
+        locationName: String,
+        eventTime: Long
+    ): Result<AppEventItem> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanTitle = title.trim()
+        require(cleanTitle.isNotBlank()) { "عنوان المناسبة مطلوب" }
+        val me = getUserOnce(myUid)
+        val eventId = UUID.randomUUID().toString()
+        val now = System.currentTimeMillis()
+        val item = AppEventItem(
+            eventId = eventId,
+            creatorUid = myUid,
+            creatorName = me?.displayName?.ifBlank { "@${me.publicId}" } ?: "WESAL User",
+            title = cleanTitle,
+            description = description.trim(),
+            locationName = locationName.trim(),
+            eventTime = eventTime,
+            participantUids = listOf(myUid),
+            createdAt = now
+        )
+        firestore.collection(Constants.COLLECTION_EVENTS).document(eventId).set(
+            mapOf(
+                "eventId" to item.eventId,
+                "creatorUid" to item.creatorUid,
+                "creatorName" to item.creatorName,
+                "title" to item.title,
+                "description" to item.description,
+                "locationName" to item.locationName,
+                "eventTime" to item.eventTime,
+                "participantUids" to item.participantUids,
+                "createdAt" to item.createdAt
+            )
+        ).await()
+        item
+    }
+
+    override suspend fun deleteAppEvent(eventId: String): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val ref = firestore.collection(Constants.COLLECTION_EVENTS).document(eventId)
+        val snap = ref.get().await()
+        require(!snap.exists() || snap.getString("creatorUid") == myUid || isSuperAdmin()) {
+            "فقط منشئ المناسبة أو الإدارة يمكنه حذفها"
+        }
+        ref.delete().await()
+    }
+
+    override suspend fun rsvpAppEvent(eventId: String, join: Boolean): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val op = if (join) FieldValue.arrayUnion(myUid) else FieldValue.arrayRemove(myUid)
+        firestore.collection(Constants.COLLECTION_EVENTS).document(eventId)
+            .update("participantUids", op)
+            .await()
     }
 }

@@ -171,6 +171,8 @@ class ChatRepositoryImpl @Inject constructor(
         var peerLastSeen = 0L
         var peerVerified = false
         var peerVerificationType = "BLUE"
+        var peerVerificationGlowEnabled = true
+        var peerVerificationGlowIntensity = 0.7f
         var peerFrameId = ""
         var peerFrameExpiresAt = 0L
         var peerIconUrl = ""
@@ -192,21 +194,30 @@ class ChatRepositoryImpl @Inject constructor(
             if (peerUid.isNotBlank()) {
                 val peer = fetchUserCached(peerUid)
                 if (peer != null) {
-                    val safeHandle = peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
-                    title = peer.displayName.ifBlank { safeHandle }
-                    avatar = if (peer.privacySettings.profilePhotoVisibility == PrivacyVisibility.NOBODY) "" else peer.photoUrl
-                    peerPubKey = peer.publicKey
-                    peerOnline = peer.isOnline && peer.privacySettings.onlineVisibility != PrivacyVisibility.NOBODY
-                    peerLastSeen = if (peer.privacySettings.lastSeenVisibility == PrivacyVisibility.NOBODY) 0L else peer.lastSeen
-                    peerVerified = peer.isVerified
-                    peerVerificationType = peer.verificationType
-                    peerFrameId = peer.frameId
-                    peerFrameExpiresAt = peer.frameExpiresAt
-                    peerIconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(peer.iconId, peer.iconUrl)
-                    peerPhotoRemovedBg = peer.photoRemovedBg
-                    peerNeonColor = peer.neonColor
-                    peerNeonGlowIntensity = peer.neonGlowIntensity
-                    peerNeonEnabled = peer.neonEnabled
+                    if (peer.deletedAt > 0L) {
+                        title = "حساب محذوف"
+                        avatar = ""
+                        peerOnline = false
+                        peerVerified = false
+                    } else {
+                        val safeHandle = peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+                        title = peer.displayName.ifBlank { safeHandle }
+                        avatar = if (peer.privacySettings.profilePhotoVisibility == PrivacyVisibility.NOBODY) "" else peer.photoUrl
+                        peerPubKey = peer.publicKey
+                        peerOnline = peer.isOnline && peer.privacySettings.onlineVisibility != PrivacyVisibility.NOBODY
+                        peerLastSeen = if (peer.privacySettings.lastSeenVisibility == PrivacyVisibility.NOBODY) 0L else peer.lastSeen
+                        peerVerified = peer.isVerified
+                        peerVerificationType = peer.verificationType
+                        peerVerificationGlowEnabled = peer.verificationGlowEnabled
+                        peerVerificationGlowIntensity = peer.verificationGlowIntensity
+                        peerFrameId = peer.frameId
+                        peerFrameExpiresAt = peer.frameExpiresAt
+                        peerIconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(peer.iconId, peer.iconUrl)
+                        peerPhotoRemovedBg = peer.photoRemovedBg
+                        peerNeonColor = peer.neonColor
+                        peerNeonGlowIntensity = peer.neonGlowIntensity
+                        peerNeonEnabled = peer.neonEnabled
+                    }
                 }
             }
         }
@@ -217,6 +228,8 @@ class ChatRepositoryImpl @Inject constructor(
 
         val rawPreview = doc.getString("lastMessagePreview").orEmpty()
         val sanitizedPreview = if (rawPreview == "رسالة مشفرة") "رسالة سابقة" else rawPreview
+        val reqStatus = doc.getString("requestStatus")?.takeIf { it.isNotBlank() } ?: "ACCEPTED"
+        val isReqFlag = (doc.getBoolean("isMessageRequest") ?: false) && reqStatus != "ACCEPTED"
 
         return ChatPreview(
             chatId = doc.id,
@@ -231,6 +244,8 @@ class ChatRepositoryImpl @Inject constructor(
             peerLastSeen = peerLastSeen,
             peerVerified = peerVerified,
             peerVerificationType = peerVerificationType,
+            peerVerificationGlowEnabled = peerVerificationGlowEnabled,
+            peerVerificationGlowIntensity = peerVerificationGlowIntensity,
             peerFrameId = peerFrameId,
             peerFrameExpiresAt = peerFrameExpiresAt,
             peerIconUrl = peerIconUrl,
@@ -248,6 +263,9 @@ class ChatRepositoryImpl @Inject constructor(
             isMuted = mutedMap[myUid] ?: false,
             isSupportChat = doc.getBoolean("isSupportChat") ?: false,
             isOfficialWesalChat = isOfficialWesalChat,
+            isMessageRequest = isReqFlag,
+            requestStatus = reqStatus,
+            disappearingDurationSec = doc.getLong("disappearingDurationSec") ?: 0L,
             deletedForUsers = deletedBy,
             typingUsers = typingMap.filter { it.key != myUid && it.value }.keys.toList()
         )
@@ -361,6 +379,10 @@ class ChatRepositoryImpl @Inject constructor(
     ): WesalMessage? {
         val deletedFor = (doc.get("deletedForUsers") as? List<String>) ?: emptyList()
         if (deletedFor.contains(myUid)) return null
+        val disappearingExpiresAt = doc.getLong("disappearingExpiresAt") ?: 0L
+        if (disappearingExpiresAt > 0L && System.currentTimeMillis() > disappearingExpiresAt) {
+            return null
+        }
 
         val senderId = doc.getString("senderId").orEmpty()
         val isDeletedForEveryone = doc.getBoolean("isDeletedForEveryone") ?: false
@@ -459,6 +481,8 @@ class ChatRepositoryImpl @Inject constructor(
             latitude = doc.getDouble("latitude"),
             longitude = doc.getDouble("longitude"),
             locationAddress = doc.getString("locationAddress").orEmpty(),
+            liveLocationExpiresAt = doc.getLong("liveLocationExpiresAt") ?: 0L,
+            disappearingExpiresAt = disappearingExpiresAt,
             replyToMessageId = doc.getString("replyToMessageId"),
             replyToPreview = doc.getString("replyToPreview"),
             forwardedFromName = doc.getString("forwardedFromName"),
@@ -546,32 +570,56 @@ class ChatRepositoryImpl @Inject constructor(
             ?: runCatching { chatRef.get().await() }.getOrNull()
 
         if (existingChat == null || !existingChat.exists()) {
+            val now = System.currentTimeMillis()
+            val introText = "مرحباً بك في الدعم المباشر لإدارة WESAL ($cleanTarget). اكتب استفسارك أو رسالتك وسنرد عليك في أقرب وقت."
             val data = mapOf(
                 "chatId" to deterministicChatId,
                 "isGroup" to false,
                 "isSupportChat" to true,
                 "supportTargetNumericId" to cleanTarget,
                 "participantIds" to sortedIds,
-                "lastMessagePreview" to "",
-                "lastMessageTime" to System.currentTimeMillis(),
-                "lastMessageSenderId" to "",
-                "lastMessageStatus" to MessageStatus.SENT.raw,
+                "lastMessagePreview" to introText,
+                "lastMessageTime" to now,
+                "lastMessageSenderId" to adminUid,
+                "lastMessageStatus" to MessageStatus.DELIVERED.raw,
                 "unreadCounts" to mapOf(myUid to 0, adminUid to 0),
                 "pinnedBy" to emptyMap<String, Boolean>(),
                 "mutedBy" to emptyMap<String, Boolean>(),
                 "deletedForUsers" to emptyList<String>(),
-                "typingUsers" to emptyMap<String, Boolean>()
+                "typingUsers" to emptyMap<String, Boolean>(),
+                "requestStatus" to "ACCEPTED",
+                "isMessageRequest" to false
             )
             chatRef.set(data, SetOptions.merge()).await()
+            val welcomeSupportMsgId = "support_intro_${deterministicChatId}"
+            runCatching {
+                chatRef.collection(Constants.COLLECTION_MESSAGES)
+                    .document(welcomeSupportMsgId)
+                    .set(
+                        mapOf(
+                            "messageId" to welcomeSupportMsgId,
+                            "chatId" to deterministicChatId,
+                            "senderId" to Constants.OFFICIAL_WESAL_SENDER_ID,
+                            "senderName" to "إدارة WESAL ($cleanTarget)",
+                            "type" to MessageType.SYSTEM.raw,
+                            "text" to introText,
+                            "status" to MessageStatus.DELIVERED.raw,
+                            "timestamp" to now
+                        )
+                    )
+                    .await()
+            }
         } else {
-            chatRef.set(
-                mapOf(
-                    "isSupportChat" to true,
-                    "supportTargetNumericId" to cleanTarget
-                ),
-                SetOptions.merge()
-            ).await()
-            chatRef.update("deletedForUsers", FieldValue.arrayRemove(myUid)).await()
+            val existingPreview = existingChat.getString("lastMessagePreview").orEmpty()
+            val updateFields = hashMapOf<String, Any>(
+                "isSupportChat" to true,
+                "supportTargetNumericId" to cleanTarget,
+                "deletedForUsers" to FieldValue.arrayRemove(myUid)
+            )
+            if (existingPreview.isBlank()) {
+                updateFields["lastMessagePreview"] = "الدعم الفني وإدارة WESAL ($cleanTarget)"
+            }
+            chatRef.update(updateFields).await()
         }
         deterministicChatId
     }
@@ -718,7 +766,9 @@ class ChatRepositoryImpl @Inject constructor(
 
         @Suppress("UNCHECKED_CAST")
         val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
+        val disappearingSec = chatSnap.getLong("disappearingDurationSec") ?: 0L
         val now = System.currentTimeMillis()
+        val disappearingExpiresAt = if (disappearingSec > 0L) now + disappearingSec * 1000L else 0L
         val messageId = UUID.randomUUID().toString()
         val cleanText = text.trim()
         require(cleanText.isNotEmpty()) { "الرسالة فارغة" }
@@ -737,6 +787,7 @@ class ChatRepositoryImpl @Inject constructor(
             "isViewOnce" to false,
             "viewedBy" to emptyList<String>(),
             "wrappedKeys" to emptyMap<String, String>(),
+            "disappearingExpiresAt" to disappearingExpiresAt,
             "replyToMessageId" to replyTo?.messageId,
             "replyToPreview" to replyTo?.text?.take(80),
             "forwardedFromName" to forwardedFromName,
@@ -798,61 +849,59 @@ class ChatRepositoryImpl @Inject constructor(
 
                 @Suppress("UNCHECKED_CAST")
                 val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
+                val disappearingSec = chatSnap.getLong("disappearingDurationSec") ?: 0L
                 val messageId = UUID.randomUUID().toString()
-                val safeName = fileName.replace(Regex("[^a-zA-Z0-9._\\-]"), "_").ifBlank { "media_${System.currentTimeMillis()}" }
-                val storagePath = "chats/$chatId/$messageId/$safeName"
 
-                trySend(Result.success(0.10f))
-                val uploadedStorageUrl = uploadFileToFirebaseStorage(storagePath, uri) { frac ->
-                    trySend(Result.success(frac.coerceIn(0.10f, 0.94f)))
-                }.getOrNull()
-
+                trySend(Result.success(0.15f))
                 var resolvedSizeBytes = sizeBytes
-                val downloadUrl = if (!uploadedStorageUrl.isNullOrBlank()) {
-                    uploadedStorageUrl
-                } else {
-                    when (type) {
-                        MessageType.IMAGE -> {
-                            trySend(Result.success(0.35f))
-                            val b64Jpeg = withContext(Dispatchers.IO) {
-                                uriToBase64Jpeg(context, uri, maxSide = 720, quality = 72)
-                            }
-                            val rawJpegBytes = runCatching {
-                                Base64.decode(b64Jpeg.substringAfter("base64,"), Base64.NO_WRAP)
-                            }.getOrNull() ?: ByteArray(0)
-                            require(rawJpegBytes.isNotEmpty() && rawJpegBytes.size <= Constants.MAX_INLINE_IMAGE_BYTES) {
-                                "تعذر رفع الصورة: حجم الصورة يتجاوز الحد المباشر وبوابة Firebase Storage غير مفعلة حالياً"
-                            }
-                            resolvedSizeBytes = rawJpegBytes.size.toLong()
-                            trySend(Result.success(0.85f))
-                            "wesal-plain://" + Base64.encodeToString(rawJpegBytes, Base64.NO_WRAP)
+                val downloadUrl = when (type) {
+                    MessageType.IMAGE -> {
+                        trySend(Result.success(0.42f))
+                        val smartDataUrl = withContext(Dispatchers.IO) {
+                            uriToBase64Smart(
+                                ctx = context,
+                                uri = uri,
+                                maxSide = 760,
+                                quality = 78,
+                                preserveAlphaIfPng = true
+                            )
                         }
-                        MessageType.VOICE, MessageType.AUDIO, MessageType.VIDEO, MessageType.DOCUMENT -> {
-                            trySend(Result.success(0.35f))
-                            val rawBytes = withContext(Dispatchers.IO) {
-                                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                                    ?: error("تعذر قراءة الملف المحدد من الجهاز")
-                            }
-                            require(rawBytes.isNotEmpty()) { "الملف المحدد فارغ" }
-                            require(rawBytes.size <= Constants.MAX_INLINE_IMAGE_BYTES) {
-                                when (type) {
-                                    MessageType.AUDIO, MessageType.VOICE ->
-                                        "حجم الملف الصوتي يتجاوز الحد المباشر (${Constants.MAX_INLINE_IMAGE_BYTES / 1024} KB) لأن Firebase Storage غير مفعّل في هذا المشروع"
-                                    MessageType.VIDEO ->
-                                        "حجم الفيديو يتجاوز الحد المباشر (${Constants.MAX_INLINE_IMAGE_BYTES / 1024} KB) لأن Firebase Storage غير مفعّل في هذا المشروع"
-                                    else ->
-                                        "حجم المستند يتجاوز الحد المباشر (${Constants.MAX_INLINE_IMAGE_BYTES / 1024} KB) لأن Firebase Storage غير مفعّل في هذا المشروع"
-                                }
-                            }
-                            resolvedSizeBytes = rawBytes.size.toLong()
-                            trySend(Result.success(0.85f))
-                            "wesal-plain://" + Base64.encodeToString(rawBytes, Base64.NO_WRAP)
+                        val rawBytes = runCatching {
+                            Base64.decode(smartDataUrl.substringAfter("base64,"), Base64.NO_WRAP)
+                        }.getOrNull() ?: ByteArray(0)
+                        require(smartDataUrl.isNotBlank() && rawBytes.isNotEmpty() && rawBytes.size <= 540_000) {
+                            "تعذر ضغط الصورة المحددة للحفظ المباشر"
                         }
-                        else -> throw IllegalStateException("نوع المرفق غير مدعوم للإرسال")
+                        resolvedSizeBytes = rawBytes.size.toLong()
+                        trySend(Result.success(0.88f))
+                        smartDataUrl
                     }
+                    MessageType.VOICE, MessageType.AUDIO, MessageType.VIDEO, MessageType.DOCUMENT -> {
+                        trySend(Result.success(0.42f))
+                        val rawBytes = withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                ?: error("تعذر قراءة الملف المحدد من الجهاز")
+                        }
+                        require(rawBytes.isNotEmpty()) { "الملف المحدد فارغ" }
+                        require(rawBytes.size <= 540_000) {
+                            when (type) {
+                                MessageType.AUDIO, MessageType.VOICE ->
+                                    "حجم الملف الصوتي يتجاوز الحد المباشر (540 KB) المتاح حالياً"
+                                MessageType.VIDEO ->
+                                    "حجم الفيديو يتجاوز الحد المباشر (540 KB) المتاح حالياً"
+                                else ->
+                                    "حجم المستند يتجاوز الحد المباشر (540 KB) المتاح حالياً"
+                            }
+                        }
+                        resolvedSizeBytes = rawBytes.size.toLong()
+                        trySend(Result.success(0.88f))
+                        "wesal-plain://" + Base64.encodeToString(rawBytes, Base64.NO_WRAP)
+                    }
+                    else -> throw IllegalStateException("نوع المرفق غير مدعوم للإرسال")
                 }
 
                 val now = System.currentTimeMillis()
+                val disappearingExpiresAt = if (disappearingSec > 0L) now + disappearingSec * 1000L else 0L
                 val msgData = hashMapOf<String, Any?>(
                     "messageId" to messageId,
                     "chatId" to chatId,
@@ -872,6 +921,7 @@ class ChatRepositoryImpl @Inject constructor(
                     "mediaSizeBytes" to resolvedSizeBytes,
                     "mediaDurationMs" to durationMs,
                     "waveform" to waveform,
+                    "disappearingExpiresAt" to disappearingExpiresAt,
                     "isEdited" to false,
                     "isDeletedForEveryone" to false,
                     "deletedForUsers" to emptyList<String>(),
@@ -1016,7 +1066,8 @@ class ChatRepositoryImpl @Inject constructor(
         chatId: String,
         latitude: Double,
         longitude: Double,
-        address: String
+        address: String,
+        liveDurationMinutes: Int
     ): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         val me = fetchUserCached(myUid)
@@ -1030,8 +1081,12 @@ class ChatRepositoryImpl @Inject constructor(
 
         @Suppress("UNCHECKED_CAST")
         val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
+        val disappearingSec = chatSnap.getLong("disappearingDurationSec") ?: 0L
         val now = System.currentTimeMillis()
         val messageId = UUID.randomUUID().toString()
+        val isLive = liveDurationMinutes > 0
+        val liveExpiresAt = if (isLive) now + liveDurationMinutes * 60_000L else 0L
+        val disappearingExpiresAt = if (disappearingSec > 0L) now + disappearingSec * 1000L else 0L
 
         val msg = mapOf(
             "messageId" to messageId,
@@ -1040,18 +1095,20 @@ class ChatRepositoryImpl @Inject constructor(
             "senderName" to (me?.displayName?.ifBlank {
                 me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
             } ?: "WESAL User"),
-            "type" to MessageType.LOCATION.raw,
-            "text" to address.ifBlank { "الموقع الجغرافي" },
+            "type" to if (isLive) MessageType.LIVE_LOCATION.raw else MessageType.LOCATION.raw,
+            "text" to address.ifBlank { if (isLive) "مشاركة الموقع المباشر" else "الموقع الجغرافي" },
             "latitude" to latitude,
             "longitude" to longitude,
             "locationAddress" to address,
+            "liveLocationExpiresAt" to liveExpiresAt,
+            "disappearingExpiresAt" to disappearingExpiresAt,
             "isEncrypted" to false,
             "status" to MessageStatus.SENT.raw,
             "timestamp" to now
         )
         chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(msg).await()
         val chatUpdates = hashMapOf<String, Any>(
-            "lastMessagePreview" to "موقع جغرافي",
+            "lastMessagePreview" to if (isLive) "موقع مباشر ($liveDurationMinutes د)" else "موقع جغرافي",
             "lastMessageTime" to now,
             "lastMessageSenderId" to myUid,
             "lastMessageStatus" to MessageStatus.SENT.raw,
@@ -1061,6 +1118,84 @@ class ChatRepositoryImpl @Inject constructor(
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
         }
         chatRef.update(chatUpdates).await()
+    }
+
+    override suspend fun setChatDisappearingTimer(chatId: String, durationSeconds: Long): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+        val snap = chatRef.get().await()
+        @Suppress("UNCHECKED_CAST")
+        val participants = (snap.get("participantIds") as? List<String>).orEmpty()
+        require(myUid in participants) { "لا يمكنك تعديل مؤقت هذه المحادثة" }
+        chatRef.update("disappearingDurationSec", durationSeconds.coerceAtLeast(0L)).await()
+    }
+
+    override suspend fun setMessageRequestDecision(
+        chatId: String,
+        peerUid: String,
+        decision: String
+    ): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val normalized = decision.trim().uppercase()
+        val reqStatus = when (normalized) {
+            "ACCEPT", "ACCEPTED" -> "ACCEPTED"
+            "HOLD", "HELD" -> "HELD"
+            "REJECT", "REJECTED", "DELETE", "BLOCK" -> "REJECTED"
+            else -> normalized
+        }
+        if (chatId.isNotBlank()) {
+            val chatPatch = hashMapOf<String, Any>(
+                "requestStatus" to reqStatus,
+                "isMessageRequest" to (reqStatus != "ACCEPTED")
+            )
+            if (reqStatus == "REJECTED" || normalized == "DELETE") {
+                chatPatch["deletedForUsers"] = FieldValue.arrayUnion(myUid)
+            }
+            runCatching {
+                firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+                    .set(chatPatch, SetOptions.merge())
+                    .await()
+            }
+        }
+        if (peerUid.isNotBlank() && peerUid != myUid) {
+            val sorted = listOf(myUid, peerUid).sorted()
+            val reqId = "${sorted[0]}_${sorted[1]}"
+            val reqRef = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS).document(reqId)
+            val reqSnap = runCatching { reqRef.get().await() }.getOrNull()
+            if (reqSnap != null && reqSnap.exists()) {
+                if (normalized == "DELETE") {
+                    reqRef.delete().await()
+                } else {
+                    reqRef.set(
+                        mapOf(
+                            "status" to reqStatus,
+                            "updatedAt" to System.currentTimeMillis()
+                        ),
+                        SetOptions.merge()
+                    ).await()
+                }
+            }
+        }
+    }
+
+    override suspend fun sendBusinessBroadcast(
+        recipientUids: List<String>,
+        text: String
+    ): Result<Map<String, Boolean>> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanText = text.trim()
+        require(cleanText.isNotEmpty()) { "نص الرسالة مطلوب" }
+        val distinctRecipients = recipientUids.filter { it.isNotBlank() && it != myUid }.distinct()
+        require(distinctRecipients.isNotEmpty()) { "يرجى اختيار مستلم واحد على الأقل" }
+        val report = linkedMapOf<String, Boolean>()
+        for (peerUid in distinctRecipients) {
+            val res = runCatching {
+                val chatId = getOrCreateDirectChat(peerUid).getOrThrow()
+                sendTextMessage(chatId = chatId, text = cleanText).getOrThrow()
+            }
+            report[peerUid] = res.isSuccess
+        }
+        report
     }
 
     override suspend fun setTyping(chatId: String, isTyping: Boolean) {
@@ -1201,5 +1336,19 @@ class ChatRepositoryImpl @Inject constructor(
             chatRef.update("deletedForUsers", FieldValue.arrayUnion(myUid)).await()
         }
         wesalDao.deleteChat(chatId)
+    }
+
+    override suspend fun clearChatMessagesForMe(chatId: String): Result<Unit> = runCatching {
+        val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+        val msgsSnap = chatRef.collection(Constants.COLLECTION_MESSAGES).limit(400).get().await()
+        msgsSnap.documents.chunked(350).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { msgDoc ->
+                batch.update(msgDoc.reference, "deletedForUsers", FieldValue.arrayUnion(myUid))
+            }
+            batch.commit().await()
+        }
+        chatRef.set(mapOf("unreadCounts.$myUid" to 0), SetOptions.merge()).await()
     }
 }

@@ -329,9 +329,9 @@ fun WesalAvatar(
                         Modifier.background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    innerBackdropColor.copy(alpha = 0.56f),
-                                    innerBackdropColor.copy(alpha = 0.24f),
-                                    palette.surface.copy(alpha = 0.98f)
+                                    innerBackdropColor.copy(alpha = 0.62f),
+                                    innerBackdropColor.copy(alpha = 0.26f),
+                                    if (detectedCutout) innerBackdropColor.copy(alpha = 0.05f) else palette.surface.copy(alpha = 0.96f)
                                 )
                             )
                         )
@@ -361,6 +361,15 @@ fun WesalAvatar(
                     },
                     modifier = Modifier
                         .fillMaxSize()
+                        .then(
+                            if (detectedCutout && activeFrame != null) {
+                                Modifier.graphicsLayer {
+                                    scaleX = 1.08f
+                                    scaleY = 1.08f
+                                    translationY = -size.toPx() * 0.035f
+                                }
+                            } else Modifier
+                        )
                         .clip(CircleShape)
                         .then(
                             if (activeFrame == null) {
@@ -442,14 +451,18 @@ fun WesalVerifiedBadge(
     size: Dp = 17.dp,
     badgeColor: Color = WesalColors.current.verifiedBlue,
     verificationType: String = "BLUE",
-    glowColor: Color? = null
+    glowColor: Color? = null,
+    glowEnabled: Boolean = true,
+    glowIntensity: Float = 0.7f
 ) {
     WesalVerifiedMark(
         badgeSize = size,
         modifier = modifier,
         badgeColor = badgeColor,
         verificationType = verificationType,
-        glowColor = glowColor
+        glowColor = glowColor,
+        glowEnabled = glowEnabled,
+        glowIntensity = glowIntensity
     )
 }
 
@@ -466,7 +479,9 @@ fun WesalNameWithBadge(
     neonColor: String = "",
     neonGlowIntensity: Float = 0.7f,
     neonEnabled: Boolean = true,
-    glowColor: Color? = null
+    glowColor: Color? = null,
+    verificationGlowEnabled: Boolean = true,
+    verificationGlowIntensity: Float = 0.7f
 ) {
     val preset = NeonColorPreset.fromKey(neonColor)
     val neonOn = neonEnabled && preset != NeonColorPreset.NONE
@@ -493,7 +508,13 @@ fun WesalNameWithBadge(
             modifier = Modifier.weight(1f, fill = false)
         )
         if (isVerified) {
-            WesalVerifiedBadge(size = badgeSize, verificationType = verificationType, glowColor = badgeGlow)
+            WesalVerifiedBadge(
+                size = badgeSize,
+                verificationType = verificationType,
+                glowColor = badgeGlow,
+                glowEnabled = verificationGlowEnabled,
+                glowIntensity = verificationGlowIntensity
+            )
         }
     }
 }

@@ -230,14 +230,22 @@ class ChannelsViewModel @Inject constructor(
                 mimeType = mimeType,
                 sizeBytes = sizeBytes,
                 durationMs = durationMs
-            ).collect { res ->
-                res.onSuccess { fraction ->
-                    _uploadProgress.value = if (fraction >= 1.0f) null else fraction
-                }.onFailure { err ->
+            )
+                .catch { err ->
                     _uploadProgress.value = null
                     showTempMessage(err.message ?: "تعذر نشر المنشور")
                 }
-            }
+                .onCompletion {
+                    _uploadProgress.value = null
+                }
+                .collect { res ->
+                    res.onSuccess { fraction ->
+                        _uploadProgress.value = if (fraction >= 1.0f) null else fraction
+                    }.onFailure { err ->
+                        _uploadProgress.value = null
+                        showTempMessage(err.message ?: "تعذر نشر المنشور")
+                    }
+                }
         }
     }
 

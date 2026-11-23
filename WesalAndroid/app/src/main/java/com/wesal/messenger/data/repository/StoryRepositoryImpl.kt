@@ -214,7 +214,8 @@ class StoryRepositoryImpl @Inject constructor(
         visibility: PrivacyVisibility,
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
-        excludedViewerIds: List<String>
+        excludedViewerIds: List<String>,
+        backgroundColorHex: Long
     ): Flow<StoryPublishEvent> = callbackFlow {
         val uid = auth.currentUser?.uid
         if (uid == null) {
@@ -230,35 +231,36 @@ class StoryRepositoryImpl @Inject constructor(
 
         launch {
             try {
-                trySend(StoryPublishEvent.Progress(0.10f))
+                trySend(StoryPublishEvent.Progress(0.15f))
                 val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
                 val storyId = UUID.randomUUID().toString()
-                val ext = if (isVideo) "mp4" else "jpg"
 
-                val storageUrl = uploadFileToFirebaseStorage("stories/$uid/$storyId.$ext", uri) { frac ->
-                    trySend(StoryPublishEvent.Progress(frac))
-                }.getOrNull()
-
-                val mediaUrl = if (!storageUrl.isNullOrBlank()) {
-                    storageUrl
-                } else if (isVideo) {
+                val mediaUrl = if (isVideo) {
+                    trySend(StoryPublishEvent.Progress(0.45f))
                     val rawBytes = withContext(Dispatchers.IO) {
                         context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     }
-                    if (rawBytes != null && rawBytes.isNotEmpty() && rawBytes.size <= Constants.MAX_INLINE_IMAGE_BYTES) {
+                    if (rawBytes != null && rawBytes.isNotEmpty() && rawBytes.size <= 540_000) {
                         "data:video/mp4;base64," + Base64.encodeToString(rawBytes, Base64.NO_WRAP)
                     } else {
-                        throw IllegalStateException("تعذر رفع الفيديو: حجمه يتجاوز الحد المباشر وبوابة Firebase Storage غير مفعلة حالياً")
+                        throw IllegalStateException("حجم الفيديو يتجاوز الحد المباشر (540 KB) المتاح حالياً")
                     }
                 } else {
+                    trySend(StoryPublishEvent.Progress(0.45f))
                     withContext(Dispatchers.IO) {
-                        uriToBase64Jpeg(context, uri, maxSide = 900, quality = 74)
+                        uriToBase64Smart(
+                            ctx = context,
+                            uri = uri,
+                            maxSide = 900,
+                            quality = 76,
+                            preserveAlphaIfPng = true
+                        )
                     }.also {
                         require(it.isNotBlank()) { "تعذر ضغط الصورة المحددة للحالة" }
                     }
                 }
 
-                trySend(StoryPublishEvent.Progress(0.95f))
+                trySend(StoryPublishEvent.Progress(0.92f))
 
                 val now = System.currentTimeMillis()
                 val data = mapOf(
@@ -271,7 +273,7 @@ class StoryRepositoryImpl @Inject constructor(
                     "ownerVerified" to (userSnap.getBoolean("isVerified") ?: false),
                     "type" to if (isVideo) StoryType.VIDEO.raw else StoryType.IMAGE.raw,
                     "textContent" to "",
-                    "backgroundColorHex" to 0xFF06090BL,
+                    "backgroundColorHex" to backgroundColorHex,
                     "mediaUrl" to mediaUrl,
                     "caption" to caption.trim(),
                     "createdAt" to now,
@@ -301,7 +303,8 @@ class StoryRepositoryImpl @Inject constructor(
         visibility: PrivacyVisibility,
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
-        excludedViewerIds: List<String>
+        excludedViewerIds: List<String>,
+        backgroundColorHex: Long
     ): Flow<StoryPublishEvent> = callbackFlow {
         val uid = auth.currentUser?.uid
         if (uid == null) {
@@ -317,16 +320,14 @@ class StoryRepositoryImpl @Inject constructor(
 
         launch {
             try {
-                trySend(StoryPublishEvent.Progress(0.15f))
+                trySend(StoryPublishEvent.Progress(0.20f))
                 val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
                 val storyId = UUID.randomUUID().toString()
-                val storageUrl = uploadFileToFirebaseStorage("stories/$uid/$storyId.m4a", audioUri) { frac ->
-                    trySend(StoryPublishEvent.Progress(frac))
-                }.getOrNull()
 
-                val mediaUrl = storageUrl ?: withContext(Dispatchers.IO) {
-                    uriToBase64Audio(context, audioUri, maxBytes = 380_000)
-                } ?: throw IllegalStateException("المقطع الصوتي طويل جداً للحفظ المباشر بدون Firebase Storage")
+                trySend(StoryPublishEvent.Progress(0.55f))
+                val mediaUrl = withContext(Dispatchers.IO) {
+                    uriToBase64Audio(context, audioUri, maxBytes = 520_000)
+                } ?: throw IllegalStateException("المقطع الصوتي طويل جداً للحفظ المباشر (الحد 520 KB)")
                 trySend(StoryPublishEvent.Progress(0.92f))
 
                 val now = System.currentTimeMillis()
@@ -342,7 +343,7 @@ class StoryRepositoryImpl @Inject constructor(
                     "ownerVerified" to (userSnap.getBoolean("isVerified") ?: false),
                     "type" to StoryType.AUDIO.raw,
                     "textContent" to "",
-                    "backgroundColorHex" to 0xFF064E3BL,
+                    "backgroundColorHex" to backgroundColorHex,
                     "mediaUrl" to mediaUrl,
                     "caption" to finalCaption,
                     "createdAt" to now,

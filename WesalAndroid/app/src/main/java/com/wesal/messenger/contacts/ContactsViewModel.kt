@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.domain.model.AppEventItem
+import com.wesal.messenger.domain.model.ContactLabelList
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
@@ -30,6 +32,8 @@ data class ContactsUiState(
     val searchResults: List<WesalUser> = emptyList(),
     val isSearching: Boolean = false,
     val invitedPhonesCount: Int = 0,
+    val broadcastResults: Map<String, Boolean>? = null,
+    val isSendingBroadcast: Boolean = false,
     val error: String? = null,
     val feedback: String? = null
 )
@@ -51,6 +55,12 @@ class ContactsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val contactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val contactLists: StateFlow<List<ContactLabelList>> = userRepository.observeContactLists()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val appEvents: StateFlow<List<AppEventItem>> = userRepository.observeAppEvents()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
@@ -119,6 +129,109 @@ class ContactsViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    fun saveDeviceContact(name: String, phone: String, existingContactId: String? = null) {
+        viewModelScope.launch {
+            PhoneContactsHelper.upsertDeviceContact(context, name, phone, existingContactId)
+                .onSuccess {
+                    _uiState.update {
+                        it.copy(
+                            feedback = if (existingContactId.isNullOrBlank()) {
+                                "تمت إضافة جهة الاتصال إلى الجهاز ✓"
+                            } else {
+                                "تم تعديل جهة الاتصال ✓"
+                            }
+                        )
+                    }
+                    syncDeviceContacts()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر حفظ جهة الاتصال") }
+                }
+        }
+    }
+
+    fun deleteDeviceContact(contactId: String) {
+        viewModelScope.launch {
+            PhoneContactsHelper.deleteDeviceContact(context, contactId)
+                .onSuccess {
+                    _uiState.update { it.copy(feedback = "تم حذف جهة الاتصال من الجهاز ✓") }
+                    syncDeviceContacts()
+                }
+                .onFailure { err ->
+                    _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر حذف جهة الاتصال") }
+                }
+        }
+    }
+
+    fun saveContactList(listId: String?, name: String, memberUids: List<String>) {
+        viewModelScope.launch {
+            userRepository.upsertContactList(listId, name, memberUids)
+                .onSuccess { _uiState.update { it.copy(feedback = "تم حفظ القائمة ✓") } }
+                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر حفظ القائمة") } }
+        }
+    }
+
+    fun deleteContactList(listId: String) {
+        viewModelScope.launch {
+            userRepository.deleteContactList(listId)
+                .onSuccess { _uiState.update { it.copy(feedback = "تم حذف القائمة") } }
+                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage) } }
+        }
+    }
+
+    fun createAppEvent(title: String, description: String, locationName: String, eventTime: Long) {
+        viewModelScope.launch {
+            userRepository.createAppEvent(title, description, locationName, eventTime)
+                .onSuccess { _uiState.update { it.copy(feedback = "تم نشر المناسبة ✓") } }
+                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر إنشاء المناسبة") } }
+        }
+    }
+
+    fun deleteAppEvent(eventId: String) {
+        viewModelScope.launch {
+            userRepository.deleteAppEvent(eventId)
+                .onSuccess { _uiState.update { it.copy(feedback = "تم حذف المناسبة") } }
+                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage) } }
+        }
+    }
+
+    fun toggleEventRsvp(eventId: String, join: Boolean) {
+        viewModelScope.launch {
+            userRepository.rsvpAppEvent(eventId, join)
+                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage) } }
+        }
+    }
+
+    fun sendBusinessBroadcast(recipientUids: List<String>, text: String) {
+        if (recipientUids.isEmpty() || text.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isSendingBroadcast = true, broadcastResults = null) }
+            chatRepository.sendBusinessBroadcast(recipientUids, text)
+                .onSuccess { map ->
+                    val okCount = map.values.count { it }
+                    _uiState.update {
+                        it.copy(
+                            isSendingBroadcast = false,
+                            broadcastResults = map,
+                            feedback = "تم الإرسال الجماعي لـ $okCount من أصل ${recipientUids.size} ✓"
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            isSendingBroadcast = false,
+                            error = err.localizedMessage ?: "تعذر إرسال البث الجماعي"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun clearBroadcastResults() {
+        _uiState.update { it.copy(broadcastResults = null) }
     }
 
     fun search(query: String) {
@@ -201,3 +314,4 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch { userRepository.unblockUser(targetUid) }
     }
 }
+

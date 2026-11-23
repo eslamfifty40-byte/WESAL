@@ -4,17 +4,44 @@ import androidx.annotation.DrawableRes
 import androidx.compose.ui.graphics.Color
 import com.wesal.messenger.R
 
-enum class VerificationSealType(val key: String, val labelAr: String, val labelEn: String) {
-    BLUE("BLUE", "الشارة الزرقاء", "Blue Seal"),
-    BLACK("BLACK", "الشارة السمراء", "Black Seal"),
-    GREEN("GREEN", "الشارة الخضراء", "Green Seal"),
-    GOLD("GOLD", "الشارة الذهبية", "Gold Seal"),
-    CYAN("CYAN", "الشارة السماوية", "Cyan Seal"),
-    PURPLE("PURPLE", "الشارة البنفسجية", "Purple Seal"),
-    RED("RED", "الشارة الحمراء", "Red Seal"),
-    SILVER("SILVER", "الشارة الفضية", "Silver Seal"),
-    ROSE("ROSE", "الشارة الوردية", "Rose Seal"),
-    ORANGE("ORANGE", "الشارة البرتقالية", "Orange Seal");
+enum class VerificationSealType(
+    val key: String,
+    val labelAr: String,
+    val labelEn: String,
+    val primaryHex: Long,
+    val secondaryHex: Long,
+    val glowHex: Long
+) {
+    BLUE("BLUE", "الشارة الزرقاء", "Blue Seal", 0xFF1D9BF0L, 0xFF0A66C2L, 0xFF1D9BF0L),
+    BLACK("BLACK", "الشارة السمراء", "Black Seal", 0xFF111827L, 0xFF000000L, 0xFF00D5E8L),
+    GREEN("GREEN", "الشارة الخضراء", "Green Seal", 0xFF00C853L, 0xFF007E33L, 0xFF00E676L),
+    GOLD("GOLD", "الشارة الذهبية", "Gold Seal", 0xFFFFD54FL, 0xFFB8860BL, 0xFFFFD740L),
+    CYAN("CYAN", "الشارة السماوية", "Cyan Seal", 0xFF00D5E8L, 0xFF00838FL, 0xFF00E5FFL),
+    PURPLE("PURPLE", "الشارة البنفسجية", "Purple Seal", 0xFF9C27B0L, 0xFF4A148CL, 0xFFE040FBL),
+    RED("RED", "الشارة الحمراء", "Red Seal", 0xFFFF1744L, 0xFFB71C1CL, 0xFFFF5252L),
+    SILVER("SILVER", "الشارة الفضية", "Silver Seal", 0xFFE2E8F0L, 0xFF64748BL, 0xFFCBD5E1L),
+    ROSE("ROSE", "الشارة الوردية", "Rose Seal", 0xFFEC4899L, 0xFF9D174DL, 0xFFFF80ABL),
+    ORANGE("ORANGE", "الشارة البرتقالية", "Orange Seal", 0xFFFF9100L, 0xFFE65100L, 0xFFFFAB40L),
+    INDIGO("INDIGO", "الشارة النيلية", "Indigo Seal", 0xFF6366F1L, 0xFF3730A3L, 0xFF818CF8L),
+    EMERALD("EMERALD", "الشارة الزمردية", "Emerald Seal", 0xFF10B981L, 0xFF065F46L, 0xFF34D399L),
+    TURQUOISE("TURQUOISE", "الشارة الفيروزية", "Turquoise Seal", 0xFF06B6D4L, 0xFF0E7490L, 0xFF22D3EEL),
+    CRIMSON("CRIMSON", "الشارة القرمزية", "Crimson Seal", 0xFFDC2626L, 0xFF7F1D1DL, 0xFFF87171L),
+    ROYAL_BLUE("ROYAL_BLUE", "الأزرق الملكي", "Royal Blue Seal", 0xFF2563EBL, 0xFF1E3A8AL, 0xFF60A5FAL),
+    LIME("LIME", "الشارة الليمونية", "Lime Seal", 0xFF84CC16L, 0xFF3F6212L, 0xFFA3E635L),
+    AMBER("AMBER", "الشارة العنبرية", "Amber Seal", 0xFFF59E0BL, 0xFF92400EL, 0xFFFBBF24L),
+    MAGENTA("MAGENTA", "الشارة الأرجوانية", "Magenta Seal", 0xFFD946EFL, 0xFF86198FL, 0xFFF0ABACL),
+    TEAL("TEAL", "الأزرق المخضر", "Teal Seal", 0xFF14B8A6L, 0xFF115E59L, 0xFF2DD4BFL),
+    CORAL("CORAL", "الشارة المرجانية", "Coral Seal", 0xFFFF6B6BL, 0xFFC92A2AL, 0xFFFF8787L),
+    VIOLET("VIOLET", "البنفسجي الداكن", "Violet Seal", 0xFF8B5CF6L, 0xFF4C1D95L, 0xFFA78BFAL),
+    PLATINUM("PLATINUM", "الشارة البلاتينية", "Platinum Seal", 0xFFF8FAFCL, 0xFF94A3B8L, 0xFFE2E8F0L),
+    BRONZE("BRONZE", "الشارة البرونزية", "Bronze Seal", 0xFFCD7F32L, 0xFF7C4A15L, 0xFFE6A15CL),
+    MINT("MINT", "الشارة النعناعية", "Mint Seal", 0xFF00E5A3L, 0xFF008F64L, 0xFF69F0AEL),
+    SAPPHIRE("SAPPHIRE", "الشارة الياقوتية الأزرق", "Sapphire Seal", 0xFF0F52BAL, 0xFF082D69L, 0xFF3B82F6L),
+    RUBY("RUBY", "الشارة الياقوتية الأحمر", "Ruby Seal", 0xFFE0115FL, 0xFF880E4FL, 0xFFFF4081L),
+    PEARL("PEARL", "الشارة اللؤلؤية", "Pearl Seal", 0xFFF1F5F9L, 0xFF475569L, 0xFF00D9E8L),
+    OBSIDIAN("OBSIDIAN", "الأوبسيديان الملكي", "Obsidian Seal", 0xFF1E293BL, 0xFF020617L, 0xFFFFD54FL),
+    NEON_YELLOW("NEON_YELLOW", "الأصفر الفسفوري", "Neon Yellow Seal", 0xFFFACC15L, 0xFFA16207L, 0xFFFEF08AL),
+    COSMIC("COSMIC", "الشارة الكونية", "Cosmic Seal", 0xFF7C3AEDL, 0xFF0EA5E9L, 0xFF38BDF8L);
 
     companion object {
         fun fromKey(raw: String?): VerificationSealType =
@@ -48,12 +75,134 @@ enum class NeonColorPreset(
     RED("RED", "أحمر نيون", "Neon Red", Color(0xFFFF1744), Color(0xFFFF6E87), Color(0xFFB71C1C)),
     GREEN("GREEN", "أخضر نيون", "Neon Green", Color(0xFF00E676), Color(0xFF5CFFAE), Color(0xFF006E38)),
     BLACK("BLACK", "أسود نيون", "Neon Obsidian", Color(0xFF00D5E8), Color(0xFFFFFFFF), Color(0xFF05090B)),
-    BLUE("BLUE", "أزرق نيون", "Neon Blue", Color(0xFF00D9E8), Color(0xFF5BEBFF), Color(0xFF006080));
+    BLUE("BLUE", "أزرق نيون", "Neon Blue", Color(0xFF00D9E8), Color(0xFF5BEBFF), Color(0xFF006080)),
+    GOLD("GOLD", "ذهبي نيون", "Neon Gold", Color(0xFFFFD54F), Color(0xFFFFE082), Color(0xFF8C6200)),
+    PURPLE("PURPLE", "بنفسجي نيون", "Neon Purple", Color(0xFFD500F9), Color(0xFFEA80FC), Color(0xFF6A1B9A)),
+    PINK("PINK", "وردي نيون", "Neon Pink", Color(0xFFFF4081), Color(0xFFFF80AB), Color(0xFFAD1457)),
+    ORANGE("ORANGE", "برتقالي نيون", "Neon Orange", Color(0xFFFF6D00), Color(0xFFFF9E40), Color(0xFFBF360C)),
+    CYAN("CYAN", "سماوي نيون", "Neon Cyan", Color(0xFF00E5FF), Color(0xFF84FFFF), Color(0xFF006064)),
+    EMERALD("EMERALD", "زمردي نيون", "Neon Emerald", Color(0xFF10B981), Color(0xFF6EE7B7), Color(0xFF047857)),
+    LIME("LIME", "ليموني نيون", "Neon Lime", Color(0xFFAEEA00), Color(0xFFCCFF90), Color(0xFF558B2F)),
+    INDIGO("INDIGO", "نيلي نيون", "Neon Indigo", Color(0xFF536DFE), Color(0xFF8C9EFF), Color(0xFF283593)),
+    CRIMSON("CRIMSON", "قرمزي نيون", "Neon Crimson", Color(0xFFE11D48), Color(0xFFFB7185), Color(0xFF9F1239)),
+    SILVER("SILVER", "فضي نيون", "Neon Silver", Color(0xFFE2E8F0), Color(0xFFF8FAFC), Color(0xFF334155)),
+    AMBER("AMBER", "عنبر نيون", "Neon Amber", Color(0xFFFFAB00), Color(0xFFFFD740), Color(0xFF8D4E00)),
+    TEAL("TEAL", "فيروزي غامق", "Neon Teal", Color(0xFF1DE9B6), Color(0xFF64FFDA), Color(0xFF00695C)),
+    CORAL("CORAL", "مرجاني نيون", "Neon Coral", Color(0xFFFF5252), Color(0xFFFF8A80), Color(0xFFC62828)),
+    VIOLET("VIOLET", "ليلكي نيون", "Neon Violet", Color(0xFF7C4DFF), Color(0xFFB388FF), Color(0xFF4527A0)),
+    MAGENTA("MAGENTA", "ماجنتا نيون", "Neon Magenta", Color(0xFFFF00AA), Color(0xFFFF77CC), Color(0xFF880E4F)),
+    SKY("SKY", "أزرق فاتح نيون", "Neon Sky", Color(0xFF38BDF8), Color(0xFF7DD3FC), Color(0xFF0369A1)),
+    MINT("MINT", "نعناع نيون", "Neon Mint", Color(0xFF69F0AE), Color(0xFFB9F6CA), Color(0xFF1B5E20)),
+    RUBY("RUBY", "ياقوتي نيون", "Neon Ruby", Color(0xFFF43F5E), Color(0xFFFDA4AF), Color(0xFF881337)),
+    YELLOW("YELLOW", "أصفر نيون", "Neon Yellow", Color(0xFFFFEA00), Color(0xFFFFFF8D), Color(0xFF7A6300)),
+    ROYAL("ROYAL", "ملكي نيون", "Neon Royal", Color(0xFF2979FF), Color(0xFF82B1FF), Color(0xFF0D47A1)),
+    BRONZE("BRONZE", "برونزي نيون", "Neon Bronze", Color(0xFFD97706), Color(0xFFFCD34D), Color(0xFF78350F)),
+    ICE("ICE", "ثلجي نيون", "Neon Ice", Color(0xFF67E8F9), Color(0xFFCFFAFE), Color(0xFF0E7490)),
+    NEON_WHITE("NEON_WHITE", "أبيض مضيء", "Neon White", Color(0xFFFFFFFF), Color(0xFFFFFFFF), Color(0xFF1E293B)),
+    PEACH("PEACH", "خوخي نيون", "Neon Peach", Color(0xFFFF8A65), Color(0xFFFFAB91), Color(0xFFBF360C)),
+    AQUA("AQUA", "أكوا نيون", "Neon Aqua", Color(0xFF00B8D4), Color(0xFF18FFFF), Color(0xFF006064)),
+    ROSE_GOLD("ROSE_GOLD", "ذهبي وردي", "Neon Rose Gold", Color(0xFFF472B6), Color(0xFFFBCFE8), Color(0xFF9D174D));
 
     companion object {
         fun fromKey(raw: String?): NeonColorPreset =
             entries.firstOrNull { it.key.equals(raw, ignoreCase = true) } ?: NONE
     }
+}
+
+data class AppearanceColorOption(
+    val labelAr: String,
+    val labelEn: String,
+    val hex: Long
+)
+
+object WesalAppearancePresets {
+    val accentPrimaryPresets: List<AppearanceColorOption> = listOf(
+        AppearanceColorOption("زمردي وصال", "WESAL Emerald", 0xFF00D66BL),
+        AppearanceColorOption("أخضر ملكي", "Royal Green", 0xFF10B981L),
+        AppearanceColorOption("فيروزي", "Turquoise", 0xFF00D5E8L),
+        AppearanceColorOption("أزرق نيون", "Electric Blue", 0xFF1D9BF0L),
+        AppearanceColorOption("ذهبي فاخر", "Luxury Gold", 0xFFFFD54FL),
+        AppearanceColorOption("بنفسجي ملكي", "Royal Purple", 0xFF8B5CF6L),
+        AppearanceColorOption("أحمر ياقوتي", "Ruby Red", 0xFFE11D48L),
+        AppearanceColorOption("برتقالي دافئ", "Warm Amber", 0xFFF59E0BL),
+        AppearanceColorOption("وردي نيون", "Neon Rose", 0xFFEC4899L),
+        AppearanceColorOption("سماوي عميق", "Deep Cyan", 0xFF06B6D4L),
+        AppearanceColorOption("نعناعي", "Fresh Mint", 0xFF00E5A3L),
+        AppearanceColorOption("نيلي", "Indigo Glow", 0xFF6366F1L)
+    )
+
+    val secondaryAccentPresets: List<AppearanceColorOption> = listOf(
+        AppearanceColorOption("تركواز وصال", "WESAL Turquoise", 0xFF00D5E8L),
+        AppearanceColorOption("أزرق سماوي", "Sky Cyan", 0xFF38BDF8L),
+        AppearanceColorOption("أخضر مضيء", "Neon Green", 0xFF00E676L),
+        AppearanceColorOption("ذهبي", "Gold", 0xFFFFCA28L),
+        AppearanceColorOption("بنفسجي فاتح", "Violet", 0xFFA78BFAL),
+        AppearanceColorOption("مرجاني", "Coral", 0xFFFF6B6BL),
+        AppearanceColorOption("تيال", "Teal", 0xFF14B8A6L),
+        AppearanceColorOption("ليموني", "Lime", 0xFF84CC16L),
+        AppearanceColorOption("وردي", "Pink", 0xFFF472B6L),
+        AppearanceColorOption("بلاتيني", "Platinum", 0xFFE2E8F0L),
+        AppearanceColorOption("أزرق ملكي", "Royal Blue", 0xFF3B82F6L),
+        AppearanceColorOption("برونزي", "Bronze", 0xFFD97706L)
+    )
+
+    val backgroundPresets: List<AppearanceColorOption> = listOf(
+        AppearanceColorOption("افتراضي وصال", "Default", 0L),
+        AppearanceColorOption("أسود عميق", "Obsidian Black", 0xFF05090BL),
+        AppearanceColorOption("كحلي ليلي", "Midnight Navy", 0xFF070D19L),
+        AppearanceColorOption("رمادي فحمي", "Charcoal", 0xFF111827L),
+        AppearanceColorOption("زمردي ليلي", "Dark Emerald", 0xFF04140FL),
+        AppearanceColorOption("أرجواني ليلي", "Dark Plum", 0xFF12081CL),
+        AppearanceColorOption("أبيض نقي", "Pure White", 0xFFFFFFFFL),
+        AppearanceColorOption("ثلجي ناعم", "Ice Mist", 0xFFF3F6F8L),
+        AppearanceColorOption("كريمي دافئ", "Warm Cream", 0xFFFAF7F2L),
+        AppearanceColorOption("أزرق ثلجي", "Frost Blue", 0xFFF0F7FFL),
+        AppearanceColorOption("نعناعي فاتح", "Mint Tint", 0xFFF0FDF4L),
+        AppearanceColorOption("رمادي أنيق", "Slate Mist", 0xFFF1F5F9L)
+    )
+
+    val surfacePresets: List<AppearanceColorOption> = listOf(
+        AppearanceColorOption("افتراضي وصال", "Default", 0L),
+        AppearanceColorOption("سطح ليلي", "Dark Surface", 0xFF0B1115L),
+        AppearanceColorOption("أردوازي داكن", "Dark Slate", 0xFF131C22L),
+        AppearanceColorOption("كحلي بارز", "Navy Card", 0xFF0F172AL),
+        AppearanceColorOption("غابة داكنة", "Forest Card", 0xFF082018L),
+        AppearanceColorOption("فحمي مخملي", "Velvet Gray", 0xFF18181BL),
+        AppearanceColorOption("أبيض بطاقات", "White Card", 0xFFFFFFFFL),
+        AppearanceColorOption("لؤلؤي فاتح", "Pearl Card", 0xFFF8FAFCL),
+        AppearanceColorOption("سماوي فاتح", "Sky Card", 0xFFEFF6FFL),
+        AppearanceColorOption("زمردي فاتح", "Mint Card", 0xFFECFDF5L),
+        AppearanceColorOption("رملي ناعم", "Sand Card", 0xFFFEFCE8L),
+        AppearanceColorOption("بنفسجي فاتح", "Lavender Card", 0xFFF5F3FFL)
+    )
+
+    val textPrimaryPresets: List<AppearanceColorOption> = listOf(
+        AppearanceColorOption("تباين تلقائي", "Auto Contrast", 0L),
+        AppearanceColorOption("أبيض ناصع", "Pure White", 0xFFFFFFFFL),
+        AppearanceColorOption("أبيض ثلجي", "Snow White", 0xFFF8FAFCL),
+        AppearanceColorOption("ذهبي فاتح", "Soft Gold", 0xFFFEF08AL),
+        AppearanceColorOption("سماوي ناعم", "Soft Cyan", 0xFFE0F2FEL),
+        AppearanceColorOption("نعناعي فاتح", "Mint Text", 0xFFD1FAE5L),
+        AppearanceColorOption("أسود نقي", "Pure Black", 0xFF05090BL),
+        AppearanceColorOption("أردوازي داكن", "Deep Slate", 0xFF0F172AL),
+        AppearanceColorOption("رمادي فحمي", "Charcoal", 0xFF1E293BL),
+        AppearanceColorOption("أزرق ليلي", "Dark Navy", 0xFF172554L),
+        AppearanceColorOption("أخضر داكن", "Forest Ink", 0xFF064E3BL)
+    )
+
+    val iconTintPresets: List<AppearanceColorOption> = listOf(
+        AppearanceColorOption("تلقائي", "Auto", 0L),
+        AppearanceColorOption("تركواز وصال", "Turquoise", 0xFF00D5E8L),
+        AppearanceColorOption("زمردي", "Emerald", 0xFF00D66BL),
+        AppearanceColorOption("أزرق توثيق", "Verified Blue", 0xFF1D9BF0L),
+        AppearanceColorOption("ذهبي ملكي", "Royal Gold", 0xFFFFD54FL),
+        AppearanceColorOption("أبيض", "White", 0xFFFFFFFFL),
+        AppearanceColorOption("أسود", "Black", 0xFF0A1116L),
+        AppearanceColorOption("بنفسجي", "Violet", 0xFF8B5CF6L),
+        AppearanceColorOption("وردي", "Rose", 0xFFEC4899L),
+        AppearanceColorOption("برتقالي", "Amber", 0xFFF59E0BL),
+        AppearanceColorOption("مرجاني", "Coral", 0xFFFF5252L)
+    )
 }
 
 enum class FrameCategory {

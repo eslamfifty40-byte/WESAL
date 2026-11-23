@@ -49,7 +49,23 @@ data class AppUserSettings(
     val cachedUid: String = "",
     val cachedProfileComplete: Boolean = false,
     val locationGranted: Boolean = false,
-    val locationGraceStartedAt: Long = 0L
+    val locationGraceStartedAt: Long = 0L,
+    val appLockEnabled: Boolean = false,
+    val twoFactorPinEnabled: Boolean = false,
+    val defaultDisappearingSec: Long = 0L,
+    val groupsAddPermission: String = "EVERYONE", // EVERYONE, CONTACTS
+    val silenceUnknownCalls: Boolean = false,
+    val protectIpInCalls: Boolean = false,
+    val cameraEffectsEnabled: Boolean = true,
+    val archiveKeepMutedChats: Boolean = true,
+    val highContrastAccessibility: Boolean = false,
+    val securityNotificationsEnabled: Boolean = true,
+    val lockedChatIds: Set<String> = emptySet(),
+    val archivedStoryIds: Set<String> = emptySet(),
+    val starredMessagesJson: String = "[]",
+    val lastBackupAt: Long = 0L,
+    val customSubTierMonthlyPrice: String = "29 EGP / $0.99",
+    val customSubTierYearlyPrice: String = "290 EGP / $9.99"
 ) {
     companion object {
         const val DEFAULT_WELCOME_MESSAGE_AR = "أهلاً بك في WESAL! يسعدني تواصلك وسأرد عليك في أقرب وقت."
@@ -109,6 +125,22 @@ class UserPreferencesDataStore @Inject constructor(
         val CACHED_PROFILE_COMPLETE = booleanPreferencesKey("cached_profile_complete")
         val LOCATION_GRANTED = booleanPreferencesKey("location_granted")
         val LOCATION_GRACE_STARTED_AT = longPreferencesKey("location_grace_started_at")
+        val APP_LOCK_ENABLED = booleanPreferencesKey("app_lock_enabled")
+        val TWO_FACTOR_PIN_ENABLED = booleanPreferencesKey("two_factor_pin_enabled")
+        val DEFAULT_DISAPPEARING_SEC = longPreferencesKey("default_disappearing_sec")
+        val GROUPS_ADD_PERMISSION = stringPreferencesKey("groups_add_permission")
+        val SILENCE_UNKNOWN_CALLS = booleanPreferencesKey("silence_unknown_calls")
+        val PROTECT_IP_CALLS = booleanPreferencesKey("protect_ip_calls")
+        val CAMERA_EFFECTS_ENABLED = booleanPreferencesKey("camera_effects_enabled")
+        val ARCHIVE_KEEP_MUTED = booleanPreferencesKey("archive_keep_muted")
+        val HIGH_CONTRAST_ACCESSIBILITY = booleanPreferencesKey("high_contrast_accessibility")
+        val SECURITY_NOTIFS = booleanPreferencesKey("security_notifs")
+        val LOCKED_CHAT_IDS_JSON = stringPreferencesKey("locked_chat_ids_json")
+        val ARCHIVED_STORY_IDS_JSON = stringPreferencesKey("archived_story_ids_json")
+        val STARRED_MESSAGES_JSON = stringPreferencesKey("starred_messages_json")
+        val LAST_BACKUP_AT = longPreferencesKey("last_backup_at")
+        val SUB_MONTHLY_PRICE = stringPreferencesKey("sub_monthly_price")
+        val SUB_YEARLY_PRICE = stringPreferencesKey("sub_yearly_price")
     }
 
     val settingsFlow: Flow<AppUserSettings> = context.wesalDataStore.data.map { prefs ->
@@ -139,7 +171,23 @@ class UserPreferencesDataStore @Inject constructor(
             cachedUid = prefs[Keys.CACHED_UID] ?: "",
             cachedProfileComplete = prefs[Keys.CACHED_PROFILE_COMPLETE] ?: false,
             locationGranted = prefs[Keys.LOCATION_GRANTED] ?: false,
-            locationGraceStartedAt = prefs[Keys.LOCATION_GRACE_STARTED_AT] ?: 0L
+            locationGraceStartedAt = prefs[Keys.LOCATION_GRACE_STARTED_AT] ?: 0L,
+            appLockEnabled = prefs[Keys.APP_LOCK_ENABLED] ?: false,
+            twoFactorPinEnabled = prefs[Keys.TWO_FACTOR_PIN_ENABLED] ?: false,
+            defaultDisappearingSec = prefs[Keys.DEFAULT_DISAPPEARING_SEC] ?: 0L,
+            groupsAddPermission = prefs[Keys.GROUPS_ADD_PERMISSION] ?: "EVERYONE",
+            silenceUnknownCalls = prefs[Keys.SILENCE_UNKNOWN_CALLS] ?: false,
+            protectIpInCalls = prefs[Keys.PROTECT_IP_CALLS] ?: false,
+            cameraEffectsEnabled = prefs[Keys.CAMERA_EFFECTS_ENABLED] ?: true,
+            archiveKeepMutedChats = prefs[Keys.ARCHIVE_KEEP_MUTED] ?: true,
+            highContrastAccessibility = prefs[Keys.HIGH_CONTRAST_ACCESSIBILITY] ?: false,
+            securityNotificationsEnabled = prefs[Keys.SECURITY_NOTIFS] ?: true,
+            lockedChatIds = decodeStringList(prefs[Keys.LOCKED_CHAT_IDS_JSON]).toSet(),
+            archivedStoryIds = decodeStringList(prefs[Keys.ARCHIVED_STORY_IDS_JSON]).toSet(),
+            starredMessagesJson = prefs[Keys.STARRED_MESSAGES_JSON] ?: "[]",
+            lastBackupAt = prefs[Keys.LAST_BACKUP_AT] ?: 0L,
+            customSubTierMonthlyPrice = prefs[Keys.SUB_MONTHLY_PRICE] ?: "29 EGP / $0.99",
+            customSubTierYearlyPrice = prefs[Keys.SUB_YEARLY_PRICE] ?: "290 EGP / $9.99"
         )
     }
 
@@ -489,5 +537,105 @@ class UserPreferencesDataStore @Inject constructor(
             }
         }
         return id
+    }
+
+    suspend fun setAppLockEnabled(enabled: Boolean) {
+        context.wesalDataStore.edit { it[Keys.APP_LOCK_ENABLED] = enabled }
+    }
+
+    suspend fun setTwoFactorPin(uid: String, pin: String?) {
+        if (uid.isBlank()) return
+        if (pin.isNullOrBlank()) {
+            encryptedPrefs.edit().remove("2fa_salt_$uid").remove("2fa_hash_$uid").commit()
+            context.wesalDataStore.edit { it[Keys.TWO_FACTOR_PIN_ENABLED] = false }
+        } else {
+            val clean = normalizeHiddenPinInput(pin)
+            val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            val hash = pbkdf2Hash(clean, salt)
+            encryptedPrefs.edit()
+                .putString("2fa_salt_$uid", Base64.encodeToString(salt, Base64.NO_WRAP))
+                .putString("2fa_hash_$uid", hash)
+                .commit()
+            context.wesalDataStore.edit { it[Keys.TWO_FACTOR_PIN_ENABLED] = true }
+        }
+    }
+
+    fun verifyTwoFactorPin(uid: String, candidate: String): Boolean {
+        val clean = normalizeHiddenPinInput(candidate)
+        if (uid.isBlank() || clean.isBlank()) return false
+        val saltB64 = encryptedPrefs.getString("2fa_salt_$uid", null) ?: return false
+        val expected = encryptedPrefs.getString("2fa_hash_$uid", null) ?: return false
+        val salt = runCatching { Base64.decode(saltB64, Base64.NO_WRAP) }.getOrNull() ?: return false
+        return constantTimeEquals(expected, pbkdf2Hash(clean, salt))
+    }
+
+    suspend fun setDefaultDisappearingSec(seconds: Long) {
+        context.wesalDataStore.edit { it[Keys.DEFAULT_DISAPPEARING_SEC] = seconds }
+    }
+
+    suspend fun setGroupsAddPermission(mode: String) {
+        context.wesalDataStore.edit { it[Keys.GROUPS_ADD_PERMISSION] = mode }
+    }
+
+    suspend fun setSilenceUnknownCalls(enabled: Boolean) {
+        context.wesalDataStore.edit { it[Keys.SILENCE_UNKNOWN_CALLS] = enabled }
+    }
+
+    suspend fun setProtectIpInCalls(enabled: Boolean) {
+        context.wesalDataStore.edit { it[Keys.PROTECT_IP_CALLS] = enabled }
+    }
+
+    suspend fun setCameraEffectsEnabled(enabled: Boolean) {
+        context.wesalDataStore.edit { it[Keys.CAMERA_EFFECTS_ENABLED] = enabled }
+    }
+
+    suspend fun setArchiveKeepMutedChats(keep: Boolean) {
+        context.wesalDataStore.edit { it[Keys.ARCHIVE_KEEP_MUTED] = keep }
+    }
+
+    suspend fun setHighContrastAccessibility(enabled: Boolean) {
+        context.wesalDataStore.edit { it[Keys.HIGH_CONTRAST_ACCESSIBILITY] = enabled }
+    }
+
+    suspend fun setSecurityNotificationsEnabled(enabled: Boolean) {
+        context.wesalDataStore.edit { it[Keys.SECURITY_NOTIFS] = enabled }
+    }
+
+    suspend fun toggleLockedChat(chatId: String, locked: Boolean) {
+        if (chatId.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val current = decodeStringList(prefs[Keys.LOCKED_CHAT_IDS_JSON]).toMutableSet()
+            if (locked) current.add(chatId) else current.remove(chatId)
+            prefs[Keys.LOCKED_CHAT_IDS_JSON] = json.encodeToString(current.toList())
+        }
+    }
+
+    suspend fun toggleArchivedStory(storyId: String, archived: Boolean) {
+        if (storyId.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val current = decodeStringList(prefs[Keys.ARCHIVED_STORY_IDS_JSON]).toMutableSet()
+            if (archived) current.add(storyId) else current.remove(storyId)
+            prefs[Keys.ARCHIVED_STORY_IDS_JSON] = json.encodeToString(current.toList())
+        }
+    }
+
+    suspend fun toggleStarredMessage(entryKey: String) {
+        if (entryKey.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val current = decodeStringList(prefs[Keys.STARRED_MESSAGES_JSON]).toMutableList()
+            if (entryKey in current) current.remove(entryKey) else current.add(0, entryKey)
+            prefs[Keys.STARRED_MESSAGES_JSON] = json.encodeToString(current.take(200))
+        }
+    }
+
+    suspend fun recordBackupTimestamp(ts: Long = System.currentTimeMillis()) {
+        context.wesalDataStore.edit { it[Keys.LAST_BACKUP_AT] = ts }
+    }
+
+    suspend fun setSubscriptionPrices(monthly: String, yearly: String) {
+        context.wesalDataStore.edit { prefs ->
+            if (monthly.isNotBlank()) prefs[Keys.SUB_MONTHLY_PRICE] = monthly.trim()
+            if (yearly.isNotBlank()) prefs[Keys.SUB_YEARLY_PRICE] = yearly.trim()
+        }
     }
 }

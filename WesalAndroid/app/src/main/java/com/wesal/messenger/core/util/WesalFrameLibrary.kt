@@ -13,7 +13,6 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -392,32 +391,31 @@ object WesalFrameLibrary {
         check(snap.exists()) { "لم يتم حفظ الإطار على Firebase" }
     }
 
-    /** Makes the image transparent, stores it in Firebase Storage (data: fallback) and returns (url, glow). */
+    /** Makes the image transparent and stores compact Base64 data URI directly in Firestore (no Storage dependency). */
     private suspend fun processAndStore(ctx: Context, uri: Uri, name: String): Pair<String, Long> = withContext(Dispatchers.IO) {
-        val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 640)
+        val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 512)
             ?: error("تعذر قراءة الصورة")
         val clean = FrameImageProcessor.makeBackgroundTransparent(bmp)
         val glow = FrameImageProcessor.dominantGlow(clean)
         val out = ByteArrayOutputStream()
         clean.compress(Bitmap.CompressFormat.PNG, 100, out)
         var bytes = out.toByteArray()
-        val storageUrl = runCatching {
-            val ref = FirebaseStorage.getInstance().reference.child("frame_library/$name.png")
-            val meta = com.google.firebase.storage.StorageMetadata.Builder().setContentType("image/png").build()
-            ref.putBytes(bytes, meta).await()
-            ref.downloadUrl.await().toString()
-        }.getOrNull()
-        if (!storageUrl.isNullOrBlank()) return@withContext storageUrl to glow
-        // Fallback: keep it inside Firestore (must stay well under the 1 MB document limit)
-        var side = 480
+        var side = 460
         var bm = clean
-        while (bytes.size > 600_000 && side >= 200) {
-            val sc = side.toFloat() / maxOf(bm.width, bm.height)
-            bm = Bitmap.createScaledBitmap(clean, (clean.width * sc).toInt().coerceAtLeast(1), (clean.height * sc).toInt().coerceAtLeast(1), true)
-            val o2 = ByteArrayOutputStream(); bm.compress(Bitmap.CompressFormat.PNG, 100, o2); bytes = o2.toByteArray()
-            side -= 80
+        while (bytes.size > 560_000 && side >= 180) {
+            val sc = side.toFloat() / maxOf(clean.width, clean.height).coerceAtLeast(1)
+            bm = Bitmap.createScaledBitmap(
+                clean,
+                (clean.width * sc).toInt().coerceAtLeast(1),
+                (clean.height * sc).toInt().coerceAtLeast(1),
+                true
+            )
+            val o2 = ByteArrayOutputStream()
+            bm.compress(Bitmap.CompressFormat.PNG, 100, o2)
+            bytes = o2.toByteArray()
+            side -= 70
         }
-        check(bytes.size <= 800_000) { "حجم الإطار كبير جدًا" }
+        check(bytes.size <= 760_000) { "حجم الإطار كبير جدًا؛ يرجى اختيار صورة أصغر" }
         ("data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)) to glow
     }
 
@@ -426,14 +424,7 @@ object WesalFrameLibrary {
             ?: error("تعذر قراءة ملف GIF")
         val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 256)
         val glow = bmp?.let { FrameImageProcessor.dominantGlow(it) } ?: 0xFF00D9E8L
-        val storageUrl = runCatching {
-            val ref = FirebaseStorage.getInstance().reference.child("frame_library/$name.gif")
-            val meta = com.google.firebase.storage.StorageMetadata.Builder().setContentType("image/gif").build()
-            ref.putBytes(bytes, meta).await()
-            ref.downloadUrl.await().toString()
-        }.getOrNull()
-        if (!storageUrl.isNullOrBlank()) return@withContext storageUrl to glow
-        check(bytes.size <= 780_000) { "حجم الصورة المتحركة كبير جدًا للتخزين الاحتياطي" }
+        check(bytes.size <= 760_000) { "حجم الصورة المتحركة كبير جدًا للتخزين داخل Firestore" }
         ("data:image/gif;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)) to glow
     }
 }

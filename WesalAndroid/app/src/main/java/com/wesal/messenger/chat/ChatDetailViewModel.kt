@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatPreview
+import com.wesal.messenger.domain.model.DisappearingTimer
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.WesalMessage
 import com.wesal.messenger.domain.model.WesalUser
@@ -135,6 +136,8 @@ class ChatDetailViewModel @Inject constructor(
                             peerLastSeen = peer.lastSeen,
                             peerVerified = peer.isVerified,
                             peerVerificationType = peer.verificationType,
+                            peerVerificationGlowEnabled = peer.verificationGlowEnabled,
+                            peerVerificationGlowIntensity = peer.verificationGlowIntensity,
                             peerFrameId = peer.frameId,
                             peerFrameExpiresAt = peer.frameExpiresAt,
                             peerIconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(peer.iconId, peer.iconUrl),
@@ -424,25 +427,34 @@ class ChatDetailViewModel @Inject constructor(
                 waveform = upload.waveform,
                 caption = upload.caption,
                 isViewOnce = upload.isViewOnce
-            ).collect { res ->
-                res.onSuccess { progress ->
-                    if (progress >= 1.0f) {
-                        _pendingUploads.update { list -> list.filterNot { it.id == upload.id } }
-                    } else {
-                        _pendingUploads.update { list ->
-                            list.map { if (it.id == upload.id) it.copy(progress = progress) else it }
-                        }
-                    }
-                }.onFailure { err ->
+            )
+                .catch { err ->
                     val errText = err.localizedMessage ?: "فشل الإرسال"
                     _toastMessage.value = errText
-                    _pendingUploads.update { list ->
-                        list.map {
-                            if (it.id == upload.id) it.copy(error = errText) else it
+                    _pendingUploads.update { list -> list.filterNot { it.id == upload.id } }
+                }
+                .onCompletion {
+                    _pendingUploads.update { list -> list.filterNot { it.id == upload.id && it.error == null } }
+                }
+                .collect { res ->
+                    res.onSuccess { progress ->
+                        if (progress >= 1.0f) {
+                            _pendingUploads.update { list -> list.filterNot { it.id == upload.id } }
+                        } else {
+                            _pendingUploads.update { list ->
+                                list.map { if (it.id == upload.id) it.copy(progress = progress) else it }
+                            }
+                        }
+                    }.onFailure { err ->
+                        val errText = err.localizedMessage ?: "فشل الإرسال"
+                        _toastMessage.value = errText
+                        _pendingUploads.update { list ->
+                            list.map {
+                                if (it.id == upload.id) it.copy(error = errText) else it
+                            }
                         }
                     }
                 }
-            }
         }
     }
 
@@ -661,9 +673,54 @@ class ChatDetailViewModel @Inject constructor(
         }
     }
 
-    fun sendLocation(lat: Double, lng: Double, address: String) {
+    fun sendLocation(lat: Double, lng: Double, address: String, liveDurationMinutes: Int = 0) {
         viewModelScope.launch {
-            chatRepository.sendLocationMessage(chatId, lat, lng, address)
+            chatRepository.sendLocationMessage(chatId, lat, lng, address, liveDurationMinutes)
+                .onSuccess {
+                    if (liveDurationMinutes > 0) {
+                        _toastMessage.value = "تمت مشاركة الموقع المباشر لمدة $liveDurationMinutes دقيقة"
+                    }
+                }
+                .onFailure {
+                    _toastMessage.value = it.localizedMessage ?: "تعذر إرسال الموقع"
+                }
+        }
+    }
+
+    fun setDisappearingTimer(timer: DisappearingTimer) {
+        viewModelScope.launch {
+            chatRepository.setChatDisappearingTimer(chatId, timer.seconds)
+                .onSuccess {
+                    _toastMessage.value = if (timer == DisappearingTimer.OFF) {
+                        "تم إيقاف مؤقت اختفاء الرسائل"
+                    } else {
+                        "الرسائل الجديدة ستختفي بعد ${timer.labelAr}"
+                    }
+                }
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث المؤقت" }
+        }
+    }
+
+    fun toggleStarMessage(msg: WesalMessage) {
+        val summary = msg.text.ifBlank { "[${msg.type.raw}] ${msg.mediaFileName}" }.take(80)
+        viewModelScope.launch {
+            prefs.toggleStarredMessage("${chatId}|${msg.messageId}|$summary")
+            _toastMessage.value = "تم تحديث الرسائل المميزة بنجمة ✓"
+        }
+    }
+
+    fun decideMessageRequest(decision: String, onRejectedDone: () -> Unit = {}) {
+        val peerUid = chatPreview.value?.peerUid.orEmpty()
+        viewModelScope.launch {
+            chatRepository.setMessageRequestDecision(chatId, peerUid, decision)
+                .onSuccess {
+                    when (decision.uppercase()) {
+                        "ACCEPTED" -> _toastMessage.value = "تم قبول المحادثة ✓"
+                        "HELD" -> _toastMessage.value = "تم تعليق الطلب"
+                        else -> onRejectedDone()
+                    }
+                }
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الطلب" }
         }
     }
 

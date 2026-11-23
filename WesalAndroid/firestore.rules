@@ -137,7 +137,7 @@ service cloud.firestore {
     match /wesal_id_index/{numId} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn();
-      allow delete: if isAdminOrMod();
+      allow delete: if isAdminOrMod() || (isSignedIn() && resource.data.uid == request.auth.uid);
     }
 
     match /phone_uniqueness/{pHash} {
@@ -359,6 +359,36 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
       allow read, update: if isAdminOrMod();
       allow delete: if false;
+    }
+
+    // Contact Label Lists
+    match /contact_lists/{listId} {
+      allow read: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Events & RSVPs
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.creatorUid == request.auth.uid;
+      allow update: if isSignedIn() && (
+        resource.data.creatorUid == request.auth.uid ||
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participantUids'])
+      );
+      allow delete: if isAdminOrMod() || (isSignedIn() && resource.data.creatorUid == request.auth.uid);
+    }
+
+    // Scheduled Calls
+    match /scheduled_calls/{scheduleId} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn() &&
+        request.resource.data.creatorUid == request.auth.uid &&
+        request.auth.uid in request.resource.data.participants;
+      allow update, delete: if isSignedIn() && (
+        resource.data.creatorUid == request.auth.uid ||
+        request.auth.uid in resource.data.participants
+      );
     }
   }
 }
