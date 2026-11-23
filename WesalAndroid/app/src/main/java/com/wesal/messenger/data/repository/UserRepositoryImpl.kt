@@ -1,5 +1,8 @@
 package com.wesal.messenger.data.repository
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import android.content.Context
 import android.net.Uri
 import android.os.Build
@@ -454,6 +457,9 @@ class UserRepositoryImpl @Inject constructor(
                     .limit(5)
             )
             exactNumSnap?.documents?.forEach { consider(it.toWesalUser()) }
+            numericQuery.toLongOrNull()?.let { n ->
+                getQueryCachedOrServer(usersCollection.whereEqualTo("numericId", n).limit(5))?.documents?.forEach { consider(it.toWesalUser()) }
+            }
             numericQuery.toLongOrNull()?.let { n -> getQueryCachedOrServer(usersCollection.whereEqualTo("numericId", n).limit(5))?.documents?.forEach { consider(it.toWesalUser()) } }
 
             val prefixSnap = getQueryCachedOrServer(
@@ -550,6 +556,21 @@ class UserRepositoryImpl @Inject constructor(
                         getDocCachedOrServer(ownerUid)?.let { uDoc -> considerUserDoc(hash, uDoc) }
                     }
                 }
+            }
+        }
+        distinct.filter { !matched.containsKey(it) }.chunked(20).forEach { part ->
+            coroutineScope {
+                part.map { h ->
+                    async {
+                        val lock = runCatching {
+                            firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS).document(h).get().await()
+                        }.getOrNull()
+                        val ownerUid = lock?.getString("uid").orEmpty()
+                        if (ownerUid.isNotBlank() && ownerUid != currentUid) {
+                            getDocCachedOrServer(ownerUid)?.let { considerUserDoc(h, it) }
+                        }
+                    }
+                }.awaitAll()
             }
         }
         return matched
@@ -1659,6 +1680,12 @@ class UserRepositoryImpl @Inject constructor(
 
         // 2. Numeric WESAL ID (10000..1000000 + 1001)
         val numQ = WesalIdUtils.extractSearchNumericIdQuery(q)
+        numQ.toLongOrNull()?.let { n ->
+            getQueryCachedOrServer(usersCol.whereEqualTo("numericId", n).limit(5))?.documents?.forEach {
+                val u = it.toWesalUser(includePrivateUnredacted = true)
+                results[u.uid] = u
+            }
+        }
         if (numQ.isNotBlank()) {
             getQueryCachedOrServer(usersCol.whereEqualTo("numericId", numQ).limit(5))?.documents?.forEach {
                 val u = it.toWesalUser(includePrivateUnredacted = true)
