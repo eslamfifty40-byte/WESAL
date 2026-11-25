@@ -127,7 +127,7 @@ class CallActivity : AppCompatActivity() {
                         callStatusLabel == strings.ringingCall &&
                         connState != PeerConnection.PeerConnectionState.CONNECTED
                     ) {
-                        val toneGen = runCatching { ToneGenerator(AudioManager.STREAM_VOICE_CALL, 65) }.getOrNull()
+                        val toneGen = runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 100) }.getOrNull()
                         try {
                             while (isActive) {
                                 runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_RINGTONE, 1000) }

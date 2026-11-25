@@ -191,8 +191,8 @@ class IncomingCallActivity : AppCompatActivity() {
             val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
             ringtone = RingtoneManager.getRingtone(this, uri)?.apply {
                 audioAttributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_REQUEST)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build()
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     isLooping = true

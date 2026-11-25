@@ -43,7 +43,7 @@ fun AccountSwitcherDialog(onSignOut: () -> Unit) {
         val palette = WesalColors.current
         val strings = LocalWesalStrings.current
         val me = FirebaseAuth.getInstance().currentUser
-        val accounts = remember {
+        val accounts = remember(AccountSwitcherState.show) {
             val cur = loadAccounts(ctx).toMutableList()
             if (me != null) {
                 cur.removeAll { it.firstOrNull() == me.uid }
