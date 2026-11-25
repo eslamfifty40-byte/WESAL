@@ -386,7 +386,7 @@ fun WesalAvatar(
                                 detectedCutout && activeFrame != null -> Modifier.graphicsLayer {
                                     scaleX = 1.16f
                                     scaleY = 1.16f
-                                    translationY = -size.toPx() * 0.04f
+                                    translationY = -this.size.height * 0.04f
                                 }
                                 activeFrame != null -> Modifier.graphicsLayer {
                                     scaleX = 1.08f
