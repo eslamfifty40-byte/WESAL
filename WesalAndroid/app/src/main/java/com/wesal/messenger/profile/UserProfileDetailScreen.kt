@@ -65,6 +65,7 @@ import com.wesal.messenger.media.FullscreenImageViewer
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
+import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -333,7 +334,11 @@ fun UserProfileDetailScreen(
     val target = peer
     val showAvatar = target != null &&
         target.photoUrl.isNotBlank() &&
+        !target.privacySettings.hideAvatarPhoto &&
         target.privacySettings.profilePhotoVisibility != PrivacyVisibility.NOBODY
+    val showCover = target != null &&
+        target.coverUrl.isNotBlank() &&
+        !target.privacySettings.hideCoverPhoto
 
     if (!fullscreenMediaUrl.isNullOrBlank()) {
         FullscreenImageViewer(imageModel = fullscreenMediaUrl!!, onClose = { fullscreenMediaUrl = null })
@@ -416,7 +421,7 @@ fun UserProfileDetailScreen(
                             ) {
                                 DropdownMenuItem(
                                     text = { Text(if (strings.isEnglish) "Share Contact" else "مشاركة جهة الاتصال", color = palette.textPrimary) },
-                                    leadingContent = { Icon(Icons.Default.Share, contentDescription = null, tint = palette.turquoise) },
+                                    leadingIcon = { Icon(Icons.Default.Share, contentDescription = null, tint = palette.turquoise) },
                                     onClick = {
                                         showTopMenu = false
                                         val shareText = buildString {
@@ -430,7 +435,7 @@ fun UserProfileDetailScreen(
                                 )
                                 DropdownMenuItem(
                                     text = { Text(if (strings.isEnglish) "Edit Name in Phonebook" else "تعديل الاسم في دفتر الهاتف", color = palette.textPrimary) },
-                                    leadingContent = { Icon(Icons.Default.Edit, contentDescription = null, tint = palette.emerald) },
+                                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, tint = palette.emerald) },
                                     onClick = {
                                         showTopMenu = false
                                         if (!contactsWritePermissions.allPermissionsGranted) {
@@ -442,7 +447,7 @@ fun UserProfileDetailScreen(
                                 )
                                 DropdownMenuItem(
                                     text = { Text(if (strings.isEnglish) "Delete from Address Book" else "حذف من دفتر العناوين", color = palette.error) },
-                                    leadingContent = { Icon(Icons.Default.PersonRemove, contentDescription = null, tint = palette.error) },
+                                    leadingIcon = { Icon(Icons.Default.PersonRemove, contentDescription = null, tint = palette.error) },
                                     onClick = {
                                         showTopMenu = false
                                         if (!contactsWritePermissions.allPermissionsGranted) {
@@ -454,7 +459,7 @@ fun UserProfileDetailScreen(
                                 )
                                 DropdownMenuItem(
                                     text = { Text(if (strings.isEnglish) "Verify Security Code" else "التحقق من رمز الأمان (E2EE)", color = palette.textPrimary) },
-                                    leadingContent = { Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = palette.turquoise) },
+                                    leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = palette.turquoise) },
                                     onClick = {
                                         showTopMenu = false
                                         showSecurityCodeDialog = true
@@ -462,7 +467,7 @@ fun UserProfileDetailScreen(
                                 )
                                 DropdownMenuItem(
                                     text = { Text(if (strings.isEnglish) "Add to List" else "إضافة إلى القائمة", color = palette.textPrimary) },
-                                    leadingContent = { Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = palette.emerald) },
+                                    leadingIcon = { Icon(Icons.Default.PlaylistAdd, contentDescription = null, tint = palette.emerald) },
                                     onClick = {
                                         showTopMenu = false
                                         showListsDialog = true
@@ -480,7 +485,7 @@ fun UserProfileDetailScreen(
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = palette.turquoise)
             }
-        } else if ((target.hiddenFromSearch && !isSuperAdmin && target.uid != viewModel.myUid) || target.deletedAt > 0L) {
+        } else if ((target.hiddenFromSearch && !isSuperAdmin && target.uid != viewModel.myUid) || target.deletedAt > 0L || target.deletedPermanent) {
             Box(Modifier.fillMaxSize().padding(padding).padding(24.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Default.PersonOff, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(56.dp))
@@ -518,7 +523,7 @@ fun UserProfileDetailScreen(
             ) {
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        if (target.coverUrl.isNotBlank()) {
+                        if (showCover) {
                             AsyncImage(
                                 model = wesalImageModel(target.coverUrl),
                                 contentDescription = null,
@@ -551,19 +556,18 @@ fun UserProfileDetailScreen(
                     }
                 }
 
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    WesalNameWithBadge(
-                        name = target.displayName.ifBlank { "@${target.publicId}" },
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    WesalRoyalNameplateBanner(
+                        displayName = target.displayName.ifBlank { "@${target.publicId}" },
+                        numericId = target.numericId,
                         isVerified = target.isVerified,
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.Bold,
                         verificationType = target.verificationType,
+                        verificationGlowColor = target.verificationGlowColor,
+                        verificationGlowEnabled = target.verificationGlowEnabled,
+                        verificationGlowIntensity = target.verificationGlowIntensity,
                         neonColor = neonColor,
                         neonGlowIntensity = neonGlow,
-                        neonEnabled = target.neonEnabled,
-                        verificationGlowEnabled = target.verificationGlowEnabled,
-                        verificationGlowIntensity = target.verificationGlowIntensity
+                        neonEnabled = target.neonEnabled
                     )
                     if (target.numericId.isNotBlank()) {
                         Surface(

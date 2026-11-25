@@ -706,6 +706,7 @@ fun PhoneLoginScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 val subtitle = listOfNotNull(
+                                    acc.email.takeIf { it.isNotBlank() },
                                     acc.numericId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
                                     acc.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }
                                 ).joinToString(" • ")

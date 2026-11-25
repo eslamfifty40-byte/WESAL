@@ -162,36 +162,48 @@ class ChannelRepositoryImpl @Inject constructor(
         val existing = runCatching { channelRef.get().await() }.getOrNull()
         val isSuperAdmin = isCurrentUserOwnerSuperAdmin()
 
+        val adminAvatarUrl = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS)
+                .whereEqualTo("numericId", Constants.OWNER_ADMIN_NUMERIC_ID)
+                .limit(1)
+                .get()
+                .await()
+                .documents
+                .firstOrNull()
+                ?.getString("photoUrl")
+                .orEmpty()
+        }.getOrDefault("")
+
         if (existing != null && existing.exists()) {
             val mapped = mapChannel(existing, currentUid)
             val existingOwner = existing.getString("ownerUid").orEmpty()
+            val existingAvatar = existing.getString("avatarUrl").orEmpty()
+            val updateFields = hashMapOf<String, Any>()
             if (isSuperAdmin && existingOwner.isNotBlank() && mapped?.moderatorIds?.contains(currentUid) != true) {
-                runCatching {
-                    channelRef.update(
-                        mapOf(
-                            "moderatorIds" to FieldValue.arrayUnion(currentUid),
-                            "subscriberIds" to FieldValue.arrayUnion(currentUid),
-                            "isOfficialTeamChannel" to true,
-                            "isVerified" to true,
-                            "verificationType" to "BLUE"
-                        )
-                    ).await()
-                }
+                updateFields["moderatorIds"] = FieldValue.arrayUnion(currentUid)
+                updateFields["subscriberIds"] = FieldValue.arrayUnion(currentUid)
+                updateFields["isOfficialTeamChannel"] = true
+                updateFields["isVerified"] = true
+                updateFields["verificationType"] = "BLUE"
             } else if (isSuperAdmin && existingOwner.isBlank()) {
-                runCatching {
-                    channelRef.update(
-                        mapOf(
-                            "ownerUid" to currentUid,
-                            "moderatorIds" to FieldValue.arrayUnion(currentUid),
-                            "subscriberIds" to FieldValue.arrayUnion(currentUid),
-                            "isOfficialTeamChannel" to true,
-                            "isVerified" to true,
-                            "verificationType" to "BLUE"
-                        )
-                    ).await()
-                }
+                updateFields["ownerUid"] = currentUid
+                updateFields["moderatorIds"] = FieldValue.arrayUnion(currentUid)
+                updateFields["subscriberIds"] = FieldValue.arrayUnion(currentUid)
+                updateFields["isOfficialTeamChannel"] = true
+                updateFields["isVerified"] = true
+                updateFields["verificationType"] = "BLUE"
             }
-            return mapped
+            if (adminAvatarUrl.isNotBlank() && (isSuperAdmin || existingAvatar.isBlank()) && existingAvatar != adminAvatarUrl) {
+                updateFields["avatarUrl"] = adminAvatarUrl
+            }
+            if (updateFields.isNotEmpty()) {
+                runCatching { channelRef.update(updateFields).await() }
+            }
+            return if (adminAvatarUrl.isNotBlank() && mapped != null && mapped.avatarUrl.isBlank()) {
+                mapped.copy(avatarUrl = adminAvatarUrl)
+            } else {
+                mapped
+            }
         }
 
         if (!isSuperAdmin) {
@@ -204,7 +216,7 @@ class ChannelRepositoryImpl @Inject constructor(
             "channelId" to Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID,
             "title" to "فريق وصال | WESAL Team",
             "description" to "القناة الرسمية لأخبار وتحديثات WESAL Messenger",
-            "avatarUrl" to "",
+            "avatarUrl" to adminAvatarUrl,
             "officialWallpaperUrl" to "",
             "isPublic" to true,
             "isOfficialTeamChannel" to true,
@@ -223,6 +235,7 @@ class ChannelRepositoryImpl @Inject constructor(
             channelId = Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID,
             title = "فريق وصال | WESAL Team",
             description = "القناة الرسمية لأخبار وتحديثات WESAL Messenger",
+            avatarUrl = adminAvatarUrl,
             isPublic = true,
             isOfficialTeamChannel = true,
             inviteCode = "WESALTEAM",

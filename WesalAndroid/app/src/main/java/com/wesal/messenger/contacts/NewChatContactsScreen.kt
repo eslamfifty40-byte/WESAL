@@ -40,6 +40,7 @@ import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.ContactRequestStatus
@@ -99,21 +100,23 @@ fun NewChatContactsScreen(
     }
 
     val trimmedQuery = state.query.trim()
+    val normQueryDigits = WesalIdUtils.normalizeDigits(trimmedQuery)
     val cleanQueryHandle = trimmedQuery.removePrefix("@")
     val filteredWesalContacts = remember(state.wesalContacts, trimmedQuery) {
         if (trimmedQuery.isBlank()) state.wesalContacts
         else state.wesalContacts.filter {
             it.deviceName.contains(trimmedQuery, ignoreCase = true) ||
                 it.user.displayName.contains(trimmedQuery, ignoreCase = true) ||
-                it.user.publicId.equals(cleanQueryHandle, ignoreCase = true) ||
-                it.user.numericId == trimmedQuery
+                it.user.publicId.contains(cleanQueryHandle, ignoreCase = true) ||
+                (normQueryDigits.isNotBlank() && it.user.numericId.contains(normQueryDigits))
         }
     }
     val filteredNonWesalContacts = remember(state.nonWesalContacts, trimmedQuery) {
         if (trimmedQuery.isBlank()) state.nonWesalContacts
         else state.nonWesalContacts.filter {
             it.displayName.contains(trimmedQuery, ignoreCase = true) ||
-                it.rawPhone.contains(trimmedQuery)
+                it.rawPhone.contains(trimmedQuery) ||
+                (normQueryDigits.isNotBlank() && WesalIdUtils.normalizeDigits(it.rawPhone).contains(normQueryDigits))
         }
     }
     val deviceMatchedUids = remember(state.wesalContacts) {
@@ -540,6 +543,7 @@ fun NewChatContactsScreen(
                                         name = user.displayName.ifBlank { "@${user.publicId}" },
                                         isVerified = user.isVerified,
                                         verificationType = user.verificationType,
+                                        verificationGlowColor = user.verificationGlowColor,
                                         verificationGlowEnabled = user.verificationGlowEnabled,
                                         verificationGlowIntensity = user.verificationGlowIntensity,
                                         modifier = Modifier.weight(1f)
@@ -818,7 +822,7 @@ fun NewChatContactsScreen(
                         if (trimmedQuery.isNotBlank()) {
                             item(key = "header_global_search") {
                                 Text(
-                                    text = if (strings.isEnglish) "Exact ID / @username Search" else "نتيجة البحث المباشر بالمعرف",
+                                    text = if (strings.isEnglish) "Global Account Search" else "نتائج البحث العام في WESAL",
                                     style = MaterialTheme.typography.titleSmall,
                                     color = palette.emerald,
                                     fontWeight = FontWeight.Bold,
@@ -829,9 +833,9 @@ fun NewChatContactsScreen(
                                 item(key = "no_exact_match") {
                                     Text(
                                         text = if (strings.isEnglish) {
-                                            "Enter an exact 5-digit WESAL ID (e.g. 10001) or exact @username to locate an account."
+                                            "No matching WESAL account found. Try a full name, @username, or numeric ID."
                                         } else {
-                                            "أدخل معرف WESAL الخماسي (5 أرقام) أو @username بالكامل للوصول للحساب المطلوب فقط."
+                                            "لم يتم العثور على حساب مطابق؛ ابحث بالاسم أو @username أو المعرّف الرقمي."
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = palette.textSecondary,
@@ -1124,6 +1128,7 @@ private fun WesalContactDirectoryRow(
                 neonColor = user.neonColor,
                 neonGlowIntensity = user.neonGlowIntensity,
                 neonEnabled = user.neonEnabled,
+                verificationGlowColor = user.verificationGlowColor,
                 verificationGlowEnabled = user.verificationGlowEnabled,
                 verificationGlowIntensity = user.verificationGlowIntensity
             )

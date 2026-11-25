@@ -133,17 +133,12 @@ class StoriesViewModel @Inject constructor(
     authRepository: AuthRepository
 ) : ViewModel() {
 
-    val myUid: String = authRepository.observeAuthState()
-        .map { it.orEmpty() }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, authRepository.currentUserId.orEmpty())
-        .let { state ->
-            // Expose as StateFlow<String>
-            state
-        }
-
     val myUidFlow: StateFlow<String> = authRepository.observeAuthState()
         .map { it.orEmpty() }
         .stateIn(viewModelScope, SharingStarted.Eagerly, authRepository.currentUserId.orEmpty())
+
+    val myUid: String
+        get() = myUidFlow.value
 
     val stories: StateFlow<List<StoryItem>> = storyRepository.observeActiveStories()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

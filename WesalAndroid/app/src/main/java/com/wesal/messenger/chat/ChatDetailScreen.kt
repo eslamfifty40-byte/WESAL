@@ -395,6 +395,7 @@ fun ChatDetailScreen(
                                 neonColor = peerUser?.neonColor ?: chat?.peerNeonColor.orEmpty(),
                                 neonGlowIntensity = peerUser?.neonGlowIntensity ?: (chat?.peerNeonGlowIntensity ?: 0.7f),
                                 neonEnabled = if (isOfficialReadOnly || chat?.isGroup == true) false else (peerUser?.neonEnabled ?: (chat?.peerNeonEnabled == true)),
+                                verificationGlowColor = peerUser?.verificationGlowColor ?: chat?.peerVerificationGlowColor.orEmpty(),
                                 verificationGlowEnabled = peerUser?.verificationGlowEnabled ?: (chat?.peerVerificationGlowEnabled ?: true),
                                 verificationGlowIntensity = peerUser?.verificationGlowIntensity ?: (chat?.peerVerificationGlowIntensity ?: 0.7f),
                                 style = MaterialTheme.typography.titleMedium,

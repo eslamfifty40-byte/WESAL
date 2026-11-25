@@ -15,6 +15,7 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFrameCatalog
@@ -96,12 +97,18 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
     val now = System.currentTimeMillis()
     val hidePhone = (privacyMap["hidePhoneNumber"] as? Boolean) ?: false
     val hideBirth = (privacyMap["hideBirthDate"] as? Boolean) ?: false
+    val hideAvatar = (privacyMap["hideAvatarPhoto"] as? Boolean) ?: false
+    val hideCover = (privacyMap["hideCoverPhoto"] as? Boolean) ?: false
     val recordVisits = (privacyMap["recordProfileVisits"] as? Boolean) ?: true
 
     val rawPhone = getString("phoneNumber").orEmpty()
     val phone = if (hidePhone && !includePrivateUnredacted) "" else rawPhone
     val rawBirth = getString("birthDate").orEmpty()
     val birthDate = if (hideBirth && !includePrivateUnredacted) "" else rawBirth
+    val rawPhoto = getString("photoUrl").orEmpty()
+    val photoUrl = if (hideAvatar && !includePrivateUnredacted) "" else rawPhoto
+    val rawCover = getString("coverUrl").orEmpty()
+    val coverUrl = if (hideCover && !includePrivateUnredacted) "" else rawCover
 
     val verificationExpiresAt = getLong("verificationExpiresAt") ?: 0L
     val rawVerified = getBoolean("isVerified") ?: false
@@ -135,6 +142,7 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         isPhoneVerified = isPhoneVerified,
         isVerified = isCurrentlyVerified,
         verificationType = getString("verificationType") ?: "BLUE",
+        verificationGlowColor = getString("verificationGlowColor").orEmpty(),
         verificationGlowEnabled = getBoolean("verificationGlowEnabled") ?: true,
         verificationGlowIntensity = (getDouble("verificationGlowIntensity")?.toFloat()) ?: 0.7f,
         verificationExpiresAt = verificationExpiresAt,
@@ -145,8 +153,8 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         publicId = getString("publicId").orEmpty(),
         numericId = getString("numericId").orEmpty(),
         bio = getString("bio") ?: "أستخدم تطبيق WESAL",
-        photoUrl = getString("photoUrl").orEmpty(),
-        coverUrl = getString("coverUrl").orEmpty(),
+        photoUrl = photoUrl,
+        coverUrl = coverUrl,
         birthDate = birthDate,
         frameId = activeFrameId,
         frameExpiresAt = frameExpiresAt,
@@ -173,6 +181,7 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         banExpiresAt = banExpiresAt,
         warningsCount = (getLong("warningsCount") ?: 0L).toInt(),
         deletedAt = getLong("deletedAt") ?: 0L,
+        deletedPermanent = getBoolean("deletedPermanent") ?: false,
         createdAt = getLong("createdAt") ?: 0L,
         lastSeen = lastSeenVal,
         lastHeartbeatAt = lastHeartbeatAt,
@@ -195,6 +204,8 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
             readReceiptsEnabled = (privacyMap["readReceiptsEnabled"] as? Boolean) ?: true,
             hidePhoneNumber = hidePhone,
             hideBirthDate = hideBirth,
+            hideAvatarPhoto = hideAvatar,
+            hideCoverPhoto = hideCover,
             recordProfileVisits = recordVisits
         )
     )
@@ -224,6 +235,8 @@ class UserRepositoryImpl @Inject constructor(
         var privatePhone = ""
         var privateVerified = false
         var privateBirthDate = ""
+        var privatePhotoUrl = ""
+        var privateCoverUrl = ""
         var numericBackfillStarted = false
 
         fun emitMerged() {
@@ -231,7 +244,17 @@ class UserRepositoryImpl @Inject constructor(
             val mergedPhone = pub.phoneNumber.ifBlank { privatePhone }
             val mergedVerified = pub.isPhoneVerified || privateVerified
             val mergedBirth = pub.birthDate.ifBlank { privateBirthDate }
-            trySend(pub.copy(phoneNumber = mergedPhone, isPhoneVerified = mergedVerified, birthDate = mergedBirth))
+            val mergedPhoto = pub.photoUrl.ifBlank { privatePhotoUrl }
+            val mergedCover = pub.coverUrl.ifBlank { privateCoverUrl }
+            trySend(
+                pub.copy(
+                    phoneNumber = mergedPhone,
+                    isPhoneVerified = mergedVerified,
+                    birthDate = mergedBirth,
+                    photoUrl = mergedPhoto,
+                    coverUrl = mergedCover
+                )
+            )
         }
 
         val pubReg = firestore.collection(Constants.COLLECTION_USERS)
@@ -262,6 +285,8 @@ class UserRepositoryImpl @Inject constructor(
                     privatePhone = snap.getString("phoneNumber").orEmpty()
                     privateVerified = snap.getBoolean("isPhoneVerified") ?: false
                     privateBirthDate = snap.getString("birthDate").orEmpty()
+                    privatePhotoUrl = snap.getString("hiddenPhotoUrl").orEmpty()
+                    privateCoverUrl = snap.getString("hiddenCoverUrl").orEmpty()
                     emitMerged()
                 }
             }
@@ -273,6 +298,7 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override fun observeUser(uid: String): Flow<WesalUser?> = callbackFlow {
+        val isSelf = uid == auth.currentUser?.uid
         val registration = firestore.collection(Constants.COLLECTION_USERS)
             .document(uid)
             .addSnapshotListener { snapshot, error ->
@@ -280,7 +306,7 @@ class UserRepositoryImpl @Inject constructor(
                     trySend(null)
                     return@addSnapshotListener
                 }
-                trySend(snapshot?.takeIf { it.exists() }?.toWesalUser())
+                trySend(snapshot?.takeIf { it.exists() }?.toWesalUser(includePrivateUnredacted = isSelf))
             }
         awaitClose { registration.remove() }
     }
@@ -295,8 +321,27 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getUserOnce(uid: String): WesalUser? {
+        val isSelf = uid == auth.currentUser?.uid
         val snap = getDocCachedOrServer(uid)
-        return if (snap != null && snap.exists()) snap.toWesalUser() else null
+        if (snap == null || !snap.exists()) return null
+        val user = snap.toWesalUser(includePrivateUnredacted = isSelf)
+        if (!isSelf) return user
+        val privSnap = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS)
+                .document(uid)
+                .collection(Constants.SUBCOLLECTION_PRIVATE)
+                .document("info")
+                .get()
+                .await()
+        }.getOrNull() ?: return user
+        if (!privSnap.exists()) return user
+        return user.copy(
+            phoneNumber = user.phoneNumber.ifBlank { privSnap.getString("phoneNumber").orEmpty() },
+            isPhoneVerified = user.isPhoneVerified || (privSnap.getBoolean("isPhoneVerified") ?: false),
+            birthDate = user.birthDate.ifBlank { privSnap.getString("birthDate").orEmpty() },
+            photoUrl = user.photoUrl.ifBlank { privSnap.getString("hiddenPhotoUrl").orEmpty() },
+            coverUrl = user.coverUrl.ifBlank { privSnap.getString("hiddenCoverUrl").orEmpty() }
+        )
     }
 
     override suspend fun ensureNumericIdAssigned(): String {
@@ -428,9 +473,9 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Strict User Search (Sec 14, 25, 31):
-     * Normal users locate accounts via numeric WESAL ID (10000..1000000) OR exact/normalized @username.
-     * Excludes hiddenFromSearch, secondary admin 10002, banned, deleted, and blocked accounts.
+     * Global Active User Search:
+     * Searches all active, non-hidden, non-banned, non-deleted accounts by displayName,
+     * @username (publicId), or numeric WESAL ID (10000..1000000).
      */
     override suspend fun searchUsers(query: String): List<WesalUser> {
         val trimmed = query.trim()
@@ -442,12 +487,18 @@ class UserRepositoryImpl @Inject constructor(
 
         fun consider(user: WesalUser) {
             if (user.uid == currentUid) return
-            if (user.hiddenFromSearch || user.deletedAt > 0L || user.isBanned) return
+            if (user.hiddenFromSearch || user.deletedAt > 0L || user.deletedPermanent || user.isBanned) return
             if (user.numericId == Constants.SECONDARY_ADMIN_NUMERIC_ID || Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true)) return
             if (meBlocked.contains(user.uid) || user.blockedUsers.contains(currentUid)) return
             results[user.uid] = user
         }
 
+        val normalizedDigits = WesalIdUtils.normalizeDigits(trimmed)
+            .removePrefix("#")
+            .removePrefix("@")
+            .removePrefix("ID:")
+            .removePrefix("id:")
+            .trim()
         val numericQuery = WesalIdUtils.extractSearchNumericIdQuery(trimmed)
         if (numericQuery.isNotBlank()) {
             val exactNumSnap = getQueryCachedOrServer(
@@ -473,7 +524,7 @@ class UserRepositoryImpl @Inject constructor(
         }
 
         val cleanHandle = WesalIdUtils.normalize(trimmed)
-        if (cleanHandle.length >= 4 && !trimmed.all { it.isDigit() }) {
+        if (cleanHandle.length >= 2) {
             val exactSnap = getQueryCachedOrServer(
                 usersCollection
                     .whereEqualTo("publicId", cleanHandle)
@@ -482,7 +533,30 @@ class UserRepositoryImpl @Inject constructor(
             exactSnap?.documents?.forEach { consider(it.toWesalUser()) }
         }
 
-        return results.values.toList()
+        // Scan recent active pool so displayName and partial @username / numericId substrings match cleanly
+        val poolSnap = getQueryCachedOrServer(
+            usersCollection
+                .orderBy("createdAt", Query.Direction.DESCENDING)
+                .limit(250)
+        ) ?: getQueryCachedOrServer(usersCollection.limit(250))
+
+        poolSnap?.documents?.forEach { doc ->
+            val u = doc.toWesalUser()
+            val nameMatch = u.displayName.contains(trimmed, ignoreCase = true)
+            val handleMatch = cleanHandle.length >= 2 && u.publicId.contains(cleanHandle, ignoreCase = true)
+            val idMatch = normalizedDigits.length >= 2 &&
+                normalizedDigits.all { it.isDigit() } &&
+                u.numericId.contains(normalizedDigits)
+            if (nameMatch || handleMatch || idMatch) {
+                consider(u)
+            }
+        }
+
+        return results.values.sortedWith(
+            compareByDescending<WesalUser> { it.numericId == normalizedDigits || (cleanHandle.isNotBlank() && it.publicId.equals(cleanHandle, ignoreCase = true)) }
+                .thenByDescending { it.isVerified }
+                .thenBy { it.displayName.lowercase() }
+        )
     }
 
     /**
@@ -636,6 +710,9 @@ class UserRepositoryImpl @Inject constructor(
                 updates["businessHours"] = businessHours.toFirestoreMap()
             }
 
+            val hideAvatar = (existingPrivacy["hideAvatarPhoto"] as? Boolean) ?: false
+            val hideCover = (existingPrivacy["hideCoverPhoto"] as? Boolean) ?: false
+
             if (photoUri != null) {
                 val isCutout = withContext(Dispatchers.IO) { hasUriAlphaChannel(context, photoUri) }
                 val uploadedAvatar = withContext(Dispatchers.IO) {
@@ -648,7 +725,7 @@ class UserRepositoryImpl @Inject constructor(
                     )
                 }
                 if (uploadedAvatar.isNotBlank()) {
-                    updates["photoUrl"] = uploadedAvatar
+                    updates["photoUrl"] = if (hideAvatar) "" else uploadedAvatar
                     val hasAlphaFlag = isCutout ||
                         uploadedAvatar.contains("image/png", ignoreCase = true) ||
                         uploadedAvatar.contains("image/webp", ignoreCase = true) ||
@@ -671,7 +748,7 @@ class UserRepositoryImpl @Inject constructor(
                     )
                 }
                 if (uploadedCover.isNotBlank()) {
-                    updates["coverUrl"] = uploadedCover
+                    updates["coverUrl"] = if (hideCover) "" else uploadedCover
                     userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
                         .set(mapOf("hiddenCoverUrl" to uploadedCover), SetOptions.merge())
                         .await()
@@ -725,6 +802,12 @@ class UserRepositoryImpl @Inject constructor(
         val updates = hashMapOf<String, Any>("uid" to uid)
         val privateUpdates = hashMapOf<String, Any>("updatedAt" to System.currentTimeMillis())
 
+        val existingSnap = runCatching { userRef.get().await() }.getOrNull()
+        @Suppress("UNCHECKED_CAST")
+        val existingPrivacy = existingSnap?.get("privacySettings") as? Map<String, Any?> ?: emptyMap()
+        val hideAvatar = (existingPrivacy["hideAvatarPhoto"] as? Boolean) ?: false
+        val hideCover = (existingPrivacy["hideCoverPhoto"] as? Boolean) ?: false
+
         var expectedAvatar: String? = null
         var expectedCover: String? = null
 
@@ -741,7 +824,7 @@ class UserRepositoryImpl @Inject constructor(
             }
             check(uploadedAvatar.isNotBlank()) { "تعذر تجهيز أو رفع الصورة الشخصية" }
             expectedAvatar = uploadedAvatar
-            updates["photoUrl"] = uploadedAvatar
+            updates["photoUrl"] = if (hideAvatar) "" else uploadedAvatar
             val isCutoutPng = hasAlphaSource ||
                 uploadedAvatar.contains("image/png", ignoreCase = true) ||
                 uploadedAvatar.contains("image/webp", ignoreCase = true) ||
@@ -762,7 +845,7 @@ class UserRepositoryImpl @Inject constructor(
             }
             check(uploadedCover.isNotBlank()) { "تعذر تجهيز أو رفع صورة الغلاف" }
             expectedCover = uploadedCover
-            updates["coverUrl"] = uploadedCover
+            updates["coverUrl"] = if (hideCover) "" else uploadedCover
             privateUpdates["hiddenCoverUrl"] = uploadedCover
         }
 
@@ -772,14 +855,18 @@ class UserRepositoryImpl @Inject constructor(
         // Read back from Firebase server to guarantee permanent persistence across restarts
         val serverSnap = userRef.get(Source.SERVER).await()
         check(serverSnap.exists()) { "تعذر التحقق من حفظ الصورة على الخادم" }
-        if (expectedAvatar != null) {
+        if (expectedAvatar != null && !hideAvatar) {
             check(serverSnap.getString("photoUrl") == expectedAvatar) { "لم يتم تثبيت الصورة الشخصية على Firebase" }
         }
-        if (expectedCover != null) {
+        if (expectedCover != null && !hideCover) {
             check(serverSnap.getString("coverUrl") == expectedCover) { "لم يتم تثبيت صورة الغلاف على Firebase" }
         }
 
-        serverSnap.toWesalUser(includePrivateUnredacted = true).let { savedUser ->
+        serverSnap.toWesalUser(includePrivateUnredacted = true).let { baseSaved ->
+            val savedUser = baseSaved.copy(
+                photoUrl = baseSaved.photoUrl.ifBlank { expectedAvatar.orEmpty() },
+                coverUrl = baseSaved.coverUrl.ifBlank { expectedCover.orEmpty() }
+            )
             val providerIds = auth.currentUser?.providerData?.map { it.providerId }.orEmpty()
             val provider = if (providerIds.contains("google.com")) "google" else "email"
             prefs.upsertSavedAccount(
@@ -885,12 +972,24 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun removeProfilePhoto(): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
-        firestore.collection(Constants.COLLECTION_USERS).document(uid).update("photoUrl", "").await()
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        userRef.update("photoUrl", "").await()
+        runCatching {
+            userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                .set(mapOf("hiddenPhotoUrl" to ""), SetOptions.merge())
+                .await()
+        }
     }
 
     override suspend fun removeProfileCover(): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
-        firestore.collection(Constants.COLLECTION_USERS).document(uid).update("coverUrl", "").await()
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        userRef.update("coverUrl", "").await()
+        runCatching {
+            userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                .set(mapOf("hiddenCoverUrl" to ""), SetOptions.merge())
+                .await()
+        }
     }
 
     override suspend fun updatePrivacySettings(settings: PrivacySettings): Result<Unit> {
@@ -904,6 +1003,8 @@ class UserRepositoryImpl @Inject constructor(
             val currentPhone = privSnap?.getString("phoneNumber").orEmpty().ifBlank { snap.getString("phoneNumber").orEmpty() }
             val currentVerified = (privSnap?.getBoolean("isPhoneVerified") ?: snap.getBoolean("isPhoneVerified")) ?: false
             val currentBirth = privSnap?.getString("birthDate").orEmpty().ifBlank { snap.getString("birthDate").orEmpty() }
+            val currentPhoto = snap.getString("photoUrl").orEmpty().ifBlank { privSnap?.getString("hiddenPhotoUrl").orEmpty() }
+            val currentCover = snap.getString("coverUrl").orEmpty().ifBlank { privSnap?.getString("hiddenCoverUrl").orEmpty() }
 
             val map = hashMapOf<String, Any>(
                 "privacySettings" to mapOf(
@@ -914,13 +1015,17 @@ class UserRepositoryImpl @Inject constructor(
                     "readReceiptsEnabled" to settings.readReceiptsEnabled,
                     "hidePhoneNumber" to settings.hidePhoneNumber,
                     "hideBirthDate" to settings.hideBirthDate,
+                    "hideAvatarPhoto" to settings.hideAvatarPhoto,
+                    "hideCoverPhoto" to settings.hideCoverPhoto,
                     "recordProfileVisits" to settings.recordProfileVisits
                 )
             )
 
+            val privateBackup = hashMapOf<String, Any>()
             if (settings.hidePhoneNumber) {
                 if (currentPhone.isNotBlank()) {
-                    privRef.set(mapOf("phoneNumber" to currentPhone, "isPhoneVerified" to currentVerified), SetOptions.merge()).await()
+                    privateBackup["phoneNumber"] = currentPhone
+                    privateBackup["isPhoneVerified"] = currentVerified
                 }
                 map["phoneNumber"] = ""
                 map["phoneHash"] = ""
@@ -932,13 +1037,34 @@ class UserRepositoryImpl @Inject constructor(
 
             if (settings.hideBirthDate) {
                 if (currentBirth.isNotBlank()) {
-                    privRef.set(mapOf("birthDate" to currentBirth), SetOptions.merge()).await()
+                    privateBackup["birthDate"] = currentBirth
                 }
                 map["birthDate"] = ""
             } else if (currentBirth.isNotBlank()) {
                 map["birthDate"] = currentBirth
             }
 
+            if (settings.hideAvatarPhoto) {
+                if (currentPhoto.isNotBlank()) {
+                    privateBackup["hiddenPhotoUrl"] = currentPhoto
+                }
+                map["photoUrl"] = ""
+            } else if (currentPhoto.isNotBlank()) {
+                map["photoUrl"] = currentPhoto
+            }
+
+            if (settings.hideCoverPhoto) {
+                if (currentCover.isNotBlank()) {
+                    privateBackup["hiddenCoverUrl"] = currentCover
+                }
+                map["coverUrl"] = ""
+            } else if (currentCover.isNotBlank()) {
+                map["coverUrl"] = currentCover
+            }
+
+            if (privateBackup.isNotEmpty()) {
+                privRef.set(privateBackup, SetOptions.merge()).await()
+            }
             docRef.set(map, SetOptions.merge()).await()
             Result.success(Unit)
         } catch (e: Exception) {
@@ -1076,20 +1202,25 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun revokeSession(sessionId: String): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
-        firestore.collection(Constants.COLLECTION_USERS)
-            .document(uid)
-            .collection(Constants.COLLECTION_SESSIONS)
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        userRef.collection(Constants.COLLECTION_SESSIONS)
             .document(sessionId)
             .delete()
             .await()
+        val remaining = runCatching {
+            userRef.collection(Constants.COLLECTION_SESSIONS).get().await()
+                .documents.count { !it.id.startsWith("link_") }
+        }.getOrDefault(1)
+        runCatching {
+            userRef.set(mapOf("activeSessionsCount" to remaining), SetOptions.merge()).await()
+        }
     }
 
     override suspend fun revokeAllOtherSessions(): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val currentSessionId = prefs.getOrCreateDeviceSessionId()
-        val snap = firestore.collection(Constants.COLLECTION_USERS)
-            .document(uid)
-            .collection(Constants.COLLECTION_SESSIONS)
+        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+        val snap = userRef.collection(Constants.COLLECTION_SESSIONS)
             .get()
             .await()
         val batch = firestore.batch()
@@ -1100,6 +1231,13 @@ class UserRepositoryImpl @Inject constructor(
             }
         }
         batch.commit().await()
+        val remaining = runCatching {
+            userRef.collection(Constants.COLLECTION_SESSIONS).get().await()
+                .documents.count { !it.id.startsWith("link_") }
+        }.getOrDefault(1)
+        runCatching {
+            userRef.set(mapOf("activeSessionsCount" to remaining), SetOptions.merge()).await()
+        }
     }
 
     override suspend fun createSessionLinkToken(): Result<String> = runCatching {
@@ -1464,6 +1602,8 @@ class UserRepositoryImpl @Inject constructor(
         userPublicId = getString("userPublicId").orEmpty(),
         requestType = getString("requestType") ?: "VERIFICATION_BLUE",
         desiredSeal = getString("desiredSeal") ?: "BLUE",
+        desiredFrameId = getString("desiredFrameId").orEmpty(),
+        desiredGlowColor = getString("desiredGlowColor").orEmpty(),
         idDocumentUrl = getString("idDocumentUrl").orEmpty(),
         note = getString("note").orEmpty(),
         status = getString("status") ?: "PENDING",
@@ -1514,12 +1654,16 @@ class UserRepositoryImpl @Inject constructor(
         requestType: String,
         desiredSeal: String,
         idUri: Uri,
-        note: String
+        note: String,
+        desiredFrameId: String,
+        desiredGlowColor: String
     ): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val me = getUserOnce(uid) ?: WesalUser(uid = uid)
         val reqId = "sub_${uid}_${System.currentTimeMillis()}"
         val validSeal = VerificationSealType.fromKey(desiredSeal).key
+        val validGlow = NeonColorPreset.fromKey(desiredGlowColor).key
+        val cleanFrame = desiredFrameId.trim()
         val idDocUrl = withContext(Dispatchers.IO) {
             uploadProfileMediaToStorageOrSmallFallback(
                 ctx = context,
@@ -1540,6 +1684,8 @@ class UserRepositoryImpl @Inject constructor(
                 "userPublicId" to me.publicId,
                 "requestType" to requestType.ifBlank { "VERIFICATION_$validSeal" },
                 "desiredSeal" to validSeal,
+                "desiredFrameId" to cleanFrame,
+                "desiredGlowColor" to validGlow,
                 "idDocumentUrl" to idDocUrl,
                 "note" to note.trim(),
                 "status" to "PENDING",
@@ -1584,8 +1730,21 @@ class UserRepositoryImpl @Inject constructor(
                 note = adminNote.ifBlank { "تمت الموافقة على طلب التوثيق" },
                 verificationType = req.desiredSeal,
                 expiresAt = 0L,
-                durationLabel = "دائم"
+                durationLabel = "دائم",
+                glowEnabled = true,
+                glowIntensity = 0.78f,
+                verificationGlowColor = req.desiredGlowColor
             ).getOrThrow()
+            if (req.desiredFrameId.isNotBlank()) {
+                runCatching {
+                    setAccountFrame(
+                        targetUid = req.userUid,
+                        frameId = req.desiredFrameId,
+                        expiresAt = 0L,
+                        durationLabel = "دائم"
+                    )
+                }
+            }
         }
 
         writeAdminActionLog(
@@ -1595,7 +1754,13 @@ class UserRepositoryImpl @Inject constructor(
             targetPublicId = req.userPublicId,
             targetName = req.userName,
             note = adminNote.trim(),
-            details = if (approved) "الموافقة على طلب توثيق (${req.desiredSeal})" else "رفض طلب توثيق"
+            details = if (approved) {
+                buildString {
+                    append("الموافقة على طلب توثيق (${req.desiredSeal})")
+                    if (req.desiredGlowColor.isNotBlank()) append(" • هالة: ${req.desiredGlowColor}")
+                    if (req.desiredFrameId.isNotBlank()) append(" • إطار: ${req.desiredFrameId}")
+                }
+            } else "رفض طلب توثيق"
         )
     }
 
@@ -1645,7 +1810,23 @@ class UserRepositoryImpl @Inject constructor(
                 .get()
                 .await()
         }.getOrNull() ?: return emptyList()
-        return snap.documents.map { it.toWesalUser(includePrivateUnredacted = true) }
+        val byUid = linkedMapOf<String, WesalUser>()
+        // Always ensure Super Admin 10001 appears at the top of the list even if older than the limit window
+        runCatching {
+            firestore.collection(Constants.COLLECTION_USERS)
+                .whereEqualTo("numericId", Constants.OWNER_ADMIN_NUMERIC_ID)
+                .limit(2)
+                .get()
+                .await()
+        }.getOrNull()?.documents?.forEach { doc ->
+            val u = doc.toWesalUser(includePrivateUnredacted = true)
+            byUid[u.uid] = u
+        }
+        snap.documents.forEach { doc ->
+            val u = doc.toWesalUser(includePrivateUnredacted = true)
+            byUid.putIfAbsent(u.uid, u)
+        }
+        return byUid.values.toList()
     }
 
     override suspend fun adminSearchUsers(query: String): List<WesalUser> {
@@ -1755,7 +1936,7 @@ class UserRepositoryImpl @Inject constructor(
             activeWeekCount = users.count { it.lastSeen > 0 && now - it.lastSeen <= 7 * dayMs },
             activeMonthCount = users.count { it.lastSeen > 0 && now - it.lastSeen <= 30 * dayMs },
             bannedCount = users.count { it.isBanned },
-            deletedCount = users.count { it.deletedAt > 0L },
+            deletedCount = users.count { it.deletedAt > 0L || it.deletedPermanent },
             hiddenCount = users.count { it.hiddenFromSearch },
             verifiedCount = users.count { it.isVerified }
         )
@@ -1769,7 +1950,8 @@ class UserRepositoryImpl @Inject constructor(
         expiresAt: Long,
         durationLabel: String,
         glowEnabled: Boolean,
-        glowIntensity: Float
+        glowIntensity: Float,
+        verificationGlowColor: String
     ): Result<Unit> = runCatching {
         val admin = auth.currentUser ?: error("Not authenticated")
         val perms = getCurrentAdminPermissions()
@@ -1779,16 +1961,24 @@ class UserRepositoryImpl @Inject constructor(
         val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val targetSnap = targetRef.get().await()
         require(targetSnap.exists()) { "الحساب غير موجود" }
+        val targetUser = targetSnap.toWesalUser(includePrivateUnredacted = true)
+        if (!perms.isFullSuperAdmin) {
+            require(!Constants.isProtectedAdminNumericId(targetUser.numericId) && !Constants.isSuperAdminEmail(targetUser.email)) {
+                "لا يمكن تعديل حساب الإدارة الأساسي إلا من المشرف الأعلى"
+            }
+        }
 
         val safeType = VerificationSealType.fromKey(verificationType).key
+        val safeGlowColor = NeonColorPreset.fromKey(verificationGlowColor).key
         val actionName = if (verified) "GRANTED" else "REVOKED"
         // Operation ID bucketed gently to prevent accidental duplicate write from rapid double-tap retries
         val opBucket = now / 5000L
-        val operationId = "ver_${targetUid}_${actionName}_${safeType}_${expiresAt}_$opBucket"
+        val operationId = "ver_${targetUid}_${actionName}_${safeType}_${safeGlowColor}_${expiresAt}_$opBucket"
 
         val updates = hashMapOf<String, Any>(
             "isVerified" to verified,
             "verificationType" to safeType,
+            "verificationGlowColor" to if (verified) safeGlowColor else "",
             "verificationGlowEnabled" to glowEnabled,
             "verificationGlowIntensity" to glowIntensity.coerceIn(0.15f, 1.0f).toDouble(),
             "verificationExpiresAt" to if (verified) expiresAt else 0L,
@@ -1798,9 +1988,9 @@ class UserRepositoryImpl @Inject constructor(
         )
         targetRef.set(updates, SetOptions.merge()).await()
 
-        val targetNum = targetSnap.getString("numericId").orEmpty()
-        val targetPub = targetSnap.getString("publicId").orEmpty()
-        val targetName = targetSnap.getString("displayName").orEmpty()
+        val targetNum = targetUser.numericId
+        val targetPub = targetUser.publicId
+        val targetName = targetUser.displayName
         val logData = mapOf(
             "logId" to operationId,
             "operationId" to operationId,
@@ -1815,7 +2005,12 @@ class UserRepositoryImpl @Inject constructor(
             "adminUid" to admin.uid,
             "adminEmail" to (admin.email ?: Constants.SUPER_ADMIN_EMAIL),
             "note" to note.trim(),
-            "details" to if (verified) "توثيق الحساب ($safeType) - ${durationLabel.ifBlank { "دائم" }}" else "إلغاء التوثيق",
+            "details" to if (verified) {
+                buildString {
+                    append("توثيق الحساب ($safeType) - ${durationLabel.ifBlank { "دائم" }}")
+                    if (safeGlowColor.isNotBlank()) append(" • وهج: $safeGlowColor")
+                }
+            } else "إلغاء التوثيق",
             "timestamp" to now
         )
         firestore.collection(Constants.COLLECTION_VERIFICATION_LOGS)
@@ -1835,6 +2030,12 @@ class UserRepositoryImpl @Inject constructor(
         val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = targetRef.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
+        val targetUser = snap.toWesalUser(includePrivateUnredacted = true)
+        if (!perms.isFullSuperAdmin) {
+            require(!Constants.isProtectedAdminNumericId(targetUser.numericId) && !Constants.isSuperAdminEmail(targetUser.email)) {
+                "لا يمكن تعديل إطار الإدارة إلا من المشرف الأعلى"
+            }
+        }
 
         targetRef.set(
             mapOf(
@@ -1848,9 +2049,9 @@ class UserRepositoryImpl @Inject constructor(
         writeAdminActionLog(
             action = if (frameId.isBlank()) "FRAME_REMOVED" else "FRAME_GRANTED",
             targetUid = targetUid,
-            targetNumericId = snap.getString("numericId").orEmpty(),
-            targetPublicId = snap.getString("publicId").orEmpty(),
-            targetName = snap.getString("displayName").orEmpty(),
+            targetNumericId = targetUser.numericId,
+            targetPublicId = targetUser.publicId,
+            targetName = targetUser.displayName,
             durationLabel = durationLabel,
             expiresAt = expiresAt,
             details = if (frameId.isBlank()) "إزالة الإطار الشخصي" else "إهداء إطار: $frameId ($durationLabel)",
@@ -1865,6 +2066,12 @@ class UserRepositoryImpl @Inject constructor(
         val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = targetRef.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
+        val targetUser = snap.toWesalUser(includePrivateUnredacted = true)
+        if (!perms.isFullSuperAdmin) {
+            require(!Constants.isProtectedAdminNumericId(targetUser.numericId) && !Constants.isSuperAdminEmail(targetUser.email)) {
+                "لا يمكن تعديل أيقونة الإدارة إلا من المشرف الأعلى"
+            }
+        }
 
         val cleanId = iconId.trim()
         val resolvedUrl = if (cleanId.isBlank()) "" else iconUrl.trim().ifBlank { WesalFrameLibrary.resolveIconUrl(cleanId) }
@@ -1879,9 +2086,9 @@ class UserRepositoryImpl @Inject constructor(
         writeAdminActionLog(
             action = if (cleanId.isBlank()) "ICON_REMOVED" else "ICON_GRANTED",
             targetUid = targetUid,
-            targetNumericId = snap.getString("numericId").orEmpty(),
-            targetPublicId = snap.getString("publicId").orEmpty(),
-            targetName = snap.getString("displayName").orEmpty(),
+            targetNumericId = targetUser.numericId,
+            targetPublicId = targetUser.publicId,
+            targetName = targetUser.displayName,
             details = if (cleanId.isBlank()) "إزالة أيقونة الحساب" else "تعيين أيقونة الحساب: $cleanId"
         )
     }
@@ -1994,6 +2201,12 @@ class UserRepositoryImpl @Inject constructor(
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = ref.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
+        val targetUser = snap.toWesalUser(includePrivateUnredacted = true)
+        if (!perms.isFullSuperAdmin) {
+            require(!Constants.isProtectedAdminNumericId(targetUser.numericId) && !Constants.isSuperAdminEmail(targetUser.email)) {
+                "لا يمكن تعديل نيون الإدارة إلا من المشرف الأعلى"
+            }
+        }
 
         val cleanColor = if (enabled) neonColor.trim() else ""
         val effectiveEnabled = enabled && cleanColor.isNotBlank()
@@ -2010,9 +2223,9 @@ class UserRepositoryImpl @Inject constructor(
         writeAdminActionLog(
             action = "NEON_UPDATED",
             targetUid = targetUid,
-            targetNumericId = snap.getString("numericId").orEmpty(),
-            targetPublicId = snap.getString("publicId").orEmpty(),
-            targetName = snap.getString("displayName").orEmpty(),
+            targetNumericId = targetUser.numericId,
+            targetPublicId = targetUser.publicId,
+            targetName = targetUser.displayName,
             details = if (!effectiveEnabled) "إيقاف النيون" else "نيون: $cleanColor (${(safeGlow * 100).toInt()}%)"
         )
     }
@@ -2024,6 +2237,12 @@ class UserRepositoryImpl @Inject constructor(
         val ref = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
         val snap = ref.get().await()
         require(snap.exists()) { "الحساب غير موجود" }
+        val targetUser = snap.toWesalUser(includePrivateUnredacted = true)
+        if (!perms.isFullSuperAdmin) {
+            require(!Constants.isProtectedAdminNumericId(targetUser.numericId) && !Constants.isSuperAdminEmail(targetUser.email)) {
+                "لا يمكن تعديل ظهور حساب الإدارة المحمي"
+            }
+        }
 
         val now = System.currentTimeMillis()
         ref.set(
@@ -2320,7 +2539,71 @@ class UserRepositoryImpl @Inject constructor(
                 }
         }
 
-        ref.delete().await()
+        val now = System.currentTimeMillis()
+        val cleanReason = reason.trim().ifBlank { "تم حذف هذا الحساب نهائياً" }
+        if (user.email.isNotBlank()) {
+            val eHash = PhoneUtils.sha256Hash(user.email.trim().lowercase())
+            firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
+                .document("email_$eHash")
+                .set(
+                    mapOf(
+                        "type" to "DELETED_PERMANENT",
+                        "targetUid" to targetUid,
+                        "permanent" to true,
+                        "expiresAt" to 0L,
+                        "reason" to cleanReason,
+                        "createdAt" to now
+                    )
+                ).await()
+        }
+        if (realPhone.isNotBlank()) {
+            val pHash = PhoneUtils.sha256Hash(realPhone)
+            firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
+                .document("phone_$pHash")
+                .set(
+                    mapOf(
+                        "type" to "DELETED_PERMANENT",
+                        "targetUid" to targetUid,
+                        "permanent" to true,
+                        "expiresAt" to 0L,
+                        "reason" to cleanReason,
+                        "createdAt" to now
+                    )
+                ).await()
+        }
+
+        // Write scrubbed tombstone so deleted account stays tracked in DELETED stats/filters and cannot be recreated
+        ref.set(
+            mapOf(
+                "displayName" to "حساب محذوف",
+                "bio" to "",
+                "photoUrl" to "",
+                "coverUrl" to "",
+                "phoneNumber" to "",
+                "phoneHash" to "",
+                "birthDate" to "",
+                "email" to "",
+                "fcmToken" to "",
+                "publicKey" to "",
+                "facebookUrl" to "",
+                "instagramUrl" to "",
+                "isVerified" to false,
+                "isBanned" to false,
+                "banReason" to "",
+                "frameId" to "",
+                "iconId" to "",
+                "iconUrl" to "",
+                "neonEnabled" to false,
+                "neonColor" to "",
+                "isOnline" to false,
+                "activeSessionsCount" to 0,
+                "hiddenFromSearch" to true,
+                "deletedAt" to now,
+                "deletedPermanent" to true,
+                "lastSeen" to FieldValue.serverTimestamp()
+            ),
+            SetOptions.merge()
+        ).await()
 
         writeAdminActionLog(
             action = "USER_DELETED_PERMANENT",
@@ -2328,8 +2611,8 @@ class UserRepositoryImpl @Inject constructor(
             targetNumericId = user.numericId,
             targetPublicId = user.publicId,
             targetName = user.displayName,
-            note = reason.trim().ifBlank { "حذف الحساب نهائيًا" },
-            details = "حذف الحساب وبياناته نهائيًا بواسطة الإدارة"
+            note = cleanReason,
+            details = "حذف الحساب نهائياً وتصفية بياناته وحظر إعادة التسجيل"
         )
     }
 
@@ -2939,7 +3222,15 @@ class UserRepositoryImpl @Inject constructor(
             Constants.COLLECTION_HIDDEN_LOGS
         )
         require(collectionName in allowedCollections && logId.isNotBlank()) { "معرف سجل غير صالح" }
-        firestore.collection(collectionName).document(logId).delete().await()
+        val col = firestore.collection(collectionName)
+        runCatching { col.document(logId).delete().await() }
+        val byOp = runCatching { col.whereEqualTo("operationId", logId).get().await() }.getOrNull()
+        val matchingDocs = byOp?.documents.orEmpty().filter { it.id != logId }
+        if (matchingDocs.isNotEmpty()) {
+            val batch = firestore.batch()
+            matchingDocs.forEach { batch.delete(it.reference) }
+            batch.commit().await()
+        }
     }
 
     override suspend fun clearAuditLogs(collectionName: String): Result<Unit> = runCatching {
@@ -2951,10 +3242,12 @@ class UserRepositoryImpl @Inject constructor(
             Constants.COLLECTION_HIDDEN_LOGS
         )
         require(collectionName in allowedCollections) { "سجل غير صالح" }
-        val snap = firestore.collection(collectionName).limit(400).get().await()
-        snap.documents.chunked(380).forEach { chunk ->
+        val col = firestore.collection(collectionName)
+        while (true) {
+            val snap = col.limit(350).get().await()
+            if (snap.isEmpty) break
             val batch = firestore.batch()
-            chunk.forEach { batch.delete(it.reference) }
+            snap.documents.forEach { batch.delete(it.reference) }
             batch.commit().await()
         }
     }

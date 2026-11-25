@@ -88,6 +88,8 @@ data class PrivacySettings(
     val readReceiptsEnabled: Boolean = true,
     val hidePhoneNumber: Boolean = false,
     val hideBirthDate: Boolean = false,
+    val hideAvatarPhoto: Boolean = false,
+    val hideCoverPhoto: Boolean = false,
     val recordProfileVisits: Boolean = true
 )
 
@@ -164,6 +166,8 @@ data class SubscriptionRequest(
     val userPublicId: String = "",
     val requestType: String = "VERIFICATION_BLUE",
     val desiredSeal: String = "BLUE",
+    val desiredFrameId: String = "",
+    val desiredGlowColor: String = "",
     val idDocumentUrl: String = "",
     val note: String = "",
     val status: String = "PENDING", // PENDING, APPROVED, REJECTED
@@ -195,6 +199,7 @@ data class WesalUser(
     val isPhoneVerified: Boolean = false,
     val isVerified: Boolean = false,
     val verificationType: String = "BLUE", // 30 seal presets in VerificationSealType
+    val verificationGlowColor: String = "", // Optional independent halo from 30 NeonColorPreset colors
     val verificationGlowEnabled: Boolean = true,
     val verificationGlowIntensity: Float = 0.7f,
     val verificationExpiresAt: Long = 0L, // 0 = permanent
@@ -235,6 +240,7 @@ data class WesalUser(
     val banExpiresAt: Long = 0L,
     val warningsCount: Int = 0,
     val deletedAt: Long = 0L,
+    val deletedPermanent: Boolean = false,
     val createdAt: Long = 0L,
     val lastSeen: Long = 0L,
     val lastHeartbeatAt: Long = 0L,
@@ -466,6 +472,7 @@ data class ChatPreview(
     val peerLastSeen: Long = 0L,
     val peerVerified: Boolean = false,
     val peerVerificationType: String = "BLUE",
+    val peerVerificationGlowColor: String = "",
     val peerVerificationGlowEnabled: Boolean = true,
     val peerVerificationGlowIntensity: Float = 0.7f,
     val peerFrameId: String = "",

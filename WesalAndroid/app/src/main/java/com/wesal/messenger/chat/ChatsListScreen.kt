@@ -335,6 +335,7 @@ fun ChatsListScreen(
                     name = chat.title,
                     isVerified = chat.peerVerified || chat.isOfficialWesalChat,
                     verificationType = chat.peerVerificationType,
+                    verificationGlowColor = chat.peerVerificationGlowColor,
                     verificationGlowEnabled = chat.peerVerificationGlowEnabled,
                     verificationGlowIntensity = chat.peerVerificationGlowIntensity
                 )
@@ -853,6 +854,7 @@ fun ChatsListScreen(
                                                     name = reqChat.title,
                                                     isVerified = reqChat.peerVerified,
                                                     verificationType = reqChat.peerVerificationType,
+                                                    verificationGlowColor = reqChat.peerVerificationGlowColor,
                                                     verificationGlowEnabled = reqChat.peerVerificationGlowEnabled,
                                                     verificationGlowIntensity = reqChat.peerVerificationGlowIntensity,
                                                     fontWeight = FontWeight.Bold
@@ -1097,6 +1099,7 @@ private fun ChatRowItem(
                         neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerNeonColor else "",
                         neonGlowIntensity = chat.peerNeonGlowIntensity,
                         neonEnabled = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled,
+                        verificationGlowColor = if (chat.isOfficialWesalChat) "" else chat.peerVerificationGlowColor,
                         verificationGlowEnabled = chat.peerVerificationGlowEnabled,
                         verificationGlowIntensity = chat.peerVerificationGlowIntensity,
                         fontWeight = FontWeight.SemiBold,

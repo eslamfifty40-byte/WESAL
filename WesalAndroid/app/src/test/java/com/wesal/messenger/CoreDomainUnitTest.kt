@@ -343,10 +343,34 @@ class CoreDomainUnitTest {
         val req = com.wesal.messenger.domain.model.SubscriptionRequest(
             requestId = "r1",
             userUid = "u1",
-            desiredSeal = "GOLD"
+            desiredSeal = "GOLD",
+            desiredFrameId = "cust_01",
+            desiredGlowColor = "CYAN"
         )
         assertEquals("PENDING", req.status)
         assertEquals("GOLD", req.desiredSeal)
+        assertEquals("cust_01", req.desiredFrameId)
+        assertEquals("CYAN", req.desiredGlowColor)
+
+        val privacy = com.wesal.messenger.domain.model.PrivacySettings(
+            hideAvatarPhoto = true,
+            hideCoverPhoto = true
+        )
+        assertTrue(privacy.hideAvatarPhoto)
+        assertTrue(privacy.hideCoverPhoto)
+
+        val verifiedGlowUser = WesalUser(
+            uid = "u_glow",
+            isVerified = true,
+            verificationType = "PURPLE",
+            verificationGlowColor = "MAGENTA"
+        )
+        assertEquals("MAGENTA", verifiedGlowUser.verificationGlowColor)
+        assertEquals(
+            com.wesal.messenger.core.util.NeonColorPreset.MAGENTA,
+            com.wesal.messenger.core.util.NeonColorPreset.fromKey("magenta")
+        )
+        assertTrue(com.wesal.messenger.core.util.NeonColorPreset.entries.size >= 30)
 
         assertEquals(
             com.wesal.messenger.core.util.WesalFrameCatalog.allFrames.size,

@@ -55,6 +55,7 @@ import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.crop.CropActivity
 import com.wesal.messenger.domain.model.BusinessDayHours
@@ -70,6 +71,7 @@ import com.wesal.messenger.media.AvatarPreviewConfirmDialog
 import com.wesal.messenger.media.AvatarSourceBottomSheet
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -425,7 +427,10 @@ fun ProfileScreen(
         activeCropKind = kind
         pendingRawUri = sourceUri
         val mode = if (kind == PendingCropKind.COVER) CropActivity.MODE_COVER_16_9 else CropActivity.MODE_CIRCLE_AVATAR
-        cropLauncher.launch(AvatarCropHelper.createCropIntent(context, sourceUri, mode))
+        val activeFrameGlow = WesalFrameLibrary.resolve(user?.frameId, user?.frameExpiresAt ?: 0L)?.glow
+        val activeNeonGlow = NeonColorPreset.fromKey(user?.neonColor).takeIf { it != NeonColorPreset.NONE }?.glowColor
+        val glowHex = (activeFrameGlow ?: activeNeonGlow)?.toArgb()?.toLong()
+        cropLauncher.launch(AvatarCropHelper.createCropIntent(context, sourceUri, mode, glowColorHex = glowHex))
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -646,17 +651,17 @@ fun ProfileScreen(
             if (user != null) {
                 val activeNeon = user!!.neonColor
                 val activeGlow = user!!.neonGlowIntensity
-                WesalNameWithBadge(
-                    name = name.ifBlank { "@$publicId" },
+                WesalRoyalNameplateBanner(
+                    displayName = name.ifBlank { "@$publicId" },
+                    numericId = user?.numericId.orEmpty(),
                     isVerified = user?.isVerified == true,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = palette.textPrimary,
-                    fontWeight = FontWeight.Bold,
                     verificationType = user!!.verificationType,
+                    verificationGlowColor = user?.verificationGlowColor.orEmpty(),
+                    verificationGlowEnabled = user?.verificationGlowEnabled != false,
+                    verificationGlowIntensity = user?.verificationGlowIntensity ?: 0.7f,
                     neonColor = activeNeon,
                     neonGlowIntensity = activeGlow,
-                    neonEnabled = user?.neonEnabled != false,
-                    glowColor = WesalFrameLibrary.resolve(user?.frameId, user?.frameExpiresAt ?: 0L)?.glow
+                    neonEnabled = user?.neonEnabled != false
                 )
                 val immutableNumericId = user?.numericId.orEmpty()
                 if (immutableNumericId.isNotBlank()) {
@@ -1090,26 +1095,7 @@ fun ProfileScreen(
                 }
             }
 
-            if (!user?.email.isNullOrBlank()) {
-                Surface(
-                    color = palette.surface,
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, palette.border),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Icon(Icons.Default.Email, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
-                            Text(if (strings.isEnglish) "Email (Private)" else "البريد الإلكتروني (خاص بك)", color = palette.textSecondary)
-                        }
-                        Text(user!!.email, color = palette.textPrimary, fontWeight = FontWeight.Medium)
-                    }
-                }
-            }
+            // Email intentionally omitted from ProfileScreen per privacy requirement
 
             // International Phone Section (Sec 9: Country + Local Box, NO "رقم موثوق" icon/badge, NO OTP)
             Surface(

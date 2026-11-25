@@ -65,15 +65,61 @@ private fun Color.relativeLuminance(): Float {
     return 0.2126f * red + 0.7152f * green + 0.0722f * blue
 }
 
+enum class WesalPersonalAccentPreset(
+    val key: String,
+    val labelAr: String,
+    val labelEn: String,
+    val emeraldHex: Long,
+    val turquoiseHex: Long
+) {
+    DEFAULT("DEFAULT", "وصال الأصلي", "WESAL Classic", 0xFF00D66BL, 0xFF00D5E8L),
+    ROYAL_GOLD("ROYAL_GOLD", "ذهبي ملكي", "Royal Gold", 0xFFD97706L, 0xFFFFD54FL),
+    ELECTRIC_BLUE("ELECTRIC_BLUE", "أزرق نيون", "Electric Blue", 0xFF1D9BF0L, 0xFF38BDF8L),
+    VIOLET_COSMOS("VIOLET_COSMOS", "بنفسجي كوني", "Violet Cosmos", 0xFF8B5CF6L, 0xFFD946EFL),
+    CRIMSON_ROYAL("CRIMSON_ROYAL", "قرمزي ملكي", "Royal Crimson", 0xFFE11D48L, 0xFFFF6B6BL),
+    EMERALD_MINT("EMERALD_MINT", "زمردي منعش", "Fresh Mint", 0xFF10B981L, 0xFF14B8A6L);
+
+    companion object {
+        fun fromKey(key: String?): WesalPersonalAccentPreset =
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: DEFAULT
+    }
+}
+
+enum class WesalPersonalSurfacePreset(
+    val key: String,
+    val labelAr: String,
+    val labelEn: String,
+    val darkBgHex: Long,
+    val darkSurfaceHex: Long,
+    val darkElevatedHex: Long,
+    val lightBgHex: Long,
+    val lightSurfaceHex: Long,
+    val lightElevatedHex: Long
+) {
+    DEFAULT("DEFAULT", "افتراضي", "Default", 0xFF05090BL, 0xFF0B1115L, 0xFF131C22L, 0xFFF3F6F8L, 0xFFFFFFFFL, 0xFFE6EDF2L),
+    MIDNIGHT_NAVY("MIDNIGHT_NAVY", "أزرق ليلي", "Midnight", 0xFF060B17L, 0xFF0D1526L, 0xFF162138L, 0xFFF0F7FFL, 0xFFFFFFFFL, 0xFFE0ECFFL),
+    OBSIDIAN_EMERALD("OBSIDIAN_EMERALD", "أوبسيديان أخضر", "Forest Obsidian", 0xFF040D0AL, 0xFF091813L, 0xFF10261EL, 0xFFF0FDF4L, 0xFFFFFFFFL, 0xFFDCFCE7L),
+    VELVET_CHARCOAL("VELVET_CHARCOAL", "رمادي مخملي", "Velvet", 0xFF09090BL, 0xFF121216L, 0xFF1C1C22L, 0xFFF8FAFCL, 0xFFFFFFFFL, 0xFFE2E8F0L);
+
+    companion object {
+        fun fromKey(key: String?): WesalPersonalSurfacePreset =
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: DEFAULT
+    }
+}
+
 @Composable
 fun WesalTheme(
     darkTheme: Boolean = true,
     languageTag: String = "ar",
     fontScale: Float = 1.0f,
     globalAppearance: GlobalAppearanceConfig = GlobalAppearanceConfig(),
+    personalAccentPreset: String = "DEFAULT",
+    personalSurfacePreset: String = "DEFAULT",
     content: @Composable () -> Unit
 ) {
     val basePalette = if (darkTheme) WesalDarkPalette else WesalLightPalette
+    val accentPreset = WesalPersonalAccentPreset.fromKey(personalAccentPreset)
+    val surfacePreset = WesalPersonalSurfacePreset.fromKey(personalSurfacePreset)
     val palette = if (globalAppearance.enabled) {
         val customEmerald = safeArgbColor(globalAppearance.emeraldHex) ?: basePalette.emerald
         val customTurquoise = safeArgbColor(globalAppearance.turquoiseHex) ?: basePalette.turquoise
@@ -112,11 +158,26 @@ fun WesalTheme(
             textSecondary = textSecondary,
             iconTint = customIconTint
         )
+    } else if (accentPreset != WesalPersonalAccentPreset.DEFAULT || surfacePreset != WesalPersonalSurfacePreset.DEFAULT) {
+        val nextEmerald = if (accentPreset == WesalPersonalAccentPreset.DEFAULT) basePalette.emerald else Color(accentPreset.emeraldHex)
+        val nextTurquoise = if (accentPreset == WesalPersonalAccentPreset.DEFAULT) basePalette.turquoise else Color(accentPreset.turquoiseHex)
+        val nextBg = if (surfacePreset == WesalPersonalSurfacePreset.DEFAULT) basePalette.background else Color(if (darkTheme) surfacePreset.darkBgHex else surfacePreset.lightBgHex)
+        val nextSurface = if (surfacePreset == WesalPersonalSurfacePreset.DEFAULT) basePalette.surface else Color(if (darkTheme) surfacePreset.darkSurfaceHex else surfacePreset.lightSurfaceHex)
+        val nextElevated = if (surfacePreset == WesalPersonalSurfacePreset.DEFAULT) basePalette.surfaceElevated else Color(if (darkTheme) surfacePreset.darkElevatedHex else surfacePreset.lightElevatedHex)
+        basePalette.copy(
+            emerald = nextEmerald,
+            turquoise = nextTurquoise,
+            turquoiseSoft = nextTurquoise,
+            iconTint = nextTurquoise,
+            background = nextBg,
+            surface = nextSurface,
+            surfaceElevated = nextElevated
+        )
     } else {
         basePalette
     }
     val baseColorScheme = if (darkTheme) WesalDarkColorScheme else WesalLightColorScheme
-    val colorScheme = if (globalAppearance.enabled) {
+    val colorScheme = if (globalAppearance.enabled || accentPreset != WesalPersonalAccentPreset.DEFAULT || surfacePreset != WesalPersonalSurfacePreset.DEFAULT) {
         baseColorScheme.copy(
             primary = palette.emerald,
             secondary = palette.turquoise,

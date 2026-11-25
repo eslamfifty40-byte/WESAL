@@ -93,7 +93,7 @@ class MainViewModel @Inject constructor(
                     if (user != null) {
                         val now = System.currentTimeMillis()
                         val banActive = user.isBanned && (user.banType == "PERMANENT" || user.banExpiresAt == 0L || now <= user.banExpiresAt)
-                        if (user.deletedAt > 0L || banActive) {
+                        if (user.deletedAt > 0L || user.deletedPermanent || banActive) {
                             authRepository.signOut()
                             _startDestination.value = StartDestination.PhoneLogin
                             return@launch
@@ -119,7 +119,7 @@ class MainViewModel @Inject constructor(
                 if (user == null) return@collect
                 val now = System.currentTimeMillis()
                 val banActive = user.isBanned && (user.banType == "PERMANENT" || user.banExpiresAt == 0L || now <= user.banExpiresAt)
-                if (user.deletedAt > 0L || banActive) {
+                if (user.deletedAt > 0L || user.deletedPermanent || banActive) {
                     authRepository.signOut()
                 }
             }

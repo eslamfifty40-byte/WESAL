@@ -136,6 +136,7 @@ class ChatDetailViewModel @Inject constructor(
                             peerLastSeen = peer.lastSeen,
                             peerVerified = peer.isVerified,
                             peerVerificationType = peer.verificationType,
+                            peerVerificationGlowColor = peer.verificationGlowColor,
                             peerVerificationGlowEnabled = peer.verificationGlowEnabled,
                             peerVerificationGlowIntensity = peer.verificationGlowIntensity,
                             peerFrameId = peer.frameId,

@@ -90,7 +90,9 @@ class MainActivity : AppCompatActivity() {
                 darkTheme = settings.darkTheme,
                 languageTag = settings.languageTag,
                 fontScale = settings.fontScale,
-                globalAppearance = globalAppearance
+                globalAppearance = globalAppearance,
+                personalAccentPreset = settings.personalAccentPreset,
+                personalSurfacePreset = settings.personalSurfacePreset
             ) {
                 CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
                     if (startDest !is StartDestination.Loading) {

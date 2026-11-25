@@ -9,12 +9,14 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -26,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -50,10 +53,13 @@ import coil.compose.AsyncImage
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalPersonalAccentPreset
+import com.wesal.messenger.core.theme.WesalPersonalSurfacePreset
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.LocaleManager
+import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.data.local.AppUserSettings
@@ -121,12 +127,21 @@ class SettingsViewModel @Inject constructor(
         desiredSeal: String,
         idUri: Uri,
         note: String,
+        desiredFrameId: String = "",
+        desiredGlowColor: String = "",
         isEn: Boolean,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
             isSubmittingSubscription.value = true
-            userRepository.submitSubscriptionRequest(requestType, desiredSeal, idUri, note)
+            userRepository.submitSubscriptionRequest(
+                requestType = requestType,
+                desiredSeal = desiredSeal,
+                idUri = idUri,
+                note = note,
+                desiredFrameId = desiredFrameId,
+                desiredGlowColor = desiredGlowColor
+            )
                 .onSuccess {
                     isSubmittingSubscription.value = false
                     statusMessage.value = if (isEn) {
@@ -250,6 +265,14 @@ class SettingsViewModel @Inject constructor(
             prefs.setLanguage(tag)
             LocaleManager.setAppLanguage(tag)
         }
+    }
+
+    fun setPersonalAccentPreset(key: String) {
+        viewModelScope.launch { prefs.setPersonalAccentPreset(key) }
+    }
+
+    fun setPersonalSurfacePreset(key: String) {
+        viewModelScope.launch { prefs.setPersonalSurfacePreset(key) }
     }
 
     fun updateNotificationPrefs(messages: Boolean? = null, groups: Boolean? = null, calls: Boolean? = null, stories: Boolean? = null) {
@@ -471,18 +494,44 @@ fun SettingsScreen(
                             neonColor = activeNeonColor,
                             neonGlowIntensity = activeGlow
                         )
-                        WesalNameWithBadge(
-                            name = user?.displayName?.ifBlank { if (strings.isEnglish) "Complete your name" else "أكمل اسمك" }
-                                ?: strings.loading,
-                            isVerified = user?.isVerified == true,
-                            style = MaterialTheme.typography.titleLarge,
-                            color = palette.textPrimary,
-                            fontWeight = FontWeight.Bold,
-                            verificationType = user?.verificationType ?: "BLUE",
-                            neonColor = activeNeonColor,
-                            neonGlowIntensity = activeGlow,
-                            neonEnabled = isNeonOn
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            WesalNameWithBadge(
+                                name = user?.displayName?.ifBlank { if (strings.isEnglish) "Complete your name" else "أكمل اسمك" }
+                                    ?: strings.loading,
+                                isVerified = user?.isVerified == true,
+                                style = MaterialTheme.typography.titleLarge,
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.Bold,
+                                verificationType = user?.verificationType ?: "BLUE",
+                                verificationGlowColor = user?.verificationGlowColor.orEmpty(),
+                                verificationGlowEnabled = user?.verificationGlowEnabled != false,
+                                verificationGlowIntensity = user?.verificationGlowIntensity ?: 0.7f,
+                                neonColor = activeNeonColor,
+                                neonGlowIntensity = activeGlow,
+                                neonEnabled = isNeonOn
+                            )
+                            Surface(
+                                color = palette.emerald.copy(alpha = 0.18f),
+                                shape = CircleShape,
+                                border = BorderStroke(1.2.dp, palette.emerald),
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .clickable { showAccountsDialog = true }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = strings.switchAccount,
+                                        tint = palette.emerald,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
                         val numericLabel = user?.numericId?.takeIf { it.isNotBlank() }?.let { "ID: $it" }
                         val idLabel = user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }
                         val idLine = listOfNotNull(numericLabel, idLabel).joinToString("  •  ")
@@ -501,11 +550,10 @@ fun SettingsScreen(
                             )
                         }
                         val hiddenPhone = user?.privacySettings?.hidePhoneNumber == true
-                        val contactLine = if (hiddenPhone) {
-                            user?.email?.takeIf { it.isNotBlank() }
-                        } else {
+                        val contactLine = if (!hiddenPhone) {
                             user?.phoneNumber?.takeIf { it.isNotBlank() }
-                                ?: user?.email?.takeIf { it.isNotBlank() }
+                        } else {
+                            null
                         }
                         if (!contactLine.isNullOrBlank()) {
                             Text(
@@ -532,18 +580,6 @@ fun SettingsScreen(
         }
 
         item {
-            SettingsRow(
-                icon = Icons.Default.ManageAccounts,
-                title = strings.switchAccount,
-                subtitle = if (savedAccounts.size > 1) {
-                    if (strings.isEnglish) "${savedAccounts.size} accounts saved on this device" else "${savedAccounts.size} حسابات مسجلة على هذا الجهاز"
-                } else {
-                    if (strings.isEnglish) "Manage saved accounts or add another WESAL account" else "أضف حساب Google أو بريد إلكتروني آخر للتبديل السريع"
-                },
-                tint = palette.emerald
-            ) {
-                showAccountsDialog = true
-            }
             SettingsRow(
                 Icons.Default.AccountCircle,
                 if (strings.isEnglish) "Account & Profile" else "الحساب والملف الشخصي",
@@ -613,6 +649,104 @@ fun SettingsScreen(
                     valueRange = 0.85f..1.3f,
                     colors = SliderDefaults.colors(thumbColor = palette.turquoise, activeTrackColor = palette.emerald)
                 )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = if (strings.isEnglish) "Personal App Accent Color" else "لون التطبيق الشخصي",
+                    color = palette.textPrimary,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    WesalPersonalAccentPreset.entries.forEach { preset ->
+                        val selected = WesalPersonalAccentPreset.fromKey(appSettings.personalAccentPreset) == preset
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (selected) palette.surfaceElevated else palette.surface,
+                            border = BorderStroke(
+                                width = if (selected) 1.8.dp else 1.dp,
+                                color = if (selected) Color(preset.emeraldHex) else palette.border
+                            ),
+                            modifier = Modifier.clickable { viewModel.setPersonalAccentPreset(preset.key) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            Brush.linearGradient(
+                                                listOf(Color(preset.emeraldHex), Color(preset.turquoiseHex))
+                                            )
+                                        )
+                                )
+                                Text(
+                                    text = if (strings.isEnglish) preset.labelEn else preset.labelAr,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.textPrimary,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = if (strings.isEnglish) "Personal Background & Surface Theme" else "خلفية وأسطح الواجهة",
+                    color = palette.textPrimary,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    WesalPersonalSurfacePreset.entries.forEach { preset ->
+                        val selected = WesalPersonalSurfacePreset.fromKey(appSettings.personalSurfacePreset) == preset
+                        val swatchColor = Color(if (appSettings.darkTheme) preset.darkSurfaceHex else preset.lightSurfaceHex)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (selected) palette.surfaceElevated else palette.surface,
+                            border = BorderStroke(
+                                width = if (selected) 1.8.dp else 1.dp,
+                                color = if (selected) palette.turquoise else palette.border
+                            ),
+                            modifier = Modifier.clickable { viewModel.setPersonalSurfacePreset(preset.key) }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clip(CircleShape)
+                                        .background(swatchColor)
+                                        .border(1.dp, palette.border, CircleShape)
+                                )
+                                Text(
+                                    text = if (strings.isEnglish) preset.labelEn else preset.labelAr,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.textPrimary,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                    }
+                }
             }
             SettingsRow(
                 Icons.Default.Storage,
@@ -1117,6 +1251,14 @@ fun SettingsScreen(
                         Switch(checked = ps.hideBirthDate, onCheckedChange = { ps = ps.copy(hideBirthDate = it) })
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (strings.isEnglish) "Hide Profile Photo from Others" else "إخفاء الصورة الشخصية عن الآخرين", color = palette.textPrimary)
+                        Switch(checked = ps.hideAvatarPhoto, onCheckedChange = { ps = ps.copy(hideAvatarPhoto = it) })
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (strings.isEnglish) "Hide Cover Photo from Others" else "إخفاء صورة الغلاف عن الآخرين", color = palette.textPrimary)
+                        Switch(checked = ps.hideCoverPhoto, onCheckedChange = { ps = ps.copy(hideCoverPhoto = it) })
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text(if (strings.isEnglish) "Record Profile Visits" else "تسجيل زوار الحساب", color = palette.textPrimary)
                         Switch(checked = ps.recordProfileVisits, onCheckedChange = { ps = ps.copy(recordProfileVisits = it) })
                     }
@@ -1268,8 +1410,12 @@ fun SettingsScreen(
 
     if (showSubscriptionsDialog) {
         var selectedSeal by remember { mutableStateOf(VerificationSealType.BLUE) }
+        var selectedGlow by remember { mutableStateOf(NeonColorPreset.NONE) }
+        var selectedFrameId by remember { mutableStateOf("") }
+        var cutoutPreview by remember { mutableStateOf(user?.photoRemovedBg == true) }
         var idPhotoUri by remember { mutableStateOf<Uri?>(null) }
         var requestNote by remember { mutableStateOf("") }
+        val customerFrames = remember { WesalFrameLibrary.pickerItems("CUSTOMER", includeHiddenAndDeleted = false) }
         val idPicker = rememberLauncherForActivityResult(
             ActivityResultContracts.PickVisualMedia()
         ) { uri ->
@@ -1291,17 +1437,71 @@ fun SettingsScreen(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    Surface(
+                        color = palette.emerald.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, palette.emerald.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (strings.isEnglish) {
+                                "Preview below only. Badges, frames, and glow colors activate on your profile only after Super Admin review and approval."
+                            } else {
+                                "المعاينة أدناه للتجربة فقط؛ لا يتم تفعيل الشارة أو الإطار أو لون النيون على حسابك إلا بعد موافقة الإدارة وتوثيق الهوية."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textPrimary,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+
+                    // Live preview of requested badge + frame + glow + cutout
+                    Surface(
+                        color = palette.surfaceElevated,
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, palette.border),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            WesalAvatar(
+                                imageUrl = user?.photoUrl.orEmpty(),
+                                name = user?.displayName ?: "WESAL",
+                                size = 58.dp,
+                                frameId = selectedFrameId,
+                                frameExpiresAt = 0L,
+                                isCutout = cutoutPreview,
+                                iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
+                                neonColor = selectedGlow.key,
+                                neonGlowIntensity = 0.85f
+                            )
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                WesalNameWithBadge(
+                                    name = user?.displayName?.ifBlank { "WESAL User" } ?: "WESAL User",
+                                    isVerified = true,
+                                    verificationType = selectedSeal.key,
+                                    verificationGlowColor = selectedGlow.key,
+                                    verificationGlowEnabled = true,
+                                    verificationGlowIntensity = 0.85f,
+                                    neonColor = selectedGlow.key,
+                                    neonEnabled = selectedGlow != NeonColorPreset.NONE,
+                                    neonGlowIntensity = 0.85f,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (strings.isEnglish) "Live Preview" else "معاينة حية للطلب",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.turquoise
+                                )
+                            }
+                        }
+                    }
+
                     Text(
-                        text = if (strings.isEnglish) {
-                            "Choose your desired verification seal and attach a clear personal ID photo for admin verification."
-                        } else {
-                            "اختر شارة التوثيق المطلوبة وأرفق صورة واضحة للهوية الرسمية لإرسال الطلب لإدارة WESAL."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = palette.textSecondary
-                    )
-                    Text(
-                        text = if (strings.isEnglish) "Desired Badge:" else "الشارة المطلوبة:",
+                        text = if (strings.isEnglish) "Desired Verification Badge:" else "الشارة المطلوبة:",
                         style = MaterialTheme.typography.labelMedium,
                         color = palette.textPrimary,
                         fontWeight = FontWeight.SemiBold
@@ -1316,10 +1516,128 @@ fun SettingsScreen(
                             FilterChip(
                                 selected = selectedSeal == seal,
                                 onClick = { selectedSeal = seal },
-                                leadingIcon = { WesalVerifiedBadge(size = 16.dp, verificationType = seal.key) },
+                                leadingIcon = {
+                                    WesalVerifiedBadge(
+                                        size = 16.dp,
+                                        verificationType = seal.key,
+                                        verificationGlowColor = selectedGlow.key
+                                    )
+                                },
                                 label = { Text(if (strings.isEnglish) seal.labelEn else seal.labelAr, maxLines = 1) }
                             )
                         }
+                    }
+
+                    Text(
+                        text = if (strings.isEnglish) "Glow Color (30 Colors):" else "لون التوهج والإضاءة (30 لون):",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        NeonColorPreset.entries.forEach { preset ->
+                            val isSel = selectedGlow == preset
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSel) palette.surfaceElevated else palette.surface,
+                                border = BorderStroke(
+                                    width = if (isSel) 2.dp else 1.dp,
+                                    color = if (isSel) preset.glowColor else palette.border
+                                ),
+                                modifier = Modifier.clickable { selectedGlow = preset }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .clip(CircleShape)
+                                            .background(preset.glowColor)
+                                            .border(1.dp, palette.border, CircleShape)
+                                    )
+                                    Text(
+                                        text = if (strings.isEnglish) preset.labelEn else preset.labelAr,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textPrimary,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = if (strings.isEnglish) "Desired Frame (Optional):" else "الإطار المطلوب (اختياري):",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = selectedFrameId.isBlank(),
+                            onClick = { selectedFrameId = "" },
+                            label = { Text(if (strings.isEnglish) "No Frame" else "بدون إطار", maxLines = 1) }
+                        )
+                        customerFrames.forEach { item ->
+                            val isSel = selectedFrameId == item.id
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = palette.surfaceElevated,
+                                border = BorderStroke(
+                                    width = if (isSel) 2.dp else 1.dp,
+                                    color = if (isSel) palette.emerald else palette.border
+                                ),
+                                modifier = Modifier
+                                    .size(52.dp)
+                                    .clickable { selectedFrameId = item.id }
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(4.dp)) {
+                                    if (item.imageUrl.isNotBlank()) {
+                                        AsyncImage(
+                                            model = wesalImageModel(item.imageUrl),
+                                            contentDescription = item.title,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Fit
+                                        )
+                                    } else {
+                                        androidx.compose.foundation.Image(
+                                            painter = androidx.compose.ui.res.painterResource(id = item.resId),
+                                            contentDescription = item.title,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Fit
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (strings.isEnglish) "Preview Transparent Cutout" else "معاينة الصورة المفرغة بدون خلفية",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(checked = cutoutPreview, onCheckedChange = { cutoutPreview = it })
                     }
 
                     OutlinedButton(
@@ -1335,7 +1653,7 @@ fun SettingsScreen(
                             text = if (idPhotoUri == null) {
                                 if (strings.isEnglish) "Attach Official ID Photo (Required)" else "إرفاق صورة الهوية الرسمية (إلزامي)"
                             } else {
-                                if (strings.isEnglish) "Change Attached ID Photo" else "تغيير صورة الهوية المرفقة ✓"
+                                if (strings.isEnglish) "Change Attached ID Photo ✓" else "تغيير صورة الهوية المرفقة ✓"
                             },
                             color = palette.turquoise
                         )
@@ -1398,10 +1716,21 @@ fun SettingsScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            WesalVerifiedBadge(size = 15.dp, verificationType = req.desiredSeal)
+                                            WesalVerifiedBadge(
+                                                size = 15.dp,
+                                                verificationType = req.desiredSeal,
+                                                verificationGlowColor = req.desiredGlowColor
+                                            )
                                             Text(req.desiredSeal, color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
                                         }
                                         Text(statusLabel, color = statusColor, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                    }
+                                    val extras = listOfNotNull(
+                                        req.desiredFrameId.takeIf { it.isNotBlank() }?.let { if (strings.isEnglish) "Frame: $it" else "الإطار: $it" },
+                                        req.desiredGlowColor.takeIf { it.isNotBlank() && it != "NONE" }?.let { if (strings.isEnglish) "Glow: $it" else "التوهج: $it" }
+                                    ).joinToString(" • ")
+                                    if (extras.isNotBlank()) {
+                                        Text(extras, color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
                                     }
                                     if (req.adminResponse.isNotBlank()) {
                                         Text(
@@ -1431,6 +1760,8 @@ fun SettingsScreen(
                             desiredSeal = selectedSeal.key,
                             idUri = uri,
                             note = requestNote,
+                            desiredFrameId = selectedFrameId,
+                            desiredGlowColor = selectedGlow.key,
                             isEn = strings.isEnglish
                         ) {
                             idPhotoUri = null

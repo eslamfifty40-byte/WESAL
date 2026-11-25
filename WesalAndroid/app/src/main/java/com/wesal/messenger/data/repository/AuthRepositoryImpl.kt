@@ -78,20 +78,26 @@ class AuthRepositoryImpl @Inject constructor(
     private suspend fun isIdentifierBanned(rawEmail: String): Pair<Boolean, String> {
         val clean = rawEmail.trim().lowercase()
         if (clean.isBlank()) return false to ""
-        val emailHash = PhoneUtils.sha256Hash("email:$clean")
-        val snap = runCatching {
-            firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
-                .document(emailHash)
-                .get()
-                .await()
-        }.getOrNull() ?: return false to ""
-        if (!snap.exists()) return false to ""
+        val canonicalId = "email_${PhoneUtils.sha256Hash(clean)}"
+        val legacyId = PhoneUtils.sha256Hash("email:$clean")
+        val col = firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
+        val snap = runCatching { col.document(canonicalId).get().await() }.getOrNull()
+            ?.takeIf { it.exists() }
+            ?: runCatching { col.document(legacyId).get().await() }.getOrNull()
+                ?.takeIf { it.exists() }
+            ?: return false to ""
+        val type = snap.getString("type").orEmpty()
         val expiresAt = snap.getLong("expiresAt") ?: 0L
         val permanent = snap.getBoolean("permanent") ?: (expiresAt == 0L)
         if (!permanent && expiresAt > 0L && System.currentTimeMillis() > expiresAt) {
             return false to ""
         }
-        val reason = snap.getString("reason").orEmpty()
+        val defaultReason = if (type == "DELETED_PERMANENT") {
+            "تم حذف هذا الحساب نهائياً ولا يمكن إعادة تسجيله"
+        } else {
+            ""
+        }
+        val reason = snap.getString("reason").orEmpty().ifBlank { defaultReason }
         return true to reason
     }
 
@@ -100,7 +106,8 @@ class AuthRepositoryImpl @Inject constructor(
             firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
         }.getOrNull() ?: return
         val deletedAt = snap.getLong("deletedAt") ?: 0L
-        if (deletedAt > 0L) {
+        val deletedPermanent = snap.getBoolean("deletedPermanent") ?: false
+        if (deletedAt > 0L || deletedPermanent) {
             auth.signOut()
             throw IllegalStateException("تم حذف هذا الحساب نهائياً")
         }
@@ -455,6 +462,12 @@ class AuthRepositoryImpl @Inject constructor(
             )
             return true
         } else {
+            val deletedAt = snapshot.getLong("deletedAt") ?: 0L
+            val deletedPermanent = snapshot.getBoolean("deletedPermanent") ?: false
+            if (deletedAt > 0L || deletedPermanent) {
+                auth.signOut()
+                throw IllegalStateException("تم حذف هذا الحساب نهائياً")
+            }
             val existingName = snapshot.getString("displayName").orEmpty()
             val existingPhoto = snapshot.getString("photoUrl").orEmpty()
             val existingPublicId = snapshot.getString("publicId").orEmpty()
@@ -537,12 +550,21 @@ class AuthRepositoryImpl @Inject constructor(
                     lastUsedAt = System.currentTimeMillis()
                 )
             )
+            val resolvedName = existingName.ifBlank { suggestedName.trim() }
+            if (resolvedName.isNotBlank() && auth.currentUser?.displayName.isNullOrBlank()) {
+                runCatching {
+                    val req = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                        .setDisplayName(resolvedName)
+                        .build()
+                    auth.currentUser?.updateProfile(req)?.await()
+                }
+            }
             // Grandfathered existing completed accounts stay logged in if they already completed onboarding or have mandatory fields filled
-            val hasName = existingName.isNotBlank() || suggestedName.isNotBlank()
+            val hasName = resolvedName.isNotBlank()
             val hasPhone = effectivePhone.isNotBlank()
             val hasDob = effectiveDob.isNotBlank()
             val isComplete = when (existingCompleted) {
-                true -> hasName && hasPhone && hasDob
+                true -> hasName || (hasPhone && hasDob)
                 false -> false
                 null -> hasName && hasPhone && hasDob
             }
@@ -859,18 +881,20 @@ class AuthRepositoryImpl @Inject constructor(
                 "appVersion" to BuildConfig.VERSION_NAME,
                 "lastActiveAt" to System.currentTimeMillis()
             )
-            firestore.collection(Constants.COLLECTION_USERS)
+            val sessionsCol = firestore.collection(Constants.COLLECTION_USERS)
                 .document(uid)
                 .collection(Constants.COLLECTION_SESSIONS)
-                .document(sessionId)
-                .set(sessionData, SetOptions.merge())
-                .await()
+            sessionsCol.document(sessionId).set(sessionData, SetOptions.merge()).await()
+            val activeCount = runCatching {
+                sessionsCol.get().await().documents.count { !it.id.startsWith("link_") }
+            }.getOrDefault(1).coerceAtLeast(1)
             firestore.collection(Constants.COLLECTION_USERS)
                 .document(uid)
                 .set(
                     mapOf(
                         "lastDeviceName" to deviceName,
-                        "lastAppVersion" to BuildConfig.VERSION_NAME
+                        "lastAppVersion" to BuildConfig.VERSION_NAME,
+                        "activeSessionsCount" to activeCount
                     ),
                     SetOptions.merge()
                 ).await()
@@ -883,22 +907,24 @@ class AuthRepositoryImpl @Inject constructor(
             if (uid != null) {
                 val sessionId = prefs.getOrCreateDeviceSessionId()
                 runCatching {
-                    firestore.collection(Constants.COLLECTION_USERS)
-                        .document(uid)
-                        .update(
-                            mapOf(
-                                "isOnline" to false,
-                                "lastSeen" to FieldValue.serverTimestamp(),
-                                "lastHeartbeatAt" to 0L,
-                                "fcmToken" to ""
-                            )
-                        ).await()
-                    firestore.collection(Constants.COLLECTION_USERS)
-                        .document(uid)
-                        .collection(Constants.COLLECTION_SESSIONS)
+                    val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+                    userRef.collection(Constants.COLLECTION_SESSIONS)
                         .document(sessionId)
                         .delete()
                         .await()
+                    val remainingSessions = runCatching {
+                        userRef.collection(Constants.COLLECTION_SESSIONS).get().await()
+                            .documents.count { !it.id.startsWith("link_") }
+                    }.getOrDefault(0)
+                    userRef.update(
+                        mapOf(
+                            "isOnline" to false,
+                            "lastSeen" to FieldValue.serverTimestamp(),
+                            "lastHeartbeatAt" to 0L,
+                            "fcmToken" to "",
+                            "activeSessionsCount" to remainingSessions
+                        )
+                    ).await()
                 }
             }
 
@@ -1090,8 +1116,10 @@ class AuthRepositoryImpl @Inject constructor(
                     "facebookUrl" to "",
                     "instagramUrl" to "",
                     "isOnline" to false,
+                    "activeSessionsCount" to 0,
                     "hiddenFromSearch" to true,
                     "deletedAt" to now,
+                    "deletedPermanent" to true,
                     "lastSeen" to FieldValue.serverTimestamp()
                 ),
                 SetOptions.merge()

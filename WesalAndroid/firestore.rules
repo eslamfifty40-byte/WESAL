@@ -24,6 +24,17 @@ service cloud.firestore {
         get(/databases/$(database)/documents/moderators/$(request.auth.uid)).data.active == true;
     }
 
+    function hasModPermission(permKey) {
+      return isSuperAdmin() || (
+        isActiveModerator() &&
+        get(/databases/$(database)/documents/moderators/$(request.auth.uid)).data[permKey] == true
+      );
+    }
+
+    function isProtectedAdminTarget(uid) {
+      return uid in ['fxKvKnbnksPqZy07rQjTzxIKzzP2', 'D6Z812za9ZNUW0kAt7SaFD3a9UN2'];
+    }
+
     function isAdminOrMod() {
       return isSuperAdmin() || isActiveModerator();
     }
@@ -80,26 +91,26 @@ service cloud.firestore {
     // Delegated Moderators
     match /moderators/{modUid} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin() || hasModPermission('canManageAdmins');
     }
 
     // Global Appearance & Welcome Configuration
     match /system_config/{docId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isAdminOrMod();
+      allow create, update, delete: if isSuperAdmin() || hasModPermission('canCustomizeGlobalTheme') || hasModPermission('canBroadcastAnnouncements');
     }
 
-    // Frame / icon library managed from the admin panel (read: everyone signed in, write: admins/mods)
+    // Frame / icon library managed from the admin panel (read: everyone signed in, write: admins/authorized mods)
     match /frame_library/{frameId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isAdminOrMod();
+      allow create, update, delete: if hasModPermission('canManageLibrary') || hasModPermission('canManageFramesAndNeon');
     }
 
     // Verification & Subscription Requests
     match /subscription_requests/{reqId} {
-      allow read: if isAdminOrMod() || (isSignedIn() && resource.data.userUid == request.auth.uid);
+      allow read: if hasModPermission('canManageVerification') || hasModPermission('canManageFramesAndNeon') || (isSignedIn() && resource.data.userUid == request.auth.uid);
       allow create: if isSignedIn() && request.resource.data.userUid == request.auth.uid;
-      allow update, delete: if isAdminOrMod();
+      allow update, delete: if hasModPermission('canManageVerification') || hasModPermission('canManageFramesAndNeon');
     }
 
     // Verification & Admin & Hidden Audit Logs
@@ -126,18 +137,18 @@ service cloud.firestore {
 
     match /official_announcements/{annId} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isAdminOrMod();
+      allow create, update, delete: if isSuperAdmin() || hasModPermission('canBroadcastAnnouncements');
     }
 
     match /banned_identifiers/{idHash} {
       allow read: if isSignedIn();
-      allow create, update, delete: if isAdminOrMod();
+      allow create, update, delete: if hasModPermission('canManageUsersModeration');
     }
 
     match /wesal_id_index/{numId} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn();
-      allow delete: if isAdminOrMod() || (isSignedIn() && resource.data.uid == request.auth.uid);
+      allow delete: if isSuperAdmin() || hasModPermission('canManageUsersModeration') || (isSignedIn() && resource.data.uid == request.auth.uid);
     }
 
     match /phone_uniqueness/{pHash} {
@@ -150,24 +161,62 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isOwner(userId) &&
         !('isVerified' in request.resource.data && request.resource.data.isVerified == true) &&
-        !('verifiedByUid' in request.resource.data && request.resource.data.verifiedByUid != '');
+        !('verifiedByUid' in request.resource.data && request.resource.data.verifiedByUid != '') &&
+        !('deletedPermanent' in request.resource.data && request.resource.data.deletedPermanent == true) &&
+        !('isBanned' in request.resource.data && request.resource.data.isBanned == true);
       allow update: if (
         isOwner(userId) &&
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-          'isVerified',
-          'verifiedByUid',
-          'verifiedAt',
-          'verificationNote'
-        ])
-      ) || isAdminOrMod();
-      allow delete: if isSuperAdmin();
+        (
+          isSuperAdmin() ||
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+            'isVerified',
+            'verifiedByUid',
+            'verifiedAt',
+            'verificationNote',
+            'verificationType',
+            'verificationGlowColor',
+            'verificationGlowEnabled',
+            'verificationGlowIntensity',
+            'verificationExpiresAt',
+            'frameId',
+            'frameUrl',
+            'frameExpiresAt',
+            'iconId',
+            'iconUrl',
+            'neonEnabled',
+            'neonColor',
+            'neonGlowIntensity',
+            'adminPermissions',
+            'isBanned',
+            'banType',
+            'banReason',
+            'banExpiresAt',
+            'warningsCount',
+            'hiddenFromSearch',
+            'hideFromSearchReason',
+            'hiddenAt',
+            'hiddenByUid'
+          ])
+        )
+      ) || (
+        isSuperAdmin()
+      ) || (
+        !isProtectedAdminTarget(userId) &&
+        isActiveModerator() && (
+          hasModPermission('canManageVerification') ||
+          hasModPermission('canManageFramesAndNeon') ||
+          hasModPermission('canManageUsersModeration') ||
+          hasModPermission('canManageReports')
+        )
+      );
+      allow delete: if isSuperAdmin() && !isProtectedAdminTarget(userId);
 
       match /sessions/{sessionId} {
         allow read, write, delete: if isOwner(userId);
       }
 
       match /private/{docId} {
-        allow read, write, delete: if isOwner(userId) || isAdminOrMod();
+        allow read, write, delete: if isOwner(userId) || isSuperAdmin() || hasModPermission('canInspectPrivateData');
       }
     }
 
@@ -357,7 +406,7 @@ service cloud.firestore {
     // Abuse Reports
     match /reports/{reportId} {
       allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
-      allow read, update: if isAdminOrMod();
+      allow read, update: if isSuperAdmin() || hasModPermission('canManageReports');
       allow delete: if false;
     }
 

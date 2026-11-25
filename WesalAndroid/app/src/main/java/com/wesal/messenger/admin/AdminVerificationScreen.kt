@@ -70,6 +70,7 @@ import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
 import com.wesal.messenger.presentation.components.WesalVerifiedBadge
 import com.wesal.messenger.presentation.components.wesalImageModel
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -357,6 +358,7 @@ class AdminVerificationViewModel @Inject constructor(
         target: WesalUser,
         verified: Boolean,
         sealType: VerificationSealType,
+        verificationGlowColor: NeonColorPreset = NeonColorPreset.NONE,
         expiresAt: Long,
         durationLabel: String,
         note: String
@@ -368,6 +370,7 @@ class AdminVerificationViewModel @Inject constructor(
                 verified = verified,
                 note = note,
                 verificationType = sealType.key,
+                verificationGlowColor = if (verified) verificationGlowColor.key else "",
                 expiresAt = if (verified) expiresAt else 0L,
                 durationLabel = if (verified) durationLabel else "سحب"
             ).onSuccess {
@@ -1058,6 +1061,9 @@ fun AdminVerificationScreen(
                     channels = channels,
                     allowedSections = allowedSections,
                     myNumericId = myNumericLabel,
+                    currentAdminUser = currentUser,
+                    canCustomizeAppearance = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon,
+                    onCustomizeSelf = { u -> frameNeonTarget = u },
                     onJumpTo = { currentSection = it }
                 )
 
@@ -1098,6 +1104,9 @@ fun AdminVerificationScreen(
                         AdminUsersListSection(
                             title = "${activeUserFilter.labelAr} (${filteredUsers.size})",
                             users = filteredUsers,
+                            canVerifyUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
+                            canManageFrames = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
+                            canModerateUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageUsersModeration,
                             canDeleteUsers = adminPermissions.isFullSuperAdmin,
                             onInspect = { viewModel.inspectUser(it.uid) },
                             onVerify = { verifyTarget = it },
@@ -1133,6 +1142,9 @@ fun AdminVerificationScreen(
                     AdminUsersListSection(
                         title = "نتائج البحث الإداري الشامل (${searchResults.size})",
                         users = searchResults,
+                        canVerifyUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
+                        canManageFrames = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
+                        canModerateUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageUsersModeration,
                         canDeleteUsers = adminPermissions.isFullSuperAdmin,
                         onInspect = { viewModel.inspectUser(it.uid) },
                         onVerify = { verifyTarget = it },
@@ -1183,6 +1195,8 @@ fun AdminVerificationScreen(
                     logs = verificationLogs,
                     globalFrameEnabled = globalFrameEnabled,
                     globalAppearance = globalAppearance,
+                    canVerifyUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
+                    canManageFrames = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
                     canManageAuditLogs = isSuperAdmin,
                     onToggleGlobalFrame = viewModel::toggleGlobalCustomerFrame,
                     onSaveGlobalCustomerDefaults = viewModel::saveGlobalCustomerDefaults,
@@ -1241,6 +1255,9 @@ fun AdminVerificationScreen(
                         AdminUsersListSection(
                             title = "التحكم في إخفاء الحسابات من البحث (المخفية: ${users.count { it.hiddenFromSearch }})",
                             users = hiddenFiltered,
+                            canVerifyUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
+                            canManageFrames = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
+                            canModerateUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageUsersModeration,
                             canDeleteUsers = adminPermissions.isFullSuperAdmin,
                             onInspect = { viewModel.inspectUser(it.uid) },
                             onVerify = { verifyTarget = it },
@@ -1336,6 +1353,7 @@ fun AdminVerificationScreen(
                             name = u.displayName.ifBlank { "WESAL User" },
                             isVerified = u.isVerified,
                             verificationType = u.verificationType,
+                            verificationGlowColor = u.verificationGlowColor,
                             neonColor = u.neonColor,
                             neonGlowIntensity = u.neonGlowIntensity,
                             neonEnabled = u.neonEnabled,
@@ -1368,37 +1386,47 @@ fun AdminVerificationScreen(
                     AdminInfoLine("آخر ظهور", formatAdminTime(u.lastSeen))
 
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                        FilledTonalButton(
-                            onClick = { viewModel.dismissInspectedUser(); verifyTarget = u },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("التوثيق", maxLines = 1) }
-                        FilledTonalButton(
-                            onClick = { viewModel.dismissInspectedUser(); frameNeonTarget = u },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("إطار/أيقونة/نيون", maxLines = 1) }
+                    if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification) {
+                                FilledTonalButton(
+                                    onClick = { viewModel.dismissInspectedUser(); verifyTarget = u },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("التوثيق", maxLines = 1) }
+                            }
+                            if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary) {
+                                FilledTonalButton(
+                                    onClick = { viewModel.dismissInspectedUser(); frameNeonTarget = u },
+                                    modifier = Modifier.weight(1f)
+                                ) { Text("إطار/أيقونة/نيون", maxLines = 1) }
+                            }
+                        }
+                    }
+                    if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageUsersModeration) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                            FilledTonalButton(
+                                onClick = { viewModel.dismissInspectedUser(); warnTarget = u },
+                                modifier = Modifier.weight(1f)
+                            ) { Text("إنذار", maxLines = 1) }
+                            FilledTonalButton(
+                                onClick = {
+                                    viewModel.dismissInspectedUser()
+                                    if (u.isBanned) viewModel.unbanUser(u) else banTarget = u
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = if (u.isBanned) palette.emerald.copy(alpha = 0.16f) else palette.error.copy(alpha = 0.16f)
+                                )
+                            ) { Text(if (u.isBanned) "رفع الحظر" else "حظر", maxLines = 1) }
+                        }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                        FilledTonalButton(
-                            onClick = { viewModel.dismissInspectedUser(); warnTarget = u },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("إنذار", maxLines = 1) }
-                        FilledTonalButton(
-                            onClick = {
-                                viewModel.dismissInspectedUser()
-                                if (u.isBanned) viewModel.unbanUser(u) else banTarget = u
-                            },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.filledTonalButtonColors(
-                                containerColor = if (u.isBanned) palette.emerald.copy(alpha = 0.16f) else palette.error.copy(alpha = 0.16f)
-                            )
-                        ) { Text(if (u.isBanned) "رفع الحظر" else "حظر", maxLines = 1) }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { viewModel.dismissInspectedUser(); hideTarget = u },
-                            modifier = Modifier.weight(1f)
-                        ) { Text(if (u.hiddenFromSearch) "إظهار" else "إخفاء", maxLines = 1) }
+                        if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageUsersModeration) {
+                            OutlinedButton(
+                                onClick = { viewModel.dismissInspectedUser(); hideTarget = u },
+                                modifier = Modifier.weight(1f)
+                            ) { Text(if (u.hiddenFromSearch) "إظهار" else "إخفاء", maxLines = 1) }
+                        }
                         OutlinedButton(
                             onClick = {
                                 viewModel.dismissInspectedUser()
@@ -1437,8 +1465,8 @@ fun AdminVerificationScreen(
         AdminVerificationDialog(
             user = target,
             onDismiss = { verifyTarget = null },
-            onApply = { verified, seal, expiresAt, durationLabel, note ->
-                viewModel.applyVerification(target, verified, seal, expiresAt, durationLabel, note)
+            onApply = { verified, seal, glowColor, expiresAt, durationLabel, note ->
+                viewModel.applyVerification(target, verified, seal, glowColor, expiresAt, durationLabel, note)
                 verifyTarget = null
             }
         )
@@ -1591,6 +1619,9 @@ private fun AdminOverviewSection(
     channels: List<WesalChannel>,
     allowedSections: List<AdminSection>,
     myNumericId: String,
+    currentAdminUser: WesalUser? = null,
+    canCustomizeAppearance: Boolean = false,
+    onCustomizeSelf: (WesalUser) -> Unit = {},
     onJumpTo: (AdminSection) -> Unit
 ) {
     val palette = WesalColors.current
@@ -1609,13 +1640,23 @@ private fun AdminOverviewSection(
                     .fillMaxWidth()
                     .border(1.dp, palette.emerald.copy(alpha = 0.45f), RoundedCornerShape(18.dp))
             ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = palette.emerald)
                         Text("مركز القيادة الإداري — WESAL Messenger", color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                     }
                     Text("المعرّف النشط: WESAL ID $myNumericId • إدارة عليا 10001 / 10002", color = palette.emerald, style = MaterialTheme.typography.bodySmall)
                     Text("جميع الصلاحيات مرتبطة بالتحقق الخادمي + Firebase UID", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                    if (canCustomizeAppearance && currentAdminUser != null) {
+                        OutlinedButton(
+                            onClick = { onCustomizeSelf(currentAdminUser) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("تخصيص أيقونة وإطار ونيون حسابي الإداري (${currentAdminUser.numericId.ifBlank { myNumericId }})", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                 }
             }
         }
@@ -1747,6 +1788,9 @@ private fun AdminStatisticsSection(
 private fun AdminUsersListSection(
     title: String,
     users: List<WesalUser>,
+    canVerifyUsers: Boolean = true,
+    canManageFrames: Boolean = true,
+    canModerateUsers: Boolean = true,
     canDeleteUsers: Boolean,
     onInspect: (WesalUser) -> Unit,
     onVerify: (WesalUser) -> Unit,
@@ -1794,6 +1838,7 @@ private fun AdminUsersListSection(
                                 name = user.displayName.ifBlank { "WESAL User" },
                                 isVerified = user.isVerified,
                                 verificationType = user.verificationType,
+                                verificationGlowColor = user.verificationGlowColor,
                                 neonColor = user.neonColor,
                                 neonGlowIntensity = user.neonGlowIntensity,
                                 neonEnabled = user.neonEnabled,
@@ -1828,13 +1873,19 @@ private fun AdminUsersListSection(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         SmallAdminChip("التفاصيل", Icons.Default.Info) { onInspect(user) }
-                        SmallAdminChip("توثيق", Icons.Default.Verified) { onVerify(user) }
-                        SmallAdminChip("إطار/أيقونة/نيون", Icons.Default.AutoAwesome) { onFrameNeon(user) }
-                        SmallAdminChip("إنذار", Icons.Default.Warning) { onWarn(user) }
-                        if (!isProtected) {
-                            SmallAdminChip(if (user.isBanned) "فك حظر" else "حظر", Icons.Default.Block) { onBanToggle(user) }
+                        if (canVerifyUsers) {
+                            SmallAdminChip("توثيق", Icons.Default.Verified) { onVerify(user) }
                         }
-                        SmallAdminChip(if (user.hiddenFromSearch) "إظهار" else "إخفاء", Icons.Default.VisibilityOff) { onHideToggle(user) }
+                        if (canManageFrames) {
+                            SmallAdminChip("إطار/أيقونة/نيون", Icons.Default.AutoAwesome) { onFrameNeon(user) }
+                        }
+                        if (canModerateUsers) {
+                            SmallAdminChip("إنذار", Icons.Default.Warning) { onWarn(user) }
+                            if (!isProtected) {
+                                SmallAdminChip(if (user.isBanned) "فك حظر" else "حظر", Icons.Default.Block) { onBanToggle(user) }
+                            }
+                            SmallAdminChip(if (user.hiddenFromSearch) "إظهار" else "إخفاء", Icons.Default.VisibilityOff) { onHideToggle(user) }
+                        }
                         if (canDeleteUsers && !isProtected) {
                             SmallAdminChip("حذف", Icons.Default.DeleteForever) { onDelete(user) }
                         }
@@ -2003,7 +2054,8 @@ private fun AdminBansWarningsSection(
                                 WesalNameWithBadge(
                                     name = user.displayName.ifBlank { "@${user.publicId}" },
                                     isVerified = user.isVerified,
-                                    verificationType = user.verificationType
+                                    verificationType = user.verificationType,
+                                    verificationGlowColor = user.verificationGlowColor
                                 )
                                 Text("ID: ${user.numericId} • إنذارات: ${user.warningsCount}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
                             }
@@ -2102,6 +2154,8 @@ private fun AdminVerificationAndAppearanceSection(
     logs: List<VerificationAuditLog>,
     globalFrameEnabled: Boolean,
     globalAppearance: GlobalAppearanceConfig,
+    canVerifyUsers: Boolean = true,
+    canManageFrames: Boolean = true,
     canManageAuditLogs: Boolean,
     onToggleGlobalFrame: (Boolean) -> Unit,
     onSaveGlobalCustomerDefaults: (Boolean, String, String, String) -> Unit,
@@ -2381,6 +2435,7 @@ private fun AdminVerificationAndAppearanceSection(
                                     name = user.displayName.ifBlank { "@${user.publicId}" },
                                     isVerified = user.isVerified,
                                     verificationType = user.verificationType,
+                                    verificationGlowColor = user.verificationGlowColor,
                                     neonColor = user.neonColor,
                                     neonGlowIntensity = user.neonGlowIntensity,
                                     neonEnabled = user.neonEnabled,
@@ -2396,11 +2451,15 @@ private fun AdminVerificationAndAppearanceSection(
                                 }
                             }
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                FilledTonalButton(onClick = { onOpenVerifyDialog(user) }) {
-                                    Text(if (user.isVerified) "تعديل/سحب" else "توثيق", maxLines = 1)
+                                if (canVerifyUsers) {
+                                    FilledTonalButton(onClick = { onOpenVerifyDialog(user) }) {
+                                        Text(if (user.isVerified) "تعديل/سحب" else "توثيق", maxLines = 1)
+                                    }
                                 }
-                                OutlinedButton(onClick = { onOpenFrameNeonDialog(user) }) {
-                                    Text("إطار/أيقونة/نيون", maxLines = 1)
+                                if (canManageFrames) {
+                                    OutlinedButton(onClick = { onOpenFrameNeonDialog(user) }) {
+                                        Text("إطار/أيقونة/نيون", maxLines = 1)
+                                    }
                                 }
                             }
                         }
@@ -2824,7 +2883,8 @@ private fun AdminOnlineUsersSection(
                             WesalNameWithBadge(
                                 name = user.displayName.ifBlank { "@${user.publicId}" },
                                 isVerified = user.isVerified,
-                                verificationType = user.verificationType
+                                verificationType = user.verificationType,
+                                verificationGlowColor = user.verificationGlowColor
                             )
                             Text(
                                 text = "ID: ${user.numericId} • ${user.lastDeviceName.ifBlank { "Android" }} (${user.lastAppVersion.ifBlank { "1.0" }})",
@@ -2905,10 +2965,11 @@ private fun AdminInfoLine(label: String, value: String) {
 private fun AdminVerificationDialog(
     user: WesalUser,
     onDismiss: () -> Unit,
-    onApply: (Boolean, VerificationSealType, Long, String, String) -> Unit
+    onApply: (Boolean, VerificationSealType, NeonColorPreset, Long, String, String) -> Unit
 ) {
     val palette = WesalColors.current
     var selectedSeal by remember(user.uid) { mutableStateOf(VerificationSealType.fromKey(user.verificationType)) }
+    var selectedGlow by remember(user.uid) { mutableStateOf(NeonColorPreset.fromKey(user.verificationGlowColor)) }
     var selectedDuration by remember(user.uid) { mutableStateOf(VerificationDurationOption.PERMANENT) }
     var customCountText by remember { mutableStateOf("3") }
     var note by remember(user.uid) { mutableStateOf(user.verificationNote) }
@@ -2916,7 +2977,7 @@ private fun AdminVerificationDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = palette.surface,
-        title = { Text("توثيق الحساب (الشارات والمدد)", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
+        title = { Text("توثيق الحساب (الشارات والتوهج والمدد)", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -2924,7 +2985,11 @@ private fun AdminVerificationDialog(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(user.displayName.ifBlank { "@${user.publicId}" }, color = palette.textPrimary, fontWeight = FontWeight.SemiBold)
-                    WesalVerifiedBadge(size = 20.dp, verificationType = selectedSeal.key)
+                    WesalVerifiedBadge(
+                        size = 20.dp,
+                        verificationType = selectedSeal.key,
+                        verificationGlowColor = selectedGlow.key
+                    )
                 }
 
                 Text("اختر نوع الشارة:", color = palette.textSecondary, style = MaterialTheme.typography.labelMedium)
@@ -2938,9 +3003,48 @@ private fun AdminVerificationDialog(
                         FilterChip(
                             selected = selectedSeal == seal,
                             onClick = { selectedSeal = seal },
-                            leadingIcon = { WesalVerifiedBadge(size = 16.dp, verificationType = seal.key) },
+                            leadingIcon = {
+                                WesalVerifiedBadge(
+                                    size = 16.dp,
+                                    verificationType = seal.key,
+                                    verificationGlowColor = selectedGlow.key
+                                )
+                            },
                             label = { Text(seal.labelAr, maxLines = 1, style = MaterialTheme.typography.labelSmall) }
                         )
+                    }
+                }
+
+                Text("لون توهج الشارة (30 لون):", color = palette.textSecondary, style = MaterialTheme.typography.labelMedium)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                ) {
+                    NeonColorPreset.entries.forEach { preset ->
+                        val isSel = selectedGlow == preset
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSel) palette.surfaceElevated else palette.surface,
+                            border = BorderStroke(if (isSel) 2.dp else 1.dp, if (isSel) preset.glowColor else palette.border),
+                            modifier = Modifier.clickable { selectedGlow = preset }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(13.dp)
+                                        .clip(CircleShape)
+                                        .background(preset.glowColor)
+                                        .border(1.dp, palette.border, CircleShape)
+                                )
+                                Text(preset.labelAr, color = palette.textPrimary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            }
+                        }
                     }
                 }
 
@@ -2997,13 +3101,13 @@ private fun AdminVerificationDialog(
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (user.isVerified && !isProtected) {
                     OutlinedButton(
-                        onClick = { onApply(false, selectedSeal, 0L, "سحب التوثيق", note) },
+                        onClick = { onApply(false, selectedSeal, NeonColorPreset.NONE, 0L, "سحب التوثيق", note) },
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
                     ) { Text("سحب") }
                 }
                 Button(onClick = {
                     val (exp, lbl) = calculateDurationExpiresAt(selectedDuration, customCountText.toIntOrNull() ?: 1)
-                    onApply(true, selectedSeal, exp, lbl, note)
+                    onApply(true, selectedSeal, selectedGlow, exp, lbl, note)
                 }) {
                     Text(if (user.isVerified) "تحديث" else "منح الشارة")
                 }
@@ -3026,6 +3130,7 @@ private fun AdminFrameAndNeonDialog(
     var selectedFrameId by remember(user.uid) { mutableStateOf(user.frameId) }
     var selectedIconId by remember(user.uid) { mutableStateOf(user.iconId) }
     var selectedIconUrl by remember(user.uid) { mutableStateOf(WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)) }
+    var previewCutout by remember(user.uid) { mutableStateOf(user.photoRemovedBg) }
     var selectedDuration by remember { mutableStateOf(VerificationDurationOption.PERMANENT) }
     var customCount by remember { mutableStateOf("7") }
     var neonEnabled by remember(user.uid) { mutableStateOf(user.neonEnabled && NeonColorPreset.fromKey(user.neonColor) != NeonColorPreset.NONE) }
@@ -3211,30 +3316,50 @@ private fun AdminFrameAndNeonDialog(
         title = { Text("الإطارات والأيقونات والنيون", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    WesalAvatar(
-                        imageUrl = user.photoUrl,
-                        name = user.displayName,
-                        size = 54.dp,
-                        frameId = selectedFrameId,
-                        frameExpiresAt = 0L,
-                        isCutout = user.photoRemovedBg,
-                        iconUrl = selectedIconUrl,
-                        neonColor = if (neonEnabled) selectedNeon.key else "",
-                        neonGlowIntensity = neonGlow
-                    )
-                    WesalNameWithBadge(
-                        name = user.displayName.ifBlank { "@${user.publicId}" },
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        WesalAvatar(
+                            imageUrl = user.photoUrl,
+                            name = user.displayName,
+                            size = 58.dp,
+                            frameId = selectedFrameId,
+                            frameExpiresAt = 0L,
+                            isCutout = previewCutout,
+                            iconUrl = selectedIconUrl,
+                            neonColor = if (neonEnabled) selectedNeon.key else "",
+                            neonGlowIntensity = neonGlow
+                        )
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            WesalNameWithBadge(
+                                name = user.displayName.ifBlank { "@${user.publicId}" },
+                                isVerified = user.isVerified,
+                                verificationType = user.verificationType,
+                                verificationGlowColor = user.verificationGlowColor,
+                                neonColor = selectedNeon.key,
+                                neonGlowIntensity = neonGlow,
+                                neonEnabled = neonEnabled,
+                                fontWeight = FontWeight.Bold
+                            )
+                            FilterChip(
+                                selected = previewCutout,
+                                onClick = { previewCutout = !previewCutout },
+                                label = { Text("معاينة تفريغ الخلفية (Cutout)", maxLines = 1, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                    WesalRoyalNameplateBanner(
+                        displayName = user.displayName.ifBlank { "@${user.publicId}" },
+                        numericId = user.numericId,
                         isVerified = user.isVerified,
                         verificationType = user.verificationType,
+                        verificationGlowColor = user.verificationGlowColor,
                         neonColor = selectedNeon.key,
                         neonGlowIntensity = neonGlow,
-                        neonEnabled = neonEnabled,
-                        fontWeight = FontWeight.Bold
+                        neonEnabled = neonEnabled
                     )
                 }
 
@@ -3756,11 +3881,31 @@ private fun AdminSubscriptionRequestsSection(
                                 Text("ID: ${req.userNumericId.ifBlank { "—" }} • @${req.userPublicId.ifBlank { "—" }}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
                             }
                             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                WesalVerifiedBadge(size = 18.dp, verificationType = req.desiredSeal)
+                                WesalVerifiedBadge(
+                                    size = 18.dp,
+                                    verificationType = req.desiredSeal,
+                                    verificationGlowColor = req.desiredGlowColor
+                                )
                                 Text(req.status, color = statusColor, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                             }
                         }
 
+                        if (req.desiredFrameId.isNotBlank() || (req.desiredGlowColor.isNotBlank() && req.desiredGlowColor != "NONE")) {
+                            val frameLabel = req.desiredFrameId.takeIf { it.isNotBlank() }?.let { fid ->
+                                val titleAr = WesalFrameLibrary.docs[fid]?.titleAr?.takeIf { it.isNotBlank() }
+                                    ?: WesalFrameCatalog.allFrames.firstOrNull { it.id == fid }?.titleAr
+                                    ?: fid
+                                "الإطار المطلوب: $titleAr"
+                            }
+                            val glowLabel = req.desiredGlowColor.takeIf { it.isNotBlank() && it != "NONE" }?.let { gKey ->
+                                "لون التوهج المطلوب: ${NeonColorPreset.fromKey(gKey).labelAr}"
+                            }
+                            Text(
+                                text = listOfNotNull(frameLabel, glowLabel).joinToString(" • "),
+                                color = palette.turquoise,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
                         if (req.note.isNotBlank()) {
                             Text("ملاحظة المستخدم: ${req.note}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
                         }

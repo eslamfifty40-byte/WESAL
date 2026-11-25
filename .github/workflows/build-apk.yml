@@ -58,15 +58,19 @@ jobs:
 
       - name: Clean Gradle project
         working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew clean --no-daemon
+        run: ./gradlew :app:clean --no-daemon --max-workers=1
+
+      - name: Compile Debug Kotlin
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: ./gradlew :app:compileDebugKotlin --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
 
       - name: Run Debug Unit Tests
         working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew testDebugUnitTest --no-daemon --stacktrace
+        run: ./gradlew :app:testDebugUnitTest --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
 
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        run: ./gradlew :app:assembleDebug --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
 
       - name: Verify generated APK & signing certificate
         working-directory: ${{ steps.project.outputs.dir }}

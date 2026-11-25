@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
+import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.VerificationSealType
 import kotlin.math.PI
 import kotlin.math.cos
@@ -24,6 +25,7 @@ fun WesalVerifiedMark(
     badgeColor: Color = Color(0xFF1D9BF0),
     verificationType: String = "BLUE",
     glowColor: Color? = null,
+    verificationGlowColor: String = "",
     glowEnabled: Boolean = true,
     glowIntensity: Float = 0.7f
 ) {
@@ -34,15 +36,17 @@ fun WesalVerifiedMark(
         Color(sealType.primaryHex)
     }
     val borderStrokeColor = Color(sealType.secondaryHex)
-    val halo = glowColor ?: Color(sealType.glowHex)
+    val customGlowPreset = NeonColorPreset.fromKey(verificationGlowColor).takeIf { it != NeonColorPreset.NONE }
+    val effectiveGlowColor = glowColor ?: customGlowPreset?.glowColor
+    val halo = effectiveGlowColor ?: Color(sealType.glowHex)
     val effectiveGlow = glowIntensity.coerceIn(0.15f, 1.0f)
 
     Canvas(modifier.size(badgeSize)) {
         val s = this.size.minDimension
         val c = Offset(s / 2f, s / 2f)
         if (glowEnabled) {
-            val innerAlpha = ((if (glowColor != null) 0.62f else 0.42f) * effectiveGlow).coerceIn(0.1f, 0.92f)
-            val midAlpha = ((if (glowColor != null) 0.28f else 0.18f) * effectiveGlow).coerceIn(0.05f, 0.50f)
+            val innerAlpha = ((if (effectiveGlowColor != null) 0.62f else 0.42f) * effectiveGlow).coerceIn(0.1f, 0.92f)
+            val midAlpha = ((if (effectiveGlowColor != null) 0.28f else 0.18f) * effectiveGlow).coerceIn(0.05f, 0.50f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(

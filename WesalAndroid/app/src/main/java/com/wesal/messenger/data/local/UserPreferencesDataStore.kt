@@ -65,7 +65,9 @@ data class AppUserSettings(
     val starredMessagesJson: String = "[]",
     val lastBackupAt: Long = 0L,
     val customSubTierMonthlyPrice: String = "29 EGP / $0.99",
-    val customSubTierYearlyPrice: String = "290 EGP / $9.99"
+    val customSubTierYearlyPrice: String = "290 EGP / $9.99",
+    val personalAccentPreset: String = "DEFAULT",
+    val personalSurfacePreset: String = "DEFAULT"
 ) {
     companion object {
         const val DEFAULT_WELCOME_MESSAGE_AR = "أهلاً بك في WESAL! يسعدني تواصلك وسأرد عليك في أقرب وقت."
@@ -141,6 +143,9 @@ class UserPreferencesDataStore @Inject constructor(
         val LAST_BACKUP_AT = longPreferencesKey("last_backup_at")
         val SUB_MONTHLY_PRICE = stringPreferencesKey("sub_monthly_price")
         val SUB_YEARLY_PRICE = stringPreferencesKey("sub_yearly_price")
+        val DEVICE_INSTALL_ID = stringPreferencesKey("device_install_id")
+        val PERSONAL_ACCENT_PRESET = stringPreferencesKey("personal_accent_preset")
+        val PERSONAL_SURFACE_PRESET = stringPreferencesKey("personal_surface_preset")
     }
 
     val settingsFlow: Flow<AppUserSettings> = context.wesalDataStore.data.map { prefs ->
@@ -187,7 +192,9 @@ class UserPreferencesDataStore @Inject constructor(
             starredMessagesJson = prefs[Keys.STARRED_MESSAGES_JSON] ?: "[]",
             lastBackupAt = prefs[Keys.LAST_BACKUP_AT] ?: 0L,
             customSubTierMonthlyPrice = prefs[Keys.SUB_MONTHLY_PRICE] ?: "29 EGP / $0.99",
-            customSubTierYearlyPrice = prefs[Keys.SUB_YEARLY_PRICE] ?: "290 EGP / $9.99"
+            customSubTierYearlyPrice = prefs[Keys.SUB_YEARLY_PRICE] ?: "290 EGP / $9.99",
+            personalAccentPreset = prefs[Keys.PERSONAL_ACCENT_PRESET] ?: "DEFAULT",
+            personalSurfacePreset = prefs[Keys.PERSONAL_SURFACE_PRESET] ?: "DEFAULT"
         )
     }
 
@@ -519,6 +526,7 @@ class UserPreferencesDataStore @Inject constructor(
 
     suspend fun clearUserSessionState() {
         context.wesalDataStore.edit { prefs ->
+            // Keep DEVICE_INSTALL_ID intact so re-login or account switching reuses the same device session document
             prefs.remove(Keys.DEVICE_SESSION_ID)
             prefs.remove(Keys.CACHED_UID)
             prefs.remove(Keys.CACHED_PROFILE_COMPLETE)
@@ -528,13 +536,27 @@ class UserPreferencesDataStore @Inject constructor(
     suspend fun getOrCreateDeviceSessionId(): String {
         var id = ""
         context.wesalDataStore.edit { prefs ->
-            val existing = prefs[Keys.DEVICE_SESSION_ID]
-            if (existing.isNullOrBlank()) {
-                id = java.util.UUID.randomUUID().toString()
-                prefs[Keys.DEVICE_SESSION_ID] = id
+            val existingInstallId = prefs[Keys.DEVICE_INSTALL_ID]
+                ?: prefs[Keys.DEVICE_SESSION_ID]?.takeIf { it.isNotBlank() }
+            if (existingInstallId.isNullOrBlank()) {
+                val androidIdRaw = runCatching {
+                    android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ANDROID_ID
+                    )
+                }.getOrNull().orEmpty()
+                id = if (androidIdRaw.isNotBlank()) {
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                        .digest("wesal_dev_$androidIdRaw".toByteArray(Charsets.UTF_8))
+                    "dev_" + digest.joinToString("") { "%02x".format(it) }.take(24)
+                } else {
+                    "dev_" + java.util.UUID.randomUUID().toString().replace("-", "").take(24)
+                }
             } else {
-                id = existing
+                id = existingInstallId
             }
+            prefs[Keys.DEVICE_INSTALL_ID] = id
+            prefs[Keys.DEVICE_SESSION_ID] = id
         }
         return id
     }
@@ -636,6 +658,18 @@ class UserPreferencesDataStore @Inject constructor(
         context.wesalDataStore.edit { prefs ->
             if (monthly.isNotBlank()) prefs[Keys.SUB_MONTHLY_PRICE] = monthly.trim()
             if (yearly.isNotBlank()) prefs[Keys.SUB_YEARLY_PRICE] = yearly.trim()
+        }
+    }
+
+    suspend fun setPersonalAccentPreset(presetKey: String) {
+        context.wesalDataStore.edit {
+            it[Keys.PERSONAL_ACCENT_PRESET] = presetKey.ifBlank { "DEFAULT" }
+        }
+    }
+
+    suspend fun setPersonalSurfacePreset(presetKey: String) {
+        context.wesalDataStore.edit {
+            it[Keys.PERSONAL_SURFACE_PRESET] = presetKey.ifBlank { "DEFAULT" }
         }
     }
 }

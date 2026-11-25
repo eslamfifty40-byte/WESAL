@@ -111,7 +111,9 @@ interface UserRepository {
         requestType: String,
         desiredSeal: String,
         idUri: Uri,
-        note: String
+        note: String,
+        desiredFrameId: String = "",
+        desiredGlowColor: String = ""
     ): Result<Unit>
     suspend fun reviewSubscriptionRequest(
         requestId: String,
@@ -130,7 +132,8 @@ interface UserRepository {
         expiresAt: Long = 0L,
         durationLabel: String = "",
         glowEnabled: Boolean = true,
-        glowIntensity: Float = 0.7f
+        glowIntensity: Float = 0.7f,
+        verificationGlowColor: String = ""
     ): Result<Unit>
     suspend fun setAccountFrame(
         targetUid: String,

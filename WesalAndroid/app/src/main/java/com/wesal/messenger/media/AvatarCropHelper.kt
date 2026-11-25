@@ -32,9 +32,10 @@ object AvatarCropHelper {
         context: Context,
         sourceUri: Uri,
         mode: String = CropActivity.MODE_CIRCLE_AVATAR,
-        title: String? = null
+        title: String? = null,
+        glowColorHex: Long? = null
     ): Intent {
-        return CropActivity.createIntent(context, sourceUri, mode, title)
+        return CropActivity.createIntent(context, sourceUri, mode, title, glowColorHex)
     }
 
     fun getCropOutput(resultData: Intent?): Uri? = resultData?.data

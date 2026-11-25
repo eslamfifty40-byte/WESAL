@@ -4,9 +4,12 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.CallRecord
 import com.wesal.messenger.domain.model.CallStatus
+import com.wesal.messenger.domain.model.MessageStatus
+import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.ScheduledCallRecord
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.CallRepository
@@ -184,6 +187,16 @@ class CallRepositoryImpl @Inject constructor(
             "durationSeconds" to 0L
         )
         firestore.collection(Constants.COLLECTION_CALLS).document(callId).set(data).await()
+        upsertChatCallLog(
+            callId = callId,
+            callerId = callerUid,
+            calleeId = callee.uid,
+            callerName = data["callerName"] as String,
+            isVideo = isVideo,
+            status = CallStatus.CONNECTING,
+            durationSeconds = 0L,
+            timestamp = data["startedAt"] as Long
+        )
         callId
     }
 
@@ -263,14 +276,110 @@ class CallRepositoryImpl @Inject constructor(
 
     override suspend fun updateCallStatus(callId: String, status: CallStatus, durationSeconds: Long) {
         runCatching {
+            val now = System.currentTimeMillis()
             val updates = hashMapOf<String, Any>(
                 "status" to status.raw,
                 "durationSeconds" to durationSeconds
             )
             if (status == CallStatus.ENDED || status == CallStatus.REJECTED || status == CallStatus.MISSED) {
-                updates["endedAt"] = System.currentTimeMillis()
+                updates["endedAt"] = now
             }
-            firestore.collection(Constants.COLLECTION_CALLS).document(callId).update(updates).await()
+            val callRef = firestore.collection(Constants.COLLECTION_CALLS).document(callId)
+            callRef.update(updates).await()
+            if (status == CallStatus.ACTIVE || status == CallStatus.ENDED || status == CallStatus.REJECTED || status == CallStatus.MISSED) {
+                val snap = callRef.get().await()
+                val callerId = snap.getString("callerId").orEmpty()
+                val calleeId = snap.getString("calleeId").orEmpty()
+                val callerName = snap.getString("callerName").orEmpty().ifBlank { "WESAL User" }
+                val isVideo = snap.getBoolean("isVideo") ?: false
+                val startedAt = snap.getLong("startedAt") ?: now
+                if (callerId.isNotBlank() && calleeId.isNotBlank()) {
+                    upsertChatCallLog(
+                        callId = callId,
+                        callerId = callerId,
+                        calleeId = calleeId,
+                        callerName = callerName,
+                        isVideo = isVideo,
+                        status = status,
+                        durationSeconds = durationSeconds,
+                        timestamp = startedAt
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun upsertChatCallLog(
+        callId: String,
+        callerId: String,
+        calleeId: String,
+        callerName: String,
+        isVideo: Boolean,
+        status: CallStatus,
+        durationSeconds: Long,
+        timestamp: Long
+    ) {
+        if (callerId.isBlank() || calleeId.isBlank() || callerId == calleeId) return
+        val myUid = auth.currentUser?.uid ?: return
+        runCatching {
+            val sortedIds = listOf(callerId, calleeId).sorted()
+            val chatId = "dm_${sortedIds[0]}_${sortedIds[1]}"
+            val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+            val chatSnap = chatRef.get().await()
+            if (!chatSnap.exists()) return@runCatching
+
+            val prefix = if (isVideo) "📹 مكالمة فيديو" else "📞 مكالمة صوتية"
+            val summary = when (status) {
+                CallStatus.CONNECTING, CallStatus.RINGING -> "$prefix • جاري الاتصال..."
+                CallStatus.ACTIVE -> "$prefix • جارية الآن"
+                CallStatus.MISSED -> "$prefix • لم يتم الرد"
+                CallStatus.REJECTED -> "$prefix • مرفوضة"
+                CallStatus.ENDED -> if (durationSeconds > 0L) {
+                    val mins = durationSeconds / 60L
+                    val secs = durationSeconds % 60L
+                    "$prefix • ${"%02d:%02d".format(mins, secs)}"
+                } else {
+                    "$prefix • انتهت"
+                }
+            }
+            val msgId = "call_$callId"
+            val msgRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document(msgId)
+            val msgSnap = msgRef.get().await()
+            if (!msgSnap.exists() && myUid == callerId) {
+                msgRef.set(
+                    mapOf(
+                        "messageId" to msgId,
+                        "chatId" to chatId,
+                        "senderId" to callerId,
+                        "senderName" to callerName,
+                        "type" to MessageType.CALL_LOG.raw,
+                        "text" to summary,
+                        "ciphertext" to "",
+                        "isEncrypted" to false,
+                        "mediaDurationMs" to durationSeconds * 1000L,
+                        "status" to MessageStatus.DELIVERED.raw,
+                        "timestamp" to timestamp
+                    )
+                ).await()
+            } else if (msgSnap.exists() && msgSnap.getString("senderId") == myUid) {
+                msgRef.set(
+                    mapOf(
+                        "text" to summary,
+                        "mediaDurationMs" to durationSeconds * 1000L,
+                        "status" to MessageStatus.DELIVERED.raw
+                    ),
+                    SetOptions.merge()
+                ).await()
+            }
+            chatRef.set(
+                mapOf(
+                    "lastMessagePreview" to summary,
+                    "lastMessageTime" to System.currentTimeMillis(),
+                    "lastMessageSenderId" to callerId,
+                    "lastMessageStatus" to MessageStatus.DELIVERED.raw
+                ),
+                SetOptions.merge()
+            ).await()
         }
     }
 

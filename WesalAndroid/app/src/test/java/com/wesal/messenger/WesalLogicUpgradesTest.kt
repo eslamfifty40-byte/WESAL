@@ -66,4 +66,24 @@ class WesalLogicUpgradesTest {
         assertEquals("ROTATE_AURA", admin02.defaultAnimationStyle)
         assertTrue(admin02.apertureCenterYFraction < 0.45f)
     }
+
+    @Test
+    fun personalThemePresets_resolveDefaultAndNamedKeysSafely() {
+        assertEquals(
+            com.wesal.messenger.core.theme.WesalPersonalAccentPreset.ROYAL_GOLD,
+            com.wesal.messenger.core.theme.WesalPersonalAccentPreset.fromKey("royal_gold")
+        )
+        assertEquals(
+            com.wesal.messenger.core.theme.WesalPersonalAccentPreset.DEFAULT,
+            com.wesal.messenger.core.theme.WesalPersonalAccentPreset.fromKey("nonexistent")
+        )
+        assertEquals(
+            com.wesal.messenger.core.theme.WesalPersonalSurfacePreset.MIDNIGHT_NAVY,
+            com.wesal.messenger.core.theme.WesalPersonalSurfacePreset.fromKey("midnight_navy")
+        )
+        assertEquals(
+            com.wesal.messenger.core.theme.WesalPersonalSurfacePreset.DEFAULT,
+            com.wesal.messenger.core.theme.WesalPersonalSurfacePreset.fromKey(null)
+        )
+    }
 }

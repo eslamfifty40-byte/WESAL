@@ -415,6 +415,25 @@ fun WesalAvatar(
         }
 
         if (iconUrl.isNotBlank()) {
+            val iconTransition = rememberInfiniteTransition(label = "wesal_icon_anim")
+            val iconPulse by iconTransition.animateFloat(
+                initialValue = 0.94f,
+                targetValue = 1.06f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 1500),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "icon_pulse"
+            )
+            val iconTilt by iconTransition.animateFloat(
+                initialValue = -3.5f,
+                targetValue = 3.5f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 1900),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "icon_tilt"
+            )
             AsyncImage(
                 model = ImageRequest.Builder(context)
                     .data(iconModel)
@@ -425,6 +444,12 @@ fun WesalAvatar(
                 modifier = Modifier
                     .size((innerAvatarSize * 0.36f).coerceIn(16.dp, 26.dp))
                     .align(Alignment.BottomStart)
+                    .graphicsLayer {
+                        scaleX = iconPulse
+                        scaleY = iconPulse
+                        rotationZ = iconTilt
+                        transformOrigin = TransformOrigin.Center
+                    }
                     .clip(CircleShape)
                     .background(palette.surface)
                     .border(1.2.dp, palette.surface, CircleShape),
@@ -452,6 +477,7 @@ fun WesalVerifiedBadge(
     badgeColor: Color = WesalColors.current.verifiedBlue,
     verificationType: String = "BLUE",
     glowColor: Color? = null,
+    verificationGlowColor: String = "",
     glowEnabled: Boolean = true,
     glowIntensity: Float = 0.7f
 ) {
@@ -461,6 +487,7 @@ fun WesalVerifiedBadge(
         badgeColor = badgeColor,
         verificationType = verificationType,
         glowColor = glowColor,
+        verificationGlowColor = verificationGlowColor,
         glowEnabled = glowEnabled,
         glowIntensity = glowIntensity
     )
@@ -480,6 +507,7 @@ fun WesalNameWithBadge(
     neonGlowIntensity: Float = 0.7f,
     neonEnabled: Boolean = true,
     glowColor: Color? = null,
+    verificationGlowColor: String = "",
     verificationGlowEnabled: Boolean = true,
     verificationGlowIntensity: Float = 0.7f
 ) {
@@ -492,7 +520,8 @@ fun WesalNameWithBadge(
         glowIntensity = neonGlowIntensity,
         fallbackColor = color
     )
-    val badgeGlow = if (neonOn) preset.glowColor else glowColor
+    val customBadgeGlow = NeonColorPreset.fromKey(verificationGlowColor).takeIf { it != NeonColorPreset.NONE }?.glowColor
+    val badgeGlow = glowColor ?: customBadgeGlow ?: if (neonOn) preset.glowColor else null
 
     Row(
         modifier = modifier,
@@ -512,10 +541,139 @@ fun WesalNameWithBadge(
                 size = badgeSize,
                 verificationType = verificationType,
                 glowColor = badgeGlow,
+                verificationGlowColor = verificationGlowColor,
                 glowEnabled = verificationGlowEnabled,
                 glowIntensity = verificationGlowIntensity
             )
         }
+    }
+}
+
+@Composable
+fun WesalRoyalNameplateBanner(
+    displayName: String,
+    numericId: String,
+    modifier: Modifier = Modifier,
+    isVerified: Boolean = false,
+    verificationType: String = "BLUE",
+    verificationGlowColor: String = "",
+    verificationGlowEnabled: Boolean = true,
+    verificationGlowIntensity: Float = 0.7f,
+    neonColor: String = "",
+    neonGlowIntensity: Float = 0.7f,
+    neonEnabled: Boolean = true,
+    accentColor: Color = Color(0xFFFFD54F),
+    crimsonColor: Color = Color(0xFFD50026)
+) {
+    val cleanId = numericId.trim().removePrefix("@")
+    val neonPreset = NeonColorPreset.fromKey(neonColor)
+    val glowHighlight = if (neonEnabled && neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else accentColor
+
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+                .drawBehind {
+                    drawRoundRect(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                crimsonColor.copy(alpha = 0.42f),
+                                glowHighlight.copy(alpha = 0.18f),
+                                Color.Transparent
+                            ),
+                            center = center,
+                            radius = size.width * 0.62f
+                        ),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(24f, 24f)
+                    )
+                }
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFF4A040E),
+                            crimsonColor.copy(alpha = 0.92f),
+                            Color(0xFF7B0719),
+                            crimsonColor.copy(alpha = 0.92f),
+                            Color(0xFF4A040E)
+                        )
+                    )
+                )
+                .border(
+                    width = 1.8.dp,
+                    brush = Brush.horizontalGradient(
+                        colors = listOf(
+                            Color(0xFFB8860B),
+                            Color(0xFFFFE082),
+                            accentColor,
+                            Color(0xFFFFE082),
+                            Color(0xFFB8860B)
+                        )
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                )
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
+                    WesalNameWithBadge(
+                        name = displayName.ifBlank { "WESAL User" },
+                        isVerified = isVerified,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color(0xFFFFF8E1),
+                        fontWeight = FontWeight.ExtraBold,
+                        badgeSize = 20.dp,
+                        verificationType = verificationType,
+                        neonColor = neonColor,
+                        neonGlowIntensity = neonGlowIntensity,
+                        neonEnabled = neonEnabled,
+                        verificationGlowColor = verificationGlowColor,
+                        verificationGlowEnabled = verificationGlowEnabled,
+                        verificationGlowIntensity = verificationGlowIntensity
+                    )
+                    Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
+                }
+                if (cleanId.isNotBlank()) {
+                    Text(
+                        text = "@$cleanId",
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            shadow = Shadow(
+                                color = accentColor.copy(alpha = 0.55f),
+                                offset = Offset.Zero,
+                                blurRadius = 12f
+                            )
+                        ),
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFFFE082)
+                    )
+                }
+            }
+        }
+        Text(
+            text = "✦ WESAL Messenger ✦",
+            style = MaterialTheme.typography.labelMedium.copy(
+                shadow = Shadow(
+                    color = accentColor.copy(alpha = 0.45f),
+                    offset = Offset.Zero,
+                    blurRadius = 10f
+                )
+            ),
+            color = accentColor,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 

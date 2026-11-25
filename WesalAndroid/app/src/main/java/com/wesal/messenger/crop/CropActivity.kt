@@ -11,6 +11,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -71,6 +76,7 @@ class CropActivity : ComponentActivity() {
         const val EXTRA_CROP_MODE = "wesal_crop_mode"
         const val EXTRA_TITLE = "wesal_crop_title"
         const val EXTRA_BG_REMOVED = "wesal_crop_bg_removed"
+        const val EXTRA_GLOW_COLOR = "wesal_crop_glow_color"
         const val MODE_CIRCLE_AVATAR = "CIRCLE_AVATAR"
         const val MODE_COVER_16_9 = "COVER_16_9"
         const val MODE_SQUARE = "SQUARE"
@@ -80,11 +86,13 @@ class CropActivity : ComponentActivity() {
             context: Context,
             sourceUri: Uri,
             mode: String = MODE_CIRCLE_AVATAR,
-            title: String? = null
+            title: String? = null,
+            glowColorHex: Long? = null
         ): Intent = Intent(context, CropActivity::class.java).apply {
             data = sourceUri
             putExtra(EXTRA_CROP_MODE, mode)
             if (!title.isNullOrBlank()) putExtra(EXTRA_TITLE, title)
+            if (glowColorHex != null && glowColorHex != 0L) putExtra(EXTRA_GLOW_COLOR, glowColorHex)
         }
     }
 
@@ -93,6 +101,7 @@ class CropActivity : ComponentActivity() {
         val uri: Uri? = intent.data
         val mode = intent.getStringExtra(EXTRA_CROP_MODE) ?: MODE_CIRCLE_AVATAR
         val customTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty()
+        val customGlowHex = intent.getLongExtra(EXTRA_GLOW_COLOR, 0L)
         val bmp = uri?.let { loadBitmap(it) }
         if (bmp == null) {
             setResult(RESULT_CANCELED)
@@ -104,6 +113,7 @@ class CropActivity : ComponentActivity() {
                 initialBitmap = bmp,
                 mode = mode,
                 customTitle = customTitle,
+                customGlowHex = customGlowHex,
                 onCancel = {
                     setResult(RESULT_CANCELED)
                     finish()
@@ -173,6 +183,7 @@ private fun CropScreen(
     initialBitmap: Bitmap,
     mode: String,
     customTitle: String,
+    customGlowHex: Long = 0L,
     onCancel: () -> Unit,
     onDone: (Bitmap, Boolean) -> Unit
 ) {
@@ -357,8 +368,8 @@ private fun CropScreen(
                 CropToolMode.MOVE -> "اسحب وحرّك الصورة وكبّرها بإصبعين لاختيار الجزء المطلوب"
                 CropToolMode.SMART_OBJECT -> "اضغط على أي عنصر زائد أو جزء غير مرغوب لتحديده ومسحه بسهولة"
                 CropToolMode.LASSO_ERASE -> "ارسم حلقة حول العنصر الزائد غير المرغوب فيه لتحديده ثم مسحه"
-                CropToolMode.ERASE -> "مرّر إصبعك لمسح الأجزاء الزائدة يدوياً بدقة"
-                CropToolMode.RESTORE -> "مرّر إصبعك لاسترجاع الأجزاء الممسوحة"
+                CropToolMode.ERASE -> "مرّر بإصبع للمسح أو بإصبعين للتكبير والتحريك بدقة"
+                CropToolMode.RESTORE -> "مرّر بإصبع للاستعادة أو بإصبعين للتكبير والتحريك"
             },
             color = Color(0xFFB0BEC5),
             style = MaterialTheme.typography.bodySmall,
@@ -463,21 +474,42 @@ private fun CropScreen(
                             )
                         }
                         CropToolMode.ERASE, CropToolMode.RESTORE -> {
-                            detectDragGestures(
-                                onDragStart = { start ->
-                                    clearPendingSelection()
-                                    pushUndoSnapshot()
-                                    touchCursor = start
-                                    applyBrushAt(start, toolMode == CropToolMode.ERASE)
-                                },
-                                onDrag = { change, _ ->
-                                    change.consume()
-                                    touchCursor = change.position
-                                    applyBrushAt(change.position, toolMode == CropToolMode.ERASE)
-                                },
-                                onDragEnd = { touchCursor = null },
-                                onDragCancel = { touchCursor = null }
-                            )
+                            awaitEachGesture {
+                                val firstDown = awaitFirstDown(requireUnconsumed = false)
+                                val isErase = toolMode == CropToolMode.ERASE
+                                var brushStarted = false
+                                var hadMultiTouch = false
+                                clearPendingSelection()
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressedChanges = event.changes.filter { it.pressed }
+                                    if (pressedChanges.isEmpty()) break
+                                    if (pressedChanges.size >= 2) {
+                                        hadMultiTouch = true
+                                        touchCursor = null
+                                        val vw = viewportSize.width.toFloat()
+                                        val vh = viewportSize.height.toFloat()
+                                        val zoomFactor = event.calculateZoom()
+                                        val panOffset = event.calculatePan()
+                                        if (zoomFactor != 1f || panOffset != Offset.Zero) {
+                                            val nz = (zoomLevel * zoomFactor).coerceIn(1f, 6f)
+                                            zoomLevel = nz
+                                            offset = clampOffset(offset + panOffset, nz, vw, vh)
+                                        }
+                                        event.changes.forEach { it.consume() }
+                                    } else if (!hadMultiTouch) {
+                                        val change = pressedChanges.first()
+                                        if (!brushStarted) {
+                                            pushUndoSnapshot()
+                                            brushStarted = true
+                                        }
+                                        touchCursor = change.position
+                                        applyBrushAt(change.position, isErase)
+                                        change.consume()
+                                    }
+                                }
+                                touchCursor = null
+                            }
                         }
                     }
                 }
@@ -487,9 +519,19 @@ private fun CropScreen(
                 val vh = size.height
                 if (bgRemoved) {
                     if (glowPreview) {
+                        val previewCore = if (customGlowHex != 0L) {
+                            Color(customGlowHex.toInt()).copy(alpha = 0.45f)
+                        } else {
+                            Color(0xFF004D40)
+                        }
+                        val previewMid = if (customGlowHex != 0L) {
+                            Color(customGlowHex.toInt()).copy(alpha = 0.16f)
+                        } else {
+                            Color(0xFF061E24)
+                        }
                         drawRect(
                             brush = Brush.radialGradient(
-                                colors = listOf(Color(0xFF004D40), Color(0xFF061E24), Color(0xFF04090C)),
+                                colors = listOf(previewCore, previewMid, Color(0xFF04090C)),
                                 center = Offset(vw / 2f, vh / 2f),
                                 radius = maxOf(vw, vh) * 0.72f
                             )

@@ -171,6 +171,7 @@ class ChatRepositoryImpl @Inject constructor(
         var peerLastSeen = 0L
         var peerVerified = false
         var peerVerificationType = "BLUE"
+        var peerVerificationGlowColor = ""
         var peerVerificationGlowEnabled = true
         var peerVerificationGlowIntensity = 0.7f
         var peerFrameId = ""
@@ -187,6 +188,9 @@ class ChatRepositoryImpl @Inject constructor(
 
         if (isOfficialWesalChat) {
             title = title.ifBlank { "WESAL Messenger" }
+            if (avatar.isBlank()) {
+                avatar = fetchOwnerAdminAvatarUrl()
+            }
             peerVerified = true
             peerVerificationType = "BLUE"
         } else if (!isGroup) {
@@ -194,7 +198,7 @@ class ChatRepositoryImpl @Inject constructor(
             if (peerUid.isNotBlank()) {
                 val peer = fetchUserCached(peerUid)
                 if (peer != null) {
-                    if (peer.deletedAt > 0L) {
+                    if (peer.deletedAt > 0L || peer.deletedPermanent) {
                         title = "حساب محذوف"
                         avatar = ""
                         peerOnline = false
@@ -202,12 +206,13 @@ class ChatRepositoryImpl @Inject constructor(
                     } else {
                         val safeHandle = peer.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
                         title = peer.displayName.ifBlank { safeHandle }
-                        avatar = if (peer.privacySettings.profilePhotoVisibility == PrivacyVisibility.NOBODY) "" else peer.photoUrl
+                        avatar = if (peer.privacySettings.profilePhotoVisibility == PrivacyVisibility.NOBODY || peer.privacySettings.hideAvatarPhoto) "" else peer.photoUrl
                         peerPubKey = peer.publicKey
                         peerOnline = peer.isOnline && peer.privacySettings.onlineVisibility != PrivacyVisibility.NOBODY
                         peerLastSeen = if (peer.privacySettings.lastSeenVisibility == PrivacyVisibility.NOBODY) 0L else peer.lastSeen
                         peerVerified = peer.isVerified
                         peerVerificationType = peer.verificationType
+                        peerVerificationGlowColor = peer.verificationGlowColor
                         peerVerificationGlowEnabled = peer.verificationGlowEnabled
                         peerVerificationGlowIntensity = peer.verificationGlowIntensity
                         peerFrameId = peer.frameId
@@ -244,6 +249,7 @@ class ChatRepositoryImpl @Inject constructor(
             peerLastSeen = peerLastSeen,
             peerVerified = peerVerified,
             peerVerificationType = peerVerificationType,
+            peerVerificationGlowColor = peerVerificationGlowColor,
             peerVerificationGlowEnabled = peerVerificationGlowEnabled,
             peerVerificationGlowIntensity = peerVerificationGlowIntensity,
             peerFrameId = peerFrameId,
@@ -569,9 +575,11 @@ class ChatRepositoryImpl @Inject constructor(
         val existingChat = runCatching { chatRef.get(Source.SERVER).await() }.getOrNull()
             ?: runCatching { chatRef.get().await() }.getOrNull()
 
+        val now = System.currentTimeMillis()
+        val introText = "مرحباً بك في الدعم المباشر لإدارة WESAL ($cleanTarget). اكتب استفسارك أو رسالتك وسنرد عليك في أقرب وقت."
+        val welcomeSupportMsgId = "support_intro_${deterministicChatId}"
+
         if (existingChat == null || !existingChat.exists()) {
-            val now = System.currentTimeMillis()
-            val introText = "مرحباً بك في الدعم المباشر لإدارة WESAL ($cleanTarget). اكتب استفسارك أو رسالتك وسنرد عليك في أقرب وقت."
             val data = mapOf(
                 "chatId" to deterministicChatId,
                 "isGroup" to false,
@@ -591,7 +599,24 @@ class ChatRepositoryImpl @Inject constructor(
                 "isMessageRequest" to false
             )
             chatRef.set(data, SetOptions.merge()).await()
-            val welcomeSupportMsgId = "support_intro_${deterministicChatId}"
+        } else {
+            val existingPreview = existingChat.getString("lastMessagePreview").orEmpty()
+            val updateFields = hashMapOf<String, Any>(
+                "isSupportChat" to true,
+                "supportTargetNumericId" to cleanTarget,
+                "deletedForUsers" to FieldValue.arrayRemove(myUid)
+            )
+            if (existingPreview.isBlank()) {
+                updateFields["lastMessagePreview"] = introText
+                updateFields["lastMessageTime"] = now
+            }
+            chatRef.update(updateFields).await()
+        }
+
+        val hasAnyMessages = runCatching {
+            !chatRef.collection(Constants.COLLECTION_MESSAGES).limit(1).get().await().isEmpty
+        }.getOrDefault(false)
+        if (!hasAnyMessages) {
             runCatching {
                 chatRef.collection(Constants.COLLECTION_MESSAGES)
                     .document(welcomeSupportMsgId)
@@ -599,7 +624,7 @@ class ChatRepositoryImpl @Inject constructor(
                         mapOf(
                             "messageId" to welcomeSupportMsgId,
                             "chatId" to deterministicChatId,
-                            "senderId" to Constants.OFFICIAL_WESAL_SENDER_ID,
+                            "senderId" to myUid,
                             "senderName" to "إدارة WESAL ($cleanTarget)",
                             "type" to MessageType.SYSTEM.raw,
                             "text" to introText,
@@ -609,19 +634,28 @@ class ChatRepositoryImpl @Inject constructor(
                     )
                     .await()
             }
-        } else {
-            val existingPreview = existingChat.getString("lastMessagePreview").orEmpty()
-            val updateFields = hashMapOf<String, Any>(
-                "isSupportChat" to true,
-                "supportTargetNumericId" to cleanTarget,
-                "deletedForUsers" to FieldValue.arrayRemove(myUid)
-            )
-            if (existingPreview.isBlank()) {
-                updateFields["lastMessagePreview"] = "الدعم الفني وإدارة WESAL ($cleanTarget)"
-            }
-            chatRef.update(updateFields).await()
         }
         deterministicChatId
+    }
+
+    private var cachedOwnerAdminAvatar: Pair<Long, String>? = null
+    private suspend fun fetchOwnerAdminAvatarUrl(): String {
+        val now = System.currentTimeMillis()
+        val cached = cachedOwnerAdminAvatar
+        if (cached != null && now - cached.first < 60_000L) return cached.second
+        val url = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS)
+                .whereEqualTo("numericId", Constants.OWNER_ADMIN_NUMERIC_ID)
+                .limit(1)
+                .get()
+                .await()
+                .documents
+                .firstOrNull()
+                ?.getString("photoUrl")
+                .orEmpty()
+        }.getOrDefault("")
+        cachedOwnerAdminAvatar = now to url
+        return url
     }
 
     override suspend fun ensureOfficialWelcomeChat(displayName: String, forceResend: Boolean): Result<Unit> = runCatching {
@@ -657,6 +691,7 @@ class ChatRepositoryImpl @Inject constructor(
         }.getOrDefault(false)
         val now = System.currentTimeMillis()
 
+        val adminAvatarUrl = fetchOwnerAdminAvatarUrl()
         if (chatSnap == null || !chatSnap.exists()) {
             chatRef.set(
                 mapOf(
@@ -664,6 +699,7 @@ class ChatRepositoryImpl @Inject constructor(
                     "isGroup" to false,
                     "isOfficialWesalChat" to true,
                     "groupName" to "WESAL Messenger",
+                    "groupAvatarUrl" to adminAvatarUrl,
                     "participantIds" to listOf(myUid),
                     "pinnedBy" to mapOf(myUid to true),
                     "mutedBy" to emptyMap<String, Boolean>(),
@@ -677,6 +713,8 @@ class ChatRepositoryImpl @Inject constructor(
                 ),
                 SetOptions.merge()
             ).await()
+        } else if (adminAvatarUrl.isNotBlank() && chatSnap.getString("groupAvatarUrl").orEmpty().isBlank()) {
+            runCatching { chatRef.set(mapOf("groupAvatarUrl" to adminAvatarUrl), SetOptions.merge()).await() }
         }
 
         if (!hasAnyMessage || forceResend) {
