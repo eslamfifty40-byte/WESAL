@@ -1033,7 +1033,9 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun reportUser(
-        targ        targetType: String,
+        targetUid: String,
+        reason: String,
+        targetType: String,
         targetChatId: String,
         targetMessageId: String,
         targetContentSnapshot: String
