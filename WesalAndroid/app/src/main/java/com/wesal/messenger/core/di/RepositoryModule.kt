@@ -1,5 +1,6 @@
 package com.wesal.messenger.core.di
 
+import com.wesal.messenger.domain.repository.*
 import com.wesal.messenger.data.repository.AuthRepositoryImpl
 import com.wesal.messenger.data.repository.CallRepositoryImpl
 import com.wesal.messenger.data.repository.ChannelRepositoryImpl
