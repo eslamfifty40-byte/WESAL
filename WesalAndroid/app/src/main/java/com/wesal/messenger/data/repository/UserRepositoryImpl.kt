@@ -1,4 +1,4 @@
-package com.wesal.messenger.data.repository
+package com.wel.messenger.data.repository
 
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -599,7 +599,7 @@ class UserRepositoryImpl @Inject constructor(
             }
 
             val dupSnap = firestore.collection(Constants.COLLECTION_USERS)
-                .whereEqualTo("publicId", sanitizedHandle)
+            exiط    .whereEqualTo("publicId", sanitizedHandle)
                 .get()
                 .await()
             if (dupSnap.documents.any { it.id != uid }) {
@@ -1033,9 +1033,7 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     override suspend fun reportUser(
-        targetUid: String,
-        reason: String,
-        targetType: String,
+        targ        targetType: String,
         targetChatId: String,
         targetMessageId: String,
         targetContentSnapshot: String
@@ -2920,3 +2918,7 @@ class UserRepositoryImpl @Inject constructor(
     }
 
 }
+
+exit
+
+
