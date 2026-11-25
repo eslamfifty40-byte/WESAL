@@ -6,6 +6,11 @@ on:
     branches: ["main", "master"]
   workflow_dispatch:
 
+env:
+  ORG_GRADLE_PROJECT_WESAL_TURN_URL: ${{ secrets.WESAL_TURN_URL }}
+  ORG_GRADLE_PROJECT_WESAL_TURN_USERNAME: ${{ secrets.WESAL_TURN_USERNAME }}
+  ORG_GRADLE_PROJECT_WESAL_TURN_CREDENTIAL: ${{ secrets.WESAL_TURN_CREDENTIAL }}
+
 jobs:
   build-and-test:
     name: Unit Tests & Debug APK
