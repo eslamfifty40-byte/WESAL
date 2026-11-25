@@ -184,7 +184,7 @@ class CoreDomainUnitTest {
             targetContactName = "أحمد",
             isEnglish = false
         )
-        assertTrue(msgAr.contains("معرّفي @eslam_wesal"))
+        assertTrue(msgAr.contains("معرفي: eslam_wesal"))
         assertFalse(msgAr.contains("wesal.app", ignoreCase = true))
         assertFalse(msgAr.contains("/join", ignoreCase = true))
         assertTrue(msgAr.contains(com.wesal.messenger.core.util.Constants.APK_DOWNLOAD_URL))
@@ -194,7 +194,7 @@ class CoreDomainUnitTest {
             targetContactName = null,
             isEnglish = true
         )
-        assertTrue(msgEn.contains("My ID: @sara_99"))
+        assertTrue(msgEn.contains("My ID: sara_99"))
         assertFalse(msgEn.contains("wesal.app", ignoreCase = true))
         assertFalse(msgEn.contains("/join", ignoreCase = true))
         assertTrue(msgEn.contains(com.wesal.messenger.core.util.Constants.APK_DOWNLOAD_URL))
@@ -290,10 +290,10 @@ class CoreDomainUnitTest {
     }
 
     @Test
-    fun verificationSeals_haveAllTenColorsAndFallbackToBlue() {
+    fun verificationSeals_haveAllThirtyColorsAndFallbackToBlue() {
         val keys = com.wesal.messenger.core.util.VerificationSealType.entries.map { it.key }
-        assertEquals(10, keys.size)
-        assertTrue(keys.containsAll(listOf("BLUE", "BLACK", "GREEN", "GOLD", "CYAN", "PURPLE", "RED", "SILVER", "ROSE", "ORANGE")))
+        assertEquals(30, keys.size)
+        assertTrue(keys.containsAll(listOf("BLUE", "BLACK", "GREEN", "GOLD", "CYAN", "PURPLE", "RED", "SILVER", "ROSE", "ORANGE", "INDIGO", "COSMIC")))
         assertEquals(
             com.wesal.messenger.core.util.VerificationSealType.GOLD,
             com.wesal.messenger.core.util.VerificationSealType.fromKey("gold")
