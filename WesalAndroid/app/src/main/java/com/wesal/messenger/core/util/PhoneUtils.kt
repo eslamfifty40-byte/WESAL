@@ -56,9 +56,11 @@ object PhoneUtils {
 
     fun resolveDeviceDialCode(context: Context): String {
         val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
-        val iso = tm?.networkCountryIso?.takeIf { it.isNotBlank() }
+        val telephonyIso = tm?.networkCountryIso?.takeIf { it.isNotBlank() }
             ?: tm?.simCountryIso?.takeIf { it.isNotBlank() }
-            ?: Locale.getDefault().country
+        val localeCountry = Locale.getDefault().country
+            .takeIf { it.isNotBlank() && !it.equals("US", ignoreCase = true) }
+        val iso = telephonyIso ?: localeCountry ?: return Constants.DEFAULT_COUNTRY_DIAL
         return CountryCatalog.countries.firstOrNull {
             it.iso.equals(iso, ignoreCase = true)
         }?.dialCode ?: Constants.DEFAULT_COUNTRY_DIAL
@@ -177,6 +179,35 @@ object PhoneUtils {
 
         val digitsCount = e164.drop(1).length
         return if (e164.startsWith("+") && digitsCount in 7..15) e164 else null
+    }
+
+    fun normalizePhoneCandidates(
+        rawInput: String,
+        defaultDialCode: String = Constants.DEFAULT_COUNTRY_DIAL
+    ): List<String> {
+        val cleaned = normalizeAsciiDigits(rawInput).trim().replace(Regex("[\\s\\-().]"), "")
+        if (cleaned.isEmpty()) return emptyList()
+        val digitsOnly = cleaned.filter { it in '0'..'9' }
+        if (digitsOnly.length < 7) return emptyList()
+
+        val candidates = linkedSetOf<String>()
+        normalizeToE164(rawInput, defaultDialCode)?.let { candidates.add(it) }
+        if (defaultDialCode != Constants.DEFAULT_COUNTRY_DIAL) {
+            normalizeToE164(rawInput, Constants.DEFAULT_COUNTRY_DIAL)?.let { candidates.add(it) }
+        }
+        if (!cleaned.startsWith("+") && !cleaned.startsWith("00")) {
+            val noZero = digitsOnly.trimStart('0')
+            if (noZero.length == 10 &&
+                (noZero.startsWith("10") || noZero.startsWith("11") || noZero.startsWith("12") || noZero.startsWith("15"))
+            ) {
+                candidates.add("+20$noZero")
+            }
+            if (noZero.length == 9 && noZero.startsWith("5")) {
+                candidates.add("+966$noZero")
+                candidates.add("+971$noZero")
+            }
+        }
+        return candidates.toList()
     }
 
     fun sha256Hash(e164Phone: String): String {

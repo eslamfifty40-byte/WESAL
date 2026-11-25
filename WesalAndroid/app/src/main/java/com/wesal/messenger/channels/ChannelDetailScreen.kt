@@ -2,6 +2,7 @@ package com.wesal.messenger.channels
 
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -22,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -29,6 +32,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
@@ -39,11 +44,14 @@ import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.domain.model.ChannelPost
 import com.wesal.messenger.domain.model.ChannelPostType
 import com.wesal.messenger.domain.model.ChannelRole
+import com.wesal.messenger.media.FullscreenImageViewer
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
+import com.wesal.messenger.presentation.components.saveImageUrlToGallery
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.voice.VoicePlaybackState
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -71,6 +79,8 @@ fun ChannelDetailScreen(
     val moderators by viewModel.moderators.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
+    val currentUserPhotoUrl by viewModel.currentUserPhotoUrl.collectAsStateWithLifecycle()
+    val uiScope = rememberCoroutineScope()
 
     var postText by remember { mutableStateOf("") }
     var showAttachMenu by remember { mutableStateOf(false) }
@@ -81,6 +91,7 @@ fun ChannelDetailScreen(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var editingPost by remember { mutableStateOf<ChannelPost?>(null) }
     var commentSheetPostId by remember { mutableStateOf<String?>(null) }
+    var fullscreenImageUrl by remember { mutableStateOf<String?>(null) }
     var copiedNotice by remember { mutableStateOf(false) }
 
     LaunchedEffect(channelId) {
@@ -164,7 +175,13 @@ fun ChannelDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.clickable { showInfoDialog = true }
                     ) {
-                        WesalAvatar(imageUrl = ch?.avatarUrl.orEmpty(), name = ch?.title ?: "C", size = 38.dp)
+                        Box(
+                            modifier = Modifier.clickable(enabled = ch?.avatarUrl?.isNotBlank() == true) {
+                                fullscreenImageUrl = ch?.avatarUrl
+                            }
+                        ) {
+                            WesalAvatar(imageUrl = ch?.avatarUrl.orEmpty(), name = ch?.title ?: "C", size = 38.dp)
+                        }
                         Column {
                             WesalNameWithBadge(
                                 name = ch?.title ?: strings.loading,
@@ -248,6 +265,17 @@ fun ChannelDetailScreen(
                                             imagePicker.launch("image/*")
                                         }
                                     )
+                                    if (currentUserPhotoUrl.isNotBlank()) {
+                                        DropdownMenuItem(
+                                            text = { Text(if (strings.isEnglish) "Post My Profile Photo" else "نشر صورتي الشخصية", color = palette.textPrimary) },
+                                            leadingIcon = { Icon(Icons.Default.AccountCircle, contentDescription = null, tint = palette.turquoise) },
+                                            onClick = {
+                                                showAttachMenu = false
+                                                viewModel.publishPersonalPhotoToChannel(channelId, postText, currentUserPhotoUrl)
+                                                postText = ""
+                                            }
+                                        )
+                                    }
                                     DropdownMenuItem(
                                         text = { Text(if (strings.isEnglish) "Video" else "فيديو", color = palette.textPrimary) },
                                         leadingIcon = { Icon(Icons.Default.VideoFile, contentDescription = null, tint = palette.turquoise) },
@@ -437,6 +465,26 @@ fun ChannelDetailScreen(
                                 viewModel.selectPostForComments(post.postId)
                                 commentSheetPostId = post.postId
                             },
+                            onOpenImage = { url -> fullscreenImageUrl = url },
+                            onSaveImage = { url ->
+                                uiScope.launch {
+                                    saveImageUrlToGallery(context, url, "WESAL_CHANNEL")
+                                        .onSuccess {
+                                            Toast.makeText(
+                                                context,
+                                                if (strings.isEnglish) "Photo saved to gallery ✓" else "تم حفظ الصورة في المعرض ✓",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                        .onFailure { err ->
+                                            Toast.makeText(
+                                                context,
+                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر حفظ الصورة",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                }
+                            },
                             onEdit = { editingPost = post },
                             onTogglePin = { viewModel.togglePin(channelId, post.postId, !post.isPinned) },
                             onDelete = { viewModel.deletePost(channelId, post.postId) }
@@ -498,6 +546,36 @@ fun ChannelDetailScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    if (ch.avatarUrl.isNotBlank()) {
+                        Box(modifier = Modifier.clickable { fullscreenImageUrl = ch.avatarUrl }) {
+                            WesalAvatar(imageUrl = ch.avatarUrl, name = ch.title, size = 76.dp)
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                uiScope.launch {
+                                    saveImageUrlToGallery(context, ch.avatarUrl, "WESAL_CH_AVATAR")
+                                        .onSuccess {
+                                            Toast.makeText(
+                                                context,
+                                                if (strings.isEnglish) "Channel photo saved ✓" else "تم حفظ صورة القناة في المعرض ✓",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                        .onFailure { err ->
+                                            Toast.makeText(
+                                                context,
+                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر الحفظ",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Default.Download, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (strings.isEnglish) "Save Channel Photo" else "حفظ صورة القناة", color = palette.turquoise)
+                        }
+                    }
                     if (ch.description.isNotBlank()) {
                         Text(ch.description, color = palette.textSecondary, modifier = Modifier.fillMaxWidth())
                     }
@@ -893,6 +971,18 @@ fun ChannelDetailScreen(
             }
         }
     }
+
+    fullscreenImageUrl?.let { imgUrl ->
+        Dialog(
+            onDismissRequest = { fullscreenImageUrl = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            FullscreenImageViewer(
+                imageModel = imgUrl,
+                onClose = { fullscreenImageUrl = null }
+            )
+        }
+    }
 }
 
 @Composable
@@ -1006,6 +1096,8 @@ private fun ChannelPostCard(
     onToggleAudio: () -> Unit,
     onReact: (String) -> Unit,
     onOpenComments: () -> Unit,
+    onOpenImage: (String) -> Unit,
+    onSaveImage: (String) -> Unit,
     onEdit: () -> Unit,
     onTogglePin: () -> Unit,
     onDelete: () -> Unit
@@ -1057,15 +1149,37 @@ private fun ChannelPostCard(
             }
 
             if (post.type == ChannelPostType.IMAGE && post.mediaUrl.isNotBlank()) {
-                AsyncImage(
-                    model = wesalImageModel(post.mediaUrl),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 260.dp)
                         .clip(RoundedCornerShape(14.dp))
-                )
+                        .clickable { onOpenImage(post.mediaUrl) }
+                ) {
+                    AsyncImage(
+                        model = wesalImageModel(post.mediaUrl),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.58f),
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .clickable { onSaveImage(post.mediaUrl) }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = if (strings.isEnglish) "Save photo" else "حفظ الصورة",
+                            tint = Color.White,
+                            modifier = Modifier
+                                .padding(7.dp)
+                                .size(18.dp)
+                        )
+                    }
+                }
             } else if (post.type == ChannelPostType.AUDIO && post.mediaUrl.isNotBlank()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

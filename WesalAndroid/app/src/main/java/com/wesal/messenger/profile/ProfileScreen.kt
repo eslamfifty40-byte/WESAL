@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -40,7 +41,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
@@ -72,6 +72,7 @@ import com.wesal.messenger.media.AvatarSourceBottomSheet
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
+import com.wesal.messenger.presentation.components.saveImageUrlToGallery
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -334,6 +335,7 @@ fun ProfileScreen(
     val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val uiScope = rememberCoroutineScope()
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val visitors by viewModel.profileVisitors.collectAsStateWithLifecycle()
     val uiStatus by viewModel.uiStatus.collectAsStateWithLifecycle()
@@ -606,6 +608,36 @@ fun ProfileScreen(
                                     color = palette.background.copy(alpha = 0.72f),
                                     shape = RoundedCornerShape(10.dp),
                                     modifier = Modifier.clickable(enabled = !uiStatus.isSaving) {
+                                        uiScope.launch {
+                                            saveImageUrlToGallery(context, coverPreview, "WESAL_COVER")
+                                                .onSuccess {
+                                                    Toast.makeText(
+                                                        context,
+                                                        if (strings.isEnglish) "Cover saved to gallery ✓" else "تم حفظ صورة الغلاف في المعرض ✓",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                                .onFailure { err ->
+                                                    Toast.makeText(
+                                                        context,
+                                                        err.localizedMessage ?: "Error",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Download,
+                                        contentDescription = if (strings.isEnglish) "Save cover" else "حفظ الغلاف",
+                                        tint = palette.emerald,
+                                        modifier = Modifier.padding(6.dp).size(18.dp)
+                                    )
+                                }
+                                Surface(
+                                    color = palette.background.copy(alpha = 0.72f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.clickable(enabled = !uiStatus.isSaving) {
                                         showDeleteCoverConfirm = true
                                     }
                                 ) {
@@ -619,7 +651,7 @@ fun ProfileScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(52.dp))
+                    Spacer(Modifier.height(64.dp))
                 }
 
                 Box(
@@ -634,7 +666,7 @@ fun ProfileScreen(
                     WesalAvatar(
                         imageUrl = selectedAvatarUri?.toString() ?: user?.photoUrl.orEmpty(),
                         name = name.ifBlank { "WESAL" },
-                        size = 108.dp,
+                        size = 136.dp,
                         frameId = user?.frameId.orEmpty(),
                         frameExpiresAt = user?.frameExpiresAt ?: 0L,
                         isCutout = user?.photoRemovedBg == true,
@@ -642,8 +674,19 @@ fun ProfileScreen(
                         neonColor = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
                         neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
                     )
-                    Surface(color = palette.surface, shape = RoundedCornerShape(50), tonalElevation = 4.dp) {
-                        Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise, modifier = Modifier.padding(6.dp).size(18.dp))
+                    Surface(
+                        color = palette.surface,
+                        shape = CircleShape,
+                        border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.55f)),
+                        tonalElevation = 4.dp,
+                        modifier = Modifier.offset(x = (-6).dp, y = (-6).dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Edit,
+                            contentDescription = strings.edit,
+                            tint = palette.turquoise,
+                            modifier = Modifier.padding(6.dp).size(16.dp)
+                        )
                     }
                 }
             }
@@ -689,16 +732,18 @@ fun ProfileScreen(
                     }
                 }
                 if (publicId.isNotBlank()) {
-                    Text(
-                        text = "@${publicId.trim()}",
-                        style = wesalNeonTextStyle(
-                            baseStyle = MaterialTheme.typography.titleMedium,
-                            neonColorKey = if (user?.neonEnabled != false) activeNeon else "",
-                            glowIntensity = activeGlow,
-                            fallbackColor = palette.turquoise
-                        ),
-                        fontWeight = FontWeight.Bold
-                    )
+                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                        Text(
+                            text = "@${publicId.trim()}",
+                            style = wesalNeonTextStyle(
+                                baseStyle = MaterialTheme.typography.titleMedium,
+                                neonColorKey = if (user?.neonEnabled != false) activeNeon else "",
+                                glowIntensity = activeGlow,
+                                fallbackColor = palette.turquoise
+                            ),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
 
                 // Frame / Neon / Seal active summary badge if any customization is granted
@@ -745,7 +790,7 @@ fun ProfileScreen(
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
                     enabled = !uiStatus.isSaving,
                     onClick = {
@@ -758,11 +803,32 @@ fun ProfileScreen(
                     Text(if (strings.isEnglish) "Change Avatar" else "تغيير الصورة", color = palette.turquoise)
                 }
 
-                if (selectedAvatarUri != null || !user?.photoUrl.isNullOrBlank()) {
+                val avatarPreview = selectedAvatarUri?.toString() ?: user?.photoUrl.orEmpty()
+                if (avatarPreview.isNotBlank()) {
+                    OutlinedButton(
+                        enabled = !uiStatus.isSaving,
+                        onClick = {
+                            uiScope.launch {
+                                saveImageUrlToGallery(context, avatarPreview, "WESAL_AVATAR")
+                                    .onSuccess {
+                                        Toast.makeText(
+                                            context,
+                                            if (strings.isEnglish) "Photo saved ✓" else "تم حفظ الصورة في المعرض ✓",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                    .onFailure { err ->
+                                        Toast.makeText(context, err.localizedMessage ?: "Error", Toast.LENGTH_SHORT).show()
+                                    }
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(18.dp))
+                    }
                     OutlinedButton(enabled = !uiStatus.isSaving, onClick = { showDeleteAvatarConfirm = true }) {
                         Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = palette.error, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (strings.isEnglish) "Remove" else "حذف الصورة", color = palette.error)
+                        Spacer(Modifier.width(4.dp))
+                        Text(if (strings.isEnglish) "Remove" else "حذف", color = palette.error)
                     }
                 }
             }

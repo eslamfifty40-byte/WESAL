@@ -18,7 +18,9 @@ import com.wesal.messenger.domain.repository.UserRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flatMapLatest
@@ -38,6 +40,13 @@ class ChannelRepositoryImpl @Inject constructor(
     private val firestore: FirebaseFirestore,
     private val userRepository: UserRepository
 ) : ChannelRepository {
+
+    @Volatile
+    private var lastOfficialEnsureUid: String = ""
+    @Volatile
+    private var lastOfficialEnsureAtMs: Long = 0L
+    @Volatile
+    private var cachedOfficialChannel: WesalChannel? = null
 
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
@@ -156,23 +165,35 @@ class ChannelRepositoryImpl @Inject constructor(
 
     override suspend fun ensureOfficialTeamChannel(): WesalChannel? {
         val currentUid = auth.currentUser?.uid ?: return null
+        val nowMs = System.currentTimeMillis()
+        if (currentUid == lastOfficialEnsureUid &&
+            nowMs - lastOfficialEnsureAtMs < 300_000L &&
+            cachedOfficialChannel != null
+        ) {
+            return cachedOfficialChannel
+        }
+
         val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS)
             .document(Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
 
-        val existing = runCatching { channelRef.get().await() }.getOrNull()
-        val isSuperAdmin = isCurrentUserOwnerSuperAdmin()
-
-        val adminAvatarUrl = runCatching {
-            firestore.collection(Constants.COLLECTION_USERS)
-                .whereEqualTo("numericId", Constants.OWNER_ADMIN_NUMERIC_ID)
-                .limit(1)
-                .get()
-                .await()
-                .documents
-                .firstOrNull()
-                ?.getString("photoUrl")
-                .orEmpty()
-        }.getOrDefault("")
+        val (existing, isSuperAdmin, adminAvatarUrl) = coroutineScope {
+            val existingDef = async { runCatching { channelRef.get().await() }.getOrNull() }
+            val superAdminDef = async { isCurrentUserOwnerSuperAdmin() }
+            val avatarDef = async {
+                runCatching {
+                    firestore.collection(Constants.COLLECTION_USERS)
+                        .whereEqualTo("numericId", Constants.OWNER_ADMIN_NUMERIC_ID)
+                        .limit(1)
+                        .get()
+                        .await()
+                        .documents
+                        .firstOrNull()
+                        ?.getString("photoUrl")
+                        .orEmpty()
+                }.getOrDefault("")
+            }
+            Triple(existingDef.await(), superAdminDef.await(), avatarDef.await())
+        }
 
         if (existing != null && existing.exists()) {
             val mapped = mapChannel(existing, currentUid)
@@ -199,11 +220,15 @@ class ChannelRepositoryImpl @Inject constructor(
             if (updateFields.isNotEmpty()) {
                 runCatching { channelRef.update(updateFields).await() }
             }
-            return if (adminAvatarUrl.isNotBlank() && mapped != null && mapped.avatarUrl.isBlank()) {
+            val resolved = if (adminAvatarUrl.isNotBlank() && mapped != null && mapped.avatarUrl.isBlank()) {
                 mapped.copy(avatarUrl = adminAvatarUrl)
             } else {
                 mapped
             }
+            lastOfficialEnsureUid = currentUid
+            lastOfficialEnsureAtMs = nowMs
+            cachedOfficialChannel = resolved
+            return resolved
         }
 
         if (!isSuperAdmin) {
@@ -231,7 +256,7 @@ class ChannelRepositoryImpl @Inject constructor(
             "createdAt" to now
         )
         runCatching { channelRef.set(officialData).await() }
-        return WesalChannel(
+        val created = WesalChannel(
             channelId = Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID,
             title = "فريق وصال | WESAL Team",
             description = "القناة الرسمية لأخبار وتحديثات WESAL Messenger",
@@ -247,6 +272,10 @@ class ChannelRepositoryImpl @Inject constructor(
             verificationType = "BLUE",
             createdAt = now
         )
+        lastOfficialEnsureUid = currentUid
+        lastOfficialEnsureAtMs = nowMs
+        cachedOfficialChannel = created
+        return created
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -892,8 +921,8 @@ class ChannelRepositoryImpl @Inject constructor(
                 ctx = context,
                 storagePath = "channels/$channelId/avatar_${System.currentTimeMillis()}.jpg",
                 uri = uri,
-                maxSide = 360,
-                quality = 78
+                maxSide = 512,
+                quality = 85
             )
         }
 }

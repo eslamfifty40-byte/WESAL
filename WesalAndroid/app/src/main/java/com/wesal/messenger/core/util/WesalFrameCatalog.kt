@@ -201,9 +201,20 @@ object WesalAppearancePresets {
         AppearanceColorOption("بنفسجي", "Violet", 0xFF8B5CF6L),
         AppearanceColorOption("وردي", "Rose", 0xFFEC4899L),
         AppearanceColorOption("برتقالي", "Amber", 0xFFF59E0BL),
-        AppearanceColorOption("مرجاني", "Coral", 0xFFFF5252L)
+        AppearanceColorOption("مرجاني", "Coral", 0xFFFF5252L),
+        AppearanceColorOption("سماوي", "Sky Blue", 0xFF38BDF8L),
+        AppearanceColorOption("زمردي نيون", "Neon Mint", 0xFF00E5A3L),
+        AppearanceColorOption("ياقوتي", "Crimson", 0xFFE11D48L)
     )
 }
+
+data class WesalBuiltinIconSpec(
+    val id: String,
+    val titleAr: String,
+    val titleEn: String,
+    @DrawableRes val resId: Int,
+    val accentColorHex: Long
+)
 
 enum class FrameCategory {
     DEFAULT_ALL_CUSTOMERS,
@@ -266,45 +277,60 @@ object WesalFrameCatalog {
     )
 
     val adminFrames: List<WesalFrameSpec> = listOf(
-        WesalFrameSpec("admin_39", "إطار الإدارة الملكي #39 (مروحة دوّارة)", "Admin Royal Crest #39", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_39, true, 0xFFFF1744L, apertureCenterYFraction = 0.375f, apertureDiameterFraction = 0.49f, defaultAnimated = true, defaultAnimationStyle = "ROTATE_AURA"),
-        WesalFrameSpec("admin_01", "إطار إدارة #1", "Admin Frame #1", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_01, true, 0xFFFFD54FL, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.48f),
-        WesalFrameSpec("admin_02", "إطار إدارة #2 (مروحة دوّارة)", "Admin Frame #2", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_02, true, 0xFF00D9E8L, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.50f, defaultAnimated = true, defaultAnimationStyle = "ROTATE_AURA"),
-        WesalFrameSpec("admin_03", "إطار إدارة #3", "Admin Frame #3", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_03, true, 0xFFFF5252L, apertureCenterYFraction = 0.38f, apertureDiameterFraction = 0.49f),
-        WesalFrameSpec("admin_04", "إطار إدارة #4", "Admin Frame #4", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_04, true, 0xFF00E676L, apertureCenterYFraction = 0.38f, apertureDiameterFraction = 0.48f),
-        WesalFrameSpec("admin_05", "إطار إدارة #5", "Admin Frame #5", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_05, true, 0xFF40C4FFL, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.52f),
-        WesalFrameSpec("admin_06", "إطار إدارة #6", "Admin Frame #6", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_06, true, 0xFFE040FBL, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.50f),
-        WesalFrameSpec("admin_07", "إطار إدارة #7", "Admin Frame #7", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_07, true, 0xFFFFD740L, apertureCenterYFraction = 0.405f, apertureDiameterFraction = 0.52f),
-        WesalFrameSpec("admin_08", "إطار إدارة #8", "Admin Frame #8", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_08, true, 0xFF69F0AEL, apertureCenterYFraction = 0.405f, apertureDiameterFraction = 0.48f),
-        WesalFrameSpec("admin_09", "إطار إدارة #9", "Admin Frame #9", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_09, true, 0xFFFF4081L, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.47f),
-        WesalFrameSpec("admin_10", "إطار ملكي #10", "Admin Royal #10", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_10, true, 0xFFFFD54FL, apertureCenterYFraction = 0.51f, apertureDiameterFraction = 0.56f),
-        WesalFrameSpec("admin_11", "إطار ملكي #11", "Admin Royal #11", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_11, true, 0xFF00D9E8L, apertureCenterYFraction = 0.475f, apertureDiameterFraction = 0.44f),
-        WesalFrameSpec("admin_12", "إطار إدارة #12", "Admin Frame #12", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_12, true, 0xFFFFAB40L, apertureCenterYFraction = 0.405f, apertureDiameterFraction = 0.52f),
-        WesalFrameSpec("admin_13", "إطار ملكي #13", "Admin Royal #13", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_13, true, 0xFFFF5252L, apertureCenterYFraction = 0.52f, apertureDiameterFraction = 0.53f),
-        WesalFrameSpec("admin_14", "إطار إدارة #14", "Admin Frame #14", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_14, true, 0xFF00E676L, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.48f),
+        WesalFrameSpec("admin_39", "إطار الإدارة الملكي #39 (مروحة دوّارة)", "Admin Royal Crest #39", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_39, true, 0xFFFF1744L, apertureCenterYFraction = 0.395f, apertureDiameterFraction = 0.56f, defaultAnimated = true, defaultAnimationStyle = "ROTATE_AURA"),
+        WesalFrameSpec("admin_01", "إطار إدارة #1", "Admin Frame #1", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_01, true, 0xFFFFD54FL, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.54f),
+        WesalFrameSpec("admin_02", "إطار إدارة #2 (مروحة دوّارة)", "Admin Frame #2", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_02, true, 0xFF00D9E8L, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.55f, defaultAnimated = true, defaultAnimationStyle = "ROTATE_AURA"),
+        WesalFrameSpec("admin_03", "إطار إدارة #3", "Admin Frame #3", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_03, true, 0xFFFF5252L, apertureCenterYFraction = 0.395f, apertureDiameterFraction = 0.55f),
+        WesalFrameSpec("admin_04", "إطار إدارة #4", "Admin Frame #4", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_04, true, 0xFF00E676L, apertureCenterYFraction = 0.395f, apertureDiameterFraction = 0.54f),
+        WesalFrameSpec("admin_05", "إطار إدارة #5", "Admin Frame #5", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_05, true, 0xFF40C4FFL, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.56f),
+        WesalFrameSpec("admin_06", "إطار إدارة #6", "Admin Frame #6", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_06, true, 0xFFE040FBL, apertureCenterYFraction = 0.42f, apertureDiameterFraction = 0.55f),
+        WesalFrameSpec("admin_07", "إطار إدارة #7", "Admin Frame #7", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_07, true, 0xFFFFD740L, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.56f),
+        WesalFrameSpec("admin_08", "إطار إدارة #8", "Admin Frame #8", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_08, true, 0xFF69F0AEL, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.54f),
+        WesalFrameSpec("admin_09", "إطار إدارة #9", "Admin Frame #9", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_09, true, 0xFFFF4081L, apertureCenterYFraction = 0.42f, apertureDiameterFraction = 0.53f),
+        WesalFrameSpec("admin_10", "إطار ملكي #10", "Admin Royal #10", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_10, true, 0xFFFFD54FL, apertureCenterYFraction = 0.51f, apertureDiameterFraction = 0.58f),
+        WesalFrameSpec("admin_11", "إطار ملكي #11", "Admin Royal #11", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_11, true, 0xFF00D9E8L, apertureCenterYFraction = 0.475f, apertureDiameterFraction = 0.52f),
+        WesalFrameSpec("admin_12", "إطار إدارة #12", "Admin Frame #12", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_12, true, 0xFFFFAB40L, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.56f),
+        WesalFrameSpec("admin_13", "إطار ملكي #13", "Admin Royal #13", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_13, true, 0xFFFF5252L, apertureCenterYFraction = 0.51f, apertureDiameterFraction = 0.56f),
+        WesalFrameSpec("admin_14", "إطار إدارة #14", "Admin Frame #14", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_14, true, 0xFF00E676L, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.54f),
         WesalFrameSpec("admin_15", "إطار ملكي #15", "Admin Royal #15", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_15, true, 0xFFB388FFL),
         WesalFrameSpec("admin_16", "إطار ملكي #16", "Admin Royal #16", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_16, true, 0xFF00E5FFL),
-        WesalFrameSpec("admin_17", "إطار ملكي #17", "Admin Royal #17", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_17, true, 0xFFFFD740L, apertureCenterYFraction = 0.50f, apertureDiameterFraction = 0.52f),
+        WesalFrameSpec("admin_17", "إطار ملكي #17", "Admin Royal #17", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_17, true, 0xFFFFD740L, apertureCenterYFraction = 0.50f, apertureDiameterFraction = 0.56f),
         WesalFrameSpec("admin_18", "إطار ملكي #18", "Admin Royal #18", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_18, true, 0xFFFF6E40L, apertureCenterYFraction = 0.48f, apertureDiameterFraction = 0.58f),
         WesalFrameSpec("admin_19", "إطار ملكي #19", "Admin Royal #19", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_19, true, 0xFF69F0AEL),
         WesalFrameSpec("admin_20", "إطار ملكي #20", "Admin Royal #20", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_20, true, 0xFFFFD54FL, apertureCenterYFraction = 0.47f, apertureDiameterFraction = 0.62f),
-        WesalFrameSpec("admin_21", "إطار ملكي #21", "Admin Royal #21", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_21, true, 0xFFD4AF37L, apertureCenterYFraction = 0.52f, apertureDiameterFraction = 0.57f),
-        WesalFrameSpec("admin_22", "إطار ملكي #22", "Admin Royal #22", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_22, true, 0xFFFF5252L, apertureCenterYFraction = 0.46f, apertureDiameterFraction = 0.50f),
-        WesalFrameSpec("admin_23", "إطار إدارة #23", "Admin Frame #23", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_23, true, 0xFF00D9E8L, apertureCenterYFraction = 0.385f, apertureDiameterFraction = 0.47f),
-        WesalFrameSpec("admin_24", "إطار ملكي #24", "Admin Royal #24", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_24, true, 0xFFFFD740L, apertureCenterYFraction = 0.49f, apertureDiameterFraction = 0.55f),
-        WesalFrameSpec("admin_25", "إطار ملكي #25", "Admin Royal #25", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_25, true, 0xFFB388FFL, apertureCenterYFraction = 0.52f, apertureDiameterFraction = 0.53f),
+        WesalFrameSpec("admin_21", "إطار ملكي #21", "Admin Royal #21", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_21, true, 0xFFD4AF37L, apertureCenterYFraction = 0.52f, apertureDiameterFraction = 0.58f),
+        WesalFrameSpec("admin_22", "إطار ملكي #22", "Admin Royal #22", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_22, true, 0xFFFF5252L, apertureCenterYFraction = 0.46f, apertureDiameterFraction = 0.55f),
+        WesalFrameSpec("admin_23", "إطار إدارة #23", "Admin Frame #23", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_23, true, 0xFF00D9E8L, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.54f),
+        WesalFrameSpec("admin_24", "إطار ملكي #24", "Admin Royal #24", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_24, true, 0xFFFFD740L, apertureCenterYFraction = 0.49f, apertureDiameterFraction = 0.57f),
+        WesalFrameSpec("admin_25", "إطار ملكي #25", "Admin Royal #25", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_25, true, 0xFFB388FFL, apertureCenterYFraction = 0.51f, apertureDiameterFraction = 0.56f),
         WesalFrameSpec("admin_26", "إطار ملكي #26", "Admin Royal #26", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_26, true, 0xFF00E676L, apertureCenterYFraction = 0.49f, apertureDiameterFraction = 0.62f),
-        WesalFrameSpec("admin_27", "إطار ملكي #27", "Admin Royal #27", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_27, true, 0xFFFFAB40L, apertureCenterYFraction = 0.46f, apertureDiameterFraction = 0.44f),
-        WesalFrameSpec("admin_28", "إطار ملكي #28", "Admin Royal #28", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_28, true, 0xFF40C4FFL, apertureCenterYFraction = 0.48f, apertureDiameterFraction = 0.53f),
+        WesalFrameSpec("admin_27", "إطار ملكي #27", "Admin Royal #27", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_27, true, 0xFFFFAB40L, apertureCenterYFraction = 0.46f, apertureDiameterFraction = 0.52f),
+        WesalFrameSpec("admin_28", "إطار ملكي #28", "Admin Royal #28", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_28, true, 0xFF40C4FFL, apertureCenterYFraction = 0.48f, apertureDiameterFraction = 0.56f),
         WesalFrameSpec("admin_29", "إطار ملكي #29", "Admin Royal #29", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_29, true, 0xFFFF4081L),
-        WesalFrameSpec("admin_30", "إطار إدارة #30", "Admin Frame #30", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_30, true, 0xFF00D9E8L, apertureCenterYFraction = 0.395f, apertureDiameterFraction = 0.51f),
-        WesalFrameSpec("admin_31", "إطار ملكي #31", "Admin Royal #31", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_31, true, 0xFFFFD54FL, apertureCenterYFraction = 0.50f, apertureDiameterFraction = 0.50f),
+        WesalFrameSpec("admin_30", "إطار إدارة #30", "Admin Frame #30", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_30, true, 0xFF00D9E8L, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.55f),
+        WesalFrameSpec("admin_31", "إطار ملكي #31", "Admin Royal #31", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_31, true, 0xFFFFD54FL, apertureCenterYFraction = 0.50f, apertureDiameterFraction = 0.55f),
         WesalFrameSpec("admin_32", "إطار ملكي #32", "Admin Royal #32", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_32, true, 0xFFFF5252L),
-        WesalFrameSpec("admin_33", "إطار إدارة #33", "Admin Frame #33", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_33, true, 0xFF00E676L, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.53f),
-        WesalFrameSpec("admin_34", "إطار إدارة #34", "Admin Frame #34", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_34, true, 0xFFB388FFL, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.48f),
-        WesalFrameSpec("admin_35", "إطار إدارة #35", "Admin Frame #35", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_35, true, 0xFF00E5FFL, apertureCenterYFraction = 0.395f, apertureDiameterFraction = 0.54f),
-        WesalFrameSpec("admin_36", "إطار إدارة #36", "Admin Frame #36", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_36, true, 0xFFFFD740L, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.54f),
-        WesalFrameSpec("admin_37", "إطار إدارة #37", "Admin Frame #37", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_37, true, 0xFFFF6E40L, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.52f),
-        WesalFrameSpec("admin_38", "إطار إدارة #38", "Admin Frame #38", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_38, true, 0xFF00D9E8L, apertureCenterYFraction = 0.385f, apertureDiameterFraction = 0.53f)
+        WesalFrameSpec("admin_33", "إطار إدارة #33", "Admin Frame #33", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_33, true, 0xFF00E676L, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.56f),
+        WesalFrameSpec("admin_34", "إطار إدارة #34", "Admin Frame #34", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_34, true, 0xFFB388FFL, apertureCenterYFraction = 0.415f, apertureDiameterFraction = 0.54f),
+        WesalFrameSpec("admin_35", "إطار إدارة #35", "Admin Frame #35", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_35, true, 0xFF00E5FFL, apertureCenterYFraction = 0.405f, apertureDiameterFraction = 0.56f),
+        WesalFrameSpec("admin_36", "إطار إدارة #36", "Admin Frame #36", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_36, true, 0xFFFFD740L, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.56f),
+        WesalFrameSpec("admin_37", "إطار إدارة #37", "Admin Frame #37", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_37, true, 0xFFFF6E40L, apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.55f),
+        WesalFrameSpec("admin_38", "إطار إدارة #38", "Admin Frame #38", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_38, true, 0xFF00D9E8L, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.56f)
+    )
+
+    val builtinIcons: List<WesalBuiltinIconSpec> = listOf(
+        WesalBuiltinIconSpec("builtin_icon_crown", "التاج الملكي", "Royal Crown", R.drawable.wesal_ic_badge_crown, 0xFFFFD54FL),
+        WesalBuiltinIconSpec("builtin_icon_diamond", "الألماسة الفيروزية", "Turquoise Diamond", R.drawable.wesal_ic_badge_diamond, 0xFF00E5FFL),
+        WesalBuiltinIconSpec("builtin_icon_fire", "شعلة القوة", "Flame Crest", R.drawable.wesal_ic_badge_fire, 0xFFFF3D00L),
+        WesalBuiltinIconSpec("builtin_icon_star", "النجمة الذهبية", "Golden Star", R.drawable.wesal_ic_badge_star, 0xFFFFD740L),
+        WesalBuiltinIconSpec("builtin_icon_lightning", "البرق الخاطف", "Lightning Bolt", R.drawable.wesal_ic_badge_lightning, 0xFFFFEA00L),
+        WesalBuiltinIconSpec("builtin_icon_heart", "القلب الملكي", "Royal Heart", R.drawable.wesal_ic_badge_heart, 0xFFFF1744L),
+        WesalBuiltinIconSpec("builtin_icon_shield", "درع وصال", "WESAL Shield", R.drawable.wesal_ic_badge_shield, 0xFF00D66BL),
+        WesalBuiltinIconSpec("builtin_icon_gem", "الجوهرة الأرجوانية", "Violet Gem", R.drawable.wesal_ic_badge_gem, 0xFFD500F9L),
+        WesalBuiltinIconSpec("builtin_icon_wing", "الجناح الذهبي", "Golden Wing", R.drawable.wesal_ic_badge_wing, 0xFFFFD54FL),
+        WesalBuiltinIconSpec("builtin_icon_crescent", "الهلال والنجمة", "Crescent Star", R.drawable.wesal_ic_badge_crescent, 0xFF00E5FFL),
+        WesalBuiltinIconSpec("builtin_icon_phoenix", "شعار العنقاء", "Phoenix Crest", R.drawable.wesal_ic_badge_phoenix, 0xFFFF5252L),
+        WesalBuiltinIconSpec("builtin_icon_vip", "وسام VIP", "VIP Crest", R.drawable.wesal_ic_badge_vip, 0xFFFFD54FL)
     )
 
     val allFrames: List<WesalFrameSpec> = customerFrames + adminFrames

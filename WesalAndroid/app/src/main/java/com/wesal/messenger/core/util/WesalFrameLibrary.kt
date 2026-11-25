@@ -150,6 +150,8 @@ object WesalFrameLibrary {
         if (id.isNotBlank()) {
             val fromLib = docs[id]?.imageUrl?.takeIf { it.isNotBlank() }
             if (!fromLib.isNullOrBlank()) return fromLib
+            val builtinIcon = WesalFrameCatalog.builtinIcons.firstOrNull { it.id == id }
+            if (builtinIcon != null) return "builtin_icon:${builtinIcon.id}"
         }
         return fallbackUrl.trim()
     }
@@ -188,8 +190,29 @@ object WesalFrameLibrary {
     fun pickerItems(category: String, includeHiddenAndDeleted: Boolean): List<FramePickerItem> {
         val out = ArrayList<FramePickerItem>()
         if (category == "ICON") {
+            val builtinIconIds = WesalFrameCatalog.builtinIcons.map { it.id }.toSet()
+            for (spec in WesalFrameCatalog.builtinIcons) {
+                val doc = docs[spec.id]
+                val hidden = doc?.hidden == true
+                val deleted = doc?.deleted == true
+                if (!includeHiddenAndDeleted && (hidden || deleted)) continue
+                val customUrl = doc?.imageUrl?.takeIf { it.isNotBlank() }
+                out += FramePickerItem(
+                    id = spec.id,
+                    title = doc?.titleAr?.takeIf { it.isNotBlank() } ?: spec.titleAr,
+                    resId = if (customUrl == null) spec.resId else 0,
+                    imageUrl = customUrl ?: "builtin_icon:${spec.id}",
+                    glow = Color(spec.accentColorHex.toInt()),
+                    hidden = hidden,
+                    deleted = deleted,
+                    builtin = true,
+                    kind = "ICON",
+                    animated = doc?.animated ?: true,
+                    animationStyle = doc?.animationStyle ?: "PULSE_GLOW"
+                )
+            }
             docs.values
-                .filter { (it.kind == "ICON" || it.category == "ICON") && it.imageUrl.isNotBlank() }
+                .filter { it.id !in builtinIconIds && (it.kind == "ICON" || it.category == "ICON") && it.imageUrl.isNotBlank() }
                 .sortedBy { it.createdAt }
                 .forEach { d ->
                     if (!includeHiddenAndDeleted && (d.hidden || d.deleted)) return@forEach
@@ -338,7 +361,8 @@ object WesalFrameLibrary {
     /** Permanently deletes a custom uploaded frame/icon document from the library collection without touching users' own user docs. */
     suspend fun permanentlyDelete(frameId: String): Result<Unit> = runCatching {
         val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
-        check(builtin == null) { "لا يمكن حذف الإطارات المدمجة نهائيًا؛ استخدم الإزالة من المكتبة" }
+        val builtinIcon = WesalFrameCatalog.builtinIcons.firstOrNull { it.id == frameId }
+        check(builtin == null && builtinIcon == null) { "لا يمكن حذف الإطارات أو الأيقونات المدمجة نهائيًا؛ استخدم الإزالة من المكتبة" }
         col().document(frameId).delete().await()
     }
 

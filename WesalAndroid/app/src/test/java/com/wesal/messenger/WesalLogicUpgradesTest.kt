@@ -86,4 +86,30 @@ class WesalLogicUpgradesTest {
             com.wesal.messenger.core.theme.WesalPersonalSurfacePreset.fromKey(null)
         )
     }
+
+    @Test
+    fun phoneUtils_normalizePhoneCandidatesResolvesEgyptAndGulfNumbersAcrossDeviceLocales() {
+        val egyptCandidates = PhoneUtils.normalizePhoneCandidates("01012345678", "+1")
+        assertTrue(egyptCandidates.contains("+201012345678"))
+
+        val saudiCandidates = PhoneUtils.normalizePhoneCandidates("+966 50 123 4567", "+20")
+        assertTrue(saudiCandidates.contains("+966501234567"))
+
+        val arabicSaudiLocal = PhoneUtils.normalizePhoneCandidates("٠٥٠١٢٣٤٥٦٧", "+20")
+        assertTrue(arabicSaudiLocal.contains("+966501234567"))
+    }
+
+    @Test
+    fun expandedThemeAndBuiltinIconCatalogsHaveDistinctEntries() {
+        val accents = com.wesal.messenger.core.theme.WesalPersonalAccentPreset.entries
+        val surfaces = com.wesal.messenger.core.theme.WesalPersonalSurfacePreset.entries
+        val icons = com.wesal.messenger.core.util.WesalFrameCatalog.builtinIcons
+
+        assertTrue(accents.size >= 14)
+        assertTrue(surfaces.size >= 8)
+        assertTrue(icons.size >= 12)
+        assertTrue(icons.all { it.id.isNotBlank() && it.resId != 0 })
+        assertEquals(icons.size, icons.map { it.id }.distinct().size)
+    }
 }
+

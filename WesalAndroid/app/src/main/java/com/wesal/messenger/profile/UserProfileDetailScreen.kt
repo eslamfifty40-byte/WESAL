@@ -24,12 +24,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.SavedStateHandle
@@ -66,6 +69,7 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
 import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
+import com.wesal.messenger.presentation.components.saveImageUrlToGallery
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -521,30 +525,93 @@ fun UserProfileDetailScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
+                val detailScope = rememberCoroutineScope()
                 Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        if (showCover) {
-                            AsyncImage(
-                                model = wesalImageModel(target.coverUrl),
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(16f / 9f)
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .clickable { fullscreenMediaUrl = target.coverUrl },
-                                contentScale = ContentScale.Crop
-                            )
-                            Spacer(Modifier.height(54.dp))
-                        } else {
-                            Spacer(Modifier.height(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aspectRatio(16f / 9f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(
+                                    Brush.linearGradient(
+                                        colors = listOf(
+                                            palette.surfaceElevated,
+                                            palette.emerald.copy(alpha = 0.22f),
+                                            palette.turquoise.copy(alpha = 0.20f)
+                                        )
+                                    )
+                                )
+                        ) {
+                            if (showCover) {
+                                AsyncImage(
+                                    model = wesalImageModel(target.coverUrl),
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clickable { fullscreenMediaUrl = target.coverUrl },
+                                    contentScale = ContentScale.Crop
+                                )
+                                Surface(
+                                    color = palette.background.copy(alpha = 0.72f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(8.dp)
+                                        .clickable {
+                                            detailScope.launch {
+                                                saveImageUrlToGallery(context, target.coverUrl, "WESAL_COVER")
+                                                    .onSuccess {
+                                                        Toast.makeText(
+                                                            context,
+                                                            if (strings.isEnglish) "Cover saved ✓" else "تم حفظ صورة الغلاف ✓",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                            }
+                                        }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Download,
+                                        contentDescription = if (strings.isEnglish) "Save cover" else "حفظ الغلاف",
+                                        tint = palette.turquoise,
+                                        modifier = Modifier.padding(6.dp).size(18.dp)
+                                    )
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .align(Alignment.TopCenter)
+                                        .padding(top = 26.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (target.privacySettings.hideCoverPhoto) Icons.Default.Lock else Icons.Default.Wallpaper,
+                                        contentDescription = null,
+                                        tint = palette.turquoise.copy(alpha = 0.65f),
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                    Text(
+                                        text = if (target.privacySettings.hideCoverPhoto) {
+                                            if (strings.isEnglish) "Cover photo hidden" else "صورة الغلاف مخفية"
+                                        } else {
+                                            "WESAL Messenger"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = palette.textSecondary.copy(alpha = 0.8f)
+                                    )
+                                }
+                            }
                         }
+                        Spacer(Modifier.height(64.dp))
                     }
 
                     Box(modifier = Modifier.clickable(enabled = showAvatar) { fullscreenMediaUrl = target.photoUrl }) {
                         WesalAvatar(
                             imageUrl = if (showAvatar) target.photoUrl else "",
                             name = target.displayName.ifBlank { target.publicId },
-                            size = 114.dp,
+                            size = 136.dp,
                             isOnline = canSeeOnline && target.isOnline,
                             frameId = target.frameId,
                             frameExpiresAt = target.frameExpiresAt,
@@ -604,11 +671,13 @@ fun UserProfileDetailScreen(
                                 Toast.makeText(context, "@${target.publicId}", Toast.LENGTH_SHORT).show()
                             }
                         ) {
-                            Text(
-                                text = "@${target.publicId}",
-                                style = wesalNeonTextStyle(MaterialTheme.typography.titleMedium, neonColor, neonGlow, palette.textSecondary),
-                                fontWeight = FontWeight.SemiBold
-                            )
+                            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                                Text(
+                                    text = "@${target.publicId}",
+                                    style = wesalNeonTextStyle(MaterialTheme.typography.titleMedium, neonColor, neonGlow, palette.textSecondary),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                             Icon(Icons.Default.ContentCopy, contentDescription = null, tint = palette.textSecondary, modifier = Modifier.size(15.dp))
                         }
                     }

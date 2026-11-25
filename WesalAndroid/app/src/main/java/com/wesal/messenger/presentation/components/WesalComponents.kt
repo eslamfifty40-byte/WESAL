@@ -107,10 +107,13 @@ fun WesalAvatar(
 ) {
     val context = LocalContext.current
     val palette = WesalColors.current
-    var loadFailed by remember(imageUrl) { mutableStateOf(false) }
-    var detectedCutout by remember(imageUrl, isCutout) { mutableStateOf(isCutout) }
     val imageModel = remember(imageUrl) { wesalImageModel(imageUrl) }
     val imageCacheKey = remember(imageUrl) { wesalImageCacheKey(imageUrl) }
+    val cachedCutout = remember(imageCacheKey) { getCachedCutoutAlpha(imageCacheKey) }
+    var loadFailed by remember(imageUrl) { mutableStateOf(false) }
+    var detectedCutout by remember(imageUrl, isCutout, cachedCutout) {
+        mutableStateOf(isCutout || cachedCutout == true)
+    }
     val activeFrame = remember(frameId, frameExpiresAt, WesalFrameLibrary.docs) {
         WesalFrameLibrary.resolve(frameId, frameExpiresAt)
     }
@@ -123,9 +126,9 @@ fun WesalAvatar(
         else -> null
     }
     val baseGlowAlpha = if (neonPreset != NeonColorPreset.NONE) {
-        0.42f + 0.36f * neonGlowIntensity.coerceIn(0.2f, 1.0f)
+        0.38f + 0.34f * neonGlowIntensity.coerceIn(0.2f, 1.0f)
     } else {
-        0.60f
+        0.52f
     }
 
     val isAnimatedFrame = activeFrame?.animated == true
@@ -159,8 +162,8 @@ fun WesalAvatar(
         label = "rotate"
     ) ?: remember { mutableStateOf(0f) })
 
-    val containerSize = if (activeFrame != null) size * 1.28f else size
-    // Portrait fits squarely inside the circular aperture of the crest frame (no overflow over lower shield/banner)
+    val containerSize = if (activeFrame != null) size * 1.38f else size
+    // Portrait fits squarely inside the circular aperture of the crest frame (prominent hero fill without lower shield clipping)
     val innerAvatarSize = if (activeFrame == null) {
         size
     } else {
@@ -289,18 +292,28 @@ fun WesalAvatar(
             .then(
                 if (avatarGlowColor != null) {
                     Modifier.drawBehind {
+                        val glowCenter = Offset(
+                            x = center.x,
+                            y = center.y + apertureOffsetY.toPx()
+                        )
+                        val glowRadius = if (activeFrame != null) {
+                            innerAvatarSize.toPx() * 0.58f
+                        } else {
+                            this.size.minDimension * 0.50f
+                        }
+                        val edgeAlpha = if (activeFrame != null) 0.44f else 0.70f
                         drawCircle(
                             brush = Brush.radialGradient(
                                 colors = listOf(
-                                    avatarGlowColor.copy(alpha = avatarGlowAlpha),
-                                    avatarGlowColor.copy(alpha = avatarGlowAlpha * 0.42f),
+                                    avatarGlowColor.copy(alpha = avatarGlowAlpha * edgeAlpha),
+                                    avatarGlowColor.copy(alpha = avatarGlowAlpha * 0.14f),
                                     Color.Transparent
                                 ),
-                                center = center,
-                                radius = this.size.minDimension * 0.62f
+                                center = glowCenter,
+                                radius = glowRadius
                             ),
-                            radius = this.size.minDimension * 0.62f,
-                            center = center
+                            radius = glowRadius,
+                            center = glowCenter
                         )
                     }
                 } else Modifier
@@ -310,7 +323,7 @@ fun WesalAvatar(
         if (activeFrame != null && activeFrame.animated && isRotateFanStyle) {
             FanAuraSpinner(
                 frame = activeFrame,
-                spinnerSize = containerSize * 0.96f,
+                spinnerSize = containerSize * 0.94f,
                 centerOffsetY = apertureOffsetY,
                 includeBlades = true
             )
@@ -329,9 +342,9 @@ fun WesalAvatar(
                         Modifier.background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    innerBackdropColor.copy(alpha = 0.62f),
-                                    innerBackdropColor.copy(alpha = 0.26f),
-                                    if (detectedCutout) innerBackdropColor.copy(alpha = 0.05f) else palette.surface.copy(alpha = 0.96f)
+                                    innerBackdropColor.copy(alpha = 0.58f),
+                                    innerBackdropColor.copy(alpha = 0.22f),
+                                    if (detectedCutout) innerBackdropColor.copy(alpha = 0.04f) else palette.surface.copy(alpha = 0.96f)
                                 )
                             )
                         )
@@ -341,34 +354,46 @@ fun WesalAvatar(
         ) {
             val borderColor = if (neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else palette.border
             val borderWidth = if (neonPreset != NeonColorPreset.NONE) 1.8.dp else 1.dp
+            val needSoftwareCheck = activeFrame != null && cachedCutout == null && !isCutout
             if (imageUrl.isNotBlank() && !loadFailed) {
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(imageModel)
                         .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
-                        .crossfade(true)
-                        .allowHardware(false)
+                        .crossfade(false)
+                        .apply { if (needSoftwareCheck) allowHardware(false) }
                         .build(),
                     contentDescription = name,
                     onError = { loadFailed = true },
                     onSuccess = { st ->
-                        val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
-                        if (bmp != null && bmp.hasAlpha() && bmp.width > 8 && bmp.height > 8) {
-                            val c1 = (bmp.getPixel(1, 1) ushr 24) < 20
-                            val c2 = (bmp.getPixel(bmp.width - 2, 1) ushr 24) < 20
-                            detectedCutout = c1 && c2
+                        if (needSoftwareCheck) {
+                            val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                            if (bmp != null && bmp.hasAlpha() && bmp.width > 8 && bmp.height > 8) {
+                                val c1 = (bmp.getPixel(1, 1) ushr 24) < 20
+                                val c2 = (bmp.getPixel(bmp.width - 2, 1) ushr 24) < 20
+                                val isTransparentCutout = c1 && c2
+                                detectedCutout = isTransparentCutout
+                                putCachedCutoutAlpha(imageCacheKey, isTransparentCutout)
+                            } else {
+                                putCachedCutoutAlpha(imageCacheKey, false)
+                            }
                         }
                     },
                     modifier = Modifier
                         .fillMaxSize()
                         .then(
-                            if (detectedCutout && activeFrame != null) {
-                                Modifier.graphicsLayer {
+                            when {
+                                detectedCutout && activeFrame != null -> Modifier.graphicsLayer {
+                                    scaleX = 1.16f
+                                    scaleY = 1.16f
+                                    translationY = -size.toPx() * 0.04f
+                                }
+                                activeFrame != null -> Modifier.graphicsLayer {
                                     scaleX = 1.08f
                                     scaleY = 1.08f
-                                    translationY = -size.toPx() * 0.035f
                                 }
-                            } else Modifier
+                                else -> Modifier
+                            }
                         )
                         .clip(CircleShape)
                         .then(
@@ -620,46 +645,27 @@ fun WesalRoyalNameplateBanner(
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             contentAlignment = Alignment.Center
         ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(3.dp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
-                    WesalNameWithBadge(
-                        name = displayName.ifBlank { "WESAL User" },
-                        isVerified = isVerified,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = Color(0xFFFFF8E1),
-                        fontWeight = FontWeight.ExtraBold,
-                        badgeSize = 20.dp,
-                        verificationType = verificationType,
-                        neonColor = neonColor,
-                        neonGlowIntensity = neonGlowIntensity,
-                        neonEnabled = neonEnabled,
-                        verificationGlowColor = verificationGlowColor,
-                        verificationGlowEnabled = verificationGlowEnabled,
-                        verificationGlowIntensity = verificationGlowIntensity
-                    )
-                    Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
-                }
-                if (cleanId.isNotBlank()) {
-                    Text(
-                        text = "@$cleanId",
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            shadow = Shadow(
-                                color = accentColor.copy(alpha = 0.55f),
-                                offset = Offset.Zero,
-                                blurRadius = 12f
-                            )
-                        ),
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFFFE082)
-                    )
-                }
+                Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
+                WesalNameWithBadge(
+                    name = displayName.ifBlank { "WESAL User" },
+                    isVerified = isVerified,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color(0xFFFFF8E1),
+                    fontWeight = FontWeight.ExtraBold,
+                    badgeSize = 20.dp,
+                    verificationType = verificationType,
+                    neonColor = neonColor,
+                    neonGlowIntensity = neonGlowIntensity,
+                    neonEnabled = neonEnabled,
+                    verificationGlowColor = verificationGlowColor,
+                    verificationGlowEnabled = verificationGlowEnabled,
+                    verificationGlowIntensity = verificationGlowIntensity
+                )
+                Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
             }
         }
         Text(

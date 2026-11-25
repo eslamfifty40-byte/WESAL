@@ -81,10 +81,13 @@ class ContactsViewModel @Inject constructor(
 
     fun syncDeviceContacts() {
         viewModelScope.launch {
-            _uiState.update { it.copy(isLoadingContacts = true, error = null) }
+            val showLoader = _uiState.value.wesalContacts.isEmpty() && _uiState.value.nonWesalContacts.isEmpty()
+            _uiState.update { it.copy(isLoadingContacts = showLoader, error = null) }
             runCatching {
                 val deviceList = PhoneContactsHelper.loadDeviceContacts(context)
-                val hashes = deviceList.mapNotNull { it.phoneHash }.distinct()
+                val hashes = deviceList
+                    .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
+                    .distinct()
                 val matchedByHash = userRepository.findUsersByPhoneHashes(hashes)
 
                 val matched = mutableListOf<MatchedWesalContact>()
@@ -92,7 +95,8 @@ class ContactsViewModel @Inject constructor(
                 val seenUids = mutableSetOf<String>()
 
                 deviceList.forEach { contact ->
-                    val user = contact.phoneHash?.let { matchedByHash[it] }
+                    val contactHashes = contact.candidateHashes.ifEmpty { listOfNotNull(contact.phoneHash) }
+                    val user = contactHashes.firstNotNullOfOrNull { matchedByHash[it] }
                     val isSecondaryAdmin = user != null && (
                         user.numericId == Constants.SECONDARY_ADMIN_NUMERIC_ID ||
                             Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true)

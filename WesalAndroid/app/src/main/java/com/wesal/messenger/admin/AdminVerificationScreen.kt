@@ -4122,7 +4122,7 @@ private fun AdminGlobalAppearanceSection(
         "ليلي عميق" to 0xFF050A0EL,
         "كحلي داكن" to 0xFF0B1120L,
         "أرجواني داكن" to 0xFF120B1EL,
-        "أبيض نقي" to 0xFFF8FAACL
+        "أبيض نقي" to 0xFFF8FAFCL
     )
     val surfaceChoices = listOf(
         "افتراضي" to 0L,

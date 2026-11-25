@@ -305,7 +305,7 @@ class CallActivity : AppCompatActivity() {
                             }
                         }
                     } else if (isVideo && remoteVideo != null) {
-                        val remoteRenderer = remember {
+                        val remoteRenderer = remember(remoteVideo) {
                             SurfaceViewRenderer(this@CallActivity).apply {
                                 init(webRtcManager.eglBase.eglBaseContext, null)
                             }
@@ -356,7 +356,7 @@ class CallActivity : AppCompatActivity() {
                     }
 
                     if (isVideo && localVideo != null && !cameraOff) {
-                        val localRenderer = remember {
+                        val localRenderer = remember(localVideo) {
                             SurfaceViewRenderer(this@CallActivity).apply {
                                 init(webRtcManager.eglBase.eglBaseContext, null)
                                 setZOrderMediaOverlay(true)

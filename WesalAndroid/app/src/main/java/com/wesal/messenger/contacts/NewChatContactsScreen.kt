@@ -555,15 +555,307 @@ fun NewChatContactsScreen(
                 }
 
                 else -> {
-                    // Default Contacts Tab (0)
+                    // Default Contacts Tab (0) — Saved WESAL phonebook contacts ALWAYS appear at the top first
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (!contactsPermission.status.isGranted) {
+                            item(key = "contacts_consent_card") {
+                                Surface(
+                                    color = palette.surface,
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, palette.border),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Icon(Icons.Default.Contacts, contentDescription = null, tint = palette.turquoise)
+                                            Text(
+                                                text = if (strings.isEnglish) "Secure Contact Matching (Optional)" else "مطابقة جهات الاتصال الآمنة (اختياري)",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                color = palette.textPrimary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                        Text(
+                                            text = if (strings.isEnglish) {
+                                                "With your permission, WESAL matches phone hashes locally via SHA-256 without uploading your address book."
+                                            } else {
+                                                "بعد موافقتك، يطابق WESAL أرقام هاتفك محلياً عبر SHA-256 دون رفع دفتر الهاتف."
+                                            },
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = palette.textSecondary
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Button(
+                                                onClick = { contactsPermission.launchPermissionRequest() },
+                                                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
+                                                shape = RoundedCornerShape(12.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (strings.isEnglish) "Allow Contact Sync" else "السماح بمطابقة جهات الاتصال",
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                            if (!contactsPermission.status.shouldShowRationale) {
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        val intent = Intent(
+                                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                                            Uri.fromParts("package", context.packageName, null)
+                                                        )
+                                                        runCatching { context.startActivity(intent) }
+                                                    },
+                                                    shape = RoundedCornerShape(12.dp)
+                                                ) { Text(strings.settings, color = palette.turquoise) }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (incomingPending.isNotEmpty()) {
+                            item(key = "header_incoming_requests") {
+                                Text(
+                                    text = "${strings.incomingRequestsTitle} (${incomingPending.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.emerald,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                            items(incomingPending, key = { "in_${it.requestId}" }) { req ->
+                                Surface(
+                                    color = palette.surface,
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, palette.emerald.copy(alpha = 0.35f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onOpenUserProfile(req.senderUid) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        WesalAvatar(imageUrl = req.senderAvatarUrl, name = req.senderName, size = 44.dp)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            WesalNameWithBadge(
+                                                name = req.senderName.ifBlank { "@${req.senderPublicId}" },
+                                                isVerified = req.senderVerified,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            if (req.senderPublicId.isNotBlank()) {
+                                                Text("@${req.senderPublicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                        Button(
+                                            onClick = { viewModel.acceptContactRequest(req.requestId) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text(strings.acceptContactRequest, maxLines = 1) }
+                                        OutlinedButton(
+                                            onClick = { viewModel.rejectContactRequest(req.requestId) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text(strings.rejectContactRequest, color = palette.error, maxLines = 1) }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (filteredWesalContacts.isNotEmpty()) {
+                            item(key = "header_verified_contacts") {
+                                Text(
+                                    text = if (strings.isEnglish) "Saved Contacts on WESAL (${filteredWesalContacts.size})" else "جهات اتصالك المسجلة على WESAL (${filteredWesalContacts.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.turquoise,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(filteredWesalContacts, key = { "wesal_${it.user.uid}" }) { matched ->
+                                WesalContactDirectoryRow(
+                                    user = matched.user,
+                                    displayTitle = matched.deviceName,
+                                    request = requestByPeer[matched.user.uid],
+                                    myUid = myUid,
+                                    isSuperAdmin = isSuperAdmin,
+                                    onOpenProfile = { onOpenUserProfile(matched.user.uid) },
+                                    onStartChat = { viewModel.startChatWith(matched.user.uid, onOpenChat) },
+                                    onSendRequest = { viewModel.sendContactRequest(matched.user.uid) },
+                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, matched.user, isVideo)) }
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
+                        }
+
+                        if (trimmedQuery.isNotBlank()) {
+                            item(key = "header_global_search") {
+                                Text(
+                                    text = if (strings.isEnglish) "Global Account Search" else "نتائج البحث العام في WESAL",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.emerald,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+                                )
+                            }
+                            if (extraGlobalResults.isEmpty() && !state.isSearching) {
+                                item(key = "no_exact_match") {
+                                    Text(
+                                        text = if (strings.isEnglish) {
+                                            "No matching WESAL account found. Try a full name, @username, or numeric ID."
+                                        } else {
+                                            "لم يتم العثور على حساب مطابق؛ ابحث بالاسم أو @username أو المعرّف الرقمي."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = palette.textSecondary,
+                                        modifier = Modifier.padding(vertical = 8.dp)
+                                    )
+                                }
+                            } else {
+                                items(extraGlobalResults, key = { "search_${it.uid}" }) { user ->
+                                    WesalContactDirectoryRow(
+                                        user = user,
+                                        displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
+                                        request = requestByPeer[user.uid],
+                                        myUid = myUid,
+                                        isSuperAdmin = isSuperAdmin,
+                                        onOpenProfile = { onOpenUserProfile(user.uid) },
+                                        onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
+                                        onSendRequest = { viewModel.sendContactRequest(user.uid) },
+                                        onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                                        onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
+                                    )
+                                    HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                                }
+                            }
+                        }
+
+                        if (filteredNonWesalContacts.isNotEmpty()) {
+                            item(key = "header_invite_contacts") {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (strings.isEnglish) "Other Phone Contacts — ${strings.inviteFriends} (${filteredNonWesalContacts.size})" else "جهات اتصال الهاتف غير المسجلة (${filteredNonWesalContacts.size})",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = palette.textSecondary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    if (state.invitedPhonesCount > 0) {
+                                        Text(
+                                            text = if (strings.isEnglish) "Sent: ${state.invitedPhonesCount}" else "دعوات مرسلة: ${state.invitedPhonesCount}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = palette.emerald
+                                        )
+                                    }
+                                }
+                            }
+                            items(filteredNonWesalContacts, key = { "invite_${it.contactId}_${it.rawPhone}" }) { contact ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    WesalAvatar(imageUrl = "", name = contact.displayName, size = 44.dp)
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(contact.displayName, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(contact.e164Phone ?: contact.rawPhone, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                                    }
+                                    FilledTonalButton(
+                                        onClick = {
+                                            viewModel.recordInviteDispatched()
+                                            WesalShareUtils.shareViaWhatsApp(
+                                                context = context,
+                                                message = WesalShareUtils.buildInviteMessage(
+                                                    myWesalId = currentUser?.publicId,
+                                                    targetContactName = contact.displayName,
+                                                    isEnglish = strings.isEnglish,
+                                                    senderName = currentUser?.displayName
+                                                ),
+                                                targetPhoneE164 = contact.e164Phone
+                                            )
+                                        },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = palette.emerald.copy(alpha = 0.16f), contentColor = palette.emerald),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Text("WhatsApp", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            editingDeviceContact = contact
+                                            if (!writeContactsPermission.allPermissionsGranted) {
+                                                writeContactsPermission.launchMultiplePermissionRequest()
+                                            } else {
+                                                showAddEditContactDialog = true
+                                            }
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            if (!writeContactsPermission.allPermissionsGranted) {
+                                                writeContactsPermission.launchMultiplePermissionRequest()
+                                            } else {
+                                                viewModel.deleteDeviceContact(contact.contactId)
+                                            }
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = strings.delete, tint = palette.error, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
+                        }
+
+                        if (outgoingPending.isNotEmpty()) {
+                            item(key = "header_sent_requests") {
+                                Text(
+                                    text = "${strings.sentRequestsTitle} (${outgoingPending.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.textSecondary,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 6.dp)
+                                )
+                            }
+                            items(outgoingPending, key = { "out_${it.requestId}" }) { req ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onOpenUserProfile(req.receiverUid) }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    WesalAvatar(imageUrl = req.receiverAvatarUrl, name = req.receiverName, size = 40.dp)
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        WesalNameWithBadge(
+                                            name = req.receiverName.ifBlank { "@${req.receiverPublicId}" },
+                                            isVerified = req.receiverVerified
+                                        )
+                                        Text(strings.pendingRequestSent, color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    TextButton(onClick = { viewModel.cancelContactRequest(req.requestId) }) {
+                                        Text(strings.cancelRequest, color = palette.error)
+                                    }
+                                }
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
+                        }
+
                         currentUser?.takeIf { it.numericId.isNotBlank() || it.publicId.isNotBlank() }?.let { me ->
                             item(key = "my_wesal_id_card") {
                                 Surface(
                                     color = palette.surface,
                                     shape = RoundedCornerShape(14.dp),
                                     border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.35f)),
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
                                 ) {
                                     Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Row(
@@ -649,298 +941,6 @@ fun NewChatContactsScreen(
                                         Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null, tint = palette.emerald)
                                     }
                                 }
-                            }
-                        }
-
-                        if (incomingPending.isNotEmpty()) {
-                            item(key = "header_incoming_requests") {
-                                Text(
-                                    text = "${strings.incomingRequestsTitle} (${incomingPending.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.emerald,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 6.dp)
-                                )
-                            }
-                            items(incomingPending, key = { "in_${it.requestId}" }) { req ->
-                                Surface(
-                                    color = palette.surface,
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, palette.emerald.copy(alpha = 0.35f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onOpenUserProfile(req.senderUid) }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        WesalAvatar(imageUrl = req.senderAvatarUrl, name = req.senderName, size = 44.dp)
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            WesalNameWithBadge(
-                                                name = req.senderName.ifBlank { "@${req.senderPublicId}" },
-                                                isVerified = req.senderVerified,
-                                                fontWeight = FontWeight.SemiBold
-                                            )
-                                            if (req.senderPublicId.isNotBlank()) {
-                                                Text("@${req.senderPublicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
-                                            }
-                                        }
-                                        Button(
-                                            onClick = { viewModel.acceptContactRequest(req.requestId) },
-                                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                        ) { Text(strings.acceptContactRequest, maxLines = 1) }
-                                        OutlinedButton(
-                                            onClick = { viewModel.rejectContactRequest(req.requestId) },
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                        ) { Text(strings.rejectContactRequest, color = palette.error, maxLines = 1) }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (outgoingPending.isNotEmpty()) {
-                            item(key = "header_sent_requests") {
-                                Text(
-                                    text = "${strings.sentRequestsTitle} (${outgoingPending.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.textSecondary,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 6.dp)
-                                )
-                            }
-                            items(outgoingPending, key = { "out_${it.requestId}" }) { req ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onOpenUserProfile(req.receiverUid) }
-                                        .padding(vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    WesalAvatar(imageUrl = req.receiverAvatarUrl, name = req.receiverName, size = 40.dp)
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        WesalNameWithBadge(
-                                            name = req.receiverName.ifBlank { "@${req.receiverPublicId}" },
-                                            isVerified = req.receiverVerified
-                                        )
-                                        Text(strings.pendingRequestSent, color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
-                                    }
-                                    TextButton(onClick = { viewModel.cancelContactRequest(req.requestId) }) {
-                                        Text(strings.cancelRequest, color = palette.error)
-                                    }
-                                }
-                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-                            }
-                        }
-
-                        if (!contactsPermission.status.isGranted) {
-                            item(key = "contacts_consent_card") {
-                                Surface(
-                                    color = palette.surface,
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, palette.border),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                            Icon(Icons.Default.Contacts, contentDescription = null, tint = palette.turquoise)
-                                            Text(
-                                                text = if (strings.isEnglish) "Secure Contact Matching (Optional)" else "مطابقة جهات الاتصال الآمنة (اختياري)",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = palette.textPrimary,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                        Text(
-                                            text = if (strings.isEnglish) {
-                                                "With your permission, WESAL matches phone hashes locally via SHA-256 without uploading your address book."
-                                            } else {
-                                                "بعد موافقتك، يطابق WESAL أرقام هاتفك محلياً عبر SHA-256 دون رفع دفتر الهاتف."
-                                            },
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = palette.textSecondary
-                                        )
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            Button(
-                                                onClick = { contactsPermission.launchPermissionRequest() },
-                                                colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
-                                                shape = RoundedCornerShape(12.dp)
-                                            ) {
-                                                Text(
-                                                    text = if (strings.isEnglish) "Allow Contact Sync" else "السماح بمطابقة جهات الاتصال",
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                            }
-                                            if (!contactsPermission.status.shouldShowRationale) {
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        val intent = Intent(
-                                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                                            Uri.fromParts("package", context.packageName, null)
-                                                        )
-                                                        runCatching { context.startActivity(intent) }
-                                                    },
-                                                    shape = RoundedCornerShape(12.dp)
-                                                ) { Text(strings.settings, color = palette.turquoise) }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (filteredWesalContacts.isNotEmpty()) {
-                            item(key = "header_verified_contacts") {
-                                Text(
-                                    text = if (strings.isEnglish) "Contacts on WESAL (${filteredWesalContacts.size})" else "جهات اتصالك على WESAL (${filteredWesalContacts.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.turquoise,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
-                                )
-                            }
-                            items(filteredWesalContacts, key = { "wesal_${it.user.uid}" }) { matched ->
-                                WesalContactDirectoryRow(
-                                    user = matched.user,
-                                    displayTitle = matched.deviceName,
-                                    request = requestByPeer[matched.user.uid],
-                                    myUid = myUid,
-                                    isSuperAdmin = isSuperAdmin,
-                                    onOpenProfile = { onOpenUserProfile(matched.user.uid) },
-                                    onStartChat = { viewModel.startChatWith(matched.user.uid, onOpenChat) },
-                                    onSendRequest = { viewModel.sendContactRequest(matched.user.uid) },
-                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
-                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, matched.user, isVideo)) }
-                                )
-                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-                            }
-                        }
-
-                        if (trimmedQuery.isNotBlank()) {
-                            item(key = "header_global_search") {
-                                Text(
-                                    text = if (strings.isEnglish) "Global Account Search" else "نتائج البحث العام في WESAL",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.emerald,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
-                                )
-                            }
-                            if (extraGlobalResults.isEmpty() && !state.isSearching) {
-                                item(key = "no_exact_match") {
-                                    Text(
-                                        text = if (strings.isEnglish) {
-                                            "No matching WESAL account found. Try a full name, @username, or numeric ID."
-                                        } else {
-                                            "لم يتم العثور على حساب مطابق؛ ابحث بالاسم أو @username أو المعرّف الرقمي."
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = palette.textSecondary,
-                                        modifier = Modifier.padding(vertical = 8.dp)
-                                    )
-                                }
-                            } else {
-                                items(extraGlobalResults, key = { "search_${it.uid}" }) { user ->
-                                    WesalContactDirectoryRow(
-                                        user = user,
-                                        displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
-                                        request = requestByPeer[user.uid],
-                                        myUid = myUid,
-                                        isSuperAdmin = isSuperAdmin,
-                                        onOpenProfile = { onOpenUserProfile(user.uid) },
-                                        onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
-                                        onSendRequest = { viewModel.sendContactRequest(user.uid) },
-                                        onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
-                                        onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
-                                    )
-                                    HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-                                }
-                            }
-                        }
-
-                        if (filteredNonWesalContacts.isNotEmpty()) {
-                            item(key = "header_invite_contacts") {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 2.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = "${strings.inviteFriends} (${filteredNonWesalContacts.size})",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = palette.textSecondary,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    if (state.invitedPhonesCount > 0) {
-                                        Text(
-                                            text = if (strings.isEnglish) "Sent: ${state.invitedPhonesCount}" else "دعوات مرسلة: ${state.invitedPhonesCount}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = palette.emerald
-                                        )
-                                    }
-                                }
-                            }
-                            items(filteredNonWesalContacts, key = { "invite_${it.contactId}_${it.rawPhone}" }) { contact ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    WesalAvatar(imageUrl = "", name = contact.displayName, size = 44.dp)
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(contact.displayName, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(contact.e164Phone ?: contact.rawPhone, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
-                                    }
-                                    FilledTonalButton(
-                                        onClick = {
-                                            viewModel.recordInviteDispatched()
-                                            WesalShareUtils.shareViaWhatsApp(
-                                                context = context,
-                                                message = WesalShareUtils.buildInviteMessage(
-                                                    myWesalId = currentUser?.publicId,
-                                                    targetContactName = contact.displayName,
-                                                    isEnglish = strings.isEnglish,
-                                                    senderName = currentUser?.displayName
-                                                ),
-                                                targetPhoneE164 = contact.e164Phone
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = palette.emerald.copy(alpha = 0.16f), contentColor = palette.emerald),
-                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Text("WhatsApp", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
-                                    }
-                                    IconButton(
-                                        onClick = {
-                                            editingDeviceContact = contact
-                                            if (!writeContactsPermission.allPermissionsGranted) {
-                                                writeContactsPermission.launchMultiplePermissionRequest()
-                                            } else {
-                                                showAddEditContactDialog = true
-                                            }
-                                        },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise, modifier = Modifier.size(18.dp))
-                                    }
-                                    IconButton(
-                                        onClick = {
-                                            if (!writeContactsPermission.allPermissionsGranted) {
-                                                writeContactsPermission.launchMultiplePermissionRequest()
-                                            } else {
-                                                viewModel.deleteDeviceContact(contact.contactId)
-                                            }
-                                        },
-                                        modifier = Modifier.size(32.dp)
-                                    ) {
-                                        Icon(Icons.Default.DeleteOutline, contentDescription = strings.delete, tint = palette.error, modifier = Modifier.size(18.dp))
-                                    }
-                                }
-                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                             }
                         }
                     }

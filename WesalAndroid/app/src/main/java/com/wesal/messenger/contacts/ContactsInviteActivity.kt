@@ -85,17 +85,24 @@ private fun ContactsInviteScreen(
         if (granted) {
             val list = withContext(Dispatchers.IO) { PhoneContactsHelper.loadDeviceContacts(ctx) }
             contacts = list
-            val hashes = list.mapNotNull { it.phoneHash }.distinct()
+            val hashes = list
+                .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
+                .distinct()
             matchedUsers = runCatching { userRepository.findUsersByPhoneHashes(hashes) }
                 .getOrDefault(emptyMap())
         }
     }
 
     var q by remember { mutableStateOf("") }
-    val shown = remember(contacts, q) {
+    val shown = remember(contacts, matchedUsers, q) {
         contacts.filter {
             q.isBlank() || it.displayName.contains(q, true) || it.rawPhone.contains(q)
-        }
+        }.sortedWith(
+            compareByDescending<DeviceContact> { c ->
+                val keys = c.candidateHashes.ifEmpty { listOfNotNull(c.phoneHash) }
+                keys.any { matchedUsers.containsKey(it) }
+            }.thenBy { it.displayName.lowercase() }
+        )
     }
 
     Column(
@@ -153,7 +160,8 @@ private fun ContactsInviteScreen(
         }
         LazyColumn {
             items(shown, key = { "${it.contactId}_${it.rawPhone}" }) { c ->
-                val registeredUser = c.phoneHash?.let { matchedUsers[it] }
+                val registeredUser = c.candidateHashes.ifEmpty { listOfNotNull(c.phoneHash) }
+                    .firstNotNullOfOrNull { matchedUsers[it] }
                 val phoneKey = c.e164Phone ?: c.rawPhone
                 val isInvited = invitedPhones.contains(phoneKey)
                 Row(

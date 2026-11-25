@@ -32,6 +32,7 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -41,6 +42,7 @@ import java.io.File
 import java.net.URL
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -89,10 +91,35 @@ class ChatRepositoryImpl @Inject constructor(
             flowOf(emptyList())
         } else {
             callbackFlow {
+                val hasRemoteEmission = AtomicBoolean(false)
+                launch(Dispatchers.IO) {
+                    val cached = runCatching { wesalDao.observeChats().firstOrNull() }.getOrNull()
+                    if (!hasRemoteEmission.get() && !cached.isNullOrEmpty()) {
+                        trySend(
+                            cached.map {
+                                ChatPreview(
+                                    chatId = it.chatId,
+                                    isGroup = it.isGroup,
+                                    peerUid = it.peerUid,
+                                    title = it.title.ifBlank { "محادثة WESAL" },
+                                    avatarUrl = it.avatarUrl,
+                                    lastMessagePreview = it.lastMessagePreview,
+                                    lastMessageTime = it.lastMessageTime,
+                                    unreadCount = it.unreadCount,
+                                    isPinned = it.isPinned,
+                                    isMuted = it.isMuted,
+                                    isOfficialWesalChat = it.chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
+                                )
+                            }
+                        )
+                    }
+                }
+
                 val registration = firestore.collection(Constants.COLLECTION_CHATS)
                     .whereArrayContains("participantIds", uid)
                     .addSnapshotListener { snapshot, error ->
                         if (error != null || snapshot == null) return@addSnapshotListener
+                        hasRemoteEmission.set(true)
                         launch(Dispatchers.IO) {
                             val now = System.currentTimeMillis()
                             val missingPeerUids = snapshot.documents
@@ -325,15 +352,53 @@ class ChatRepositoryImpl @Inject constructor(
             flowOf(emptyList())
         } else {
             callbackFlow {
+                val hasRemoteMessages = AtomicBoolean(false)
+                launch(Dispatchers.IO) {
+                    val cachedMsgs = runCatching { wesalDao.observeMessages(chatId).firstOrNull() }.getOrNull()
+                    if (!hasRemoteMessages.get() && !cachedMsgs.isNullOrEmpty()) {
+                        trySend(
+                            cachedMsgs.map {
+                                WesalMessage(
+                                    messageId = it.messageId,
+                                    chatId = it.chatId,
+                                    senderId = it.senderId,
+                                    senderName = it.senderName,
+                                    type = MessageType.fromRaw(it.type),
+                                    text = it.text,
+                                    mediaUrl = it.mediaUrl,
+                                    mediaLocalPath = it.mediaLocalPath,
+                                    mediaMimeType = it.mediaMimeType,
+                                    mediaFileName = it.mediaFileName,
+                                    mediaSizeBytes = it.mediaSizeBytes,
+                                    mediaDurationMs = it.mediaDurationMs,
+                                    status = MessageStatus.fromRaw(it.status),
+                                    timestamp = it.timestamp
+                                )
+                            }
+                        )
+                    }
+                }
+
                 val chatDoc = runCatching {
                     firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
                 }.getOrNull()
                 val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
                 val isGroup = chatDoc?.getBoolean("isGroup") ?: false
 
-                val peerPubKeyCache = mutableMapOf<String, String>()
-                participantIds.filter { it != myUid }.forEach { uid ->
-                    fetchUserCached(uid)?.publicKey?.let { if (it.isNotBlank()) peerPubKeyCache[uid] = it }
+                val peerPubKeyCache = ConcurrentHashMap<String, String>()
+                val peerUids = participantIds.filter { it != myUid }.distinct()
+                if (peerUids.isNotEmpty()) {
+                    coroutineScope {
+                        peerUids.map { uid ->
+                            async(Dispatchers.IO) {
+                                runCatching {
+                                    fetchUserCached(uid)?.publicKey?.let { key ->
+                                        if (key.isNotBlank()) peerPubKeyCache[uid] = key
+                                    }
+                                }
+                            }
+                        }.awaitAll()
+                    }
                 }
 
                 val registration = firestore.collection(Constants.COLLECTION_CHATS)
@@ -342,6 +407,7 @@ class ChatRepositoryImpl @Inject constructor(
                     .orderBy("timestamp", Query.Direction.ASCENDING)
                     .addSnapshotListener { snapshot, error ->
                         if (error != null || snapshot == null) return@addSnapshotListener
+                        hasRemoteMessages.set(true)
                         launch(Dispatchers.Default) {
                             val messages = snapshot.documents.mapNotNull { doc ->
                                 mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)

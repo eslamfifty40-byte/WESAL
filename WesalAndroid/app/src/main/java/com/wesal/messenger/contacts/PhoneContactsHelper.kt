@@ -12,7 +12,8 @@ data class DeviceContact(
     val displayName: String,
     val rawPhone: String,
     val e164Phone: String?,
-    val phoneHash: String?
+    val phoneHash: String?,
+    val candidateHashes: List<String> = emptyList()
 )
 
 object PhoneContactsHelper {
@@ -46,17 +47,20 @@ object PhoneContactsHelper {
                     val rawPhone = cursor.getString(phoneCol).orEmpty().trim()
                     if (rawPhone.isBlank()) continue
 
-                    val e164 = PhoneUtils.normalizeToE164(rawPhone, defaultCountryDialCode)
+                    val candidates = PhoneUtils.normalizePhoneCandidates(rawPhone, defaultCountryDialCode)
+                    val e164 = PhoneUtils.normalizeToE164(rawPhone, defaultCountryDialCode) ?: candidates.firstOrNull()
                     val dedupKey = e164 ?: PhoneUtils.normalizeAsciiDigits(rawPhone).filter { it.isDigit() }
                     if (dedupKey.isBlank() || resultMap.containsKey(dedupKey)) continue
 
-                    val hash = e164?.let { PhoneUtils.sha256Hash(it) }
+                    val hashes = candidates.map { PhoneUtils.sha256Hash(it) }
+                    val hash = e164?.let { PhoneUtils.sha256Hash(it) } ?: hashes.firstOrNull()
                     resultMap[dedupKey] = DeviceContact(
                         contactId = contactId,
                         displayName = name.ifBlank { rawPhone },
                         rawPhone = rawPhone,
                         e164Phone = e164,
-                        phoneHash = hash
+                        phoneHash = hash,
+                        candidateHashes = if (hashes.isNotEmpty()) hashes else listOfNotNull(hash)
                     )
                 }
             }

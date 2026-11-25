@@ -37,7 +37,10 @@ import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.net.URL
 
 @Composable
 fun WesalQrCodeBox(
@@ -122,6 +125,76 @@ fun saveQrBitmapToGallery(context: Context, payload: String, fileName: String = 
         values.clear()
         values.put(MediaStore.Images.Media.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
+    }
+}
+
+suspend fun saveImageUrlToGallery(
+    context: Context,
+    imageUrl: String,
+    fileNamePrefix: String = "WESAL_IMG"
+): Result<String> = withContext(Dispatchers.IO) {
+    runCatching {
+        val clean = imageUrl.trim()
+        require(clean.isNotBlank()) { "لا توجد صورة صالحة للحفظ" }
+
+        val rawBytes: ByteArray = when {
+            clean.startsWith("data:", ignoreCase = true) -> {
+                val base64Idx = clean.indexOf("base64,")
+                require(base64Idx >= 0) { "تنسيق الصورة غير مدعوم" }
+                android.util.Base64.decode(clean.substring(base64Idx + 7), android.util.Base64.DEFAULT)
+            }
+            clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) -> {
+                val conn = URL(clean).openConnection()
+                conn.connectTimeout = 10_000
+                conn.readTimeout = 12_000
+                conn.getInputStream().use { it.readBytes() }
+            }
+            clean.startsWith("content://", ignoreCase = true) -> {
+                context.contentResolver.openInputStream(Uri.parse(clean))?.use { it.readBytes() }
+                    ?: error("تعذر قراءة الصورة المختارة")
+            }
+            clean.startsWith("file://", ignoreCase = true) -> {
+                val path = Uri.parse(clean).path ?: error("مسار غير صالح")
+                File(path).readBytes()
+            }
+            else -> {
+                val file = File(clean)
+                require(file.exists()) { "تعذر العثور على الصورة" }
+                file.readBytes()
+            }
+        }
+
+        require(rawBytes.isNotEmpty()) { "ملف الصورة فارغ" }
+        val bmp = BitmapFactory.decodeByteArray(rawBytes, 0, rawBytes.size)
+        val isPng = clean.contains("image/png", ignoreCase = true) || (bmp?.hasAlpha() == true)
+        val ext = if (isPng) "png" else "jpg"
+        val mime = if (isPng) "image/png" else "image/jpeg"
+        val fileName = "${fileNamePrefix}_${System.currentTimeMillis()}.$ext"
+
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+            put(MediaStore.Images.Media.MIME_TYPE, mime)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/WESAL")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: error("تعذر حفظ الصورة في المعرض")
+        resolver.openOutputStream(uri)?.use { out ->
+            if (bmp != null) {
+                bmp.compress(if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG, 95, out)
+            } else {
+                out.write(rawBytes)
+            }
+        } ?: error("تعذر فتح مسار الحفظ")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+        }
+        fileName
     }
 }
 

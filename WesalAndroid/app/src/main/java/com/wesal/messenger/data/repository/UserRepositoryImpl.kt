@@ -6,6 +6,7 @@ import android.os.Build
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
+import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
@@ -27,7 +28,10 @@ import com.wesal.messenger.domain.repository.UserRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
@@ -500,55 +504,67 @@ class UserRepositoryImpl @Inject constructor(
             .removePrefix("id:")
             .trim()
         val numericQuery = WesalIdUtils.extractSearchNumericIdQuery(trimmed)
-        if (numericQuery.isNotBlank()) {
-            val exactNumSnap = getQueryCachedOrServer(
-                usersCollection
-                    .whereEqualTo("numericId", numericQuery)
-                    .limit(5)
-            )
-            exactNumSnap?.documents?.forEach { consider(it.toWesalUser()) }
+        val cleanHandle = WesalIdUtils.normalize(trimmed)
 
-            val prefixSnap = getQueryCachedOrServer(
-                usersCollection
-                    .orderBy("numericId")
-                    .whereGreaterThanOrEqualTo("numericId", numericQuery)
-                    .whereLessThanOrEqualTo("numericId", "$numericQuery\uf8ff")
-                    .limit(15)
-            )
-            prefixSnap?.documents?.forEach { doc ->
+        coroutineScope {
+            val exactNumDef = if (numericQuery.isNotBlank()) {
+                async {
+                    getQueryCachedOrServer(
+                        usersCollection
+                            .whereEqualTo("numericId", numericQuery)
+                            .limit(5)
+                    )
+                }
+            } else null
+            val prefixNumDef = if (numericQuery.isNotBlank()) {
+                async {
+                    getQueryCachedOrServer(
+                        usersCollection
+                            .orderBy("numericId")
+                            .whereGreaterThanOrEqualTo("numericId", numericQuery)
+                            .whereLessThanOrEqualTo("numericId", "$numericQuery\uf8ff")
+                            .limit(15)
+                    )
+                }
+            } else null
+            val exactHandleDef = if (cleanHandle.length >= 2) {
+                async {
+                    getQueryCachedOrServer(
+                        usersCollection
+                            .whereEqualTo("publicId", cleanHandle)
+                            .limit(5)
+                    )
+                }
+            } else null
+
+            exactNumDef?.await()?.documents?.forEach { consider(it.toWesalUser()) }
+            prefixNumDef?.await()?.documents?.forEach { doc ->
                 val user = doc.toWesalUser()
                 if (WesalIdUtils.isValidNumericId(user.numericId) || user.numericId == "1001") {
                     consider(user)
                 }
             }
+            exactHandleDef?.await()?.documents?.forEach { consider(it.toWesalUser()) }
         }
 
-        val cleanHandle = WesalIdUtils.normalize(trimmed)
-        if (cleanHandle.length >= 2) {
-            val exactSnap = getQueryCachedOrServer(
+        // Only scan recent active pool if fast indexed lookups found fewer than 5 matches
+        if (results.size < 5) {
+            val poolSnap = getQueryCachedOrServer(
                 usersCollection
-                    .whereEqualTo("publicId", cleanHandle)
-                    .limit(5)
-            )
-            exactSnap?.documents?.forEach { consider(it.toWesalUser()) }
-        }
+                    .orderBy("createdAt", Query.Direction.DESCENDING)
+                    .limit(100)
+            ) ?: getQueryCachedOrServer(usersCollection.limit(100))
 
-        // Scan recent active pool so displayName and partial @username / numericId substrings match cleanly
-        val poolSnap = getQueryCachedOrServer(
-            usersCollection
-                .orderBy("createdAt", Query.Direction.DESCENDING)
-                .limit(250)
-        ) ?: getQueryCachedOrServer(usersCollection.limit(250))
-
-        poolSnap?.documents?.forEach { doc ->
-            val u = doc.toWesalUser()
-            val nameMatch = u.displayName.contains(trimmed, ignoreCase = true)
-            val handleMatch = cleanHandle.length >= 2 && u.publicId.contains(cleanHandle, ignoreCase = true)
-            val idMatch = normalizedDigits.length >= 2 &&
-                normalizedDigits.all { it.isDigit() } &&
-                u.numericId.contains(normalizedDigits)
-            if (nameMatch || handleMatch || idMatch) {
-                consider(u)
+            poolSnap?.documents?.forEach { doc ->
+                val u = doc.toWesalUser()
+                val nameMatch = u.displayName.contains(trimmed, ignoreCase = true)
+                val handleMatch = cleanHandle.length >= 2 && u.publicId.contains(cleanHandle, ignoreCase = true)
+                val idMatch = normalizedDigits.length >= 2 &&
+                    normalizedDigits.all { it.isDigit() } &&
+                    u.numericId.contains(normalizedDigits)
+                if (nameMatch || handleMatch || idMatch) {
+                    consider(u)
+                }
             }
         }
 
@@ -584,7 +600,7 @@ class UserRepositoryImpl @Inject constructor(
         val distinct = phoneHashes.filter { it.isNotBlank() }.distinct()
         if (distinct.isEmpty()) return emptyMap()
         val currentUid = auth.currentUser?.uid
-        val matched = mutableMapOf<String, WesalUser>()
+        val matched = java.util.concurrent.ConcurrentHashMap<String, WesalUser>()
 
         fun considerUserDoc(hash: String, doc: DocumentSnapshot) {
             if (!doc.exists() || hash.isBlank()) return
@@ -602,31 +618,44 @@ class UserRepositoryImpl @Inject constructor(
             }
         }
 
-        distinct.chunked(30).forEach { chunk ->
-            val snap = getQueryCachedOrServer(
-                firestore.collection(Constants.COLLECTION_USERS)
-                    .whereIn("phoneHash", chunk)
-            )
-            snap?.documents?.forEach { doc ->
-                val hash = doc.getString("phoneHash").orEmpty()
-                considerUserDoc(hash, doc)
-            }
+        coroutineScope {
+            distinct.chunked(30).map { chunk ->
+                async(Dispatchers.IO) {
+                    val snap = getQueryCachedOrServer(
+                        firestore.collection(Constants.COLLECTION_USERS)
+                            .whereIn("phoneHash", chunk)
+                    )
+                    snap?.documents?.forEach { doc ->
+                        val hash = doc.getString("phoneHash").orEmpty()
+                        considerUserDoc(hash, doc)
+                    }
 
-            // Fallback lookup via phone_uniqueness for legacy accounts missing phoneHash on /users
-            val missingHashes = chunk.filter { !matched.containsKey(it) }
-            if (missingHashes.isNotEmpty()) {
-                val lockSnap = getQueryCachedOrServer(
-                    firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
-                        .whereIn(com.google.firebase.firestore.FieldPath.documentId(), missingHashes)
-                )
-                lockSnap?.documents?.forEach { lockDoc ->
-                    val hash = lockDoc.id
-                    val ownerUid = lockDoc.getString("uid").orEmpty()
-                    if (ownerUid.isNotBlank() && ownerUid != currentUid && !matched.containsKey(hash)) {
-                        getDocCachedOrServer(ownerUid)?.let { uDoc -> considerUserDoc(hash, uDoc) }
+                    // Fallback lookup via phone_uniqueness for legacy accounts missing phoneHash on /users
+                    val missingHashes = chunk.filter { !matched.containsKey(it) }
+                    if (missingHashes.isNotEmpty()) {
+                        val lockSnap = getQueryCachedOrServer(
+                            firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                                .whereIn(FieldPath.documentId(), missingHashes)
+                        )
+                        val missingTargets = lockSnap?.documents
+                            ?.mapNotNull { lockDoc ->
+                                val hash = lockDoc.id
+                                val ownerUid = lockDoc.getString("uid").orEmpty()
+                                if (ownerUid.isNotBlank() && ownerUid != currentUid && !matched.containsKey(hash)) {
+                                    hash to ownerUid
+                                } else null
+                            }
+                            .orEmpty()
+                        if (missingTargets.isNotEmpty()) {
+                            missingTargets.map { (hash, ownerUid) ->
+                                async(Dispatchers.IO) {
+                                    getDocCachedOrServer(ownerUid)?.let { uDoc -> considerUserDoc(hash, uDoc) }
+                                }
+                            }.awaitAll()
+                        }
                     }
                 }
-            }
+            }.awaitAll()
         }
         return matched
     }

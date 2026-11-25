@@ -20,6 +20,9 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -41,6 +44,10 @@ class ChannelsViewModel @Inject constructor(
 
     val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val currentUserPhotoUrl: StateFlow<String> = userRepository.observeCurrentUser()
+        .map { it?.photoUrl.orEmpty() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -116,8 +123,16 @@ class ChannelsViewModel @Inject constructor(
     }
 
     fun loadModerators(moderatorIds: List<String>) {
+        if (moderatorIds.isEmpty()) {
+            _moderators.value = emptyList()
+            return
+        }
         viewModelScope.launch {
-            _moderators.value = moderatorIds.mapNotNull { uid -> userRepository.getUserOnce(uid) }
+            _moderators.value = coroutineScope {
+                moderatorIds.distinct().map { uid ->
+                    async { runCatching { userRepository.getUserOnce(uid) }.getOrNull() }
+                }.awaitAll().filterNotNull()
+            }
         }
     }
 
@@ -246,6 +261,61 @@ class ChannelsViewModel @Inject constructor(
                         showTempMessage(err.message ?: "تعذر نشر المنشور")
                     }
                 }
+        }
+    }
+
+    fun publishPersonalPhotoToChannel(channelId: String, caption: String, photoUrl: String) {
+        val clean = photoUrl.trim()
+        if (clean.isBlank()) {
+            showTempMessage("لا توجد صورة شخصية محفوظة حالياً")
+            return
+        }
+        viewModelScope.launch {
+            _uploadProgress.value = 0.08f
+            val localFile = withContext(Dispatchers.IO) {
+                runCatching {
+                    val isPng = clean.contains("image/png", ignoreCase = true)
+                    val outFile = File(context.cacheDir, "wesal_personal_ch_${System.currentTimeMillis()}.${if (isPng) "png" else "jpg"}")
+                    when {
+                        clean.startsWith("data:", ignoreCase = true) -> {
+                            val idx = clean.indexOf("base64,")
+                            require(idx >= 0) { "تنسيق غير مدعوم" }
+                            val bytes = Base64.decode(clean.substring(idx + 7), Base64.DEFAULT)
+                            outFile.writeBytes(bytes)
+                        }
+                        clean.startsWith("http://", ignoreCase = true) || clean.startsWith("https://", ignoreCase = true) -> {
+                            URL(clean).openStream().use { input ->
+                                outFile.outputStream().use { output -> input.copyTo(output) }
+                            }
+                        }
+                        clean.startsWith("content://", ignoreCase = true) -> {
+                            context.contentResolver.openInputStream(Uri.parse(clean))?.use { input ->
+                                outFile.outputStream().use { output -> input.copyTo(output) }
+                            } ?: error("تعذر قراءة الصورة")
+                        }
+                        clean.startsWith("file://", ignoreCase = true) -> {
+                            File(Uri.parse(clean).path.orEmpty()).copyTo(outFile, overwrite = true)
+                        }
+                        else -> File(clean).copyTo(outFile, overwrite = true)
+                    }
+                    outFile.takeIf { it.exists() && it.length() > 0L }
+                }.getOrNull()
+            }
+            if (localFile == null) {
+                _uploadProgress.value = null
+                showTempMessage("تعذر تجهيز الصورة الشخصية للنشر")
+                return@launch
+            }
+            publishMediaPost(
+                channelId = channelId,
+                type = ChannelPostType.IMAGE,
+                text = caption,
+                mediaUri = Uri.fromFile(localFile),
+                fileName = localFile.name,
+                mimeType = if (localFile.extension == "png") "image/png" else "image/jpeg",
+                sizeBytes = localFile.length(),
+                durationMs = 0L
+            )
         }
     }
 

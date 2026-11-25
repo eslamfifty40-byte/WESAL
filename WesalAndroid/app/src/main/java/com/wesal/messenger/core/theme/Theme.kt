@@ -77,7 +77,15 @@ enum class WesalPersonalAccentPreset(
     ELECTRIC_BLUE("ELECTRIC_BLUE", "أزرق نيون", "Electric Blue", 0xFF1D9BF0L, 0xFF38BDF8L),
     VIOLET_COSMOS("VIOLET_COSMOS", "بنفسجي كوني", "Violet Cosmos", 0xFF8B5CF6L, 0xFFD946EFL),
     CRIMSON_ROYAL("CRIMSON_ROYAL", "قرمزي ملكي", "Royal Crimson", 0xFFE11D48L, 0xFFFF6B6BL),
-    EMERALD_MINT("EMERALD_MINT", "زمردي منعش", "Fresh Mint", 0xFF10B981L, 0xFF14B8A6L);
+    EMERALD_MINT("EMERALD_MINT", "زمردي منعش", "Fresh Mint", 0xFF10B981L, 0xFF14B8A6L),
+    AMBER_SUNSET("AMBER_SUNSET", "عنبر الغروب", "Amber Sunset", 0xFFF59E0BL, 0xFFFB923CL),
+    SAPPHIRE_ICE("SAPPHIRE_ICE", "ياقوتي ثلجي", "Sapphire Ice", 0xFF2563EBL, 0xFF67E8F9L),
+    RUBY_FLAME("RUBY_FLAME", "ياقوت أحمر", "Ruby Flame", 0xFFDC2626L, 0xFFFFD54FL),
+    ROSE_QUARTZ("ROSE_QUARTZ", "وردي ملكي", "Rose Quartz", 0xFFEC4899L, 0xFFF472B6L),
+    CYAN_AURORA("CYAN_AURORA", "أورورا سماوي", "Cyan Aurora", 0xFF06B6D4L, 0xFF69F0AEL),
+    INDIGO_NEBULA("INDIGO_NEBULA", "نيلي فضائي", "Indigo Nebula", 0xFF6366F1L, 0xFF38BDF8L),
+    COPPER_BRONZE("COPPER_BRONZE", "برونزي فاخر", "Luxury Bronze", 0xFFB45309L, 0xFFFBBF24L),
+    PLATINUM_STEEL("PLATINUM_STEEL", "بلاتيني عصري", "Platinum", 0xFF64748BL, 0xFF94A3B8L);
 
     companion object {
         fun fromKey(key: String?): WesalPersonalAccentPreset =
@@ -99,7 +107,11 @@ enum class WesalPersonalSurfacePreset(
     DEFAULT("DEFAULT", "افتراضي", "Default", 0xFF05090BL, 0xFF0B1115L, 0xFF131C22L, 0xFFF3F6F8L, 0xFFFFFFFFL, 0xFFE6EDF2L),
     MIDNIGHT_NAVY("MIDNIGHT_NAVY", "أزرق ليلي", "Midnight", 0xFF060B17L, 0xFF0D1526L, 0xFF162138L, 0xFFF0F7FFL, 0xFFFFFFFFL, 0xFFE0ECFFL),
     OBSIDIAN_EMERALD("OBSIDIAN_EMERALD", "أوبسيديان أخضر", "Forest Obsidian", 0xFF040D0AL, 0xFF091813L, 0xFF10261EL, 0xFFF0FDF4L, 0xFFFFFFFFL, 0xFFDCFCE7L),
-    VELVET_CHARCOAL("VELVET_CHARCOAL", "رمادي مخملي", "Velvet", 0xFF09090BL, 0xFF121216L, 0xFF1C1C22L, 0xFFF8FAFCL, 0xFFFFFFFFL, 0xFFE2E8F0L);
+    VELVET_CHARCOAL("VELVET_CHARCOAL", "رمادي مخملي", "Velvet", 0xFF09090BL, 0xFF121216L, 0xFF1C1C22L, 0xFFF8FAFCL, 0xFFFFFFFFL, 0xFFE2E8F0L),
+    ROYAL_BORDEAUX("ROYAL_BORDEAUX", "عنابي ملكي", "Royal Bordeaux", 0xFF120609L, 0xFF1D0B10L, 0xFF2B1219L, 0xFFFFF1F2L, 0xFFFFFFFFL, 0xFFFFE4E6L),
+    COSMIC_PLUM("COSMIC_PLUM", "بنفسجي ليلي", "Cosmic Plum", 0xFF0B0714L, 0xFF140E24L, 0xFF1E1636L, 0xFFF5F3FFL, 0xFFFFFFFFL, 0xFFEDE9FEL),
+    DEEP_OCEAN("DEEP_OCEAN", "محيط عميق", "Deep Ocean", 0xFF041014L, 0xFF091B22L, 0xFF102A33L, 0xFFECFEFFL, 0xFFFFFFFFL, 0xFFCFFAFEL),
+    WARM_ONYX("WARM_ONYX", "عقيق ذهبي", "Warm Onyx", 0xFF0D0A05L, 0xFF18130AL, 0xFF261E10L, 0xFFFFFBEBL, 0xFFFFFFFFL, 0xFFFEF3C7L);
 
     companion object {
         fun fromKey(key: String?): WesalPersonalSurfacePreset =
