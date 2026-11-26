@@ -992,12 +992,37 @@ class ChatRepositoryImpl @Inject constructor(
             Log.e("WesalChat", "chat summary update failed for chat $chatId: ${e.message}")
             WesalDiag.report("فشل تحديث المحادثة: ${(e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code ?: e.javaClass.simpleName} - ${e.message}")
         }
-        val acked = withTimeoutOrNull(20_000L) { msgTask.await(); true }
+        // If the gRPC write stream silently stalls (wr=TIMEOUT while reads are fine), fall back to
+        // a direct REST commit of the same write. Same message id, so a late SDK ack of the queued
+        // write is idempotent for the message doc (the unread increment could double-count once in
+        // that rare case - acceptable).
+        val acked = withTimeoutOrNull(8_000L) { msgTask.await(); true }
         if (acked == null) {
-            val sumDone = sumTask.isComplete
-            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. msgwrite=PENDING summary=${if (sumDone) "DONE" else "PENDING"}. جاري الفحص...")
-            val probe = runCatching { NetProbe.run(firestore, auth) }.getOrElse { "probe failed: ${it.javaClass.simpleName}" }
-            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. msgwrite=PENDING summary=${if (sumTask.isComplete) "DONE" else "PENDING"} فحص: $probe")
+            val chatScalar = HashMap<String, Any?>()
+            val incrUids = ArrayList<String>()
+            chatUpdates.forEach { (k, v) ->
+                if (v is FieldValue) {
+                    if (k.startsWith("unreadCounts.")) incrUids.add(k.removePrefix("unreadCounts."))
+                } else {
+                    chatScalar[k] = v
+                }
+            }
+            val restCode = runCatching {
+                FirestoreRest.commitTextMessage(
+                    auth = auth,
+                    chatDocPath = "${Constants.COLLECTION_CHATS}/$chatId",
+                    messageDocPath = "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId",
+                    messageData = messageData,
+                    chatScalarFields = chatScalar,
+                    unreadIncrementUids = incrUids
+                )
+            }.getOrElse { -1 }
+            if (restCode in 200..299) {
+                WesalDiag.report("تم الإرسال عبر قناة REST الاحتياطية. msgrest=$restCode msgwrite=PENDING summary=${if (sumTask.isComplete) "DONE" else "PENDING"}")
+            } else {
+                val probe = runCatching { NetProbe.run(firestore, auth) }.getOrElse { "probe failed: ${it.javaClass.simpleName}" }
+                WesalDiag.report("السيرفر لم يؤكد الإرسال. msgwrite=PENDING summary=${if (sumTask.isComplete) "DONE" else "PENDING"} msgrest=${if (restCode == -1) "ERR" else restCode} فحص: $probe")
+            }
         }
         Unit
     }
