@@ -39,6 +39,7 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -192,25 +193,31 @@ class IncomingCallActivity : AppCompatActivity() {
     private fun startRingingAndVibration() {
         ringingStopped = false
         lifecycleScope.launch {
-            val savedRingtoneUri = runCatching { prefs.getCallRingtoneUriForCurrentAccount() }.getOrDefault("")
+            // Never let a stalled preference read silence the ring: cap it, then fall back to the
+            // system default ringtone, and fall back again if the saved custom uri cannot play.
+            val savedRingtoneUri = withTimeoutOrNull(1500L) {
+                runCatching { prefs.getCallRingtoneUriForCurrentAccount() }.getOrDefault("")
+            }.orEmpty()
             if (ringingStopped || isFinishing || isDestroyed) return@launch
+            fun buildTone(uri: Uri?): Ringtone? =
+                uri?.let { runCatching { RingtoneManager.getRingtone(this@IncomingCallActivity, it) }.getOrNull() }
             runCatching {
                 val defaultUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                val targetUri = savedRingtoneUri.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
-                    ?: defaultUri
-                val resolvedRingtone = RingtoneManager.getRingtone(this@IncomingCallActivity, targetUri)
-                    ?: RingtoneManager.getRingtone(this@IncomingCallActivity, defaultUri)
-                if (!ringingStopped && !isFinishing && !isDestroyed) {
-                    ringtone = resolvedRingtone?.apply {
-                        audioAttributes = AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build()
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            isLooping = true
-                        }
-                        play()
+                val customUri = savedRingtoneUri.takeIf { it.isNotBlank() }
+                    ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                val tone = buildTone(customUri)
+                    ?: buildTone(defaultUri)
+                    ?: buildTone(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
+                if (!ringingStopped && !isFinishing && !isDestroyed && tone != null) {
+                    tone.audioAttributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        tone.isLooping = true
                     }
+                    ringtone = tone
+                    runCatching { tone.play() }
                 }
             }
         }
