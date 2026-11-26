@@ -750,6 +750,11 @@ fun SettingsScreen(
             }
             SettingsRow(
                 Icons.Default.Storage,
+                if (strings.isEnglish) "Build version" else "نسخة التطبيق",
+                com.wesal.messenger.BuildConfig.BUILD_STAMP
+            ) { }
+            SettingsRow(
+                Icons.Default.Storage,
                 if (strings.isEnglish) "Storage Cache" else "إدارة التخزين",
                 if (strings.isEnglish) "Cache: $cacheText (Tap to clear)" else "الملفات المؤقتة: $cacheText (اضغط للمسح)"
             ) {
@@ -1853,3 +1858,4 @@ private fun NotifSwitchRow(label: String, checked: Boolean, onCheckedChange: (Bo
         Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
+
