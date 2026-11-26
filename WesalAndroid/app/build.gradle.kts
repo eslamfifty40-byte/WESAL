@@ -18,7 +18,11 @@ android {
         applicationId = "com.wesal.messenger"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        // CI injects the workflow run number so every published build has a strictly
+        // increasing versionCode (the in-app updater compares it with the release tag).
+        versionCode = System.getenv("WESAL_VERSION_CODE")?.toIntOrNull()
+            ?: (project.findProperty("WESAL_VERSION_CODE") as? String)?.toIntOrNull()
+            ?: 1
         val buildSha = (System.getenv("GITHUB_SHA") ?: "local").take(7)
         val buildTime = Instant.now().toString().take(16).replace("T", " ") + " UTC"
         versionName = "1.0.0-$buildSha"

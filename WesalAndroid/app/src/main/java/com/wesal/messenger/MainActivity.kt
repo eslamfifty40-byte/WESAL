@@ -15,6 +15,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -22,6 +26,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wesal.messenger.calls.IncomingCallActivity
 import com.wesal.messenger.core.theme.WesalTheme
 import com.wesal.messenger.core.util.LocaleManager
+import com.wesal.messenger.core.util.wesalStringsForLanguage
+import com.wesal.messenger.update.AppUpdateChecker
+import com.wesal.messenger.update.WesalUpdateInfo
 import com.wesal.messenger.presentation.MainViewModel
 import com.wesal.messenger.presentation.StartDestination
 import com.wesal.messenger.presentation.WesalNavHost
@@ -61,6 +68,13 @@ class MainActivity : AppCompatActivity() {
             val deepLinkChatId by deepLinkChatIdState
             val deepLinkChannelId by deepLinkChannelIdState
             var lastHandledCallId by remember { mutableStateOf<String?>(null) }
+            var pendingUpdate by remember { mutableStateOf<WesalUpdateInfo?>(null) }
+            val activityContext = LocalContext.current
+
+            // One update check per cold start; silent on any failure.
+            LaunchedEffect(Unit) {
+                pendingUpdate = AppUpdateChecker.fetchLatestUpdate(activityContext)
+            }
 
             LaunchedEffect(incomingCall?.callId) {
                 val call = incomingCall
@@ -109,6 +123,36 @@ class MainActivity : AppCompatActivity() {
                                 mainViewModel.consumePendingChannelInvite()
                             },
                             onConsumePendingInvite = { mainViewModel.consumePendingInvite() }
+                        )
+                    }
+
+                    pendingUpdate?.let { update ->
+                        val isEn = wesalStringsForLanguage(settings.languageTag).isEnglish
+                        AlertDialog(
+                            onDismissRequest = { pendingUpdate = null },
+                            title = { Text(if (isEn) "Update available" else "تحديث جديد متاح") },
+                            text = {
+                                Text(
+                                    if (isEn) {
+                                        "A new WESAL version is ready. Tap Update to download and install it."
+                                    } else {
+                                        "يوجد إصدار جديد من WESAL. اضغط تحديث للتنزيل والتثبيت."
+                                    }
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        pendingUpdate = null
+                                        AppUpdateChecker.downloadAndInstall(activityContext, update)
+                                    }
+                                ) { Text(if (isEn) "Update" else "تحديث") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { pendingUpdate = null }) {
+                                    Text(if (isEn) "Later" else "لاحقاً")
+                                }
+                            }
                         )
                     }
                 }
