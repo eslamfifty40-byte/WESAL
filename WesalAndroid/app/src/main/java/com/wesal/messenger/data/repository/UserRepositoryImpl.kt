@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.time.Period
 import java.util.UUID
@@ -889,20 +890,29 @@ class UserRepositoryImpl @Inject constructor(
             privateUpdates["hiddenCoverUrl"] = uploadedCover
         }
 
-        userRef.set(updates, SetOptions.merge()).await()
-        runCatching { privRef.set(privateUpdates, SetOptions.merge()).await() }
-
-        // Read back from Firebase server to guarantee permanent persistence across restarts
-        val serverSnap = userRef.get(Source.SERVER).await()
-        check(serverSnap.exists()) { "تعذر التحقق من حفظ الصورة على الخادم" }
-        if (expectedAvatar != null && !hideAvatar) {
-            check(serverSnap.getString("photoUrl") == expectedAvatar) { "لم يتم تثبيت الصورة الشخصية على Firebase" }
+        // Bounded awaits: on a phone where write acks stall, an unbounded await leaves the save
+        // spinner running forever and the avatar looking stuck. Fail visibly instead.
+        val writeAcked = withTimeoutOrNull(12_000L) { userRef.set(updates, SetOptions.merge()).await(); true } ?: false
+        if (!writeAcked) {
+            com.wesal.messenger.chat.WesalDiag.report("حفظ الصورة: لم يؤكد السيرفر كتابة الصورة خلال 12 ثانية")
+            error("لم يؤكد السيرفر حفظ الصورة - تحقق من الاتصال وحاول مرة أخرى")
         }
-        if (expectedCover != null && !hideCover) {
-            check(serverSnap.getString("coverUrl") == expectedCover) { "لم يتم تثبيت صورة الغلاف على Firebase" }
+        runCatching { withTimeoutOrNull(8_000L) { privRef.set(privateUpdates, SetOptions.merge()).await() } }
+
+        // Read back from Firebase server to guarantee permanent persistence across restarts.
+        // If the read-back stalls, trust the acked write instead of hanging the save.
+        val serverSnap = withTimeoutOrNull(10_000L) { userRef.get(Source.SERVER).await() }
+        if (serverSnap != null) {
+            check(serverSnap.exists()) { "تعذر التحقق من حفظ الصورة على الخادم" }
+            if (expectedAvatar != null && !hideAvatar) {
+                check(serverSnap.getString("photoUrl") == expectedAvatar) { "لم يتم تثبيت الصورة الشخصية على Firebase" }
+            }
+            if (expectedCover != null && !hideCover) {
+                check(serverSnap.getString("coverUrl") == expectedCover) { "لم يتم تثبيت صورة الغلاف على Firebase" }
+            }
         }
 
-        serverSnap.toWesalUser(includePrivateUnredacted = true).let { baseSaved ->
+        (serverSnap ?: userRef.get().await()).toWesalUser(includePrivateUnredacted = true).let { baseSaved ->
             val savedUser = baseSaved.copy(
                 photoUrl = baseSaved.photoUrl.ifBlank { expectedAvatar.orEmpty() },
                 coverUrl = baseSaved.coverUrl.ifBlank { expectedCover.orEmpty() }
@@ -1013,22 +1023,39 @@ class UserRepositoryImpl @Inject constructor(
     override suspend fun removeProfilePhoto(): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        userRef.update("photoUrl", "").await()
-        runCatching {
-            userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
-                .set(mapOf("hiddenPhotoUrl" to ""), SetOptions.merge())
-                .await()
+        // Bounded: an unacked write must fail visibly, not leave the delete hanging.
+        val acked = withTimeoutOrNull(12_000L) { userRef.update("photoUrl", "").await(); true } ?: false
+        if (!acked) {
+            com.wesal.messenger.chat.WesalDiag.report("حذف الصورة: لم يؤكد السيرفر الكتابة خلال 12 ثانية")
+            error("لم يؤكد السيرفر حذف الصورة - تحقق من الاتصال وحاول مرة أخرى")
+        }
+        // The hidden copy feeds the avatar fallback; if it stays, the old photo returns next launch.
+        val hiddenCleared = runCatching {
+            withTimeoutOrNull(8_000L) {
+                userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                    .set(mapOf("hiddenPhotoUrl" to ""), SetOptions.merge())
+                    .await(); true
+            } ?: false
+        }.getOrDefault(false)
+        if (!hiddenCleared) {
+            com.wesal.messenger.chat.WesalDiag.report("حذف الصورة: تعذر مسح النسخة المخفية - قد تعود الصورة القديمة عند إعادة الفتح")
         }
     }
 
     override suspend fun removeProfileCover(): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        userRef.update("coverUrl", "").await()
+        val acked = withTimeoutOrNull(12_000L) { userRef.update("coverUrl", "").await(); true } ?: false
+        if (!acked) {
+            com.wesal.messenger.chat.WesalDiag.report("حذف الغلاف: لم يؤكد السيرفر الكتابة خلال 12 ثانية")
+            error("لم يؤكد السيرفر حذف صورة الغلاف - تحقق من الاتصال وحاول مرة أخرى")
+        }
         runCatching {
-            userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
-                .set(mapOf("hiddenCoverUrl" to ""), SetOptions.merge())
-                .await()
+            withTimeoutOrNull(8_000L) {
+                userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                    .set(mapOf("hiddenCoverUrl" to ""), SetOptions.merge())
+                    .await()
+            }
         }
     }
 
