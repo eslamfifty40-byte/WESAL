@@ -76,6 +76,9 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     private fun configureAppCheck() {
         runCatching {
             val appCheck = FirebaseAppCheck.getInstance()
+            // Debug/CI builds have no registered App Check debug token, so a failing token request can stall
+            // Firestore. Skip App Check there; release builds keep Play Integrity.
+            if (BuildConfig.DEBUG) return@runCatching
             val factory = if (BuildConfig.DEBUG) {
                 DebugAppCheckProviderFactory.getInstance()
             } else {
