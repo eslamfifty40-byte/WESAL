@@ -53,6 +53,7 @@ object NetProbe {
                 }
             } ?: "srv=TIMEOUT"
         }
-        listOf(net, appCheck, authTok, server).joinToString(" ") { it.await() }
+        val parts = listOf(net.await(), appCheck.await(), authTok.await(), server.await())
+        parts.joinToString(" ")
     }
 }
