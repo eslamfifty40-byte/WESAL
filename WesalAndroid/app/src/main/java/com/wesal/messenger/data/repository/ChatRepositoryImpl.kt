@@ -39,6 +39,8 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -358,6 +360,7 @@ class ChatRepositoryImpl @Inject constructor(
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeMessages(chatId: String): Flow<List<WesalMessage>> = observeAuthUid().flatMapLatest { myUid ->
         if (myUid == null) {
+            WesalDiag.status.value = "uid=NULL (لا يوجد تسجيل دخول جاهز)"
             flowOf(emptyList())
         } else {
             callbackFlow {
@@ -388,44 +391,38 @@ class ChatRepositoryImpl @Inject constructor(
                     }
                 }
 
-                val chatDoc = runCatching {
-                    firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
-                }.getOrNull()
-                val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
-                val isGroup = chatDoc?.getBoolean("isGroup") ?: false
-
+                val isGroupRef = java.util.concurrent.atomic.AtomicBoolean(false)
                 val peerPubKeyCache = ConcurrentHashMap<String, String>()
-                val peerUids = participantIds.filter { it != myUid }.distinct()
-                if (peerUids.isNotEmpty()) {
-                    coroutineScope {
-                        peerUids.map { uid ->
-                            async(Dispatchers.IO) {
-                                runCatching {
-                                    fetchUserCached(uid)?.publicKey?.let { key ->
-                                        if (key.isNotBlank()) peerPubKeyCache[uid] = key
-                                    }
-                                }
-                            }
-                        }.awaitAll()
-                    }
-                }
+                val seqCounter = java.util.concurrent.atomic.AtomicLong(0L)
+                val lastSentSeq = java.util.concurrent.atomic.AtomicLong(0L)
+                val sendMutex = kotlinx.coroutines.sync.Mutex()
+                val lastSnapshotRef = java.util.concurrent.atomic.AtomicReference<com.google.firebase.firestore.QuerySnapshot?>(null)
+                val shortChat = chatId.take(6)
+                val shortUid = myUid.take(5)
+                WesalDiag.status.value = "uid=$shortUid chat=$shortChat listener=attaching"
 
-                val registration = firestore.collection(Constants.COLLECTION_CHATS)
-                    .document(chatId)
-                    .collection(Constants.COLLECTION_MESSAGES)
-                    .orderBy("timestamp", Query.Direction.ASCENDING)
-                    .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
-                        if (error != null) {
-                            Log.e("WesalChat", "messages listener failed for chat $chatId: ${error.code} ${error.message}")
-                            WesalDiag.report("خطأ قراءة الرسائل: ${error.code} - ${error.message}")
-                            return@addSnapshotListener
-                        }
-                        if (snapshot == null) return@addSnapshotListener
-                        hasRemoteMessages.set(true)
-                        launch(Dispatchers.Default) {
-                            val messages = snapshot.documents.mapNotNull { doc ->
-                                mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
+                fun processSnapshot(snapshot: com.google.firebase.firestore.QuerySnapshot) {
+                    val seq = seqCounter.incrementAndGet()
+                    launch(Dispatchers.Default) {
+                        val messages = runCatching {
+                            snapshot.documents.mapNotNull { doc ->
+                                mapAndDecryptMessage(doc, chatId, myUid, isGroupRef.get(), peerPubKeyCache)
                             }
+                        }.getOrElse { e ->
+                            WesalDiag.report("خطأ معالجة الرسائل: ${e.javaClass.simpleName} - ${e.message}")
+                            return@launch
+                        }
+                        // Emit first, in order, so a slow cache write can never hide a message.
+                        sendMutex.withLock {
+                            if (seq > lastSentSeq.get()) {
+                                lastSentSeq.set(seq)
+                                trySend(messages)
+                            }
+                        }
+                        val meta = snapshot.metadata
+                        WesalDiag.status.value = "uid=$shortUid chat=$shortChat docs=${snapshot.size()} shown=${messages.size} " +
+                            "dropped=${snapshot.size() - messages.size} cache=${meta.isFromCache} pending=${meta.hasPendingWrites()} #$seq"
+                        runCatching {
                             withContext(Dispatchers.IO) {
                                 wesalDao.upsertMessages(messages.map {
                                     CachedMessageEntity(
@@ -446,11 +443,65 @@ class ChatRepositoryImpl @Inject constructor(
                                     )
                                 })
                             }
-                            trySend(messages)
-                        }
+                        }.onFailure { Log.e("WesalChat", "cache upsert failed: ${it.message}") }
                     }
+                }
 
-                awaitClose { registration.remove() }
+                val registrationRef = java.util.concurrent.atomic.AtomicReference<com.google.firebase.firestore.ListenerRegistration?>(null)
+                fun attachListener() {
+                    registrationRef.set(
+                        firestore.collection(Constants.COLLECTION_CHATS)
+                            .document(chatId)
+                            .collection(Constants.COLLECTION_MESSAGES)
+                            .orderBy("timestamp", Query.Direction.ASCENDING)
+                            .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
+                                if (error != null) {
+                                    Log.e("WesalChat", "messages listener failed for chat $chatId: ${error.code} ${error.message}")
+                                    WesalDiag.report("خطأ قراءة الرسائل: ${error.code} - ${error.message}")
+                                    WesalDiag.status.value = "uid=$shortUid chat=$shortChat listener=ERROR ${error.code}"
+                                    // The listener is dead after an error: re-attach unless it is a permanent denial.
+                                    if (error.code != com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                                        launch {
+                                            delay(3000L)
+                                            registrationRef.get()?.remove()
+                                            attachListener()
+                                        }
+                                    }
+                                    return@addSnapshotListener
+                                }
+                                if (snapshot == null) return@addSnapshotListener
+                                hasRemoteMessages.set(true)
+                                lastSnapshotRef.set(snapshot)
+                                processSnapshot(snapshot)
+                            }
+                    )
+                }
+                // Attach immediately: nothing may block the message listener (the chat doc and peer keys load in the background).
+                attachListener()
+
+                launch(Dispatchers.IO) {
+                    val chatDoc = runCatching {
+                        firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
+                    }.getOrNull()
+                    val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
+                    val groupNow = chatDoc?.getBoolean("isGroup") ?: false
+                    val peerUids = participantIds.filter { it != myUid }.distinct()
+                    peerUids.map { uid ->
+                        async {
+                            runCatching {
+                                fetchUserCached(uid)?.publicKey?.let { key ->
+                                    if (key.isNotBlank()) peerPubKeyCache[uid] = key
+                                }
+                            }
+                        }
+                    }.awaitAll()
+                    if (groupNow != isGroupRef.get() || peerUids.isNotEmpty()) {
+                        isGroupRef.set(groupNow)
+                        lastSnapshotRef.get()?.let { processSnapshot(it) }
+                    }
+                }
+
+                awaitClose { registrationRef.get()?.remove() }
             }
         }
     }
@@ -1481,5 +1532,6 @@ class ChatRepositoryImpl @Inject constructor(
         chatRef.set(mapOf("unreadCounts.$myUid" to 0), SetOptions.merge()).await()
     }
 }
+
 
 
