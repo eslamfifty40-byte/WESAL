@@ -548,9 +548,25 @@ fun ChatDetailScreen(
             Column(modifier = Modifier.fillMaxSize()) {
                 val diagError by WesalDiag.error.collectAsStateWithLifecycle()
                 val diagStatus by WesalDiag.status.collectAsStateWithLifecycle()
+                val diagProbe by WesalDiag.probe.collectAsStateWithLifecycle()
+                LaunchedEffect(Unit) {
+                    if (WesalDiag.probe.value.isBlank()) {
+                        kotlinx.coroutines.delay(6000L)
+                        WesalDiag.probe.value = "فحص..."
+                        WesalDiag.probe.value = runCatching {
+                            com.wesal.messenger.data.repository.NetProbe.run(
+                                com.google.firebase.firestore.FirebaseFirestore.getInstance(
+                                    com.google.firebase.FirebaseApp.getInstance(),
+                                    "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424"
+                                ),
+                                com.google.firebase.auth.FirebaseAuth.getInstance()
+                            )
+                        }.getOrElse { "probe failed: ${it.javaClass.simpleName}" }
+                    }
+                }
                 if (diagStatus.isNotBlank()) {
                     androidx.compose.material3.Text(
-                        text = diagStatus,
+                        text = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe",
                         color = Color(0xFFBBBBBB),
                         modifier = Modifier
                             .fillMaxWidth()
