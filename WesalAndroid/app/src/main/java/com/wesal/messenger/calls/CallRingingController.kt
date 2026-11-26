@@ -32,6 +32,17 @@ object CallRingingController {
         stop()
         activeCallId = callId
         val appContext = context.applicationContext
+        runCatching {
+            val am = appContext.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            val pm = appContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            val ch = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.getNotificationChannel("wesal_calls_ring_v3")?.importance ?: -1
+            } else -2
+            com.wesal.messenger.chat.WesalDiag.ringLog(
+                "ring start ${callId.take(6)} ringer=${am.ringerMode} vol=${am.getStreamVolume(android.media.AudioManager.STREAM_RING)}/${am.getStreamMaxVolume(android.media.AudioManager.STREAM_RING)} dnd=${nm.currentInterruptionFilter} ch=$ch batt=${pm.isIgnoringBatteryOptimizations(appContext.packageName)}"
+            )
+        }
         val candidates = buildList {
             savedToneUri.trim().takeIf { it.isNotBlank() }?.let { add(it) }
             add(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE).toString())
@@ -54,9 +65,11 @@ object CallRingingController {
             if (started) {
                 ringtone = tone
                 handler.postDelayed(autoStop, MAX_RING_MS)
+                com.wesal.messenger.chat.WesalDiag.ringLog("ring PLAYING ${callId.take(6)}")
                 return
             }
         }
+        com.wesal.messenger.chat.WesalDiag.ringLog("ring FAILED: no playable tone")
     }
 
     @Synchronized

@@ -4,6 +4,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.CallRecord
@@ -83,17 +84,29 @@ class CallRepositoryImpl @Inject constructor(
             flowOf(null)
         } else {
             callbackFlow {
+                var lastLoggedRingId = ""
+                com.wesal.messenger.chat.WesalDiag.ringLog("calls listener ON")
+                // NOTE: must filter on the same field the security rule checks
+                // (uid in participants). A whereEqualTo("calleeId", uid) query cannot be
+                // proven readable by the rules engine, so the listener was denied and
+                // incoming calls never appeared. participants-arrayContains is provable.
                 val reg = firestore.collection(Constants.COLLECTION_CALLS)
-                    .whereEqualTo("calleeId", uid)
+                    .whereArrayContains("participants", uid)
                     .whereIn("status", listOf(CallStatus.CONNECTING.raw, CallStatus.RINGING.raw))
                     .addSnapshotListener { snap, err ->
-                        if (err != null) return@addSnapshotListener
+                        if (err != null) {
+                            com.wesal.messenger.chat.WesalDiag.ringLog("calls listener ERR ${(err as? FirebaseFirestoreException)?.code ?: err.javaClass.simpleName}")
+                            return@addSnapshotListener
+                        }
                         val cutoff = System.currentTimeMillis() - 90_000L
                         val activeRing = snap?.documents
                             ?.mapNotNull { doc ->
                                 val startedAt = doc.getLong("startedAt") ?: 0L
                                 val callerId = doc.getString("callerId").orEmpty()
                                 if (startedAt < cutoff || callerId.isBlank() || callerId == uid) {
+                                    return@mapNotNull null
+                                }
+                                if (doc.getString("calleeId").orEmpty() != uid) {
                                     return@mapNotNull null
                                 }
                                 CallRecord(
@@ -115,6 +128,10 @@ class CallRepositoryImpl @Inject constructor(
                                 )
                             }
                             ?.maxByOrNull { it.startedAt }
+                        if (activeRing != null && activeRing.callId != lastLoggedRingId) {
+                            lastLoggedRingId = activeRing.callId
+                            com.wesal.messenger.chat.WesalDiag.ringLog("incoming visible ${activeRing.callId.take(6)} status=${activeRing.status}")
+                        }
                         trySend(activeRing)
                     }
                 awaitClose { reg.remove() }

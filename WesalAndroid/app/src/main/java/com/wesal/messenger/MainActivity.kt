@@ -82,6 +82,7 @@ class MainActivity : AppCompatActivity() {
                     lastHandledCallId = null
                 } else if (call.callId != lastHandledCallId) {
                     lastHandledCallId = call.callId
+                    com.wesal.messenger.chat.WesalDiag.ringLog("incoming UI launch ${call.callId.take(6)}")
                     val intent = Intent(this@MainActivity, IncomingCallActivity::class.java).apply {
                         putExtra(IncomingCallActivity.EXTRA_CALL_ID, call.callId)
                         putExtra(IncomingCallActivity.EXTRA_CALLER_UID, call.callerId)

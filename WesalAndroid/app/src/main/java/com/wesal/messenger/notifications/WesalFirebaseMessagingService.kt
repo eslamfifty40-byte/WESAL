@@ -56,6 +56,9 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
         val chatId = data["chatId"]
         val dedupId = (data["messageId"] ?: "${type}_${chatId.orEmpty()}_${rawBody.hashCode()}").hashCode()
 
+        if (type != "INCOMING_CALL") {
+            com.wesal.messenger.chat.WesalDiag.ringLog("FCM msg type=$type")
+        }
         serviceScope.launch {
             val userSettings = prefs.settingsFlow.first()
             val isHiddenChat = !chatId.isNullOrBlank() && userSettings.hiddenChatIds.contains(chatId)
@@ -69,6 +72,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
 
             when (type) {
                 "INCOMING_CALL" -> {
+                    com.wesal.messenger.chat.WesalDiag.ringLog("FCM INCOMING_CALL ${data["callId"].orEmpty().take(6)} callsEnabled=${userSettings.notificationsCalls}")
                     if (!userSettings.notificationsCalls) return@launch
                     val incomingCallId = data["callId"].orEmpty()
                     showIncomingCallNotification(

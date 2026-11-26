@@ -56,7 +56,10 @@ fun AccountShareScreen(
     val numericId = user?.numericId.orEmpty()
     val publicId = user?.publicId.orEmpty()
     val primaryId = numericId.ifBlank { publicId }
-    val deepLink = if (primaryId.isNotBlank()) "${com.wesal.messenger.core.util.Constants.WEB_BASE_URL}/join?id=$primaryId" else ""
+    // wesal:// scheme: the in-app scanner and any external scanner that opens links
+    // resolve it through the manifest intent filter. The old AI Studio preview web
+    // URL 404s because that domain no longer exists.
+    val deepLink = if (primaryId.isNotBlank()) "wesal://join?id=$primaryId" else ""
     val shareMessage = WesalShareUtils.buildInviteMessage(
         myWesalId = primaryId,
         senderName = user?.displayName.orEmpty(),
@@ -166,9 +169,9 @@ fun AccountShareScreen(
                         )
                         Text(
                             text = if (strings.isEnglish) {
-                                "Others can scan this QR code or enter ID $primaryId to message you on WESAL."
+                                "Others can scan this QR with the WESAL scanner or enter ID $primaryId to message you (no email, hidden phone or birth date shared)."
                             } else {
-                                "يمكن للآخرين مسح رمز QR أو استخدام المعرّف $primaryId للتواصل معك مباشرة على WESAL (دون مشاركة البريد أو الهاتف المخفي أو تاريخ الميلاد)."
+                                "يمكن للآخرين مسح رمز QR من داخل WESAL (زر مسح رمز QR في هذه الشاشة) أو استخدام المعرّف $primaryId للتواصل معك مباشرة (دون مشاركة البريد أو الهاتف المخفي أو تاريخ الميلاد)."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = palette.textSecondary,

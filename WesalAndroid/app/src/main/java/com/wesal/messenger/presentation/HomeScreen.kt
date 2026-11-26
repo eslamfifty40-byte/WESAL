@@ -1,11 +1,14 @@
 package com.wesal.messenger.presentation
 
 import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -61,7 +64,7 @@ private enum class HomeTab(
     SETTINGS(Icons.Default.Settings)
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     isOnline: Boolean,
@@ -163,6 +166,34 @@ fun HomeScreen(
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
                 )
                 OfflineBanner(isOnline = isOnline)
+                val diagRing by com.wesal.messenger.chat.WesalDiag.ring.collectAsStateWithLifecycle()
+                if (diagRing.isNotBlank()) {
+                    val ringCtx = androidx.compose.ui.platform.LocalContext.current
+                    Text(
+                        text = diagRing + "  (اضغط للمشاركة)",
+                        color = Color(0xFFBBBBBB),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF222222))
+                            .combinedClickable(
+                                onClick = {
+                                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(android.content.Intent.EXTRA_TEXT, "v${com.wesal.messenger.BuildConfig.BUILD_STAMP}\n" + diagRing)
+                                    }
+                                    runCatching {
+                                        ringCtx.startActivity(
+                                            android.content.Intent.createChooser(send, "مشاركة التشخيص")
+                                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                    }
+                                },
+                                onLongClick = { com.wesal.messenger.chat.WesalDiag.ring.value = "" }
+                            )
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
             }
         },
         bottomBar = {

@@ -551,6 +551,7 @@ fun ChatDetailScreen(
                 val diagStatus by WesalDiag.status.collectAsStateWithLifecycle()
                 val diagProbe by WesalDiag.probe.collectAsStateWithLifecycle()
                 val diagClr by WesalDiag.clearResult.collectAsStateWithLifecycle()
+                val diagRing by WesalDiag.ring.collectAsStateWithLifecycle()
                 LaunchedEffect(Unit) {
                     if (WesalDiag.probe.value.isBlank()) {
                         kotlinx.coroutines.delay(6000L)
@@ -566,13 +567,31 @@ fun ChatDetailScreen(
                         }.getOrElse { "probe failed: ${it.javaClass.simpleName}" }
                     }
                 }
-                if (diagStatus.isNotBlank()) {
+                if (diagStatus.isNotBlank() || diagRing.isNotBlank()) {
+                    val stripCtx = androidx.compose.ui.platform.LocalContext.current
+                    val stripText = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe | $diagClr" +
+                        (if (diagRing.isNotBlank()) "\n$diagRing" else "")
                     androidx.compose.material3.Text(
-                        text = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe | $diagClr",
+                        text = stripText,
                         color = Color(0xFFBBBBBB),
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(Color(0xFF222222))
+                            .combinedClickable(
+                                onClick = {
+                                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(android.content.Intent.EXTRA_TEXT, stripText)
+                                    }
+                                    runCatching {
+                                        stripCtx.startActivity(
+                                            android.content.Intent.createChooser(send, "مشاركة التشخيص")
+                                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                    }
+                                },
+                                onLongClick = { WesalDiag.ring.value = "" }
+                            )
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
