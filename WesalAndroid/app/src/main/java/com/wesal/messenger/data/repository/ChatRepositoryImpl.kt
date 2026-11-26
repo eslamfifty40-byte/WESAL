@@ -60,7 +60,8 @@ class ChatRepositoryImpl @Inject constructor(
 
     private data class CachedUserEntry(val user: WesalUser, val fetchedAtMs: Long)
     private val userCache = ConcurrentHashMap<String, CachedUserEntry>()
-    private val userCacheTtlMs = 20_000L
+    private val userCacheTtlMs = 120_000L
+    @Volatile private var cacheOwnerUid: String? = null
     private val deliveredThrottleMs = ConcurrentHashMap<String, Long>()
 
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
@@ -88,8 +89,12 @@ class ChatRepositoryImpl @Inject constructor(
 
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeChats(): Flow<List<ChatPreview>> = observeAuthUid().flatMapLatest { uid ->
-        userCache.clear()
-        deliveredThrottleMs.clear()
+        // Keep the peer cache across re-subscriptions; only reset it when the signed-in account changes.
+        if (cacheOwnerUid != uid) {
+            userCache.clear()
+            deliveredThrottleMs.clear()
+            cacheOwnerUid = uid
+        }
         if (uid == null) {
             flowOf(emptyList())
         } else {
