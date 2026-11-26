@@ -120,7 +120,13 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
 
     val frameExpiresAt = getLong("frameExpiresAt") ?: 0L
     val rawFrameId = getString("frameId").orEmpty()
-    val activeFrameId = if (frameExpiresAt > 0L && now > frameExpiresAt) "" else rawFrameId
+    val isAdminAccount = getString("numericId").orEmpty() in Constants.ADMIN_NUMERIC_IDS
+    // The golden ADMIN frame is always shown for the admin accounts, for every viewer (not a picker entry).
+    val activeFrameId = when {
+        isAdminAccount -> WesalFrameLibrary.ADMIN_FRAME_ID
+        frameExpiresAt > 0L && now > frameExpiresAt -> ""
+        else -> rawFrameId
+    }
 
     val banExpiresAt = getLong("banExpiresAt") ?: 0L
     val rawBanned = getBoolean("isBanned") ?: false
@@ -161,7 +167,7 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         coverUrl = coverUrl,
         birthDate = birthDate,
         frameId = activeFrameId,
-        frameExpiresAt = frameExpiresAt,
+        frameExpiresAt = if (isAdminAccount) 0L else frameExpiresAt,
         iconId = rawIconId,
         iconUrl = resolvedIconUrl,
         photoRemovedBg = getBoolean("photoRemovedBg") ?: false,
@@ -3476,3 +3482,4 @@ class UserRepositoryImpl @Inject constructor(
             .await()
     }
 }
+

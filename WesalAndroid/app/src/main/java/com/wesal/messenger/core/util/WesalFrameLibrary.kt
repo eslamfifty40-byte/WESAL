@@ -79,6 +79,9 @@ data class FramePickerItem(
 
 object WesalFrameLibrary {
     const val COLLECTION = "frame_library"
+
+    /** Golden ADMIN crest, shown only for admin accounts. Deliberately not in the catalog or any picker. */
+    const val ADMIN_FRAME_ID = "wesal_admin_golden"
     private const val FIRESTORE_DB_ID = "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424"
 
     private fun db(): FirebaseFirestore =
@@ -184,6 +187,19 @@ object WesalFrameLibrary {
      */
     fun resolve(frameId: String?, expiresAt: Long): ResolvedFrame? {
         if (frameId.isNullOrBlank()) return null
+        if (frameId == ADMIN_FRAME_ID) {
+            // Opening of the artwork: centre at 39% of the height, diameter 45.8% of the width.
+            return ResolvedFrame(
+                id = ADMIN_FRAME_ID,
+                resId = com.wesal.messenger.R.drawable.wesal_frame_admin,
+                imageUrl = "",
+                glow = Color(0xFFFF3B1F),
+                animated = true,
+                animationStyle = "PULSE_GLOW",
+                apertureCenterYFraction = 0.3906f,
+                apertureDiameterFraction = 0.4583f
+            )
+        }
         if (expiresAt > 0L && System.currentTimeMillis() > expiresAt) return null
         val doc = docs[frameId]
         val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
