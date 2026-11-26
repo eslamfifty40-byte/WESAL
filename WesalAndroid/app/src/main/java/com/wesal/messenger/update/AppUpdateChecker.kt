@@ -39,7 +39,7 @@ object AppUpdateChecker {
     suspend fun fetchLatestUpdate(context: Context): WesalUpdateInfo? = withContext(Dispatchers.IO) {
         runCatching {
             val installedSha = installedBuildSha(context)
-            val conn = (URL("https://api.github.com/repos/$REPO/releases?per_page=5").openConnection() as HttpURLConnection).apply {
+            val conn = (URL("https://api.github.com/repos/$REPO/releases?per_page=30").openConnection() as HttpURLConnection).apply {
                 connectTimeout = 8_000
                 readTimeout = 8_000
                 setRequestProperty("Accept", "application/vnd.github+json")
@@ -47,23 +47,31 @@ object AppUpdateChecker {
             }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             val releases = JSONArray(body)
+            // GitHub does not list releases newest-first by creation time, so pick the newest
+            // by created_at ourselves (taking the first item offered stale builds as "updates").
+            var newest: org.json.JSONObject? = null
+            var newestAt = ""
             for (i in 0 until releases.length()) {
                 val rel = releases.getJSONObject(i)
-                val tag = rel.optString("tag_name")
-                if (!tag.startsWith(TAG_PREFIX)) continue
-                if (tag.removePrefix(TAG_PREFIX) == installedSha) return@runCatching null
-                val assets = rel.optJSONArray("assets") ?: continue
-                var apkUrl = ""
-                for (j in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(j)
-                    if (asset.optString("name").endsWith(".apk")) {
-                        apkUrl = asset.optString("browser_download_url")
-                        break
-                    }
+                if (!rel.optString("tag_name").startsWith(TAG_PREFIX)) continue
+                if (rel.optBoolean("draft")) continue
+                val at = rel.optString("created_at")
+                if (newest == null || at > newestAt) { newest = rel; newestAt = at }
+            }
+            val rel = newest ?: return@runCatching null
+            val tag = rel.optString("tag_name")
+            if (tag.removePrefix(TAG_PREFIX) == installedSha) return@runCatching null
+            val assets = rel.optJSONArray("assets") ?: return@runCatching null
+            var apkUrl = ""
+            for (j in 0 until assets.length()) {
+                val asset = assets.getJSONObject(j)
+                if (asset.optString("name").endsWith(".apk")) {
+                    apkUrl = asset.optString("browser_download_url")
+                    break
                 }
-                if (apkUrl.isNotBlank()) {
-                    return@runCatching WesalUpdateInfo(tag, apkUrl, rel.optString("body"))
-                }
+            }
+            if (apkUrl.isNotBlank()) {
+                return@runCatching WesalUpdateInfo(tag, apkUrl, rel.optString("body"))
             }
             null
         }.getOrNull()
