@@ -547,6 +547,17 @@ fun ChatDetailScreen(
 
             Column(modifier = Modifier.fillMaxSize()) {
                 val diagError by WesalDiag.error.collectAsStateWithLifecycle()
+                val diagStatus by WesalDiag.status.collectAsStateWithLifecycle()
+                if (diagStatus.isNotBlank()) {
+                    androidx.compose.material3.Text(
+                        text = diagStatus,
+                        color = Color(0xFFBBBBBB),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF222222))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
                 diagError?.let { msg ->
                     androidx.compose.material3.Text(
                         text = msg + "  (اضغط للإخفاء)",
@@ -2189,4 +2200,5 @@ private fun MessageBubble(
         }
     }
 }
+
 

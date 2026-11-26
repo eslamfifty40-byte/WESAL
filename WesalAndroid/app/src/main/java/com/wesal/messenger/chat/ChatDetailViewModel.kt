@@ -174,6 +174,7 @@ class ChatDetailViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private var typingDebounceJob: Job? = null
+    private val sendScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
     private var welcomeTriggeredInSession = false
 
     init {
@@ -282,8 +283,10 @@ class ChatDetailViewModel @Inject constructor(
 
         val reply = _replyingTo.value
         _replyingTo.value = null
-        viewModelScope.launch {
-            chatRepository.setTyping(chatId, false)
+        viewModelScope.launch { chatRepository.setTyping(chatId, false) }
+        // Sends run in an app-lifetime scope: leaving the screen or the ViewModel being cleared
+        // must not cancel a message that is being sent.
+        sendScope.launch {
             var attempt = 0
             while (true) {
                 attempt++
@@ -293,7 +296,12 @@ class ChatDetailViewModel @Inject constructor(
                     delay(1500L * attempt)
                     continue
                 }
-                WesalDiag.report("خطأ إرسال: ${error.javaClass.simpleName} - ${error.message}")
+                val frame = error.stackTrace.firstOrNull { it.className.startsWith("com.wesal") }
+                val scopeActive = viewModelScope.coroutineContext[Job]?.isActive
+                WesalDiag.report(
+                    "خطأ إرسال: ${error.javaClass.simpleName} - ${error.message} " +
+                        "| at ${frame?.fileName}:${frame?.lineNumber} | cause=${error.cause?.javaClass?.simpleName} | vmActive=$scopeActive | try=$attempt"
+                )
                 _toastMessage.value = friendlySendError(error)
                 break
             }
@@ -817,5 +825,6 @@ class ChatDetailViewModel @Inject constructor(
         voicePlayer.stop()
     }
 }
+
 
 
