@@ -67,7 +67,11 @@ object NetProbe {
                 }
             } ?: "wr=TIMEOUT"
         }
-        val parts = listOf(net.await(), appCheck.await(), authTok.await(), server.await(), write.await())
+        val restWrite = async {
+            "rst=" + runCatching { FirestoreRest.probeWrite(auth) }
+                .getOrElse { "ERR:${it.javaClass.simpleName}" }
+        }
+        val parts = listOf(net.await(), appCheck.await(), authTok.await(), server.await(), write.await(), restWrite.await())
         parts.joinToString(" ")
     }
 }
