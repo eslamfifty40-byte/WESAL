@@ -528,51 +528,33 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .clickable(onClick = onOpenProfile)
             ) {
+                // Cover banner on top, untouched; framed avatar and details sit fully below it.
                 Box(modifier = Modifier.fillMaxWidth()) {
                     val coverUrl = user?.coverUrl.orEmpty()
-                    if (coverUrl.isNotBlank()) {
-                        AsyncImage(
-                            model = wesalImageModel(coverUrl),
-                            contentDescription = null,
-                            modifier = Modifier.matchParentSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .background(
-                                    Brush.verticalGradient(
-                                        colors = listOf(
-                                            palette.surface.copy(alpha = 0.42f),
-                                            palette.surface.copy(alpha = 0.84f),
-                                            palette.surface.copy(alpha = 0.96f)
-                                        )
-                                    )
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        if (coverUrl.isNotBlank()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .aspectRatio(2.4f)
+                                    .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                            ) {
+                                AsyncImage(
+                                    model = wesalImageModel(coverUrl),
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
                                 )
-                        )
-                    }
-                    Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
-                        IconButton(
-                            onClick = onOpenAccountShare,
-                            modifier = Modifier.align(Alignment.TopStart).size(34.dp)
-                        ) {
-                            Icon(Icons.Default.QrCode2, contentDescription = strings.shareAccountQr, tint = palette.iconTint)
+                            }
                         }
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = strings.edit,
-                        tint = palette.iconTint,
-                        modifier = Modifier.align(Alignment.TopEnd).size(20.dp)
-                    )
-
-                    val isNeonOn = user?.neonEnabled != false
-                    val activeNeonColor = if (isNeonOn) user?.neonColor.orEmpty() else ""
-                    val activeGlow = user?.neonGlowIntensity ?: 0.7f
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(18.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                        val isNeonOn = user?.neonEnabled != false
+                        val activeNeonColor = if (isNeonOn) user?.neonColor.orEmpty() else ""
+                        val activeGlow = user?.neonGlowIntensity ?: 0.7f
                         WesalAvatar(
                             imageUrl = user?.photoUrl.orEmpty(),
                             name = user?.displayName ?: "WESAL",
@@ -665,6 +647,18 @@ fun SettingsScreen(
                         }
                     }
                     }
+                    IconButton(
+                        onClick = onOpenAccountShare,
+                        modifier = Modifier.align(Alignment.TopStart).padding(10.dp).size(34.dp)
+                    ) {
+                        Icon(Icons.Default.QrCode2, contentDescription = strings.shareAccountQr, tint = palette.iconTint)
+                    }
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = strings.edit,
+                        tint = palette.iconTint,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).size(20.dp)
+                    )
                 }
             }
             Spacer(Modifier.height(10.dp))
