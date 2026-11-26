@@ -92,17 +92,35 @@ class CallRepositoryImpl @Inject constructor(
                 // incoming calls never appeared. participants-arrayContains is provable.
                 val reg = firestore.collection(Constants.COLLECTION_CALLS)
                     .whereArrayContains("participants", uid)
-                    .whereIn("status", listOf(CallStatus.CONNECTING.raw, CallStatus.RINGING.raw))
                     .addSnapshotListener { snap, err ->
                         if (err != null) {
                             com.wesal.messenger.chat.WesalDiag.ringLog("calls listener ERR ${(err as? FirebaseFirestoreException)?.code ?: err.javaClass.simpleName}")
                             return@addSnapshotListener
                         }
-                        val cutoff = System.currentTimeMillis() - 90_000L
+                        // Single-field arrayContains query: no composite index needed. Status is
+                        // filtered client-side. Cutoff is generous (5 min) so caller/callee phone
+                        // clock skew cannot hide a live call.
+                        val cutoff = System.currentTimeMillis() - 300_000L
+                        run {
+                            val total = snap?.size() ?: 0
+                            val live = snap?.documents?.count {
+                                val st = it.getString("status")
+                                st == CallStatus.CONNECTING.raw || st == CallStatus.RINGING.raw
+                            } ?: 0
+                            val newest = snap?.documents?.maxOfOrNull { it.getLong("startedAt") ?: 0L } ?: 0L
+                            val skewMs = if (newest > 0L) System.currentTimeMillis() - newest else -1L
+                            com.wesal.messenger.chat.WesalDiag.ringLog(
+                                "calls snap docs=$total live=$live cache=${snap?.metadata?.isFromCache} newestAgeS=${if (skewMs >= 0) skewMs / 1000 else -1}"
+                            )
+                        }
                         val activeRing = snap?.documents
                             ?.mapNotNull { doc ->
                                 val startedAt = doc.getLong("startedAt") ?: 0L
                                 val callerId = doc.getString("callerId").orEmpty()
+                                val st = doc.getString("status")
+                                if (st != CallStatus.CONNECTING.raw && st != CallStatus.RINGING.raw) {
+                                    return@mapNotNull null
+                                }
                                 if (startedAt < cutoff || callerId.isBlank() || callerId == uid) {
                                     return@mapNotNull null
                                 }
@@ -204,6 +222,7 @@ class CallRepositoryImpl @Inject constructor(
             "durationSeconds" to 0L
         )
         firestore.collection(Constants.COLLECTION_CALLS).document(callId).set(data).await()
+        com.wesal.messenger.chat.WesalDiag.ringLog("caller wrote call ${callId.take(6)} participants=2 calleeUid=${callee.uid.take(6)}")
         upsertChatCallLog(
             callId = callId,
             callerId = callerUid,
