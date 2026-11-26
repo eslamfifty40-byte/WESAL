@@ -35,7 +35,8 @@ data class ContactsUiState(
     val broadcastResults: Map<String, Boolean>? = null,
     val isSendingBroadcast: Boolean = false,
     val error: String? = null,
-    val feedback: String? = null
+    val feedback: String? = null,
+    val syncDiag: String = ""
 )
 
 @HiltViewModel
@@ -121,14 +122,16 @@ class ContactsViewModel @Inject constructor(
                     it.copy(
                         isLoadingContacts = false,
                         wesalContacts = matched,
-                        nonWesalContacts = unmatched
+                        nonWesalContacts = unmatched,
+                        syncDiag = "read=${matched.size + unmatched.size} wesal=${matched.size}"
                     )
                 }
             }.onFailure { err ->
                 _uiState.update {
                     it.copy(
                         isLoadingContacts = false,
-                        error = err.localizedMessage ?: "تعذر قراءة جهات الاتصال"
+                        error = err.localizedMessage ?: "تعذر قراءة جهات الاتصال",
+                        syncDiag = "read=ERR:${err.javaClass.simpleName}"
                     )
                 }
             }
