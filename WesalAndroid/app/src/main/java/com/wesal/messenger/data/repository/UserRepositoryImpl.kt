@@ -607,6 +607,40 @@ class UserRepositoryImpl @Inject constructor(
             .orEmpty()
     }
 
+    override suspend fun findUsersByEmailHashes(emailHashes: List<String>): Map<String, WesalUser> {
+        val distinct = emailHashes.filter { it.isNotBlank() }.distinct()
+        if (distinct.isEmpty()) return emptyMap()
+        val currentUid = auth.currentUser?.uid
+        val matched = java.util.concurrent.ConcurrentHashMap<String, WesalUser>()
+
+        coroutineScope {
+            distinct.chunked(30).map { chunk ->
+                async(Dispatchers.IO) {
+                    val snap = getQueryCachedOrServer(
+                        firestore.collection(Constants.COLLECTION_USERS)
+                            .whereIn("emailHash", chunk)
+                    )
+                    snap?.documents?.forEach { doc ->
+                        val hash = doc.getString("emailHash").orEmpty()
+                        if (!doc.exists() || hash.isBlank()) return@forEach
+                        val user = doc.toWesalUser()
+                        if (
+                            user.uid != currentUid &&
+                            !user.hiddenFromSearch &&
+                            user.numericId != Constants.SECONDARY_ADMIN_NUMERIC_ID &&
+                            !Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true) &&
+                            !user.isBanned &&
+                            user.deletedAt == 0L
+                        ) {
+                            matched[hash] = user
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        return matched
+    }
+
     override suspend fun findUsersByPhoneHashes(phoneHashes: List<String>): Map<String, WesalUser> {
         val distinct = phoneHashes.filter { it.isNotBlank() }.distinct()
         if (distinct.isEmpty()) return emptyMap()

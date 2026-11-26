@@ -89,6 +89,10 @@ class ContactsViewModel @Inject constructor(
                     .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
                     .distinct()
                 val matchedByHash = userRepository.findUsersByPhoneHashes(hashes)
+                // Accounts that registered via Google/email or hide their phone can
+                // still be found through the contact's saved email (hashed).
+                val emailHashes = deviceList.flatMap { it.emailHashes }.distinct()
+                val matchedByEmailHash = userRepository.findUsersByEmailHashes(emailHashes)
 
                 val matched = mutableListOf<MatchedWesalContact>()
                 val unmatched = mutableListOf<DeviceContact>()
@@ -96,7 +100,9 @@ class ContactsViewModel @Inject constructor(
 
                 deviceList.forEach { contact ->
                     val contactHashes = contact.candidateHashes.ifEmpty { listOfNotNull(contact.phoneHash) }
-                    val user = contactHashes.firstNotNullOfOrNull { matchedByHash[it] }
+                    val userByPhone = contactHashes.firstNotNullOfOrNull { matchedByHash[it] }
+                    val user = userByPhone
+                        ?: contact.emailHashes.firstNotNullOfOrNull { matchedByEmailHash[it] }
                     val isSecondaryAdmin = user != null && (
                         user.numericId == Constants.SECONDARY_ADMIN_NUMERIC_ID ||
                             Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true)
@@ -105,7 +111,8 @@ class ContactsViewModel @Inject constructor(
                         if (seenUids.add(user.uid)) {
                             matched.add(MatchedWesalContact(deviceName = contact.displayName, user = user))
                         }
-                    } else if (user == null) {
+                    } else if (user == null && contact.rawPhone.isNotBlank()) {
+                        // Only phone contacts make sense as invite suggestions.
                         unmatched.add(contact)
                     }
                 }
