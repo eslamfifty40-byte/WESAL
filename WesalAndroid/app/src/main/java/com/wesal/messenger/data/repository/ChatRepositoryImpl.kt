@@ -990,7 +990,11 @@ class ChatRepositoryImpl @Inject constructor(
             WesalDiag.report("فشل الإرسال: ${(e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code ?: e.javaClass.simpleName} - ${e.message}")
         }
         val acked = withTimeoutOrNull(20_000L) { commitTask.await(); true }
-        if (acked == null) WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية (النت أو الصلاحيات)")
+        if (acked == null) {
+            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. جاري الفحص...")
+            val probe = runCatching { NetProbe.run(firestore, auth) }.getOrElse { "probe failed: ${it.javaClass.simpleName}" }
+            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. فحص: $probe")
+        }
         Unit
     }
 

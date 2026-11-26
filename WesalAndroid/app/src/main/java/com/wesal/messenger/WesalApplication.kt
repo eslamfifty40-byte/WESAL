@@ -8,6 +8,8 @@ import android.media.RingtoneManager
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.decode.VideoFrameDecoder
@@ -32,12 +34,17 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
 
     @Inject lateinit var firebaseAuth: FirebaseAuth
     @Inject lateinit var firestore: FirebaseFirestore
+    @Inject lateinit var userPrefs: com.wesal.messenger.data.local.UserPreferencesDataStore
+    private val appScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
 
     override fun onCreate() {
         super<Application>.onCreate()
         FirebaseApp.initializeApp(this)
         configureFirestoreOfflinePersistence()
         configureAppCheck()
+        rememberSignedInAccountLocally()
         createNotificationChannels()
         com.wesal.messenger.core.util.WesalFrameLibrary.startWithAuth()
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
@@ -73,9 +80,40 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         }
     }
 
+    /**
+     * Remember every signed-in account on the device right away, from the Firebase Auth user only.
+     * Saving used to happen only after server writes finished, so accounts were lost when Firestore stalled.
+     */
+    private fun rememberSignedInAccountLocally() {
+        firebaseAuth.addAuthStateListener { a ->
+            val u = a.currentUser ?: return@addAuthStateListener
+            appScope.launch {
+                runCatching {
+                    val known = userPrefs.savedAccountsFlow.first().any { it.uid == u.uid }
+                    if (!known) {
+                        userPrefs.upsertSavedAccount(
+                            com.wesal.messenger.domain.model.SavedWesalAccount(
+                                uid = u.uid,
+                                displayName = u.displayName.orEmpty(),
+                                email = u.email.orEmpty(),
+                                phoneNumber = u.phoneNumber.orEmpty(),
+                                photoUrl = u.photoUrl?.toString().orEmpty(),
+                                provider = if (!u.phoneNumber.isNullOrBlank()) "phone" else "email",
+                                lastUsedAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     private fun configureAppCheck() {
         runCatching {
             val appCheck = FirebaseAppCheck.getInstance()
+            // Debug/CI builds have no registered App Check debug token, so a failing token request can stall
+            // Firestore. Skip App Check there; release builds keep Play Integrity.
+            if (BuildConfig.DEBUG) return@runCatching
             val factory = if (BuildConfig.DEBUG) {
                 DebugAppCheckProviderFactory.getInstance()
             } else {
