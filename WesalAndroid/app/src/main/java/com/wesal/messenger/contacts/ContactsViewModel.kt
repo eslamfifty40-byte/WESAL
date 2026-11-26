@@ -158,7 +158,10 @@ class ContactsViewModel @Inject constructor(
 
     fun deleteDeviceContact(contactId: String) {
         viewModelScope.launch {
-            PhoneContactsHelper.deleteDeviceContact(context, contactId)
+            val phone = _uiState.value.nonWesalContacts.firstOrNull { it.contactId == contactId }?.rawPhone
+            // Hide the row at once, then really delete (including duplicate copies of the same number).
+            _uiState.update { st -> st.copy(nonWesalContacts = st.nonWesalContacts.filterNot { it.contactId == contactId }) }
+            PhoneContactsHelper.deleteDeviceContact(context, contactId, phone)
                 .onSuccess {
                     _uiState.update { it.copy(feedback = "تم حذف جهة الاتصال من الجهاز ✓") }
                     syncDeviceContacts()
