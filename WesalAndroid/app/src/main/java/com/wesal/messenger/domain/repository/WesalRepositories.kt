@@ -54,6 +54,7 @@ interface UserRepository {
     suspend fun searchUsers(query: String): List<WesalUser>
     suspend fun listDiscoverableUsers(limit: Int = 30): List<WesalUser>
     suspend fun findUsersByPhoneHashes(phoneHashes: List<String>): Map<String, WesalUser>
+    suspend fun findUsersByEmailHashes(emailHashes: List<String>): Map<String, WesalUser>
     suspend fun updateProfile(
         displayName: String,
         bio: String,

@@ -13,7 +13,8 @@ data class DeviceContact(
     val rawPhone: String,
     val e164Phone: String?,
     val phoneHash: String?,
-    val candidateHashes: List<String> = emptyList()
+    val candidateHashes: List<String> = emptyList(),
+    val emailHashes: List<String> = emptyList()
 )
 
 object PhoneContactsHelper {
@@ -66,7 +67,59 @@ object PhoneContactsHelper {
             }
         }
 
-        resultMap.values.sortedBy { it.displayName.lowercase() }
+        // Second pass: hash contact emails so accounts that registered with
+        // email/Google (and may hide their phone number) can still be matched.
+        // Same one-way sha256 approach as phone hashes; the raw email never
+        // leaves the device.
+        val emailsByContactId = linkedMapOf<String, Pair<String, MutableList<String>>>()
+        runCatching {
+            context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Email.CONTACT_ID,
+                    ContactsContract.CommonDataKinds.Email.DISPLAY_NAME,
+                    ContactsContract.CommonDataKinds.Email.ADDRESS
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.CONTACT_ID)
+                val nameCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.DISPLAY_NAME)
+                val addrCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Email.ADDRESS)
+                while (cursor.moveToNext()) {
+                    val cId = cursor.getString(idCol).orEmpty()
+                    val cName = cursor.getString(nameCol).orEmpty().trim()
+                    val addr = cursor.getString(addrCol).orEmpty().trim().lowercase()
+                    if (cId.isBlank() || !addr.contains('@')) continue
+                    val entry = emailsByContactId.getOrPut(cId) { cName to mutableListOf() }
+                    val hash = PhoneUtils.sha256Hash(addr)
+                    if (hash !in entry.second) entry.second.add(hash)
+                }
+            }
+        }
+
+        val knownContactIds = resultMap.values.map { it.contactId }.toSet()
+        val merged = resultMap.values.map { contact ->
+            val emailEntry = emailsByContactId[contact.contactId]
+            if (emailEntry != null) contact.copy(emailHashes = emailEntry.second) else contact
+        }.toMutableList()
+        // Email-only contacts (no phone row) can still match a WESAL account.
+        emailsByContactId.forEach { (cId, entry) ->
+            if (cId !in knownContactIds) {
+                merged += DeviceContact(
+                    contactId = cId,
+                    displayName = entry.first.ifBlank { "جهة اتصال" },
+                    rawPhone = "",
+                    e164Phone = null,
+                    phoneHash = null,
+                    candidateHashes = emptyList(),
+                    emailHashes = entry.second
+                )
+            }
+        }
+
+        merged.sortedBy { it.displayName.lowercase() }
     }
 
     suspend fun upsertDeviceContact(
