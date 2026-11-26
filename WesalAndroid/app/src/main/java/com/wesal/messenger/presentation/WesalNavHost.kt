@@ -3,6 +3,7 @@ package com.wesal.messenger.presentation
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavType
@@ -59,10 +60,25 @@ fun WesalNavHost(
     val currentEntry by navController.currentBackStackEntryAsState()
     val currentRoute = currentEntry?.destination?.route
 
-    val startRoute = when (startDestination) {
-        StartDestination.Home -> Routes.HOME
-        StartDestination.ProfileSetup -> Routes.PROFILE_SETUP
-        else -> Routes.PHONE_LOGIN
+    // The start route is fixed for the lifetime of this NavHost. Changing NavHost.startDestination later
+    // rebuilds the whole graph, which destroys the open chat screen (and cancels anything it was doing).
+    val startRoute = remember {
+        when (startDestination) {
+            StartDestination.Home -> Routes.HOME
+            StartDestination.ProfileSetup -> Routes.PROFILE_SETUP
+            else -> Routes.PHONE_LOGIN
+        }
+    }
+
+    // Late startup verification can still say "profile incomplete": move there only from Home,
+    // never while the user is inside a chat.
+    LaunchedEffect(startDestination, currentRoute) {
+        if (startDestination == StartDestination.ProfileSetup && currentRoute == Routes.HOME) {
+            navController.navigate(Routes.PROFILE_SETUP) {
+                popUpTo(Routes.HOME) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
     }
 
     LaunchedEffect(initialChatId, authUid) {
@@ -360,3 +376,4 @@ fun WesalNavHost(
         }
     }
 }
+
