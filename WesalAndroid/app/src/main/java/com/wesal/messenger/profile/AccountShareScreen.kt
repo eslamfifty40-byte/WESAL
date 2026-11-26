@@ -32,6 +32,7 @@ import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
+import com.wesal.messenger.presentation.components.WesalQrScannerDialog
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,6 +51,7 @@ fun AccountShareScreen(
     BackHandler(onBack = onBack)
 
     var showEnterInviteDialog by remember { mutableStateOf(false) }
+    var showQrScanner by remember { mutableStateOf(false) }
 
     val numericId = user?.numericId.orEmpty()
     val publicId = user?.publicId.orEmpty()
@@ -237,11 +239,24 @@ fun AccountShareScreen(
             }
 
             OutlinedButton(
-                onClick = { showEnterInviteDialog = true },
+                onClick = { showQrScanner = true },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp)
             ) {
                 Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = palette.textPrimary, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (strings.isEnglish) "Scan a Friend's QR Code" else "مسح رمز QR لحساب صديق",
+                    color = palette.textPrimary
+                )
+            }
+
+            OutlinedButton(
+                onClick = { showEnterInviteDialog = true },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Default.Link, contentDescription = null, tint = palette.textPrimary, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (strings.isEnglish) "Open Account ID or Link" else "فتح معرّف أو رابط حساب صديق",
@@ -249,6 +264,22 @@ fun AccountShareScreen(
                 )
             }
         }
+    }
+
+    if (showQrScanner) {
+        WesalQrScannerDialog(
+            onDismiss = { showQrScanner = false },
+            onQrDetected = { raw ->
+                showQrScanner = false
+                val cleaned = raw.trim()
+                    .substringAfter("id=", raw.trim())
+                    .substringBefore("&")
+                    .removePrefix("@")
+                    .removePrefix("wesal://")
+                    .trim()
+                if (cleaned.isNotBlank()) onOpenInviteId(cleaned)
+            }
+        )
     }
 
     if (showEnterInviteDialog) {
