@@ -173,14 +173,48 @@ object PhoneContactsHelper {
         null
     }
 
-    suspend fun deleteDeviceContact(context: Context, contactId: String): Result<Unit> = withContext(Dispatchers.IO) {
+    /**
+     * Deletes the contact and every other phone-book entry that has the same number. The list shows one row
+     * per number, so deleting a single contact id used to leave a duplicate (Google, SIM, WhatsApp copy)
+     * that immediately took its place and looked like the delete did nothing.
+     */
+    suspend fun deleteDeviceContact(
+        context: Context,
+        contactId: String,
+        rawPhone: String? = null
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             require(contactId.isNotBlank()) { "جهة الاتصال غير موجودة في دفتر الهاتف" }
-            val deleted = context.contentResolver.delete(
-                ContactsContract.RawContacts.CONTENT_URI,
-                "${ContactsContract.RawContacts.CONTACT_ID} = ?",
-                arrayOf(contactId)
-            )
+            val ids = linkedSetOf(contactId)
+            if (!rawPhone.isNullOrBlank()) {
+                val dial = PhoneUtils.resolveDeviceDialCode(context)
+                val wanted = PhoneUtils.normalizePhoneCandidates(rawPhone, dial).toSet()
+                if (wanted.isNotEmpty()) {
+                    context.contentResolver.query(
+                        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                        arrayOf(
+                            ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                            ContactsContract.CommonDataKinds.Phone.NUMBER
+                        ),
+                        null, null, null
+                    )?.use { c ->
+                        while (c.moveToNext()) {
+                            val id = c.getString(0).orEmpty()
+                            val num = c.getString(1).orEmpty()
+                            if (id.isBlank() || num.isBlank() || id in ids) continue
+                            if (PhoneUtils.normalizePhoneCandidates(num, dial).any { it in wanted }) ids.add(id)
+                        }
+                    }
+                }
+            }
+            var deleted = 0
+            ids.forEach { id ->
+                deleted += context.contentResolver.delete(
+                    ContactsContract.RawContacts.CONTENT_URI,
+                    "${ContactsContract.RawContacts.CONTACT_ID} = ?",
+                    arrayOf(id)
+                )
+            }
             if (deleted <= 0) {
                 error("تعذر حذف جهة الاتصال من الجهاز")
             }
@@ -188,4 +222,3 @@ object PhoneContactsHelper {
         }
     }
 }
-
