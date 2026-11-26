@@ -53,7 +53,21 @@ object NetProbe {
                 }
             } ?: "srv=TIMEOUT"
         }
-        val parts = listOf(net.await(), appCheck.await(), authTok.await(), server.await())
+        val write = async {
+            val uid = auth.currentUser?.uid ?: return@async "wr=NOUSER"
+            val t0 = System.currentTimeMillis()
+            withTimeoutOrNull(12000L) {
+                runCatching {
+                    firestore.collection("users").document(uid)
+                        .update("lastHeartbeatAt", System.currentTimeMillis()).await()
+                    "wr=OK(${System.currentTimeMillis() - t0}ms)"
+                }.getOrElse { e ->
+                    val code = (e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code
+                    "wr=ERR:${code ?: e.javaClass.simpleName}"
+                }
+            } ?: "wr=TIMEOUT"
+        }
+        val parts = listOf(net.await(), appCheck.await(), authTok.await(), server.await(), write.await())
         parts.joinToString(" ")
     }
 }

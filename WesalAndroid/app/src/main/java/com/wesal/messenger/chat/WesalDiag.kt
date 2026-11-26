@@ -6,5 +6,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 object WesalDiag {
     val error = MutableStateFlow<String?>(null)
     val status = MutableStateFlow("")
-    fun report(msg: String) { error.value = msg }
+    val probe = MutableStateFlow("")
+    fun report(msg: String) { error.value = "[v${com.wesal.messenger.BuildConfig.BUILD_STAMP}] $msg" }
 }
