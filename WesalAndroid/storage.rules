@@ -6,51 +6,58 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        request.auth.uid in ['fxKvKnbnksPqZy07rQjTzxIKzzP2', 'D6Z812za9ZNUW0kAt7SaFD3a9UN2'] ||
+        (request.auth.token.email != null &&
+         request.auth.token.email.lower() in ['eslamfifty40@gmail.com', 'tbtbttbbt7@gmail.com'])
+      );
+    }
+
     function underMaxSize() {
       return request.resource != null && request.resource.size <= 50 * 1024 * 1024;
     }
 
+    function isImageOrBinaryUnder10Mb() {
+      return request.resource != null &&
+        request.resource.size <= 10 * 1024 * 1024 &&
+        (request.resource.contentType == null ||
+         request.resource.contentType.matches('image/.*') ||
+         request.resource.contentType == 'application/octet-stream');
+    }
+
     match /avatars/{userId}/{fileName} {
       allow read: if isSignedIn();
-      allow create, update: if isSignedIn() && request.auth.uid == userId &&
-        request.resource != null &&
-        request.resource.size <= 10 * 1024 * 1024 &&
-        request.resource.contentType.matches('image/.*');
-      allow delete: if isSignedIn() && request.auth.uid == userId;
+      allow create, update: if isSignedIn() && request.auth.uid == userId && isImageOrBinaryUnder10Mb();
+      allow delete: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
     }
 
     match /frame_library/{fileName} {
       allow read: if isSignedIn();
-      allow create, update: if isSignedIn() &&
-        (request.auth.token.email == 'eslamfifty40@gmail.com' ||
-         request.auth.token.email == 'tbtbttbbt7@gmail.com') &&
-        request.resource != null &&
-        request.resource.size <= 5 * 1024 * 1024 &&
-        request.resource.contentType.matches('image/.*');
-      allow delete: if isSignedIn() &&
-        (request.auth.token.email == 'eslamfifty40@gmail.com' ||
-         request.auth.token.email == 'tbtbttbbt7@gmail.com');
+      allow create, update: if isSuperAdmin() && isImageOrBinaryUnder10Mb();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /official_team/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isSuperAdmin() && isImageOrBinaryUnder10Mb();
     }
 
     match /subscription_ids/{userId}/{fileName} {
-      allow read: if isSignedIn() && (
-        request.auth.uid == userId ||
-        request.auth.token.email == 'eslamfifty40@gmail.com' ||
-         request.auth.token.email == 'tbtbttbbt7@gmail.com'
-      );
-      allow create, update: if isSignedIn() && request.auth.uid == userId &&
-        request.resource != null &&
-        request.resource.size <= 10 * 1024 * 1024 &&
-        request.resource.contentType.matches('image/.*');
-      allow delete: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
+      allow create, update: if isSignedIn() && request.auth.uid == userId && isImageOrBinaryUnder10Mb();
+      allow delete: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
+    }
+
+    match /support_attachments/{ticketId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSuperAdmin();
     }
 
     match /group_avatars/{groupId}/{fileName} {
       allow read: if isSignedIn();
-      allow create, update: if isSignedIn() &&
-        request.resource != null &&
-        request.resource.size <= 10 * 1024 * 1024 &&
-        request.resource.contentType.matches('image/.*');
+      allow create, update: if isSignedIn() && isImageOrBinaryUnder10Mb();
       allow delete: if isSignedIn();
     }
 

@@ -15,6 +15,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -48,6 +49,7 @@ import coil.compose.AsyncImage
 import com.wesal.messenger.authentication.CountryCatalog
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
@@ -314,6 +316,34 @@ class ProfileViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     _uiStatus.value = ProfileUiStatus(message = err.localizedMessage ?: "Error", isError = true)
+                }
+        }
+    }
+
+    fun updateSelfCustomization(
+        nameplateColor: String? = null,
+        iconId: String? = null,
+        iconUrl: String? = null,
+        isEn: Boolean
+    ) {
+        viewModelScope.launch {
+            _uiStatus.value = ProfileUiStatus(isSaving = true)
+            userRepository.updateSelfCustomization(
+                nameplateColor = nameplateColor,
+                iconId = iconId,
+                iconUrl = iconUrl
+            )
+                .onSuccess {
+                    _uiStatus.value = ProfileUiStatus(
+                        message = if (isEn) "Customization saved ✓" else "تم حفظ التخصيص على حسابك ✓",
+                        isError = false
+                    )
+                }
+                .onFailure { err ->
+                    _uiStatus.value = ProfileUiStatus(
+                        message = err.localizedMessage ?: if (isEn) "Failed to save customization" else "تعذر حفظ التخصيص",
+                        isError = true
+                    )
                 }
         }
     }
@@ -705,33 +735,9 @@ fun ProfileScreen(
                     verificationGlowIntensity = user?.verificationGlowIntensity ?: 0.7f,
                     neonColor = activeNeon,
                     neonGlowIntensity = activeGlow,
-                    neonEnabled = user?.neonEnabled != false
+                    neonEnabled = user?.neonEnabled != false,
+                    nameplateColorKey = user?.nameplateColor ?: "CRIMSON"
                 )
-                val immutableNumericId = user?.numericId.orEmpty()
-                if (immutableNumericId.isNotBlank()) {
-                    Surface(
-                        color = palette.surfaceElevated,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.45f)),
-                        modifier = Modifier.clickable {
-                            clipboard.setText(AnnotatedString(immutableNumericId))
-                            Toast.makeText(context, "${strings.wesalNumericIdCopied} $immutableNumericId", Toast.LENGTH_SHORT).show()
-                        }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Text(
-                                text = "${strings.wesalNumericIdLabel}: $immutableNumericId",
-                                style = wesalNeonTextStyle(MaterialTheme.typography.labelLarge, activeNeon, activeGlow, palette.turquoise),
-                                fontWeight = FontWeight.Bold
-                            )
-                            Icon(Icons.Default.ContentCopy, contentDescription = strings.copy, tint = palette.turquoise, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
                 if (publicId.isNotBlank()) {
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                         Text(
@@ -785,6 +791,111 @@ fun ProfileScreen(
                                     style = MaterialTheme.typography.labelMedium,
                                     color = palette.textSecondary
                                 )
+                            }
+                        }
+                    }
+                }
+
+                // Self-Customization Card: 26 Nameplate Colors + Animated Profile Icon Picker
+                val availableIcons = WesalFrameLibrary.pickerItems("ICON", includeHiddenAndDeleted = false)
+                Surface(
+                    color = palette.surface,
+                    shape = RoundedCornerShape(14.dp),
+                    border = BorderStroke(1.dp, palette.border),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = strings.profileCustomizationTitle,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = strings.nameplateColorTitle,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.textSecondary
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            WesalNameplateColorPreset.entries.forEach { preset ->
+                                val selected = WesalNameplateColorPreset.fromKey(user?.nameplateColor) == preset
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(
+                                            androidx.compose.ui.graphics.Brush.linearGradient(
+                                                listOf(Color(preset.edgeHex), Color(preset.midHex), Color(preset.centerHex))
+                                            )
+                                        )
+                                        .border(
+                                            width = if (selected) 2.5.dp else 1.dp,
+                                            color = if (selected) Color(preset.borderAccentHex) else palette.border,
+                                            shape = CircleShape
+                                        )
+                                        .clickable(enabled = !uiStatus.isSaving) {
+                                            viewModel.updateSelfCustomization(nameplateColor = preset.key, isEn = strings.isEnglish)
+                                        }
+                                )
+                            }
+                        }
+
+                        if (availableIcons.isNotEmpty()) {
+                            Text(
+                                text = if (strings.isEnglish) "Animated Profile Icon" else "الأيقونة المتحركة بجانب الصورة",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = palette.textSecondary
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val noIconSelected = user?.iconId.isNullOrBlank() && user?.iconUrl.isNullOrBlank()
+                                FilterChip(
+                                    selected = noIconSelected,
+                                    enabled = !uiStatus.isSaving,
+                                    onClick = {
+                                        viewModel.updateSelfCustomization(iconId = "", iconUrl = "", isEn = strings.isEnglish)
+                                    },
+                                    label = { Text(if (strings.isEnglish) "None" else "بدون أيقونة", maxLines = 1) }
+                                )
+                                availableIcons.forEach { item ->
+                                    val selected = user?.iconId == item.id
+                                    Surface(
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = if (selected) palette.surfaceElevated else palette.background,
+                                        border = BorderStroke(
+                                            width = if (selected) 2.dp else 1.dp,
+                                            color = if (selected) palette.emerald else palette.border
+                                        ),
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clickable(enabled = !uiStatus.isSaving) {
+                                                viewModel.updateSelfCustomization(
+                                                    iconId = item.id,
+                                                    iconUrl = item.imageUrl,
+                                                    isEn = strings.isEnglish
+                                                )
+                                            }
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(5.dp)) {
+                                            AsyncImage(
+                                                model = wesalImageModel(item.imageUrl),
+                                                contentDescription = item.title,
+                                                modifier = Modifier.fillMaxSize(),
+                                                contentScale = ContentScale.Fit
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

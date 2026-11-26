@@ -95,8 +95,10 @@ export const onIncomingCallPush = onDocumentCreated(
       data: {
         type: "INCOMING_CALL",
         callId: event.params.callId,
+        callerId: String(call.callerId || ""),
         callerName: call.callerName || "مستخدم WESAL",
         callerAvatar: call.callerAvatarUrl || "",
+        callerVerified: String(Boolean(call.callerVerified)),
         isVideo: String(Boolean(call.isVideo))
       },
       android: {
@@ -243,10 +245,16 @@ export const setAccountVerification = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Only Owner Super Admin (10001) can manage verification seals");
   }
 
+  const allowedSeals = new Set([
+    "BLUE", "BLACK", "GREEN", "GOLD", "SILVER", "RUBY", "PURPLE", "ORANGE",
+    "ROSE_GOLD", "DIAMOND", "PLATINUM", "PEARL", "JADE", "BRONZE", "COPPER",
+    "AMBER", "CORAL", "MAGENTA", "VIOLET", "INDIGO", "CYAN", "TEAL", "MINT",
+    "LIME", "YELLOW", "CRIMSON", "SKY", "OBSIDIAN", "ROYAL", "ADMIN_CROWN"
+  ]);
   const targetUid = String(request.data?.targetUid || "").trim();
   const verified = Boolean(request.data?.verified);
   const verificationTypeRaw = String(request.data?.verificationType || "BLUE").toUpperCase();
-  const verificationType = ["BLUE", "BLACK", "GREEN"].includes(verificationTypeRaw) ? verificationTypeRaw : "BLUE";
+  const verificationType = allowedSeals.has(verificationTypeRaw) ? verificationTypeRaw : "BLUE";
   const expiresAt = Number(request.data?.expiresAt || 0);
   const durationLabel = String(request.data?.durationLabel || (expiresAt === 0 ? "دائم" : "مؤقت")).trim();
   const note = String(request.data?.note || "").trim();
@@ -291,3 +299,89 @@ export const setAccountVerification = onCall(async (request) => {
 
   return { ok: true, targetUid, isVerified: verified, verificationType };
 });
+
+async function notifyAdmins(
+  payload: Record<string, string>,
+  permissionKey?: string
+): Promise<void> {
+  const adminUids = new Set<string>([
+    "fxKvKnbnksPqZy07rQjTzxIKzzP2",
+    "D6Z812za9ZNUW0kAt7SaFD3a9UN2"
+  ]);
+  const saSnap = await db.collection("super_admins").get();
+  saSnap.docs.forEach((doc) => {
+    if (doc.data()?.active !== false) adminUids.add(doc.id);
+  });
+  const modSnap = await db.collection("moderators").where("active", "==", true).get();
+  modSnap.docs.forEach((doc) => {
+    const data = doc.data() || {};
+    if (!permissionKey || data[permissionKey] === true) {
+      adminUids.add(doc.id);
+    }
+  });
+
+  const tokens: string[] = [];
+  for (const uid of adminUids) {
+    const uSnap = await db.collection("users").doc(uid).get();
+    const token = uSnap.data()?.fcmToken;
+    if (token) tokens.push(token);
+  }
+  if (tokens.length === 0) return;
+
+  await admin.messaging().sendEachForMulticast({
+    tokens,
+    data: payload,
+    android: { priority: "high" }
+  });
+}
+
+export const onSubscriptionRequestCreated = onDocumentCreated(
+  "subscription_requests/{reqId}",
+  async (event) => {
+    const req = event.data?.data();
+    if (!req) return;
+    await notifyAdmins(
+      {
+        type: "ADMIN_SUBSCRIPTION",
+        messageId: `sub_${event.params.reqId}`,
+        requestId: event.params.reqId,
+        title: "طلب توثيق جديد — WESAL",
+        body: `${req.userName || "مستخدم"} (${req.userNumericId || ""}) طلب شارة ${req.desiredSeal || ""}`
+      },
+      "canManageVerification"
+    );
+  }
+);
+
+export const onReportCreated = onDocumentCreated(
+  "reports/{reportId}",
+  async (event) => {
+    const rep = event.data?.data();
+    if (!rep) return;
+    await notifyAdmins(
+      {
+        type: "ADMIN_REPORT",
+        messageId: `rep_${event.params.reportId}`,
+        reportId: event.params.reportId,
+        title: "بلاغ جديد — WESAL",
+        body: `بلاغ ضد ${rep.targetName || rep.targetUid || "حساب"}: ${String(rep.reason || "").slice(0, 80)}`
+      },
+      "canManageReports"
+    );
+  }
+);
+
+export const onSupportTicketCreated = onDocumentCreated(
+  "support_tickets/{ticketId}",
+  async (event) => {
+    const ticket = event.data?.data();
+    if (!ticket) return;
+    await notifyAdmins({
+      type: "ADMIN_SUPPORT",
+      messageId: `sup_${event.params.ticketId}`,
+      ticketId: event.params.ticketId,
+      title: "تذكرة دعم جديدة — WESAL",
+      body: `${ticket.userName || "مستخدم"}: ${String(ticket.subject || ticket.message || "").slice(0, 80)}`
+    });
+  }
+);

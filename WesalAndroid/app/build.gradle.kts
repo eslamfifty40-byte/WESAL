@@ -32,13 +32,16 @@ android {
             useSupportLibrary = true
         }
 
-        // Configurable TURN/STUN servers via BuildConfig or gradle.properties
-        val turnUrl = (project.findProperty("WESAL_TURN_URL") as? String) ?: ""
-        val turnUsername = (project.findProperty("WESAL_TURN_USERNAME") as? String) ?: ""
-        val turnCredential = (project.findProperty("WESAL_TURN_CREDENTIAL") as? String) ?: ""
-        buildConfigField("String", "TURN_URL", "\"$turnUrl\"")
-        buildConfigField("String", "TURN_USERNAME", "\"$turnUsername\"")
-        buildConfigField("String", "TURN_CREDENTIAL", "\"$turnCredential\"")
+        // Configurable TURN/STUN servers via gradle.properties or environment variables (CI Secrets)
+        fun readTurnConfig(key: String): String {
+            val raw = (project.findProperty(key) as? String)?.takeIf { it.isNotBlank() }
+                ?: System.getenv(key)?.takeIf { it.isNotBlank() }
+                ?: ""
+            return raw.replace("\\", "\\\\").replace("\"", "\\\"")
+        }
+        buildConfigField("String", "TURN_URL", "\"${readTurnConfig("WESAL_TURN_URL")}\"")
+        buildConfigField("String", "TURN_USERNAME", "\"${readTurnConfig("WESAL_TURN_USERNAME")}\"")
+        buildConfigField("String", "TURN_CREDENTIAL", "\"${readTurnConfig("WESAL_TURN_CREDENTIAL")}\"")
     }
 
     signingConfigs {

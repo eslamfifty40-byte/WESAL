@@ -26,6 +26,17 @@ enum class PrivacyVisibility(val key: String) {
     }
 }
 
+enum class GroupAddPrivacy(val raw: String) {
+    EVERYONE("EVERYONE"),
+    CONTACTS("CONTACTS"),
+    NOBODY("NOBODY");
+
+    companion object {
+        fun fromRaw(raw: String?): GroupAddPrivacy =
+            entries.firstOrNull { it.raw.equals(raw, ignoreCase = true) } ?: EVERYONE
+    }
+}
+
 enum class StoryAudienceMode(val raw: String) {
     CONTACTS("CONTACTS"),
     CONTACTS_EXCEPT("CONTACTS_EXCEPT"),
@@ -222,6 +233,8 @@ data class WesalUser(
     val neonEnabled: Boolean = false,
     val neonColor: String = "", // "", RED, GREEN, BLACK, BLUE
     val neonGlowIntensity: Float = 0.7f,
+    val nameplateColor: String = "CRIMSON",
+    val groupAddPrivacy: GroupAddPrivacy = GroupAddPrivacy.EVERYONE,
     val adminPermissions: AdminPermissions? = null,
     val facebookUrl: String = "",
     val instagramUrl: String = "",
@@ -491,6 +504,7 @@ data class ChatPreview(
     val unreadCount: Int = 0,
     val isPinned: Boolean = false,
     val isMuted: Boolean = false,
+    val isArchived: Boolean = false,
     val isSupportChat: Boolean = false,
     val isOfficialWesalChat: Boolean = false,
     val isMessageRequest: Boolean = false,
@@ -741,4 +755,43 @@ data class ScheduledCallRecord(
     val scheduledAt: Long = System.currentTimeMillis(),
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis()
+)
+
+data class SupportTicket(
+    val ticketId: String = "",
+    val referenceNumber: String = "",
+    val userUid: String = "",
+    val userName: String = "",
+    val userNumericId: String = "",
+    val userPublicId: String = "",
+    val subject: String = "",
+    val message: String = "",
+    val attachmentUrl: String = "",
+    val status: String = "OPEN", // OPEN, IN_PROGRESS, RESOLVED, CLOSED
+    val lastReplyText: String = "",
+    val lastReplyByUid: String = "",
+    val lastReplyAt: Long = 0L,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class SupportTicketMessage(
+    val messageId: String = "",
+    val ticketId: String = "",
+    val senderUid: String = "",
+    val senderName: String = "",
+    val isFromAdmin: Boolean = false,
+    val text: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class BroadcastList(
+    val listId: String = "",
+    val ownerUid: String = "",
+    val name: String = "",
+    val recipientUids: List<String> = emptyList(),
+    val lastSentText: String = "",
+    val lastSentAt: Long = 0L,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )

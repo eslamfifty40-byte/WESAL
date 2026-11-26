@@ -100,21 +100,22 @@ fun NewChatContactsScreen(
     }
 
     val trimmedQuery = state.query.trim()
+    val normQuery = WesalIdUtils.normalizeSearchText(trimmedQuery)
     val normQueryDigits = WesalIdUtils.normalizeDigits(trimmedQuery)
-    val cleanQueryHandle = trimmedQuery.removePrefix("@")
+    val cleanQueryHandle = trimmedQuery.removePrefix("@").lowercase()
     val filteredWesalContacts = remember(state.wesalContacts, trimmedQuery) {
-        if (trimmedQuery.isBlank()) state.wesalContacts
+        if (normQuery.isBlank() && cleanQueryHandle.isBlank()) state.wesalContacts
         else state.wesalContacts.filter {
-            it.deviceName.contains(trimmedQuery, ignoreCase = true) ||
-                it.user.displayName.contains(trimmedQuery, ignoreCase = true) ||
-                it.user.publicId.contains(cleanQueryHandle, ignoreCase = true) ||
+            WesalIdUtils.normalizeSearchText(it.deviceName).contains(normQuery) ||
+                WesalIdUtils.normalizeSearchText(it.user.displayName).contains(normQuery) ||
+                it.user.publicId.lowercase().contains(cleanQueryHandle) ||
                 (normQueryDigits.isNotBlank() && it.user.numericId.contains(normQueryDigits))
         }
     }
     val filteredNonWesalContacts = remember(state.nonWesalContacts, trimmedQuery) {
-        if (trimmedQuery.isBlank()) state.nonWesalContacts
+        if (normQuery.isBlank() && normQueryDigits.isBlank()) state.nonWesalContacts
         else state.nonWesalContacts.filter {
-            it.displayName.contains(trimmedQuery, ignoreCase = true) ||
+            WesalIdUtils.normalizeSearchText(it.displayName).contains(normQuery) ||
                 it.rawPhone.contains(trimmedQuery) ||
                 (normQueryDigits.isNotBlank() && WesalIdUtils.normalizeDigits(it.rawPhone).contains(normQueryDigits))
         }

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import coil.compose.AsyncImage
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -58,13 +60,14 @@ fun CameraCaptureScreen(
         listOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     )
 
-    var lensFacing by remember { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
-    var isVideoMode by remember { mutableStateOf(false) }
+    var lensFacing by rememberSaveable { mutableIntStateOf(CameraSelector.LENS_FACING_BACK) }
+    var isVideoMode by rememberSaveable { mutableStateOf(false) }
     var isRecordingVideo by remember { mutableStateOf(false) }
     var recordingElapsedSec by remember { mutableLongStateOf(0L) }
-    var capturedUri by remember { mutableStateOf<Uri?>(null) }
-    var capturedIsVideo by remember { mutableStateOf(false) }
-    var caption by remember { mutableStateOf("") }
+    var capturedUri by rememberSaveable { mutableStateOf<Uri?>(null) }
+    var capturedFilePath by rememberSaveable { mutableStateOf<String?>(null) }
+    var capturedIsVideo by rememberSaveable { mutableStateOf(false) }
+    var caption by rememberSaveable { mutableStateOf("") }
     var captureError by remember { mutableStateOf<String?>(null) }
 
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
@@ -143,7 +146,12 @@ fun CameraCaptureScreen(
             }
 
             IconButton(
-                onClick = { capturedUri = null },
+                onClick = {
+                    capturedFilePath?.let { path -> runCatching { File(path).delete() } }
+                    capturedFilePath = null
+                    capturedUri = null
+                    caption = ""
+                },
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(16.dp)
@@ -345,10 +353,16 @@ fun CameraCaptureScreen(
                                     object : ImageCapture.OnImageSavedCallback {
                                         override fun onImageSaved(output: ImageCapture.OutputFileResults) {
                                             capturedIsVideo = false
-                                            capturedUri = Uri.fromFile(file)
+                                            capturedFilePath = file.absolutePath
+                                            capturedUri = FileProvider.getUriForFile(
+                                                context,
+                                                "${context.packageName}.fileprovider",
+                                                file
+                                            )
                                         }
 
                                         override fun onError(exception: ImageCaptureException) {
+                                            runCatching { file.delete() }
                                             captureError = exception.localizedMessage ?: if (strings.isEnglish) {
                                                 "Failed to capture photo"
                                             } else {
@@ -377,8 +391,14 @@ fun CameraCaptureScreen(
                                             isRecordingVideo = false
                                             if (!event.hasError()) {
                                                 capturedIsVideo = true
-                                                capturedUri = Uri.fromFile(file)
+                                                capturedFilePath = file.absolutePath
+                                                capturedUri = FileProvider.getUriForFile(
+                                                    context,
+                                                    "${context.packageName}.fileprovider",
+                                                    file
+                                                )
                                             } else {
+                                                runCatching { file.delete() }
                                                 captureError = if (strings.isEnglish) {
                                                     "Video recording failed (${event.error})"
                                                 } else {

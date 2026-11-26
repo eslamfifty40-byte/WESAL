@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,11 +37,13 @@ import coil.compose.AsyncImage
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.WesalShareUtils
+import com.wesal.messenger.domain.model.BroadcastList
 import com.wesal.messenger.domain.model.GroupInfo
 import com.wesal.messenger.domain.model.GroupJoinMode
 import com.wesal.messenger.domain.model.GroupJoinRequest
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
+import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.GroupRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
@@ -55,6 +59,7 @@ import javax.inject.Inject
 @HiltViewModel
 class GroupsViewModel @Inject constructor(
     private val groupRepository: GroupRepository,
+    private val chatRepository: ChatRepository,
     private val userRepository: UserRepository,
     private val authRepository: AuthRepository
 ) : ViewModel() {
@@ -62,6 +67,9 @@ class GroupsViewModel @Inject constructor(
         get() = authRepository.currentUserId.orEmpty()
     val groups: StateFlow<List<GroupInfo>> = groupRepository.observeUserGroups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val broadcastLists: StateFlow<List<BroadcastList>> = chatRepository.observeBroadcastLists()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val isSendingBroadcast = MutableStateFlow(false)
 
     val searchedUsers = MutableStateFlow<List<WesalUser>>(emptyList())
     val selectedMembers = MutableStateFlow<List<WesalUser>>(emptyList())
@@ -201,21 +209,93 @@ class GroupsViewModel @Inject constructor(
     }
 
     fun addMember(groupId: String, uid: String) {
-        viewModelScope.launch { groupRepository.addMembers(groupId, listOf(uid)) }
+        viewModelScope.launch {
+            groupRepository.addMembers(groupId, listOf(uid))
+                .onSuccess { postStatus("تمت إضافة العضو إلى المجموعة ✓") }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر إضافة العضو بسبب إعدادات الخصوصية") }
+        }
     }
 
     fun removeMember(groupId: String, uid: String) {
-        viewModelScope.launch { groupRepository.removeMember(groupId, uid) }
+        viewModelScope.launch {
+            groupRepository.removeMember(groupId, uid)
+                .onSuccess { postStatus("تمت إزالة العضو") }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر إزالة العضو") }
+        }
     }
 
     fun toggleAdmin(groupId: String, uid: String, makeAdmin: Boolean) {
-        viewModelScope.launch { groupRepository.setAdminRole(groupId, uid, makeAdmin) }
+        viewModelScope.launch {
+            groupRepository.setAdminRole(groupId, uid, makeAdmin)
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر تعديل صلاحية المشرف") }
+        }
     }
 
     fun leaveGroup(groupId: String, onLeft: () -> Unit) {
         viewModelScope.launch {
-            groupRepository.leaveGroup(groupId).onSuccess { onLeft() }
+            groupRepository.leaveGroup(groupId)
+                .onSuccess { onLeft() }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر مغادرة المجموعة") }
         }
+    }
+
+    fun createBroadcastList(name: String, recipientUids: List<String>, onDone: () -> Unit) {
+        viewModelScope.launch {
+            isCreating.value = true
+            chatRepository.createBroadcastList(name, recipientUids)
+                .onSuccess {
+                    selectedMembers.value = emptyList()
+                    postStatus("تم إنشاء قائمة البث ✓")
+                    onDone()
+                }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر إنشاء قائمة البث") }
+            isCreating.value = false
+        }
+    }
+
+    fun updateBroadcastList(listId: String, name: String, recipientUids: List<String>, onDone: () -> Unit) {
+        viewModelScope.launch {
+            isCreating.value = true
+            chatRepository.updateBroadcastList(listId, name, recipientUids)
+                .onSuccess {
+                    selectedMembers.value = emptyList()
+                    postStatus("تم تحديث قائمة البث ✓")
+                    onDone()
+                }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر تحديث قائمة البث") }
+            isCreating.value = false
+        }
+    }
+
+    fun deleteBroadcastList(listId: String) {
+        viewModelScope.launch {
+            chatRepository.deleteBroadcastList(listId)
+                .onSuccess { postStatus("تم حذف قائمة البث") }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر حذف قائمة البث") }
+        }
+    }
+
+    fun sendBroadcastToList(list: BroadcastList, text: String) {
+        val cleanText = text.trim()
+        if (cleanText.isBlank()) return
+        viewModelScope.launch {
+            isSendingBroadcast.value = true
+            chatRepository.sendBusinessBroadcast(list.recipientUids, cleanText)
+                .onSuccess { report ->
+                    val okCount = report.values.count { it }
+                    postStatus("تم إرسال الرسالة الفردية لـ $okCount من أصل ${list.recipientUids.size} مستلم ✓")
+                }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر إرسال الرسالة") }
+            isSendingBroadcast.value = false
+        }
+    }
+
+    fun clearSelectedMembers() {
+        selectedMembers.value = emptyList()
+    }
+
+    fun setSelectedMembers(users: List<WesalUser>) {
+        selectedMembers.value = users
     }
 }
 
@@ -235,38 +315,74 @@ fun GroupsScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val groups by viewModel.groups.collectAsStateWithLifecycle()
+    val broadcastLists by viewModel.broadcastLists.collectAsStateWithLifecycle()
     val searched by viewModel.searchedUsers.collectAsStateWithLifecycle()
     val selectedMembers by viewModel.selectedMembers.collectAsStateWithLifecycle()
     val isCreating by viewModel.isCreating.collectAsStateWithLifecycle()
+    val isSendingBroadcast by viewModel.isSendingBroadcast.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
+    var activeTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Groups, 1 = Broadcast Lists
     var showCreateDialog by remember { mutableStateOf(false) }
     var showJoinByCodeDialog by remember { mutableStateOf(false) }
+    var showBroadcastDialog by remember { mutableStateOf(false) }
+    var editingBroadcast by remember { mutableStateOf<BroadcastList?>(null) }
+    var sendingBroadcastTarget by remember { mutableStateOf<BroadcastList?>(null) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(palette.background)
     ) {
-        if (true) {
-            Box(modifier = Modifier.fillMaxSize()) {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    statusMessage?.let { msg ->
-                        Surface(
-                            color = palette.emerald.copy(alpha = 0.14f),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { viewModel.clearStatus() }
-                        ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                statusMessage?.let { msg ->
+                    val isErrorMsg = msg.contains("تعذر") || msg.contains("لا يمكن") || msg.contains("خصوصية")
+                    Surface(
+                        color = (if (isErrorMsg) palette.error else palette.emerald).copy(alpha = 0.14f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { viewModel.clearStatus() }
+                    ) {
+                        Text(
+                            text = msg,
+                            color = if (isErrorMsg) palette.error else palette.emerald,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+
+                TabRow(
+                    selectedTabIndex = activeTab,
+                    containerColor = palette.surface,
+                    contentColor = palette.turquoise
+                ) {
+                    Tab(
+                        selected = activeTab == 0,
+                        onClick = { activeTab = 0 },
+                        text = {
                             Text(
-                                text = msg,
-                                color = palette.emerald,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(12.dp)
+                                text = if (strings.isEnglish) "Groups (${groups.size})" else "المجموعات (${groups.size})",
+                                fontWeight = if (activeTab == 0) FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 1
                             )
                         }
-                    }
+                    )
+                    Tab(
+                        selected = activeTab == 1,
+                        onClick = { activeTab = 1 },
+                        text = {
+                            Text(
+                                text = if (strings.isEnglish) "Broadcast Lists (${broadcastLists.size})" else "قوائم البث (${broadcastLists.size})",
+                                fontWeight = if (activeTab == 1) FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 1
+                            )
+                        }
+                    )
+                }
 
+                if (activeTab == 0) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -364,18 +480,149 @@ fun GroupsScreen(
                             }
                         }
                     }
-                }
+                } else {
+                    Surface(
+                        color = palette.surfaceElevated,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(Icons.Default.Campaign, contentDescription = null, tint = palette.turquoise)
+                            Text(
+                                text = if (strings.isEnglish) {
+                                    "Broadcast lists send 1-to-1 private messages to each recipient without creating a shared group."
+                                } else {
+                                    "قوائم البث ترسل رسالة فردية لكل مستلم على حدة دون إنشاء مجموعة مشتركة بينهم."
+                                },
+                                color = palette.textSecondary,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
 
-                FloatingActionButton(
-                    onClick = { showCreateDialog = true },
-                    containerColor = palette.emerald,
-                    contentColor = palette.onPrimary,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(16.dp)
-                ) {
-                    Icon(Icons.Default.GroupAdd, contentDescription = strings.newGroup)
+                    if (broadcastLists.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier.padding(24.dp)
+                            ) {
+                                Icon(Icons.Default.Campaign, contentDescription = null, tint = palette.turquoise.copy(alpha = 0.6f), modifier = Modifier.size(48.dp))
+                                Text(
+                                    text = if (strings.isEnglish) "No broadcast lists yet" else "لا توجد قوائم بث بعد",
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Button(
+                                    onClick = {
+                                        viewModel.clearSelectedMembers()
+                                        editingBroadcast = null
+                                        showBroadcastDialog = true
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                                ) {
+                                    Text(if (strings.isEnglish) "Create Broadcast List" else "إنشاء قائمة بث")
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 88.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(broadcastLists, key = { it.listId }) { bList ->
+                                Surface(
+                                    color = palette.surface,
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, palette.border),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Surface(
+                                                color = palette.turquoise.copy(alpha = 0.16f),
+                                                shape = CircleShape,
+                                                modifier = Modifier.size(44.dp)
+                                            ) {
+                                                Box(contentAlignment = Alignment.Center) {
+                                                    Icon(Icons.Default.Campaign, contentDescription = null, tint = palette.turquoise)
+                                                }
+                                            }
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(bList.name, color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                                Text(
+                                                    text = if (strings.isEnglish) "${bList.recipientUids.size} recipients" else "${bList.recipientUids.size} مستلم",
+                                                    color = palette.textSecondary,
+                                                    style = MaterialTheme.typography.labelSmall
+                                                )
+                                            }
+                                            IconButton(onClick = {
+                                                editingBroadcast = bList
+                                                showBroadcastDialog = true
+                                            }) {
+                                                Icon(Icons.Default.Edit, contentDescription = strings.edit, tint = palette.turquoise)
+                                            }
+                                            IconButton(onClick = { viewModel.deleteBroadcastList(bList.listId) }) {
+                                                Icon(Icons.Default.Delete, contentDescription = strings.delete, tint = palette.error)
+                                            }
+                                        }
+                                        if (bList.lastSentText.isNotBlank()) {
+                                            Text(
+                                                text = (if (strings.isEnglish) "Last sent: " else "آخر إرسال: ") + bList.lastSentText,
+                                                color = palette.textMuted,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Button(
+                                            onClick = { sendingBroadcastTarget = bList },
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                                        ) {
+                                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(if (strings.isEnglish) "Send 1-to-1 Broadcast" else "إرسال رسالة فردية للقائمة")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+
+            FloatingActionButton(
+                onClick = {
+                    viewModel.clearSelectedMembers()
+                    if (activeTab == 0) {
+                        showCreateDialog = true
+                    } else {
+                        editingBroadcast = null
+                        showBroadcastDialog = true
+                    }
+                },
+                containerColor = palette.emerald,
+                contentColor = palette.onPrimary,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+            ) {
+                Icon(
+                    imageVector = if (activeTab == 0) Icons.Default.GroupAdd else Icons.Default.Campaign,
+                    contentDescription = strings.newGroup
+                )
             }
         }
     }
@@ -583,6 +830,162 @@ fun GroupsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showCreateDialog = false }) { Text(strings.cancel) }
+            }
+        )
+    }
+
+    if (showBroadcastDialog) {
+        val initialEdit = editingBroadcast
+        var listName by remember(initialEdit?.listId) { mutableStateOf(initialEdit?.name.orEmpty()) }
+        var searchBQuery by remember { mutableStateOf("") }
+        LaunchedEffect(initialEdit?.listId) {
+            if (initialEdit != null && initialEdit.recipientUids.isNotEmpty()) {
+                val loaded = viewModel.loadUsersByIds(initialEdit.recipientUids)
+                viewModel.setSelectedMembers(loaded)
+            }
+        }
+        AlertDialog(
+            onDismissRequest = {
+                showBroadcastDialog = false
+                editingBroadcast = null
+            },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (initialEdit == null) {
+                        if (strings.isEnglish) "New Broadcast List" else "إنشاء قائمة بث جديدة"
+                    } else {
+                        if (strings.isEnglish) "Edit Broadcast List" else "تعديل قائمة البث"
+                    },
+                    color = palette.textPrimary
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = listName,
+                        onValueChange = { listName = it },
+                        label = { Text(if (strings.isEnglish) "List Name" else "اسم قائمة البث") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = searchBQuery,
+                        onValueChange = {
+                            searchBQuery = it
+                            viewModel.searchUsers(it)
+                        },
+                        label = { Text(strings.searchContactsPlaceholder) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (selectedMembers.isNotEmpty()) {
+                        Text(
+                            text = selectedMembers.joinToString(", ") { it.displayName.ifBlank { "@${it.publicId}" } },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = palette.emerald
+                        )
+                    }
+                    LazyColumn(modifier = Modifier.heightIn(max = 180.dp)) {
+                        val candidates = (selectedMembers + searched).distinctBy { it.uid }
+                        items(candidates, key = { "bl_${it.uid}" }) { user ->
+                            val isSelected = selectedMembers.any { it.uid == user.uid }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { viewModel.toggleMemberSelection(user) }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                WesalNameWithBadge(
+                                    name = user.displayName.ifBlank { "@${user.publicId}" },
+                                    isVerified = user.isVerified,
+                                    verificationType = user.verificationType,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Checkbox(checked = isSelected, onCheckedChange = { viewModel.toggleMemberSelection(user) })
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val uids = selectedMembers.map { it.uid }
+                        if (initialEdit == null) {
+                            viewModel.createBroadcastList(listName, uids) {
+                                showBroadcastDialog = false
+                            }
+                        } else {
+                            viewModel.updateBroadcastList(initialEdit.listId, listName, uids) {
+                                showBroadcastDialog = false
+                                editingBroadcast = null
+                            }
+                        }
+                    },
+                    enabled = !isCreating && listName.isNotBlank() && selectedMembers.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                ) {
+                    Text(if (isCreating) strings.loading else strings.save)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showBroadcastDialog = false
+                    editingBroadcast = null
+                }) { Text(strings.cancel) }
+            }
+        )
+    }
+
+    sendingBroadcastTarget?.let { targetList ->
+        var msgText by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { if (!isSendingBroadcast) sendingBroadcastTarget = null },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = "${if (strings.isEnglish) "Broadcast to" else "إرسال إلى"}: ${targetList.name}",
+                    color = palette.textPrimary
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Each of the ${targetList.recipientUids.size} recipients will receive a separate direct chat message."
+                        } else {
+                            "سيصل لكل مستلم (${targetList.recipientUids.size}) رسالة خاصة منفصلة في محادثته معك."
+                        },
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    OutlinedTextField(
+                        value = msgText,
+                        onValueChange = { msgText = it },
+                        label = { Text(if (strings.isEnglish) "Message" else "نص الرسالة") },
+                        minLines = 3,
+                        maxLines = 6,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.sendBroadcastToList(targetList, msgText)
+                        sendingBroadcastTarget = null
+                    },
+                    enabled = msgText.isNotBlank() && !isSendingBroadcast,
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                ) {
+                    Text(strings.send)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { sendingBroadcastTarget = null }) { Text(strings.cancel) }
             }
         )
     }

@@ -85,11 +85,65 @@ enum class WesalPersonalAccentPreset(
     CYAN_AURORA("CYAN_AURORA", "أورورا سماوي", "Cyan Aurora", 0xFF06B6D4L, 0xFF69F0AEL),
     INDIGO_NEBULA("INDIGO_NEBULA", "نيلي فضائي", "Indigo Nebula", 0xFF6366F1L, 0xFF38BDF8L),
     COPPER_BRONZE("COPPER_BRONZE", "برونزي فاخر", "Luxury Bronze", 0xFFB45309L, 0xFFFBBF24L),
-    PLATINUM_STEEL("PLATINUM_STEEL", "بلاتيني عصري", "Platinum", 0xFF64748BL, 0xFF94A3B8L);
+    PLATINUM_STEEL("PLATINUM_STEEL", "بلاتيني عصري", "Platinum", 0xFF64748BL, 0xFF94A3B8L),
+    NEON_LIME("NEON_LIME", "ليموني مشع", "Neon Lime", 0xFF65A30DL, 0xFFA3E635L),
+    CORAL_REEF("CORAL_REEF", "مرجاني ساطع", "Coral Reef", 0xFFF97316L, 0xFFFF7A7AL),
+    DEEP_TEAL("DEEP_TEAL", "فيروزي عميق", "Deep Teal", 0xFF0D9488L, 0xFF2DD4BFL),
+    ORCHID_GLOW("ORCHID_GLOW", "أوركيد مضيء", "Orchid Glow", 0xFFC026D3L, 0xFFE879F9L),
+    COBALT_STORM("COBALT_STORM", "كوبالت ملكي", "Cobalt Storm", 0xFF1D4ED8L, 0xFF60A5FAL),
+    GARNET_WINE("GARNET_WINE", "نبيتي داكن", "Garnet Wine", 0xFFBE123CL, 0xFFFDA4AFL),
+    JADE_FOREST("JADE_FOREST", "يشم طبيعي", "Jade Forest", 0xFF059669L, 0xFF34D399L),
+    SOLAR_FLARE("SOLAR_FLARE", "شمسي ذهبي", "Solar Flare", 0xFFEA580CL, 0xFFFACC15L),
+    AQUA_MARINE("AQUA_MARINE", "أكوا بحري", "Aquamarine", 0xFF0891B2L, 0xFF22D3EEL),
+    MAGENTA_PULSE("MAGENTA_PULSE", "ماجنتا نابض", "Magenta Pulse", 0xFFDB2777L, 0xFFF9A8D4L),
+    AMETHYST_ROYAL("AMETHYST_ROYAL", "جمشت ملكي", "Royal Amethyst", 0xFF7C3AEDL, 0xFFC4B5FDL),
+    TURQUOISE_GOLD("TURQUOISE_GOLD", "تركواز وذهب", "Turquoise Gold", 0xFF00B8D4L, 0xFFFFD54FL);
 
     companion object {
         fun fromKey(key: String?): WesalPersonalAccentPreset =
             entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: DEFAULT
+    }
+}
+
+enum class WesalNameplateColorPreset(
+    val key: String,
+    val labelAr: String,
+    val labelEn: String,
+    val edgeHex: Long,
+    val midHex: Long,
+    val centerHex: Long,
+    val borderAccentHex: Long
+) {
+    CRIMSON("CRIMSON", "أحمر ملكي", "Royal Crimson", 0xFF4A040EL, 0xFFD50026L, 0xFF7B0719L, 0xFFFFD54FL),
+    ROYAL_BLUE("ROYAL_BLUE", "أزرق ملكي", "Royal Blue", 0xFF071A40L, 0xFF1D4ED8L, 0xFF0F2D6BL, 0xFF60A5FAL),
+    EMERALD("EMERALD", "زمردي وصال", "WESAL Emerald", 0xFF03281AL, 0xFF00A854L, 0xFF064E3BL, 0xFF69F0AEL),
+    GOLD_ONYX("GOLD_ONYX", "ذهبي وأونيكس", "Gold Onyx", 0xFF261A03L, 0xFFB45309L, 0xFF452C05L, 0xFFFFE082L),
+    PURPLE_MAJESTY("PURPLE_MAJESTY", "بنفسجي ملكي", "Purple Majesty", 0xFF24063DL, 0xFF7E22CEL, 0xFF3E0B69L, 0xFFE879F9L),
+    CYAN_NEON("CYAN_NEON", "سماوي نيون", "Cyan Neon", 0xFF042430L, 0xFF0891B2L, 0xFF0B3F52L, 0xFF00E5FFL),
+    ROSE_VELVET("ROSE_VELVET", "وردي مخملي", "Rose Velvet", 0xFF420624L, 0xFFDB2777L, 0xFF6D0B3CL, 0xFFF9A8D4L),
+    ORANGE_FLAME("ORANGE_FLAME", "ناري برتقالي", "Orange Flame", 0xFF431407L, 0xFFEA580CL, 0xFF7C2D12L, 0xFFFDBA74L),
+    TEAL_ABYSS("TEAL_ABYSS", "فيروزي غامق", "Teal Abyss", 0xFF042624L, 0xFF0D9488L, 0xFF0E4742L, 0xFF5EEAD4L),
+    INDIGO_NIGHT("INDIGO_NIGHT", "نيلي ليلي", "Indigo Night", 0xFF121042L, 0xFF4338CAL, 0xFF1E1B70L, 0xFFA5B4FCL),
+    RUBY_DARK("RUBY_DARK", "ياقوت داكن", "Dark Ruby", 0xFF3D0318L, 0xFFE11D48L, 0xFF69072BL, 0xFFFDA4AFL),
+    MINT_DARK("MINT_DARK", "نعناع زمردي", "Emerald Mint", 0xFF032B21L, 0xFF10B981L, 0xFF064E3EL, 0xFFA7F3D0L),
+    MAGENTA_ROYAL("MAGENTA_ROYAL", "أرجواني فاخر", "Royal Magenta", 0xFF3D0539L, 0xFFC026D3L, 0xFF670A60L, 0xFFF0ABACL),
+    SAPPHIRE("SAPPHIRE", "سافاير بحري", "Deep Sapphire", 0xFF081B3DL, 0xFF0284C7L, 0xFF0C346EL, 0xFF7DD3FCL),
+    AMBER_BRONZE("AMBER_BRONZE", "عنبر برونزي", "Amber Bronze", 0xFF331B04L, 0xFFD97706L, 0xFF5C3108L, 0xFFFDE68AL),
+    SILVER_SLATE("SILVER_SLATE", "فضي أردوازي", "Silver Slate", 0xFF0F172AL, 0xFF475569L, 0xFF1E293BL, 0xFFE2E8F0L),
+    TURQUOISE("TURQUOISE", "تركواز ساطع", "Bright Turquoise", 0xFF042A36L, 0xFF00ACC1L, 0xFF094C61L, 0xFF84FFFFL),
+    LIME_FOREST("LIME_FOREST", "ليموني غابي", "Forest Lime", 0xFF182E04L, 0xFF65A30DL, 0xFF2C5208L, 0xFFBEF264L),
+    CORAL_SUNSET("CORAL_SUNSET", "غروب مرجاني", "Coral Sunset", 0xFF47120CL, 0xFFDC2626L, 0xFF7F1D1DL, 0xFFFCA5A5L),
+    VIOLET_PLUM("VIOLET_PLUM", "برقوقي داكن", "Violet Plum", 0xFF210738L, 0xFF6D28D9L, 0xFF3B0E63L, 0xFFC4B5FDL),
+    OBSIDIAN("OBSIDIAN", "أوبسيديان أسود", "Black Obsidian", 0xFF05070AL, 0xFF1F2937L, 0xFF111827L, 0xFF00E5FFL),
+    PEARL_BLUE("PEARL_BLUE", "أزرق لؤلؤي", "Pearl Blue", 0xFF0A2442L, 0xFF2563EBL, 0xFF143C6EL, 0xFFBFDBFEL),
+    COPPER("COPPER", "نحاسي لامع", "Polished Copper", 0xFF361206L, 0xFFC2410CL, 0xFF5C210BL, 0xFFFED7AAL),
+    JADE("JADE", "يشم ملكي", "Royal Jade", 0xFF042619L, 0xFF059669L, 0xFF09452EL, 0xFF6EE7B7L),
+    MIDNIGHT_SKY("MIDNIGHT_SKY", "سماء منتصف الليل", "Midnight Sky", 0xFF091229L, 0xFF3B82F6L, 0xFF12234DL, 0xFF93C5FDL),
+    CHARCOAL_GOLD("CHARCOAL_GOLD", "فحمي مذهب", "Charcoal Gold", 0xFF141418L, 0xFF27272FL, 0xFF1D1D24L, 0xFFFFD54FL);
+
+    companion object {
+        fun fromKey(key: String?): WesalNameplateColorPreset =
+            entries.firstOrNull { it.key.equals(key, ignoreCase = true) } ?: CRIMSON
     }
 }
 

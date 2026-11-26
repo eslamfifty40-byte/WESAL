@@ -128,7 +128,19 @@ object WesalAppearancePresets {
         AppearanceColorOption("وردي نيون", "Neon Rose", 0xFFEC4899L),
         AppearanceColorOption("سماوي عميق", "Deep Cyan", 0xFF06B6D4L),
         AppearanceColorOption("نعناعي", "Fresh Mint", 0xFF00E5A3L),
-        AppearanceColorOption("نيلي", "Indigo Glow", 0xFF6366F1L)
+        AppearanceColorOption("نيلي", "Indigo Glow", 0xFF6366F1L),
+        AppearanceColorOption("قرمزي ساطع", "Crimson Bright", 0xFFDC2626L),
+        AppearanceColorOption("أزرق كوبالت", "Cobalt Blue", 0xFF2563EBL),
+        AppearanceColorOption("أوركيد", "Orchid", 0xFFC026D3L),
+        AppearanceColorOption("تيال غامق", "Deep Teal", 0xFF0D9488L),
+        AppearanceColorOption("ليموني مشع", "Neon Lime", 0xFF65A30DL),
+        AppearanceColorOption("مرجاني", "Coral", 0xFFF97316L),
+        AppearanceColorOption("يشم فاخر", "Royal Jade", 0xFF059669L),
+        AppearanceColorOption("نبيتي", "Garnet", 0xFFBE123CL),
+        AppearanceColorOption("أكوا", "Aqua", 0xFF0891B2L),
+        AppearanceColorOption("جمشت", "Amethyst", 0xFF7C3AEDL),
+        AppearanceColorOption("برونزي", "Bronze", 0xFFB45309L),
+        AppearanceColorOption("بلاتيني", "Platinum", 0xFF64748BL)
     )
 
     val secondaryAccentPresets: List<AppearanceColorOption> = listOf(
@@ -143,7 +155,19 @@ object WesalAppearancePresets {
         AppearanceColorOption("وردي", "Pink", 0xFFF472B6L),
         AppearanceColorOption("بلاتيني", "Platinum", 0xFFE2E8F0L),
         AppearanceColorOption("أزرق ملكي", "Royal Blue", 0xFF3B82F6L),
-        AppearanceColorOption("برونزي", "Bronze", 0xFFD97706L)
+        AppearanceColorOption("برونزي", "Bronze", 0xFFD97706L),
+        AppearanceColorOption("أبيض ثلجي", "Ice Cyan", 0xFF67E8F9L),
+        AppearanceColorOption("وردي فاتح", "Soft Rose", 0xFFFDA4AFL),
+        AppearanceColorOption("ماجنتا", "Magenta", 0xFFE879F9L),
+        AppearanceColorOption("نعناعي ناعم", "Soft Mint", 0xFF6EE7B7L),
+        AppearanceColorOption("أصفر شمسي", "Solar Yellow", 0xFFFACC15L),
+        AppearanceColorOption("برتقالي فاتح", "Soft Orange", 0xFFFB923CL),
+        AppearanceColorOption("أزرق نيلي", "Periwinkle", 0xFF818CF8L),
+        AppearanceColorOption("سماوي فاتح", "Aqua Glow", 0xFF22D3EEL),
+        AppearanceColorOption("كريمي ذهبي", "Cream Gold", 0xFFFDE68AL),
+        AppearanceColorOption("أخضر ناعم", "Mint Leaf", 0xFF34D399L),
+        AppearanceColorOption("ياقوتي فاتح", "Light Ruby", 0xFFFB7185L),
+        AppearanceColorOption("رمادي فضي", "Silver", 0xFF94A3B8L)
     )
 
     val backgroundPresets: List<AppearanceColorOption> = listOf(
@@ -153,12 +177,24 @@ object WesalAppearancePresets {
         AppearanceColorOption("رمادي فحمي", "Charcoal", 0xFF111827L),
         AppearanceColorOption("زمردي ليلي", "Dark Emerald", 0xFF04140FL),
         AppearanceColorOption("أرجواني ليلي", "Dark Plum", 0xFF12081CL),
+        AppearanceColorOption("عنابي ليلي", "Dark Bordeaux", 0xFF14060AL),
+        AppearanceColorOption("محيط ليلي", "Deep Ocean", 0xFF041014L),
+        AppearanceColorOption("عقيق ليلي", "Dark Onyx", 0xFF0E0A05L),
+        AppearanceColorOption("نيلي ليلي", "Indigo Night", 0xFF090B1FL),
+        AppearanceColorOption("رمادي مخملي", "Velvet Gray", 0xFF0A0A0EL),
+        AppearanceColorOption("غابة داكنة", "Forest Black", 0xFF030F09L),
         AppearanceColorOption("أبيض نقي", "Pure White", 0xFFFFFFFFL),
         AppearanceColorOption("ثلجي ناعم", "Ice Mist", 0xFFF3F6F8L),
         AppearanceColorOption("كريمي دافئ", "Warm Cream", 0xFFFAF7F2L),
         AppearanceColorOption("أزرق ثلجي", "Frost Blue", 0xFFF0F7FFL),
         AppearanceColorOption("نعناعي فاتح", "Mint Tint", 0xFFF0FDF4L),
-        AppearanceColorOption("رمادي أنيق", "Slate Mist", 0xFFF1F5F9L)
+        AppearanceColorOption("رمادي أنيق", "Slate Mist", 0xFFF1F5F9L),
+        AppearanceColorOption("وردي خفيف", "Blush Tint", 0xFFFFF1F2L),
+        AppearanceColorOption("لافندر خفيف", "Lavender Mist", 0xFFF5F3FFL),
+        AppearanceColorOption("فيروزي خفيف", "Cyan Mist", 0xFFECFEFFL),
+        AppearanceColorOption("عنبري خفيف", "Amber Tint", 0xFFFFFBEBL),
+        AppearanceColorOption("لؤلؤي فاتح", "Pearl Light", 0xFFF8FAFCL),
+        AppearanceColorOption("سماوي باهت", "Sky Pale", 0xFFE0F2FEL)
     )
 
     val surfacePresets: List<AppearanceColorOption> = listOf(
@@ -168,12 +204,24 @@ object WesalAppearancePresets {
         AppearanceColorOption("كحلي بارز", "Navy Card", 0xFF0F172AL),
         AppearanceColorOption("غابة داكنة", "Forest Card", 0xFF082018L),
         AppearanceColorOption("فحمي مخملي", "Velvet Gray", 0xFF18181BL),
+        AppearanceColorOption("عنابي داكن", "Bordeaux Card", 0xFF210B12L),
+        AppearanceColorOption("بنفسجي داكن", "Plum Card", 0xFF1A102EL),
+        AppearanceColorOption("محيطي داكن", "Ocean Card", 0xFF0A1D24L),
+        AppearanceColorOption("ذهبي داكن", "Onyx Card", 0xFF1C160BL),
+        AppearanceColorOption("نيلي داكن", "Indigo Card", 0xFF131632L),
+        AppearanceColorOption("جرانيت داكن", "Granite Card", 0xFF1C2026L),
         AppearanceColorOption("أبيض بطاقات", "White Card", 0xFFFFFFFFL),
         AppearanceColorOption("لؤلؤي فاتح", "Pearl Card", 0xFFF8FAFCL),
         AppearanceColorOption("سماوي فاتح", "Sky Card", 0xFFEFF6FFL),
         AppearanceColorOption("زمردي فاتح", "Mint Card", 0xFFECFDF5L),
         AppearanceColorOption("رملي ناعم", "Sand Card", 0xFFFEFCE8L),
-        AppearanceColorOption("بنفسجي فاتح", "Lavender Card", 0xFFF5F3FFL)
+        AppearanceColorOption("بنفسجي فاتح", "Lavender Card", 0xFFF5F3FFL),
+        AppearanceColorOption("وردي فاتح", "Rose Card", 0xFFFFE4E6L),
+        AppearanceColorOption("أكوا فاتح", "Aqua Card", 0xFFCFFAFEL),
+        AppearanceColorOption("ثلجي رمادي", "Cool Card", 0xFFE2E8F0L),
+        AppearanceColorOption("كريمي فاتح", "Ivory Card", 0xFFFEF3C7L),
+        AppearanceColorOption("أخضر باهت", "Sage Card", 0xFFDCFCE7L),
+        AppearanceColorOption("أزرق فاتح", "Ice Card", 0xFFE0ECFFL)
     )
 
     val textPrimaryPresets: List<AppearanceColorOption> = listOf(
@@ -204,7 +252,17 @@ object WesalAppearancePresets {
         AppearanceColorOption("مرجاني", "Coral", 0xFFFF5252L),
         AppearanceColorOption("سماوي", "Sky Blue", 0xFF38BDF8L),
         AppearanceColorOption("زمردي نيون", "Neon Mint", 0xFF00E5A3L),
-        AppearanceColorOption("ياقوتي", "Crimson", 0xFFE11D48L)
+        AppearanceColorOption("ياقوتي", "Crimson", 0xFFE11D48L),
+        AppearanceColorOption("ليموني", "Lime", 0xFF84CC16L),
+        AppearanceColorOption("نيلي", "Indigo", 0xFF6366F1L),
+        AppearanceColorOption("أكوا", "Aqua", 0xFF06B6D4L),
+        AppearanceColorOption("تيال", "Teal", 0xFF14B8A6L),
+        AppearanceColorOption("أوركيد", "Orchid", 0xFFD946EFL),
+        AppearanceColorOption("برونزي", "Bronze", 0xFFD97706L),
+        AppearanceColorOption("كوبالت", "Cobalt", 0xFF2563EBL),
+        AppearanceColorOption("فضي", "Silver", 0xFFCBD5E1L),
+        AppearanceColorOption("يشم", "Jade", 0xFF10B981L),
+        AppearanceColorOption("نبيتي", "Garnet", 0xFFBE123CL)
     )
 }
 

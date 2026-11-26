@@ -64,6 +64,7 @@ import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.crop.CropActivity
 import com.wesal.messenger.domain.model.DisappearingTimer
+import com.wesal.messenger.domain.model.MessageStatus
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.WesalMessage
 import com.wesal.messenger.media.CameraCaptureScreen
@@ -722,6 +723,8 @@ fun ChatDetailScreen(
                                 val geo = Uri.parse("geo:$lat,$lng?q=$lat,$lng(${Uri.encode(msg.locationAddress)})")
                                 runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, geo)) }
                             },
+                            onRetryFailed = { viewModel.retryFailedMessage(msg) },
+                            onDismissFailed = { viewModel.dismissFailedMessage(msg.messageId) },
                             onLongClick = { selectedMessageForActions = msg }
                         )
                     }
@@ -1808,6 +1811,8 @@ private fun MessageBubble(
     onSaveAudio: () -> Unit,
     onOpenDocument: () -> Unit,
     onOpenLocation: () -> Unit,
+    onRetryFailed: () -> Unit = {},
+    onDismissFailed: () -> Unit = {},
     onLongClick: () -> Unit
 ) {
     val palette = WesalColors.current
@@ -2227,6 +2232,27 @@ private fun MessageBubble(
                     )
                     if (isMine) {
                         MessageStatusTick(status = message.status)
+                    }
+                }
+                if (isMine && message.status == MessageStatus.FAILED) {
+                    Row(
+                        modifier = Modifier.align(Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (strings.isEnglish) "Failed • Retry" else "فشل الإرسال • إعادة المحاولة",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.error,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable { onRetryFailed() }
+                        )
+                        Text(
+                            text = if (strings.isEnglish) "Remove" else "حذف",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textMuted,
+                            modifier = Modifier.clickable { onDismissFailed() }
+                        )
                     }
                 }
             }

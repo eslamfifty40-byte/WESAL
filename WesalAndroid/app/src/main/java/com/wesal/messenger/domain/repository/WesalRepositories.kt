@@ -199,6 +199,21 @@ interface UserRepository {
     suspend fun createAppEvent(title: String, description: String, locationName: String, eventTime: Long): Result<AppEventItem>
     suspend fun deleteAppEvent(eventId: String): Result<Unit>
     suspend fun rsvpAppEvent(eventId: String, join: Boolean): Result<Unit>
+
+    // Self customization (nameplate color + library icon + group privacy) & Support Tickets
+    suspend fun updateSelfCustomization(
+        nameplateColor: String? = null,
+        iconId: String? = null,
+        iconUrl: String? = null,
+        photoRemovedBg: Boolean? = null
+    ): Result<Unit>
+    suspend fun updateGroupAddPrivacy(privacy: GroupAddPrivacy): Result<Unit>
+    suspend fun submitSupportTicket(subject: String, message: String, attachmentUri: Uri? = null): Result<String>
+    fun observeMySupportTickets(): Flow<List<SupportTicket>>
+    fun observeAllSupportTickets(): Flow<List<SupportTicket>>
+    fun observeSupportTicketMessages(ticketId: String): Flow<List<SupportTicketMessage>>
+    suspend fun replySupportTicket(ticketId: String, text: String, updateStatus: String? = null): Result<Unit>
+    suspend fun updateSupportTicketStatus(ticketId: String, status: String): Result<Unit>
 }
 
 interface ChatRepository {
@@ -247,9 +262,16 @@ interface ChatRepository {
     suspend fun deleteMessageForEveryone(chatId: String, messageId: String): Result<Unit>
     suspend fun togglePinChat(chatId: String, pinned: Boolean): Result<Unit>
     suspend fun toggleMuteChat(chatId: String, muted: Boolean): Result<Unit>
+    suspend fun toggleArchiveChat(chatId: String, archived: Boolean): Result<Unit>
     suspend fun deleteChat(chatId: String, forEveryone: Boolean = false): Result<Unit>
     suspend fun clearChatMessagesForMe(chatId: String): Result<Unit>
     suspend fun decryptMediaToCache(message: WesalMessage): Result<java.io.File>
+
+    // Separate Broadcast Lists (distinct from Groups; sender-only)
+    fun observeBroadcastLists(): Flow<List<BroadcastList>>
+    suspend fun createBroadcastList(name: String, recipientUids: List<String>): Result<BroadcastList>
+    suspend fun updateBroadcastList(listId: String, name: String, recipientUids: List<String>): Result<Unit>
+    suspend fun deleteBroadcastList(listId: String): Result<Unit>
 }
 
 interface GroupRepository {

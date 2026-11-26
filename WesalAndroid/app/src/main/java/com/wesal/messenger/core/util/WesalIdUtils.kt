@@ -70,4 +70,47 @@ object WesalIdUtils {
         val suffix = (1000..9999).random()
         return "wesal_${prefix}_$suffix"
     }
+
+    fun normalizeSearchText(raw: String): String {
+        val digitsFixed = normalizeDigits(raw.trim()).lowercase()
+        val sb = StringBuilder(digitsFixed.length)
+        var lastWasSpace = false
+        for (ch in digitsFixed) {
+            when {
+                ch in '\u064B'..'\u065F' || ch == '\u0670' || ch == '\u0640' -> Unit
+                ch == 'أ' || ch == 'إ' || ch == 'آ' || ch == 'ٱ' -> {
+                    sb.append('ا')
+                    lastWasSpace = false
+                }
+                ch == 'ى' -> {
+                    sb.append('ي')
+                    lastWasSpace = false
+                }
+                ch == 'ة' -> {
+                    sb.append('ه')
+                    lastWasSpace = false
+                }
+                ch == 'ؤ' -> {
+                    sb.append('و')
+                    lastWasSpace = false
+                }
+                ch == 'ئ' -> {
+                    sb.append('ي')
+                    lastWasSpace = false
+                }
+                ch.isWhitespace() -> {
+                    if (!lastWasSpace && sb.isNotEmpty()) {
+                        sb.append(' ')
+                        lastWasSpace = true
+                    }
+                }
+                else -> {
+                    sb.append(ch)
+                    lastWasSpace = false
+                }
+            }
+        }
+        return sb.toString().trim()
+    }
 }
+

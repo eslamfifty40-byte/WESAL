@@ -453,7 +453,7 @@ object WesalFrameLibrary {
         check(snap.exists()) { "لم يتم حفظ الإطار على Firebase" }
     }
 
-    /** Makes the image transparent and stores compact Base64 data URI directly in Firestore (no Storage dependency). */
+    /** Makes the image transparent and uploads to Firebase Storage, falling back cleanly to compact Base64 if Storage is unavailable. */
     private suspend fun processAndStore(ctx: Context, uri: Uri, name: String): Pair<String, Long> = withContext(Dispatchers.IO) {
         val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 512)
             ?: error("تعذر قراءة الصورة")
@@ -462,6 +462,16 @@ object WesalFrameLibrary {
         val out = ByteArrayOutputStream()
         clean.compress(Bitmap.CompressFormat.PNG, 100, out)
         var bytes = out.toByteArray()
+
+        val storageUrl = com.wesal.messenger.data.repository.uploadRawBytesToStorage(
+            storagePath = "frame_library/${name}.png",
+            bytes = bytes,
+            mimeType = "image/png"
+        ).getOrNull()
+        if (!storageUrl.isNullOrBlank()) {
+            return@withContext storageUrl to glow
+        }
+
         var side = 460
         var bm = clean
         while (bytes.size > 560_000 && side >= 180) {
@@ -486,6 +496,14 @@ object WesalFrameLibrary {
             ?: error("تعذر قراءة ملف GIF")
         val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 256)
         val glow = bmp?.let { FrameImageProcessor.dominantGlow(it) } ?: 0xFF00D9E8L
+        val storageUrl = com.wesal.messenger.data.repository.uploadRawBytesToStorage(
+            storagePath = "frame_library/${name}.gif",
+            bytes = bytes,
+            mimeType = "image/gif"
+        ).getOrNull()
+        if (!storageUrl.isNullOrBlank()) {
+            return@withContext storageUrl to glow
+        }
         check(bytes.size <= 760_000) { "حجم الصورة المتحركة كبير جدًا للتخزين داخل Firestore" }
         ("data:image/gif;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)) to glow
     }

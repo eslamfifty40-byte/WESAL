@@ -24,6 +24,7 @@ import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.groups.GroupsScreen
 import com.wesal.messenger.presentation.components.OfflineBanner
 import com.wesal.messenger.settings.SettingsScreen
+import com.wesal.messenger.settings.WesalSupportTicketsDialog
 import com.wesal.messenger.stories.StoriesScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -83,6 +84,7 @@ fun HomeScreen(
 
     var selectedTab by rememberSaveable { mutableStateOf(HomeTab.CHATS) }
     var menuOpen by remember { mutableStateOf(false) }
+    var showSupportDialog by remember { mutableStateOf(false) }
     val ctxHome = LocalContext.current
 
     LaunchedEffect(openHiddenChatsTrigger) {
@@ -147,6 +149,10 @@ fun HomeScreen(
                                         onClick = { menuOpen = false; onOpenAdminVerification() }
                                     )
                                 }
+                                DropdownMenuItem(
+                                    text = { Text(strings.supportHelpTitle) },
+                                    onClick = { menuOpen = false; showSupportDialog = true }
+                                )
                                 DropdownMenuItem(
                                     text = { Text(strings.settings) },
                                     onClick = { menuOpen = false; selectedTab = HomeTab.SETTINGS }
@@ -213,5 +219,11 @@ fun HomeScreen(
                 )
             }
         }
+    }
+
+    if (showSupportDialog) {
+        WesalSupportTicketsDialog(
+            onDismiss = { showSupportDialog = false }
+        )
     }
 }

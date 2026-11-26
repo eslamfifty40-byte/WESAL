@@ -235,30 +235,14 @@ class StoryRepositoryImpl @Inject constructor(
                 val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
                 val storyId = UUID.randomUUID().toString()
 
-                val mediaUrl = if (isVideo) {
-                    trySend(StoryPublishEvent.Progress(0.45f))
-                    val rawBytes = withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                val ext = if (isVideo) "mp4" else "jpg"
+                val mediaUrl = uploadFileToFirebaseStorage(
+                    storagePath = "stories_media/$uid/$storyId.$ext",
+                    uri = uri,
+                    onProgress = { frac ->
+                        trySend(StoryPublishEvent.Progress((0.15f + frac * 0.77f).coerceIn(0.15f, 0.92f)))
                     }
-                    if (rawBytes != null && rawBytes.isNotEmpty() && rawBytes.size <= 540_000) {
-                        "data:video/mp4;base64," + Base64.encodeToString(rawBytes, Base64.NO_WRAP)
-                    } else {
-                        throw IllegalStateException("حجم الفيديو يتجاوز الحد المباشر (540 KB) المتاح حالياً")
-                    }
-                } else {
-                    trySend(StoryPublishEvent.Progress(0.45f))
-                    withContext(Dispatchers.IO) {
-                        uriToBase64Smart(
-                            ctx = context,
-                            uri = uri,
-                            maxSide = 900,
-                            quality = 76,
-                            preserveAlphaIfPng = true
-                        )
-                    }.also {
-                        require(it.isNotBlank()) { "تعذر ضغط الصورة المحددة للحالة" }
-                    }
-                }
+                ).getOrThrow()
 
                 trySend(StoryPublishEvent.Progress(0.92f))
 
@@ -324,10 +308,13 @@ class StoryRepositoryImpl @Inject constructor(
                 val userSnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
                 val storyId = UUID.randomUUID().toString()
 
-                trySend(StoryPublishEvent.Progress(0.55f))
-                val mediaUrl = withContext(Dispatchers.IO) {
-                    uriToBase64Audio(context, audioUri, maxBytes = 520_000)
-                } ?: throw IllegalStateException("المقطع الصوتي طويل جداً للحفظ المباشر (الحد 520 KB)")
+                val mediaUrl = uploadFileToFirebaseStorage(
+                    storagePath = "stories_audio/$uid/$storyId.m4a",
+                    uri = audioUri,
+                    onProgress = { frac ->
+                        trySend(StoryPublishEvent.Progress((0.20f + frac * 0.72f).coerceIn(0.20f, 0.92f)))
+                    }
+                ).getOrThrow()
                 trySend(StoryPublishEvent.Progress(0.92f))
 
                 val now = System.currentTimeMillis()

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
@@ -30,6 +31,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalTheme
@@ -90,13 +92,22 @@ class CallActivity : AppCompatActivity() {
                 val palette = WesalColors.current
                 val strings = LocalWesalStrings.current
 
-                val permissions = rememberMultiplePermissionsState(
-                    if (isVideo) {
-                        listOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
-                    } else {
-                        listOf(Manifest.permission.RECORD_AUDIO)
+                val requestedPermissions = remember(isVideo) {
+                    buildList {
+                        add(Manifest.permission.RECORD_AUDIO)
+                        if (isVideo) add(Manifest.permission.CAMERA)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            add(Manifest.permission.BLUETOOTH_CONNECT)
+                        }
                     }
-                )
+                }
+                val permissions = rememberMultiplePermissionsState(requestedPermissions)
+                val coreMediaGranted = permissions.permissions
+                    .filter {
+                        it.permission == Manifest.permission.RECORD_AUDIO ||
+                            (isVideo && it.permission == Manifest.permission.CAMERA)
+                    }
+                    .all { it.status.isGranted }
 
                 var micMuted by remember { mutableStateOf(false) }
                 var cameraOff by remember { mutableStateOf(!isVideo) }
@@ -120,10 +131,10 @@ class CallActivity : AppCompatActivity() {
                 }
 
                 // Outgoing ringback tone ONLY after callee genuinely acknowledges ringing
-                LaunchedEffect(isIncoming, callStatusLabel, connState, permissions.allPermissionsGranted) {
+                LaunchedEffect(isIncoming, callStatusLabel, connState, coreMediaGranted) {
                     if (
                         !isIncoming &&
-                        permissions.allPermissionsGranted &&
+                        coreMediaGranted &&
                         callStatusLabel == strings.ringingCall &&
                         connState != PeerConnection.PeerConnectionState.CONNECTED
                     ) {
@@ -142,8 +153,8 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                LaunchedEffect(permissions.allPermissionsGranted) {
-                    if (!permissions.allPermissionsGranted) return@LaunchedEffect
+                LaunchedEffect(coreMediaGranted) {
+                    if (!coreMediaGranted) return@LaunchedEffect
 
                     ContextCompat.startForegroundService(
                         this@CallActivity,
@@ -268,7 +279,7 @@ class CallActivity : AppCompatActivity() {
                 }
 
                 Box(modifier = Modifier.fillMaxSize().background(palette.background)) {
-                    if (!permissions.allPermissionsGranted) {
+                    if (!coreMediaGranted) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -417,6 +428,7 @@ class CallActivity : AppCompatActivity() {
                         val (audioIcon, audioLabel) = when (audioRoute) {
                             CallAudioRoute.BLUETOOTH -> Icons.Default.BluetoothAudio to strings.bluetoothAudio
                             CallAudioRoute.SPEAKER -> Icons.Default.VolumeUp to strings.speakerAudio
+                            CallAudioRoute.WIRED_HEADSET -> Icons.Default.Headset to (if (strings.isEnglish) "Headset" else "سماعة سلكية")
                             CallAudioRoute.EARPIECE -> Icons.Default.Hearing to strings.earpieceAudio
                         }
                         CallControlBtn(

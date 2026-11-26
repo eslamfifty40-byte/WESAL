@@ -174,6 +174,8 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         neonEnabled = rawNeonEnabled,
         neonColor = rawNeonColor,
         neonGlowIntensity = (getDouble("neonGlowIntensity")?.toFloat()) ?: 0.7f,
+        nameplateColor = getString("nameplateColor").orEmpty().ifBlank { "CRIMSON" },
+        groupAddPrivacy = GroupAddPrivacy.fromRaw(getString("groupAddPrivacy")),
         facebookUrl = getString("facebookUrl").orEmpty(),
         instagramUrl = getString("instagramUrl").orEmpty(),
         businessHours = parseBusinessHours(get("businessHours")),
@@ -555,15 +557,18 @@ class UserRepositoryImpl @Inject constructor(
 
         // Only scan recent active pool if fast indexed lookups found fewer than 5 matches
         if (results.size < 5) {
+            val normalizedQueryText = WesalIdUtils.normalizeSearchText(trimmed)
             val poolSnap = getQueryCachedOrServer(
                 usersCollection
                     .orderBy("createdAt", Query.Direction.DESCENDING)
-                    .limit(100)
-            ) ?: getQueryCachedOrServer(usersCollection.limit(100))
+                    .limit(120)
+            ) ?: getQueryCachedOrServer(usersCollection.limit(120))
 
             poolSnap?.documents?.forEach { doc ->
                 val u = doc.toWesalUser()
-                val nameMatch = u.displayName.contains(trimmed, ignoreCase = true)
+                val normalizedName = WesalIdUtils.normalizeSearchText(u.displayName)
+                val nameMatch = u.displayName.contains(trimmed, ignoreCase = true) ||
+                    (normalizedQueryText.isNotBlank() && normalizedName.contains(normalizedQueryText))
                 val handleMatch = cleanHandle.length >= 2 && u.publicId.contains(cleanHandle, ignoreCase = true)
                 val idMatch = normalizedDigits.length >= 2 &&
                     normalizedDigits.all { it.isDigit() } &&
@@ -1653,14 +1658,17 @@ class UserRepositoryImpl @Inject constructor(
         if (uid == null) flowOf(emptyList())
         else callbackFlow {
             val reg = firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS)
-                .orderBy("createdAt", Query.Direction.DESCENDING)
-                .limit(200)
+                .limit(250)
                 .addSnapshotListener { snap, err ->
                     if (err != null) {
                         trySend(emptyList())
                         return@addSnapshotListener
                     }
-                    trySend(snap?.documents?.map { it.toSubscriptionRequest() }.orEmpty())
+                    val sorted = snap?.documents
+                        ?.map { it.toSubscriptionRequest() }
+                        .orEmpty()
+                        .sortedByDescending { it.createdAt }
+                    trySend(sorted)
                 }
             awaitClose { reg.remove() }
         }
@@ -3258,13 +3266,18 @@ class UserRepositoryImpl @Inject constructor(
         )
         require(collectionName in allowedCollections && logId.isNotBlank()) { "معرف سجل غير صالح" }
         val col = firestore.collection(collectionName)
-        runCatching { col.document(logId).delete().await() }
+        col.document(logId).delete().await()
         val byOp = runCatching { col.whereEqualTo("operationId", logId).get().await() }.getOrNull()
-        val matchingDocs = byOp?.documents.orEmpty().filter { it.id != logId }
+        val byLogId = runCatching { col.whereEqualTo("logId", logId).get().await() }.getOrNull()
+        val matchingDocs = (byOp?.documents.orEmpty() + byLogId?.documents.orEmpty())
+            .distinctBy { it.id }
+            .filter { it.id != logId }
         if (matchingDocs.isNotEmpty()) {
-            val batch = firestore.batch()
-            matchingDocs.forEach { batch.delete(it.reference) }
-            batch.commit().await()
+            matchingDocs.chunked(350).forEach { chunk ->
+                val batch = firestore.batch()
+                chunk.forEach { batch.delete(it.reference) }
+                batch.commit().await()
+            }
         }
     }
 
@@ -3479,6 +3492,263 @@ class UserRepositoryImpl @Inject constructor(
         val op = if (join) FieldValue.arrayUnion(myUid) else FieldValue.arrayRemove(myUid)
         firestore.collection(Constants.COLLECTION_EVENTS).document(eventId)
             .update("participantUids", op)
+            .await()
+    }
+
+    override suspend fun updateSelfCustomization(
+        nameplateColor: String?,
+        iconId: String?,
+        iconUrl: String?,
+        photoRemovedBg: Boolean?
+    ): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val updates = hashMapOf<String, Any>()
+        if (nameplateColor != null) {
+            updates["nameplateColor"] = nameplateColor.trim().ifBlank { "CRIMSON" }
+        }
+        if (iconId != null || iconUrl != null) {
+            val cleanId = iconId.orEmpty().trim()
+            val resolvedUrl = if (cleanId.isBlank() && iconUrl.isNullOrBlank()) {
+                ""
+            } else {
+                iconUrl.orEmpty().trim().ifBlank { WesalFrameLibrary.resolveIconUrl(cleanId) }
+            }
+            updates["iconId"] = cleanId
+            updates["iconUrl"] = resolvedUrl
+        }
+        if (photoRemovedBg != null) {
+            updates["photoRemovedBg"] = photoRemovedBg
+        }
+        if (updates.isNotEmpty()) {
+            firestore.collection(Constants.COLLECTION_USERS)
+                .document(uid)
+                .set(updates, SetOptions.merge())
+                .await()
+        }
+    }
+
+    override suspend fun updateGroupAddPrivacy(privacy: GroupAddPrivacy): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        firestore.collection(Constants.COLLECTION_USERS)
+            .document(uid)
+            .set(mapOf("groupAddPrivacy" to privacy.raw), SetOptions.merge())
+            .await()
+        prefs.setGroupsAddPermission(privacy.raw)
+    }
+
+    private fun DocumentSnapshot.toSupportTicket(): SupportTicket = SupportTicket(
+        ticketId = getString("ticketId") ?: id,
+        referenceNumber = getString("referenceNumber").orEmpty(),
+        userUid = getString("userUid").orEmpty(),
+        userName = getString("userName").orEmpty(),
+        userNumericId = getString("userNumericId").orEmpty(),
+        userPublicId = getString("userPublicId").orEmpty(),
+        subject = getString("subject").orEmpty(),
+        message = getString("message").orEmpty(),
+        attachmentUrl = getString("attachmentUrl").orEmpty(),
+        status = getString("status") ?: "OPEN",
+        lastReplyText = getString("lastReplyText").orEmpty(),
+        lastReplyByUid = getString("lastReplyByUid").orEmpty(),
+        lastReplyAt = getLong("lastReplyAt") ?: 0L,
+        createdAt = getLong("createdAt") ?: 0L,
+        updatedAt = getLong("updatedAt") ?: 0L
+    )
+
+    override suspend fun submitSupportTicket(
+        subject: String,
+        message: String,
+        attachmentUri: Uri?
+    ): Result<String> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanSubject = subject.trim()
+        val cleanMessage = message.trim()
+        require(cleanSubject.isNotBlank()) { "عنوان طلب الدعم مطلوب" }
+        require(cleanMessage.isNotBlank()) { "وصف المشكلة مطلوب" }
+
+        val me = getUserOnce(uid) ?: WesalUser(uid = uid)
+        val ticketId = "tkt_${uid}_${System.currentTimeMillis()}"
+        val refNum = "WS-${(100000..999999).random()}"
+        val attachmentUrl = if (attachmentUri != null) {
+            withContext(Dispatchers.IO) {
+                uploadProfileMediaToStorageOrSmallFallback(
+                    ctx = context,
+                    storagePath = "support_attachments/$ticketId/attach_${System.currentTimeMillis()}.jpg",
+                    uri = attachmentUri,
+                    maxSide = 1080,
+                    quality = 82
+                )
+            }
+        } else {
+            ""
+        }
+        val now = System.currentTimeMillis()
+        val ticketRef = firestore.collection(Constants.COLLECTION_SUPPORT_TICKETS).document(ticketId)
+        val ticketData = mapOf(
+            "ticketId" to ticketId,
+            "referenceNumber" to refNum,
+            "userUid" to uid,
+            "userName" to me.displayName.ifBlank { "@${me.publicId}" },
+            "userNumericId" to me.numericId,
+            "userPublicId" to me.publicId,
+            "subject" to cleanSubject,
+            "message" to cleanMessage,
+            "attachmentUrl" to attachmentUrl,
+            "status" to "OPEN",
+            "lastReplyText" to "",
+            "lastReplyByUid" to "",
+            "lastReplyAt" to 0L,
+            "createdAt" to now,
+            "updatedAt" to now
+        )
+        val initialMsgId = UUID.randomUUID().toString()
+        val initialMsg = mapOf(
+            "messageId" to initialMsgId,
+            "ticketId" to ticketId,
+            "senderUid" to uid,
+            "senderName" to me.displayName.ifBlank { "@${me.publicId}" },
+            "isFromAdmin" to false,
+            "text" to cleanMessage,
+            "createdAt" to now
+        )
+        ticketRef.set(ticketData).await()
+        ticketRef.collection(Constants.SUBCOLLECTION_MESSAGES).document(initialMsgId).set(initialMsg).await()
+        refNum
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeMySupportTickets(): Flow<List<SupportTicket>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(emptyList())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_SUPPORT_TICKETS)
+                .whereEqualTo("userUid", uid)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    trySend(
+                        snap?.documents?.map { it.toSupportTicket() }.orEmpty()
+                            .sortedByDescending { it.updatedAt.coerceAtLeast(it.createdAt) }
+                    )
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeAllSupportTickets(): Flow<List<SupportTicket>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(emptyList())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_SUPPORT_TICKETS)
+                .limit(250)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        trySend(emptyList())
+                        return@addSnapshotListener
+                    }
+                    trySend(
+                        snap?.documents?.map { it.toSupportTicket() }.orEmpty()
+                            .sortedByDescending { it.updatedAt.coerceAtLeast(it.createdAt) }
+                    )
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    override fun observeSupportTicketMessages(ticketId: String): Flow<List<SupportTicketMessage>> = callbackFlow {
+        if (ticketId.isBlank()) {
+            trySend(emptyList())
+            awaitClose { }
+            return@callbackFlow
+        }
+        val reg = firestore.collection(Constants.COLLECTION_SUPPORT_TICKETS)
+            .document(ticketId)
+            .collection(Constants.SUBCOLLECTION_MESSAGES)
+            .addSnapshotListener { snap, err ->
+                if (err != null) {
+                    trySend(emptyList())
+                    return@addSnapshotListener
+                }
+                val list = snap?.documents?.map { d ->
+                    SupportTicketMessage(
+                        messageId = d.getString("messageId") ?: d.id,
+                        ticketId = d.getString("ticketId") ?: ticketId,
+                        senderUid = d.getString("senderUid").orEmpty(),
+                        senderName = d.getString("senderName").orEmpty(),
+                        isFromAdmin = d.getBoolean("isFromAdmin") ?: false,
+                        text = d.getString("text").orEmpty(),
+                        createdAt = d.getLong("createdAt") ?: 0L
+                    )
+                }.orEmpty().sortedBy { it.createdAt }
+                trySend(list)
+            }
+        awaitClose { reg.remove() }
+    }
+
+    override suspend fun replySupportTicket(
+        ticketId: String,
+        text: String,
+        updateStatus: String?
+    ): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanText = text.trim()
+        require(ticketId.isNotBlank() && cleanText.isNotBlank()) { "نص الرد مطلوب" }
+        val ticketRef = firestore.collection(Constants.COLLECTION_SUPPORT_TICKETS).document(ticketId)
+        val ticketSnap = ticketRef.get().await()
+        require(ticketSnap.exists()) { "تذكرة الدعم غير موجودة" }
+        val perms = getCurrentAdminPermissions()
+        val isAdminReply = perms.hasAnyAccess()
+        val isOwner = ticketSnap.getString("userUid") == uid
+        require(isOwner || isAdminReply) { "غير مصرح بالرد على هذه التذكرة" }
+
+        val me = getUserOnce(uid)
+        val now = System.currentTimeMillis()
+        val msgId = UUID.randomUUID().toString()
+        val senderLabel = if (isAdminReply && !isOwner) {
+            "إدارة WESAL (${me?.numericId?.takeIf { it.isNotBlank() } ?: "10001"})"
+        } else {
+            me?.displayName?.ifBlank { "@${me.publicId}" } ?: "مستخدم WESAL"
+        }
+        ticketRef.collection(Constants.SUBCOLLECTION_MESSAGES).document(msgId).set(
+            mapOf(
+                "messageId" to msgId,
+                "ticketId" to ticketId,
+                "senderUid" to uid,
+                "senderName" to senderLabel,
+                "isFromAdmin" to (isAdminReply && !isOwner),
+                "text" to cleanText,
+                "createdAt" to now
+            )
+        ).await()
+
+        val nextStatus = updateStatus?.takeIf { it.isNotBlank() }
+            ?: if (isAdminReply && !isOwner) "IN_PROGRESS" else "OPEN"
+        ticketRef.set(
+            mapOf(
+                "status" to nextStatus,
+                "lastReplyText" to cleanText.take(140),
+                "lastReplyByUid" to uid,
+                "lastReplyAt" to now,
+                "updatedAt" to now
+            ),
+            SetOptions.merge()
+        ).await()
+    }
+
+    override suspend fun updateSupportTicketStatus(ticketId: String, status: String): Result<Unit> = runCatching {
+        val perms = getCurrentAdminPermissions()
+        require(perms.hasAnyAccess()) { "صلاحية الإدارة مطلوبة" }
+        val cleanStatus = status.trim().uppercase()
+        require(cleanStatus in setOf("OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED")) { "حالة التذكرة غير صالحة" }
+        firestore.collection(Constants.COLLECTION_SUPPORT_TICKETS)
+            .document(ticketId)
+            .set(
+                mapOf(
+                    "status" to cleanStatus,
+                    "updatedAt" to System.currentTimeMillis()
+                ),
+                SetOptions.merge()
+            )
             .await()
     }
 }

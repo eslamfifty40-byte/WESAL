@@ -67,14 +67,26 @@ jobs:
 
       - name: Compile Debug Kotlin
         working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          WESAL_TURN_URL: ${{ secrets.WESAL_TURN_URL }}
+          WESAL_TURN_USERNAME: ${{ secrets.WESAL_TURN_USERNAME }}
+          WESAL_TURN_CREDENTIAL: ${{ secrets.WESAL_TURN_CREDENTIAL }}
         run: ./gradlew :app:compileDebugKotlin --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
 
       - name: Run Debug Unit Tests
         working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          WESAL_TURN_URL: ${{ secrets.WESAL_TURN_URL }}
+          WESAL_TURN_USERNAME: ${{ secrets.WESAL_TURN_USERNAME }}
+          WESAL_TURN_CREDENTIAL: ${{ secrets.WESAL_TURN_CREDENTIAL }}
         run: ./gradlew :app:testDebugUnitTest --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
 
       - name: Build Debug APK
         working-directory: ${{ steps.project.outputs.dir }}
+        env:
+          WESAL_TURN_URL: ${{ secrets.WESAL_TURN_URL }}
+          WESAL_TURN_USERNAME: ${{ secrets.WESAL_TURN_USERNAME }}
+          WESAL_TURN_CREDENTIAL: ${{ secrets.WESAL_TURN_CREDENTIAL }}
         run: ./gradlew :app:assembleDebug --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
 
       - name: Verify generated APK & signing certificate

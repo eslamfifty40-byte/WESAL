@@ -2,11 +2,16 @@ package com.wesal.messenger.settings
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.media.Ringtone
+import android.media.RingtoneManager
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import coil.imageLoader
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -66,6 +71,7 @@ import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.AdminPermissions
 import com.wesal.messenger.domain.model.DeviceSession
+import com.wesal.messenger.domain.model.GroupAddPrivacy
 import com.wesal.messenger.domain.model.PrivacySettings
 import com.wesal.messenger.domain.model.PrivacyVisibility
 import com.wesal.messenger.domain.model.SavedWesalAccount
@@ -279,6 +285,18 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { prefs.setNotificationPreference(messages, groups, calls, stories) }
     }
 
+    fun setNotificationToneUri(uriString: String) {
+        viewModelScope.launch { prefs.setNotificationToneUri(uriString) }
+    }
+
+    fun setCallRingtoneUri(uriString: String) {
+        viewModelScope.launch { prefs.setCallRingtoneUri(uriString) }
+    }
+
+    fun updateGroupAddPrivacy(privacy: GroupAddPrivacy) {
+        viewModelScope.launch { userRepository.updateGroupAddPrivacy(privacy) }
+    }
+
     fun revokeSession(sessionId: String) {
         viewModelScope.launch { userRepository.revokeSession(sessionId) }
     }
@@ -309,13 +327,33 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { userRepository.unblockUser(uid) }
     }
 
+    private val clearableCacheDirNames = listOf(
+        "image_cache",
+        "decrypted_media",
+        "shared_qr",
+        "camera_captures",
+        "cropped_media",
+        "media_cache"
+    )
+
     fun getCacheSizeMb(): String {
-        val bytes = folderSize(context.cacheDir)
-        return String.format("%.2f MB", bytes / (1024f * 1024f))
+        val dirBytes = clearableCacheDirNames.sumOf { name ->
+            folderSize(File(context.cacheDir, name))
+        }
+        val tmpBytes = context.cacheDir.listFiles()
+            ?.filter { it.isFile && (it.name.endsWith(".tmp", true) || it.name.startsWith("wesal_", true)) }
+            ?.sumOf { it.length() } ?: 0L
+        return String.format("%.2f MB", (dirBytes + tmpBytes) / (1024f * 1024f))
     }
 
     fun clearMediaCache(isEn: Boolean) {
-        context.cacheDir.deleteRecursively()
+        clearableCacheDirNames.forEach { name ->
+            runCatching { File(context.cacheDir, name).deleteRecursively() }
+        }
+        context.cacheDir.listFiles()
+            ?.filter { it.isFile && (it.name.endsWith(".tmp", true) || it.name.startsWith("wesal_", true)) }
+            ?.forEach { runCatching { it.delete() } }
+        runCatching { context.imageLoader.memoryCache?.clear() }
         statusMessage.value = if (isEn) "Cache cleared" else "تم مسح ذاكرة التخزين المؤقتة"
     }
 
@@ -393,9 +431,38 @@ fun SettingsScreen(
     var showBlockedDialog by remember { mutableStateOf(false) }
     var showAccountsDialog by remember { mutableStateOf(false) }
     var showSubscriptionsDialog by remember { mutableStateOf(false) }
+    var showSupportDialog by remember { mutableStateOf(false) }
     var showSignOutConfirm by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
     var cacheText by remember { mutableStateOf(viewModel.getCacheSizeMb()) }
+
+    val notifTonePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK && res.data != null) {
+            val picked: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                res.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                res.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            }
+            viewModel.setNotificationToneUri(picked?.toString().orEmpty())
+        }
+    }
+
+    val callRingtonePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK && res.data != null) {
+            val picked: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                res.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                res.data?.getParcelableExtra(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            }
+            viewModel.setCallRingtoneUri(picked?.toString().orEmpty())
+        }
+    }
 
     fun fetchGoogleTokenAndRun(onToken: (String) -> Unit, onNoCredential: () -> Unit = {}) {
         if (activity == null) return
@@ -451,7 +518,7 @@ fun SettingsScreen(
             }
         }
 
-        // User Profile Card (Centered portrait on top, neon Name, ID & @username underneath)
+        // User Profile Card (Cover backdrop behind centered avatar, neon Name, ID & @username underneath)
         item {
             Surface(
                 color = palette.surface,
@@ -461,13 +528,36 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .clickable(onClick = onOpenProfile)
             ) {
-                Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
-                    IconButton(
-                        onClick = onOpenAccountShare,
-                        modifier = Modifier.align(Alignment.TopStart).size(34.dp)
-                    ) {
-                        Icon(Icons.Default.QrCode2, contentDescription = strings.shareAccountQr, tint = palette.iconTint)
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    val coverUrl = user?.coverUrl.orEmpty()
+                    if (coverUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = wesalImageModel(coverUrl),
+                            contentDescription = null,
+                            modifier = Modifier.matchParentSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            palette.surface.copy(alpha = 0.42f),
+                                            palette.surface.copy(alpha = 0.84f),
+                                            palette.surface.copy(alpha = 0.96f)
+                                        )
+                                    )
+                                )
+                        )
                     }
+                    Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
+                        IconButton(
+                            onClick = onOpenAccountShare,
+                            modifier = Modifier.align(Alignment.TopStart).size(34.dp)
+                        ) {
+                            Icon(Icons.Default.QrCode2, contentDescription = strings.shareAccountQr, tint = palette.iconTint)
+                        }
                     Icon(
                         imageVector = Icons.Default.Edit,
                         contentDescription = strings.edit,
@@ -573,6 +663,7 @@ fun SettingsScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
                     }
                 }
             }
@@ -849,6 +940,15 @@ fun SettingsScreen(
                 tint = palette.verifiedBlue
             ) {
                 showSubscriptionsDialog = true
+            }
+
+            SettingsRow(
+                icon = Icons.Default.Support,
+                title = strings.supportHelpTitle,
+                subtitle = strings.submitTicketTitle,
+                tint = palette.turquoise
+            ) {
+                showSupportDialog = true
             }
 
             // Sec 24/25 & User Binding Admin Rule: 10001 Support In-App Chat (replaces external WhatsApp developer link)
@@ -1295,16 +1395,47 @@ fun SettingsScreen(
 
     if (showPrivacyDialog && user != null) {
         var ps by remember { mutableStateOf(user!!.privacySettings) }
+        var groupAddPrivacy by remember { mutableStateOf(user!!.groupAddPrivacy) }
         AlertDialog(
             onDismissRequest = { showPrivacyDialog = false },
             containerColor = palette.surface,
             title = { Text(if (strings.isEnglish) "Privacy Settings" else "إعدادات الخصوصية", color = palette.textPrimary) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     PrivacyCycleRow(if (strings.isEnglish) "Last Seen" else "آخر ظهور", ps.lastSeenVisibility) { ps = ps.copy(lastSeenVisibility = it) }
                     PrivacyCycleRow(if (strings.isEnglish) "Online Status" else "حالة الاتصال", ps.onlineVisibility) { ps = ps.copy(onlineVisibility = it) }
                     PrivacyCycleRow(if (strings.isEnglish) "Profile Photo" else "صورة الحساب", ps.profilePhotoVisibility) { ps = ps.copy(profilePhotoVisibility = it) }
                     PrivacyCycleRow(if (strings.isEnglish) "Stories" else "الحالات", ps.storiesVisibility) { ps = ps.copy(storiesVisibility = it) }
+                    HorizontalDivider(color = palette.border)
+                    Text(
+                        text = strings.groupAddPrivacyTitle,
+                        color = palette.textPrimary,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        GroupAddPrivacy.entries.forEach { mode ->
+                            val label = when (mode) {
+                                GroupAddPrivacy.EVERYONE -> strings.whoCanAddEveryone
+                                GroupAddPrivacy.CONTACTS -> strings.whoCanAddContacts
+                                GroupAddPrivacy.NOBODY -> strings.whoCanAddNobody
+                            }
+                            FilterChip(
+                                selected = groupAddPrivacy == mode,
+                                onClick = { groupAddPrivacy = mode },
+                                label = { Text(label, maxLines = 1) }
+                            )
+                        }
+                    }
+                    HorizontalDivider(color = palette.border)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text(if (strings.isEnglish) "Read Receipts" else "إيصالات القراءة", color = palette.textPrimary)
                         Switch(checked = ps.readReceiptsEnabled, onCheckedChange = { ps = ps.copy(readReceiptsEnabled = it) })
@@ -1332,7 +1463,11 @@ fun SettingsScreen(
                 }
             },
             confirmButton = {
-                Button(onClick = { viewModel.updatePrivacy(ps); showPrivacyDialog = false }) { Text(strings.save) }
+                Button(onClick = {
+                    viewModel.updatePrivacy(ps)
+                    viewModel.updateGroupAddPrivacy(groupAddPrivacy)
+                    showPrivacyDialog = false
+                }) { Text(strings.save) }
             },
             dismissButton = {
                 TextButton(onClick = { showPrivacyDialog = false }) { Text(strings.close) }
@@ -1341,12 +1476,57 @@ fun SettingsScreen(
     }
 
     if (showNotifDialog) {
+        var activePreviewTone by remember { mutableStateOf<Ringtone?>(null) }
+        var previewKind by remember { mutableStateOf<String?>(null) }
+
+        fun stopActivePreview() {
+            runCatching { activePreviewTone?.stop() }
+            activePreviewTone = null
+            previewKind = null
+        }
+
+        fun togglePreview(kind: String, rawUri: String, defaultType: Int) {
+            if (previewKind == kind) {
+                stopActivePreview()
+                return
+            }
+            stopActivePreview()
+            val targetUri = rawUri.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                ?: RingtoneManager.getDefaultUri(defaultType)
+            runCatching {
+                val ring = RingtoneManager.getRingtone(context, targetUri)
+                if (ring != null) {
+                    ring.play()
+                    activePreviewTone = ring
+                    previewKind = kind
+                }
+            }
+        }
+
+        fun resolveSoundTitle(rawUri: String, defaultType: Int): String {
+            if (rawUri.isBlank()) return strings.defaultSoundLabel
+            return runCatching {
+                val uri = Uri.parse(rawUri)
+                RingtoneManager.getRingtone(context, uri)?.getTitle(context)?.takeIf { it.isNotBlank() }
+            }.getOrNull() ?: strings.defaultSoundLabel
+        }
+
+        DisposableEffect(Unit) {
+            onDispose { stopActivePreview() }
+        }
+
         AlertDialog(
-            onDismissRequest = { showNotifDialog = false },
+            onDismissRequest = {
+                stopActivePreview()
+                showNotifDialog = false
+            },
             containerColor = palette.surface,
             title = { Text(if (strings.isEnglish) "Notification Preferences" else "تفضيلات الإشعارات", color = palette.textPrimary) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     NotifSwitchRow(if (strings.isEnglish) "Chat Messages" else "رسائل الدردشة", appSettings.notificationsMessages) {
                         viewModel.updateNotificationPrefs(messages = it)
                     }
@@ -1359,9 +1539,72 @@ fun SettingsScreen(
                     NotifSwitchRow(if (strings.isEnglish) "New Stories" else "الحالات الجديدة", appSettings.notificationsStories) {
                         viewModel.updateNotificationPrefs(stories = it)
                     }
+
+                    HorizontalDivider(color = palette.border)
+
+                    // Per-account Notification Tone Picker
+                    SoundPickerCard(
+                        title = strings.notificationToneTitle,
+                        currentTitle = resolveSoundTitle(appSettings.notificationToneUri, RingtoneManager.TYPE_NOTIFICATION),
+                        isPreviewing = previewKind == "NOTIF",
+                        hasCustomTone = appSettings.notificationToneUri.isNotBlank(),
+                        onPick = {
+                            stopActivePreview()
+                            val existing = appSettings.notificationToneUri.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+                                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                            val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_NOTIFICATION)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, strings.notificationToneTitle)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, existing)
+                            }
+                            notifTonePicker.launch(intent)
+                        },
+                        onPreviewToggle = {
+                            togglePreview("NOTIF", appSettings.notificationToneUri, RingtoneManager.TYPE_NOTIFICATION)
+                        },
+                        onReset = {
+                            stopActivePreview()
+                            viewModel.setNotificationToneUri("")
+                        }
+                    )
+
+                    // Per-account Call Ringtone Picker
+                    SoundPickerCard(
+                        title = strings.callRingtoneTitle,
+                        currentTitle = resolveSoundTitle(appSettings.callRingtoneUri, RingtoneManager.TYPE_RINGTONE),
+                        isPreviewing = previewKind == "CALL",
+                        hasCustomTone = appSettings.callRingtoneUri.isNotBlank(),
+                        onPick = {
+                            stopActivePreview()
+                            val existing = appSettings.callRingtoneUri.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+                                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                            val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_RINGTONE)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, strings.callRingtoneTitle)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                                putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, existing)
+                            }
+                            callRingtonePicker.launch(intent)
+                        },
+                        onPreviewToggle = {
+                            togglePreview("CALL", appSettings.callRingtoneUri, RingtoneManager.TYPE_RINGTONE)
+                        },
+                        onReset = {
+                            stopActivePreview()
+                            viewModel.setCallRingtoneUri("")
+                        }
+                    )
                 }
             },
-            confirmButton = { TextButton(onClick = { showNotifDialog = false }) { Text(strings.close) } }
+            confirmButton = {
+                TextButton(onClick = {
+                    stopActivePreview()
+                    showNotifDialog = false
+                }) { Text(strings.close) }
+            }
         )
     }
 
@@ -1846,6 +2089,81 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+
+    if (showSupportDialog) {
+        WesalSupportTicketsDialog(
+            onDismiss = { showSupportDialog = false },
+            onOpenDirectAdminChat = { viewModel.openSupportChatWith10001(strings.isEnglish, onOpenChat) }
+        )
+    }
+}
+
+@Composable
+private fun SoundPickerCard(
+    title: String,
+    currentTitle: String,
+    isPreviewing: Boolean,
+    hasCustomTone: Boolean,
+    onPick: () -> Unit,
+    onPreviewToggle: () -> Unit,
+    onReset: () -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    Surface(
+        color = palette.surfaceElevated,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, palette.border),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onPick),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(title, color = palette.textPrimary, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.labelLarge)
+                    Text(currentTitle, color = palette.turquoise, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Icon(Icons.Default.MusicNote, contentDescription = null, tint = palette.turquoise)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onPreviewToggle,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isPreviewing) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        tint = palette.emerald,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = if (isPreviewing) strings.stopPreview else strings.previewSound,
+                        color = palette.emerald,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1
+                    )
+                }
+                if (hasCustomTone) {
+                    OutlinedButton(
+                        onClick = onReset,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(strings.resetDefaultSound, color = palette.textSecondary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    }
+                }
+            }
+        }
     }
 }
 

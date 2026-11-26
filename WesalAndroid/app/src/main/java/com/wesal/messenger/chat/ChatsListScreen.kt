@@ -47,6 +47,8 @@ fun ChatsListScreen(
     val incomingContactRequests by viewModel.incomingContactRequests.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val showHiddenChats by viewModel.showHiddenChats.collectAsStateWithLifecycle()
+    val showArchivedOnly by viewModel.showArchivedOnly.collectAsStateWithLifecycle()
+    val archivedCount by viewModel.archivedCount.collectAsStateWithLifecycle()
     val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
     val hiddenIds by viewModel.hiddenChatIds.collectAsStateWithLifecycle()
     val lockedIds by viewModel.lockedChatIds.collectAsStateWithLifecycle()
@@ -61,6 +63,12 @@ fun ChatsListScreen(
     var showRequestsDialog by remember { mutableStateOf(false) }
     var pendingLockedChat by remember { mutableStateOf<ChatPreview?>(null) }
     var reportRequestTarget by remember { mutableStateOf<Pair<String, String?>?>(null) }
+
+    LaunchedEffect(archivedCount, showArchivedOnly) {
+        if (showArchivedOnly && archivedCount == 0) {
+            viewModel.setShowArchivedOnly(false)
+        }
+    }
 
     val extraContactRequests = remember(incomingContactRequests, messageRequestChats) {
         val chatPeers = messageRequestChats.map { it.peerUid }.toSet()
@@ -88,9 +96,6 @@ fun ChatsListScreen(
             }
         }
     }
-
-    // No lock button: hidden chats open by typing the password in the search box. The back row only shows while open.
-    val hasHiddenEntryPoint = showHiddenChats
 
     Box(
         modifier = Modifier
@@ -136,19 +141,11 @@ fun ChatsListScreen(
                 )
             }
 
-            if (hasHiddenEntryPoint) {
+            if (showHiddenChats) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            if (showHiddenChats) {
-                                viewModel.setShowingHiddenChats(false)
-                            } else if (viewModel.hasHiddenPassword()) {
-                                showUnlockDialog = true
-                            } else {
-                                viewModel.setShowingHiddenChats(true)
-                            }
-                        }
+                        .clickable { viewModel.setShowingHiddenChats(false) }
                         .padding(horizontal = 20.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -158,22 +155,62 @@ fun ChatsListScreen(
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(
-                            imageVector = if (showHiddenChats) Icons.Default.LockOpen else Icons.Default.Lock,
+                            imageVector = Icons.Default.LockOpen,
                             contentDescription = null,
                             tint = palette.emerald
                         )
                         Text(
-                            text = if (showHiddenChats) {
-                                if (strings.isEnglish) "Back to Main Chats (Lock Hidden)" else "العودة للمحادثات الرئيسية (إعادة القفل)"
-                            } else {
-                                if (strings.isEnglish) "Hidden Chats" else "المحادثات المخفية"
-                            },
+                            text = if (strings.isEnglish) "Back to Main Chats (Lock Hidden)" else "العودة للمحادثات الرئيسية (إعادة القفل)",
                             style = MaterialTheme.typography.titleMedium,
                             color = palette.textPrimary
                         )
                     }
-                    if (!showHiddenChats && hiddenCount > 0) {
+                    if (hiddenCount > 0) {
                         Text(text = hiddenCount.toString(), color = palette.emerald, fontWeight = FontWeight.Bold)
+                    }
+                }
+                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+            } else if (archivedCount > 0 || showArchivedOnly) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { viewModel.setShowArchivedOnly(!showArchivedOnly) }
+                        .padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (showArchivedOnly) Icons.Default.Unarchive else Icons.Default.Archive,
+                            contentDescription = null,
+                            tint = palette.turquoise
+                        )
+                        Text(
+                            text = if (showArchivedOnly) {
+                                if (strings.isEnglish) "Back to Main Chats" else "العودة للمحادثات الرئيسية"
+                            } else {
+                                if (strings.isEnglish) "Archived Chats" else "المؤرشفة"
+                            },
+                            style = MaterialTheme.typography.titleMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    if (!showArchivedOnly && archivedCount > 0) {
+                        Surface(
+                            color = palette.turquoise.copy(alpha = 0.18f),
+                            shape = CircleShape
+                        ) {
+                            Text(
+                                text = archivedCount.toString(),
+                                color = palette.turquoise,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp)
+                            )
+                        }
                     }
                 }
                 HorizontalDivider(color = palette.border, thickness = 0.5.dp)
@@ -310,9 +347,12 @@ fun ChatsListScreen(
             title = {
                 WesalNameWithBadge(
                     name = chat.title,
-                    isVerified = chat.peerVerified || chat.isOfficialWesalChat,
-                    verificationType = chat.peerVerificationType,
-                    verificationGlowColor = chat.peerVerificationGlowColor,
+                    isVerified = (!chat.isGroup && chat.peerVerified) || chat.isOfficialWesalChat,
+                    verificationType = if (chat.isOfficialWesalChat) "BLUE" else chat.peerVerificationType,
+                    neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerNeonColor else "",
+                    neonGlowIntensity = chat.peerNeonGlowIntensity,
+                    neonEnabled = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled,
+                    verificationGlowColor = if (chat.isOfficialWesalChat) "" else chat.peerVerificationGlowColor,
                     verificationGlowEnabled = chat.peerVerificationGlowEnabled,
                     verificationGlowIntensity = chat.peerVerificationGlowIntensity
                 )
@@ -324,24 +364,47 @@ fun ChatsListScreen(
                         headlineColor = palette.textPrimary,
                         supportingColor = palette.textSecondary
                     )
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                if (chat.isPinned) {
+                                    if (strings.isEnglish) "Unpin" else "إلغاء التثبيت"
+                                } else {
+                                    if (strings.isEnglish) "Pin Chat" else "تثبيت المحادثة"
+                                }
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Default.PushPin, contentDescription = null, tint = palette.turquoise) },
+                        colors = menuItemColors,
+                        modifier = Modifier.clickable {
+                            viewModel.togglePin(chat)
+                            selectedChatForMenu = null
+                        }
+                    )
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                if (chat.isArchived) {
+                                    if (strings.isEnglish) "Unarchive Chat" else "إلغاء الأرشفة"
+                                } else {
+                                    if (strings.isEnglish) "Archive Chat" else "أرشفة المحادثة"
+                                }
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                if (chat.isArchived) Icons.Default.Unarchive else Icons.Default.Archive,
+                                contentDescription = null,
+                                tint = palette.turquoise
+                            )
+                        },
+                        colors = menuItemColors,
+                        modifier = Modifier.clickable {
+                            viewModel.toggleArchive(chat)
+                            selectedChatForMenu = null
+                        }
+                    )
                     if (!chat.isOfficialWesalChat) {
-                        ListItem(
-                            headlineContent = {
-                                Text(
-                                    if (chat.isPinned) {
-                                        if (strings.isEnglish) "Unpin" else "إلغاء التثبيت"
-                                    } else {
-                                        if (strings.isEnglish) "Pin Chat" else "تثبيت المحادثة"
-                                    }
-                                )
-                            },
-                            leadingContent = { Icon(Icons.Default.PushPin, contentDescription = null, tint = palette.turquoise) },
-                            colors = menuItemColors,
-                            modifier = Modifier.clickable {
-                                viewModel.togglePin(chat)
-                                selectedChatForMenu = null
-                            }
-                        )
                         ListItem(
                             headlineContent = {
                                 Text(
@@ -413,19 +476,17 @@ fun ChatsListScreen(
                             selectedChatForMenu = null
                         }
                     )
-                    if (!chat.isOfficialWesalChat) {
-                        ListItem(
-                            headlineContent = {
-                                Text(if (strings.isEnglish) "Delete Chat" else "حذف المحادثة", color = palette.error)
-                            },
-                            leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = palette.error) },
-                            colors = menuItemColors,
-                            modifier = Modifier.clickable {
-                                deleteConfirmChat = chat
-                                selectedChatForMenu = null
-                            }
-                        )
-                    }
+                    ListItem(
+                        headlineContent = {
+                            Text(if (strings.isEnglish) "Delete Chat" else "حذف المحادثة", color = palette.error)
+                        },
+                        leadingContent = { Icon(Icons.Default.Delete, contentDescription = null, tint = palette.error) },
+                        colors = menuItemColors,
+                        modifier = Modifier.clickable {
+                            deleteConfirmChat = chat
+                            selectedChatForMenu = null
+                        }
+                    )
                 }
             },
             confirmButton = {
@@ -455,7 +516,7 @@ fun ChatsListScreen(
                         },
                         color = palette.textPrimary
                     )
-                    if (!target.isGroup) {
+                    if (!target.isGroup && !target.isOfficialWesalChat) {
                         Text(
                             text = if (strings.isEnglish) {
                                 "Note: Deleting for both sides erases messages from WESAL servers for both participants, though pre-downloaded copies on the other device cannot be pulled back."
@@ -473,7 +534,7 @@ fun ChatsListScreen(
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     horizontalAlignment = Alignment.End
                 ) {
-                    if (!target.isGroup) {
+                    if (!target.isGroup && !target.isOfficialWesalChat) {
                         Button(
                             onClick = {
                                 viewModel.deleteChat(target, forEveryone = true)

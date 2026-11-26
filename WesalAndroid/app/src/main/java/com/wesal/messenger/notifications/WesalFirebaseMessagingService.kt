@@ -1,8 +1,12 @@
 package com.wesal.messenger.notifications
 
+import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.AudioAttributes
+import android.net.Uri
+import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
@@ -54,8 +58,13 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
         serviceScope.launch {
             val userSettings = prefs.settingsFlow.first()
             val isHiddenChat = !chatId.isNullOrBlank() && userSettings.hiddenChatIds.contains(chatId)
-            val title = if (isHiddenChat) getString(R.string.app_name) else rawTitle
-            val body = if (isHiddenChat) "لديك رسالة جديدة" else rawBody
+            val isArchivedChat = !chatId.isNullOrBlank() && userSettings.archivedChatIds.contains(chatId)
+            // Never expose hidden chat content, sender identity, or alerts in system notifications
+            if (isHiddenChat) return@launch
+            if (isArchivedChat && userSettings.archiveKeepMutedChats) return@launch
+
+            val customToneUri = userSettings.notificationToneUri.trim()
+            val messageChannelId = resolveMessageChannelId(customToneUri)
 
             when (type) {
                 "INCOMING_CALL" -> {
@@ -63,7 +72,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                     showIncomingCallNotification(
                         callId = data["callId"].orEmpty(),
                         callerUid = data["callerId"].orEmpty(),
-                        callerName = data["callerName"] ?: title,
+                        callerName = data["callerName"] ?: rawTitle,
                         callerAvatar = data["callerAvatar"].orEmpty(),
                         callerVerified = data["callerVerified"] == "true",
                         isVideo = data["isVideo"] == "true"
@@ -72,32 +81,34 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                 "GROUP_MESSAGE" -> {
                     if (!userSettings.notificationsGroups) return@launch
                     showStandardNotification(
-                        channelId = com.wesal.messenger.core.util.WesalTones.channelId(this@WesalFirebaseMessagingService, false),
-                        title = title,
-                        body = body,
-                        chatId = if (isHiddenChat) null else chatId,
+                        channelId = messageChannelId,
+                        soundUriString = customToneUri,
+                        title = rawTitle,
+                        body = rawBody,
+                        chatId = chatId,
                         wesalChannelId = null,
                         notificationId = dedupId
                     )
                 }
                 "STORY" -> {
                     if (!userSettings.notificationsStories) return@launch
-                    showStandardNotification(Constants.CHANNEL_STORIES, title, body, null, null, dedupId)
+                    showStandardNotification(Constants.CHANNEL_STORIES, "", rawTitle, rawBody, null, null, dedupId)
                 }
                 "CHANNEL_POST" -> {
                     if (!userSettings.notificationsMessages) return@launch
-                    showStandardNotification(Constants.CHANNEL_CHANNELS, title, body, null, data["channelId"], dedupId)
+                    showStandardNotification(Constants.CHANNEL_CHANNELS, "", rawTitle, rawBody, null, data["channelId"], dedupId)
                 }
-                "SYSTEM" -> {
-                    showStandardNotification(Constants.CHANNEL_SYSTEM, rawTitle, rawBody, null, null, dedupId)
+                "SYSTEM", "ADMIN_ALERT", "ADMIN_SUBSCRIPTION", "ADMIN_REPORT", "ADMIN_SUPPORT" -> {
+                    showStandardNotification(messageChannelId, customToneUri, rawTitle, rawBody, chatId, null, dedupId)
                 }
                 else -> {
                     if (!userSettings.notificationsMessages) return@launch
                     showStandardNotification(
-                        channelId = com.wesal.messenger.core.util.WesalTones.channelId(this@WesalFirebaseMessagingService, false),
-                        title = title,
-                        body = body,
-                        chatId = if (isHiddenChat) null else chatId,
+                        channelId = messageChannelId,
+                        soundUriString = customToneUri,
+                        title = rawTitle,
+                        body = rawBody,
+                        chatId = chatId,
                         wesalChannelId = null,
                         notificationId = dedupId
                     )
@@ -106,8 +117,39 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
         }
     }
 
+    private fun resolveMessageChannelId(customToneUri: String): String {
+        if (customToneUri.isBlank()) return Constants.CHANNEL_MESSAGES
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return Constants.CHANNEL_MESSAGES
+        val manager = getSystemService(NotificationManager::class.java) ?: return Constants.CHANNEL_MESSAGES
+        val channelId = "${Constants.CHANNEL_MESSAGES}_tone_${customToneUri.hashCode()}"
+        if (manager.getNotificationChannel(channelId) == null) {
+            val parsedUri = runCatching { Uri.parse(customToneUri) }.getOrNull()
+            if (parsedUri != null) {
+                val channel = NotificationChannel(
+                    channelId,
+                    getString(R.string.channel_messages_name),
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    enableLights(true)
+                    lightColor = 0xFF00E5FF.toInt()
+                    enableVibration(true)
+                    setSound(
+                        parsedUri,
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                }
+                runCatching { manager.createNotificationChannel(channel) }
+            }
+        }
+        return channelId
+    }
+
     private fun showStandardNotification(
         channelId: String,
+        soundUriString: String,
         title: String,
         body: String,
         chatId: String?,
@@ -126,17 +168,20 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, channelId)
+        val builder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_wesal_notification)
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
-            .build()
+
+        if (soundUriString.isNotBlank()) {
+            runCatching { Uri.parse(soundUriString) }.getOrNull()?.let { builder.setSound(it) }
+        }
 
         val manager = getSystemService(NotificationManager::class.java) ?: return
-        manager.notify(notificationId, notification)
+        manager.notify(notificationId, builder.build())
     }
 
     private fun showIncomingCallNotification(
@@ -193,12 +238,13 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, com.wesal.messenger.core.util.WesalTones.channelId(this, true))
+        val notification = NotificationCompat.Builder(this, Constants.CHANNEL_CALLS)
             .setSmallIcon(R.drawable.ic_wesal_notification)
             .setContentTitle(callerName)
             .setContentText(if (isVideo) "مكالمة فيديو واردة" else "مكالمة صوتية واردة")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setSilent(true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setFullScreenIntent(fullScreenPendingIntent, true)

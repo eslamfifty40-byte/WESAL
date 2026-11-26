@@ -1,11 +1,20 @@
 package com.wesal.messenger.calls
 
+import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.wesal.messenger.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,7 +27,8 @@ import javax.inject.Singleton
 enum class CallAudioRoute {
     EARPIECE,
     SPEAKER,
-    BLUETOOTH
+    BLUETOOTH,
+    WIRED_HEADSET
 }
 
 @Singleton
@@ -38,6 +48,9 @@ class WebRtcCallManager @Inject constructor(
     private var remoteDescriptionSet = false
     private val pendingRemoteCandidates = mutableListOf<IceCandidate>()
     private var audioFocusRequest: AudioFocusRequest? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
+    private var scoReceiver: BroadcastReceiver? = null
+    private var isVideoSession = false
 
     private val _connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     val connectionState: StateFlow<PeerConnection.PeerConnectionState> = _connectionState.asStateFlow()
@@ -53,6 +66,9 @@ class WebRtcCallManager @Inject constructor(
 
     private val _bluetoothAvailable = MutableStateFlow(false)
     val bluetoothAvailable: StateFlow<Boolean> = _bluetoothAvailable.asStateFlow()
+
+    private val _wiredHeadsetAvailable = MutableStateFlow(false)
+    val wiredHeadsetAvailable: StateFlow<Boolean> = _wiredHeadsetAvailable.asStateFlow()
 
     private fun ensureFactory() {
         if (peerConnectionFactory != null) return
@@ -74,13 +90,16 @@ class WebRtcCallManager @Inject constructor(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
         )
-        if (BuildConfig.TURN_URL.isNotBlank()) {
-            servers.add(
-                PeerConnection.IceServer.builder(BuildConfig.TURN_URL)
-                    .setUsername(BuildConfig.TURN_USERNAME)
-                    .setPassword(BuildConfig.TURN_CREDENTIAL)
-                    .createIceServer()
-            )
+        val turnUrls = parseTurnUrls(BuildConfig.TURN_URL)
+        turnUrls.forEach { url ->
+            val builder = PeerConnection.IceServer.builder(url)
+            if (BuildConfig.TURN_USERNAME.isNotBlank()) {
+                builder.setUsername(BuildConfig.TURN_USERNAME)
+            }
+            if (BuildConfig.TURN_CREDENTIAL.isNotBlank()) {
+                builder.setPassword(BuildConfig.TURN_CREDENTIAL)
+            }
+            servers.add(builder.createIceServer())
         }
         return servers
     }
@@ -91,6 +110,9 @@ class WebRtcCallManager @Inject constructor(
     ) {
         ensureFactory()
         val factory = peerConnectionFactory ?: return
+        isVideoSession = isVideo
+        remoteDescriptionSet = false
+        pendingRemoteCandidates.clear()
 
         _connectionState.value = PeerConnection.PeerConnectionState.NEW
         val rtcConfig = PeerConnection.RTCConfiguration(buildIceServers()).apply {
@@ -128,8 +150,16 @@ class WebRtcCallManager @Inject constructor(
         })
 
         // Audio track
-        localAudioSource = factory.createAudioSource(MediaConstraints())
-        localAudioTrack = factory.createAudioTrack("WESAL_AUDIO", localAudioSource)
+        val audioConstraints = MediaConstraints().apply {
+            optional.add(MediaConstraints.KeyValuePair("googEchoCancellation", "true"))
+            optional.add(MediaConstraints.KeyValuePair("googAutoGainControl", "true"))
+            optional.add(MediaConstraints.KeyValuePair("googNoiseSuppression", "true"))
+            optional.add(MediaConstraints.KeyValuePair("googHighpassFilter", "true"))
+        }
+        localAudioSource = factory.createAudioSource(audioConstraints)
+        localAudioTrack = factory.createAudioTrack("WESAL_AUDIO", localAudioSource)?.apply {
+            setEnabled(true)
+        }
         localAudioTrack?.let { peerConnection?.addTrack(it, listOf("WESAL_STREAM")) }
 
         // Video track
@@ -148,13 +178,98 @@ class WebRtcCallManager @Inject constructor(
                 }
             }
         }
+
+        registerAudioMonitoring()
         refreshAudioDevices()
         val initialRoute = when {
             _bluetoothAvailable.value -> CallAudioRoute.BLUETOOTH
+            _wiredHeadsetAvailable.value -> CallAudioRoute.WIRED_HEADSET
             isVideo -> CallAudioRoute.SPEAKER
             else -> CallAudioRoute.EARPIECE
         }
         setAudioRoute(initialRoute)
+    }
+
+    private fun registerAudioMonitoring() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (audioDeviceCallback == null) {
+            val cb = object : AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                    refreshAudioDevices()
+                    if (_bluetoothAvailable.value && _audioRoute.value != CallAudioRoute.BLUETOOTH) {
+                        setAudioRoute(CallAudioRoute.BLUETOOTH)
+                    } else if (_wiredHeadsetAvailable.value && !_bluetoothAvailable.value &&
+                        _audioRoute.value == CallAudioRoute.EARPIECE
+                    ) {
+                        setAudioRoute(CallAudioRoute.WIRED_HEADSET)
+                    }
+                }
+
+                override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                    refreshAudioDevices()
+                    val current = _audioRoute.value
+                    if (current == CallAudioRoute.BLUETOOTH && !_bluetoothAvailable.value) {
+                        setAudioRoute(
+                            when {
+                                _wiredHeadsetAvailable.value -> CallAudioRoute.WIRED_HEADSET
+                                isVideoSession -> CallAudioRoute.SPEAKER
+                                else -> CallAudioRoute.EARPIECE
+                            }
+                        )
+                    } else if (current == CallAudioRoute.WIRED_HEADSET && !_wiredHeadsetAvailable.value) {
+                        setAudioRoute(
+                            when {
+                                _bluetoothAvailable.value -> CallAudioRoute.BLUETOOTH
+                                isVideoSession -> CallAudioRoute.SPEAKER
+                                else -> CallAudioRoute.EARPIECE
+                            }
+                        )
+                    }
+                }
+            }
+            audioDeviceCallback = cb
+            runCatching {
+                audioManager.registerAudioDeviceCallback(cb, Handler(Looper.getMainLooper()))
+            }
+        }
+        if (scoReceiver == null) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(ctx: Context?, intent: Intent?) {
+                    val state = intent?.getIntExtra(
+                        AudioManager.EXTRA_SCO_AUDIO_STATE,
+                        AudioManager.SCO_AUDIO_STATE_DISCONNECTED
+                    ) ?: AudioManager.SCO_AUDIO_STATE_DISCONNECTED
+                    if (state == AudioManager.SCO_AUDIO_STATE_CONNECTED &&
+                        _audioRoute.value == CallAudioRoute.BLUETOOTH
+                    ) {
+                        @Suppress("DEPRECATION")
+                        runCatching { audioManager.isBluetoothScoOn = true }
+                    }
+                }
+            }
+            scoReceiver = receiver
+            runCatching {
+                @Suppress("DEPRECATION")
+                val filter = IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(receiver, filter)
+                }
+            }
+        }
+    }
+
+    private fun unregisterAudioMonitoring() {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioDeviceCallback?.let { cb ->
+            runCatching { audioManager.unregisterAudioDeviceCallback(cb) }
+            audioDeviceCallback = null
+        }
+        scoReceiver?.let { rcv ->
+            runCatching { context.unregisterReceiver(rcv) }
+            scoReceiver = null
+        }
     }
 
     fun createOffer(onSdpCreated: (String) -> Unit) {
@@ -225,6 +340,8 @@ class WebRtcCallManager @Inject constructor(
 
     fun setMicEnabled(enabled: Boolean) {
         localAudioTrack?.setEnabled(enabled)
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        runCatching { audioManager.isMicrophoneMute = !enabled }
     }
 
     fun setCameraEnabled(enabled: Boolean) {
@@ -235,9 +352,16 @@ class WebRtcCallManager @Inject constructor(
         videoCapturer?.switchCamera(null)
     }
 
+    private fun hasBluetoothConnectPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    }
+
     fun refreshAudioDevices() {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val hasBt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val hasBt = if (!hasBluetoothConnectPermission()) {
+            false
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {
                 audioManager.availableCommunicationDevices.any { dev ->
                     dev.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
@@ -253,16 +377,40 @@ class WebRtcCallManager @Inject constructor(
                 }
             }.getOrDefault(false)
         }
+
+        val hasWired = runCatching {
+            val devices = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.availableCommunicationDevices
+            } else {
+                audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+            }
+            devices.any { dev ->
+                dev.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                    dev.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                    dev.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                    (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && dev.type == AudioDeviceInfo.TYPE_USB_DEVICE)
+            }
+        }.getOrDefault(false)
+
         _bluetoothAvailable.value = hasBt
+        _wiredHeadsetAvailable.value = hasWired
     }
 
     fun cycleAudioRoute() {
         refreshAudioDevices()
-        val next = when (_audioRoute.value) {
-            CallAudioRoute.EARPIECE -> CallAudioRoute.SPEAKER
-            CallAudioRoute.SPEAKER -> if (_bluetoothAvailable.value) CallAudioRoute.BLUETOOTH else CallAudioRoute.EARPIECE
-            CallAudioRoute.BLUETOOTH -> CallAudioRoute.EARPIECE
+        val availableRoutes = buildList {
+            if (_wiredHeadsetAvailable.value) {
+                add(CallAudioRoute.WIRED_HEADSET)
+            } else {
+                add(CallAudioRoute.EARPIECE)
+            }
+            add(CallAudioRoute.SPEAKER)
+            if (_bluetoothAvailable.value) {
+                add(CallAudioRoute.BLUETOOTH)
+            }
         }
+        val idx = availableRoutes.indexOf(_audioRoute.value)
+        val next = availableRoutes[(idx + 1) % availableRoutes.size]
         setAudioRoute(next)
     }
 
@@ -276,10 +424,14 @@ class WebRtcCallManager @Inject constructor(
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
         refreshAudioDevices()
 
-        val effectiveRoute = if (route == CallAudioRoute.BLUETOOTH && !_bluetoothAvailable.value) {
-            CallAudioRoute.EARPIECE
-        } else {
-            route
+        val effectiveRoute = when {
+            route == CallAudioRoute.BLUETOOTH && !_bluetoothAvailable.value -> {
+                if (_wiredHeadsetAvailable.value) CallAudioRoute.WIRED_HEADSET else CallAudioRoute.EARPIECE
+            }
+            route == CallAudioRoute.WIRED_HEADSET && !_wiredHeadsetAvailable.value -> {
+                CallAudioRoute.EARPIECE
+            }
+            else -> route
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -290,17 +442,26 @@ class WebRtcCallManager @Inject constructor(
                         it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
                         it.type == AudioDeviceInfo.TYPE_BLE_SPEAKER
                 }
+                CallAudioRoute.WIRED_HEADSET -> devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_USB_DEVICE
+                }
                 CallAudioRoute.SPEAKER -> devices.firstOrNull {
                     it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                 }
                 CallAudioRoute.EARPIECE -> devices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                } ?: devices.firstOrNull {
                     it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
                         it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
-                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
-                        it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET
                 }
             }
-            val applied = targetDevice != null && runCatching { audioManager.setCommunicationDevice(targetDevice) }.getOrDefault(false)
+            val applied = targetDevice != null && runCatching {
+                audioManager.setCommunicationDevice(targetDevice)
+            }.getOrDefault(false)
             if (!applied) {
                 @Suppress("DEPRECATION")
                 audioManager.isSpeakerphoneOn = (effectiveRoute == CallAudioRoute.SPEAKER)
@@ -322,7 +483,7 @@ class WebRtcCallManager @Inject constructor(
                     }
                     audioManager.isSpeakerphoneOn = true
                 }
-                CallAudioRoute.EARPIECE -> {
+                CallAudioRoute.EARPIECE, CallAudioRoute.WIRED_HEADSET -> {
                     runCatching {
                         audioManager.isBluetoothScoOn = false
                         audioManager.stopBluetoothSco()
@@ -343,6 +504,7 @@ class WebRtcCallManager @Inject constructor(
                 .build()
             val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                 .setAudioAttributes(attrs)
+                .setOnAudioFocusChangeListener { }
                 .setAcceptsDelayedFocusGain(false)
                 .build()
             audioFocusRequest = req
@@ -360,6 +522,7 @@ class WebRtcCallManager @Inject constructor(
     }
 
     fun endSession() {
+        unregisterAudioMonitoring()
         runCatching { videoCapturer?.stopCapture() }
         videoCapturer?.dispose()
         videoCapturer = null
@@ -382,7 +545,10 @@ class WebRtcCallManager @Inject constructor(
         _localVideoTrackFlow.value = null
         _connectionState.value = PeerConnection.PeerConnectionState.CLOSED
         _audioRoute.value = CallAudioRoute.EARPIECE
+        _bluetoothAvailable.value = false
+        _wiredHeadsetAvailable.value = false
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        runCatching { audioManager.isMicrophoneMute = false }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching { audioManager.clearCommunicationDevice() }
         } else {
@@ -416,5 +582,13 @@ class WebRtcCallManager @Inject constructor(
         override fun onSetSuccess() {}
         override fun onCreateFailure(error: String?) {}
         override fun onSetFailure(error: String?) {}
+    }
+
+    companion object {
+        fun parseTurnUrls(raw: String): List<String> = raw
+            .split(',', ';', '\n')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
     }
 }

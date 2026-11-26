@@ -53,9 +53,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.ContentCopy
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.domain.model.MessageStatus
@@ -163,11 +171,16 @@ fun WesalAvatar(
     ) ?: remember { mutableStateOf(0f) })
 
     val containerSize = if (activeFrame != null) size * 1.38f else size
-    // Portrait fits squarely inside the circular aperture of the crest frame (prominent hero fill without lower shield clipping)
+    // Portrait fills cleanly inside the circular aperture of the ornate crest frame (prominent subject fill without face clipping)
+    val effectiveAperture = if (activeFrame != null && activeFrame.apertureDiameterFraction < 0.60f) {
+        (activeFrame.apertureDiameterFraction * 1.07f).coerceIn(0.46f, 0.68f)
+    } else {
+        activeFrame?.apertureDiameterFraction ?: 0.62f
+    }
     val innerAvatarSize = if (activeFrame == null) {
         size
     } else {
-        containerSize * activeFrame.apertureDiameterFraction.coerceIn(0.42f, 0.78f)
+        containerSize * effectiveAperture.coerceIn(0.46f, 0.80f)
     }
     val apertureOffsetY = if (activeFrame == null) {
         0.dp
@@ -384,13 +397,13 @@ fun WesalAvatar(
                         .then(
                             when {
                                 detectedCutout && activeFrame != null -> Modifier.graphicsLayer {
-                                    scaleX = 1.16f
-                                    scaleY = 1.16f
-                                    translationY = -this.size.height * 0.04f
+                                    scaleX = 1.22f
+                                    scaleY = 1.22f
+                                    translationY = -this.size.height * 0.03f
                                 }
                                 activeFrame != null -> Modifier.graphicsLayer {
-                                    scaleX = 1.08f
-                                    scaleY = 1.08f
+                                    scaleX = 1.14f
+                                    scaleY = 1.14f
                                 }
                                 else -> Modifier
                             }
@@ -587,17 +600,34 @@ fun WesalRoyalNameplateBanner(
     neonColor: String = "",
     neonGlowIntensity: Float = 0.7f,
     neonEnabled: Boolean = true,
+    nameplateColorKey: String = "CRIMSON",
     accentColor: Color = Color(0xFFFFD54F),
     crimsonColor: Color = Color(0xFFD50026)
 ) {
+    val context = LocalContext.current
+    val strings = LocalWesalStrings.current
+    val palette = WesalColors.current
     val cleanId = numericId.trim().removePrefix("@")
     val neonPreset = NeonColorPreset.fromKey(neonColor)
-    val glowHighlight = if (neonEnabled && neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else accentColor
+    val bannerPreset = WesalNameplateColorPreset.fromKey(nameplateColorKey)
+    val resolvedMid = if (nameplateColorKey.equals("CRIMSON", ignoreCase = true) && crimsonColor != Color(0xFFD50026)) {
+        crimsonColor
+    } else {
+        Color(bannerPreset.midHex)
+    }
+    val resolvedEdge = Color(bannerPreset.edgeHex)
+    val resolvedCenter = Color(bannerPreset.centerHex)
+    val resolvedBorderAccent = if (nameplateColorKey.equals("CRIMSON", ignoreCase = true) && accentColor != Color(0xFFFFD54F)) {
+        accentColor
+    } else {
+        Color(bannerPreset.borderAccentHex)
+    }
+    val glowHighlight = if (neonEnabled && neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else resolvedBorderAccent
 
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Box(
             modifier = Modifier
@@ -607,8 +637,8 @@ fun WesalRoyalNameplateBanner(
                     drawRoundRect(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                crimsonColor.copy(alpha = 0.42f),
-                                glowHighlight.copy(alpha = 0.18f),
+                                resolvedMid.copy(alpha = 0.44f),
+                                glowHighlight.copy(alpha = 0.20f),
                                 Color.Transparent
                             ),
                             center = center,
@@ -621,11 +651,11 @@ fun WesalRoyalNameplateBanner(
                 .background(
                     Brush.horizontalGradient(
                         colors = listOf(
-                            Color(0xFF4A040E),
-                            crimsonColor.copy(alpha = 0.92f),
-                            Color(0xFF7B0719),
-                            crimsonColor.copy(alpha = 0.92f),
-                            Color(0xFF4A040E)
+                            resolvedEdge,
+                            resolvedMid.copy(alpha = 0.94f),
+                            resolvedCenter,
+                            resolvedMid.copy(alpha = 0.94f),
+                            resolvedEdge
                         )
                     )
                 )
@@ -633,11 +663,11 @@ fun WesalRoyalNameplateBanner(
                     width = 1.8.dp,
                     brush = Brush.horizontalGradient(
                         colors = listOf(
-                            Color(0xFFB8860B),
-                            Color(0xFFFFE082),
-                            accentColor,
-                            Color(0xFFFFE082),
-                            Color(0xFFB8860B)
+                            resolvedBorderAccent.copy(alpha = 0.72f),
+                            Color(0xFFFFF8E1),
+                            resolvedBorderAccent,
+                            Color(0xFFFFF8E1),
+                            resolvedBorderAccent.copy(alpha = 0.72f)
                         )
                     ),
                     shape = RoundedCornerShape(16.dp)
@@ -649,7 +679,7 @@ fun WesalRoyalNameplateBanner(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
+                Text("✦", color = resolvedBorderAccent, style = MaterialTheme.typography.labelLarge)
                 WesalNameWithBadge(
                     name = displayName.ifBlank { "WESAL User" },
                     isVerified = isVerified,
@@ -665,21 +695,46 @@ fun WesalRoyalNameplateBanner(
                     verificationGlowEnabled = verificationGlowEnabled,
                     verificationGlowIntensity = verificationGlowIntensity
                 )
-                Text("✦", color = accentColor, style = MaterialTheme.typography.labelLarge)
+                Text("✦", color = resolvedBorderAccent, style = MaterialTheme.typography.labelLarge)
             }
         }
-        Text(
-            text = "✦ WESAL Messenger ✦",
-            style = MaterialTheme.typography.labelMedium.copy(
-                shadow = Shadow(
-                    color = accentColor.copy(alpha = 0.45f),
-                    offset = Offset.Zero,
-                    blurRadius = 10f
-                )
-            ),
-            color = accentColor,
-            fontWeight = FontWeight.SemiBold
-        )
+
+        if (cleanId.isNotBlank()) {
+            val idAccent = if (neonEnabled && neonPreset != NeonColorPreset.NONE) neonPreset.glowColor else resolvedBorderAccent
+            Surface(
+                color = palette.surfaceElevated.copy(alpha = 0.92f),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, idAccent.copy(alpha = 0.60f)),
+                modifier = Modifier.clickable {
+                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("wesal_numeric_id", cleanId))
+                    Toast.makeText(context, "${strings.wesalNumericIdCopied} $cleanId", Toast.LENGTH_SHORT).show()
+                }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "ID: $cleanId",
+                        style = wesalNeonTextStyle(
+                            baseStyle = MaterialTheme.typography.titleSmall,
+                            neonColorKey = if (neonEnabled) neonColor else "",
+                            glowIntensity = neonGlowIntensity,
+                            fallbackColor = idAccent
+                        ),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = strings.copy,
+                        tint = idAccent,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
     }
 }
 

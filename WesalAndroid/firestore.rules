@@ -181,8 +181,6 @@ service cloud.firestore {
             'frameId',
             'frameUrl',
             'frameExpiresAt',
-            'iconId',
-            'iconUrl',
             'neonEnabled',
             'neonColor',
             'neonGlowIntensity',
@@ -305,7 +303,9 @@ service cloud.firestore {
       allow update: if isGroupAdmin(groupId) || (
         isSignedIn() &&
         request.auth.uid in resource.data.memberIds &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'adminIds'])
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'adminIds']) &&
+        resource.data.memberIds.removeAll([request.auth.uid]) == request.resource.data.memberIds &&
+        resource.data.adminIds.removeAll([request.auth.uid]) == request.resource.data.adminIds
       );
       allow delete: if false;
     }
@@ -438,6 +438,38 @@ service cloud.firestore {
         resource.data.creatorUid == request.auth.uid ||
         request.auth.uid in resource.data.participants
       );
+    }
+
+    // Support Tickets & Replies
+    match /support_tickets/{ticketId} {
+      allow read: if isSignedIn() && (resource.data.userUid == request.auth.uid || isAdminOrMod());
+      allow create: if isSignedIn() && request.resource.data.userUid == request.auth.uid;
+      allow update: if isAdminOrMod() || (
+        isSignedIn() &&
+        resource.data.userUid == request.auth.uid &&
+        request.resource.data.userUid == resource.data.userUid
+      );
+      allow delete: if isSuperAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn() && (
+          isAdminOrMod() ||
+          get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.userUid == request.auth.uid
+        );
+        allow create: if isSignedIn() &&
+          request.resource.data.senderUid == request.auth.uid &&
+          (
+            isAdminOrMod() ||
+            get(/databases/$(database)/documents/support_tickets/$(ticketId)).data.userUid == request.auth.uid
+          );
+        allow update, delete: if isSuperAdmin();
+      }
+    }
+
+    // Broadcast Lists (distinct from Groups; sender-only)
+    match /broadcast_lists/{listId} {
+      allow read, update, delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
     }
   }
 }

@@ -634,33 +634,9 @@ fun UserProfileDetailScreen(
                         verificationGlowIntensity = target.verificationGlowIntensity,
                         neonColor = neonColor,
                         neonGlowIntensity = neonGlow,
-                        neonEnabled = target.neonEnabled
+                        neonEnabled = target.neonEnabled,
+                        nameplateColorKey = target.nameplateColor
                     )
-                    if (target.numericId.isNotBlank()) {
-                        Surface(
-                            color = palette.surfaceElevated,
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.4f)),
-                            modifier = Modifier.clickable {
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("wesal_numeric_id", target.numericId))
-                                Toast.makeText(context, "${strings.wesalNumericIdCopied} ${target.numericId}", Toast.LENGTH_SHORT).show()
-                            }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "ID: ${target.numericId}",
-                                    style = wesalNeonTextStyle(MaterialTheme.typography.titleSmall, neonColor, neonGlow, palette.turquoise),
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Icon(Icons.Default.ContentCopy, contentDescription = strings.copy, tint = palette.turquoise, modifier = Modifier.size(14.dp))
-                            }
-                        }
-                    }
                     if (target.publicId.isNotBlank()) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,

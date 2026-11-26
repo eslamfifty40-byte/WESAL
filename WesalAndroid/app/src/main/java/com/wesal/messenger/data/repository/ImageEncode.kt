@@ -157,18 +157,58 @@ private fun hasTransparency(bmp: Bitmap): Boolean {
     return false
 }
 
+suspend fun uploadRawBytesToStorage(
+    storagePath: String,
+    bytes: ByteArray,
+    mimeType: String = "application/octet-stream",
+    onProgress: (Float) -> Unit = {}
+): Result<String> = runCatching {
+    require(bytes.isNotEmpty()) { "الملف فارغ" }
+    val ref = com.google.firebase.storage.FirebaseStorage.getInstance().reference.child(storagePath)
+    val metadata = com.google.firebase.storage.storageMetadata {
+        contentType = mimeType.ifBlank { "application/octet-stream" }
+    }
+    onProgress(0.05f)
+    val task = ref.putBytes(bytes, metadata)
+    task.addOnProgressListener { snap ->
+        val total = snap.totalByteCount.coerceAtLeast(1L)
+        val frac = (snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.05f, 0.94f)
+        onProgress(frac)
+    }
+    task.await()
+    onProgress(0.97f)
+    val url = ref.downloadUrl.await().toString()
+    onProgress(1f)
+    url
+}
+
 suspend fun uploadProfileMediaToStorageOrSmallFallback(
     ctx: Context,
     storagePath: String,
     uri: Uri,
-    maxSide: Int = 512,
+    maxSide: Int = 720,
     quality: Int = 84
 ): String {
+    val mime = runCatching { ctx.contentResolver.getType(uri).orEmpty() }.getOrDefault("image/jpeg")
+    val storageUrl = runCatching {
+        val compactImage = uriToBase64Smart(ctx, uri, maxSide = maxSide, quality = quality, preserveAlphaIfPng = true)
+        val base64Part = compactImage.substringAfter("base64,", "")
+        if (base64Part.isNotBlank()) {
+            val outMime = compactImage.substringAfter("data:", "image/jpeg").substringBefore(";base64", "image/jpeg")
+            val rawBytes = Base64.decode(base64Part, Base64.DEFAULT)
+            uploadRawBytesToStorage(storagePath, rawBytes, outMime).getOrNull()
+        } else {
+            val raw = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            if (raw != null && raw.isNotEmpty()) uploadRawBytesToStorage(storagePath, raw, mime).getOrNull() else null
+        }
+    }.getOrNull()
+    if (!storageUrl.isNullOrBlank()) return storageUrl
+
     return uriToBase64Smart(
         ctx = ctx,
         uri = uri,
-        maxSide = maxSide,
-        quality = quality,
+        maxSide = minOf(maxSide, 512),
+        quality = minOf(quality, 78),
         preserveAlphaIfPng = true
     )
 }
@@ -179,12 +219,12 @@ suspend fun uploadLibraryImageOrDataUrl(
     uri: Uri,
     maxSide: Int = 512
 ): String {
-    return uriToBase64Smart(
+    return uploadProfileMediaToStorageOrSmallFallback(
         ctx = ctx,
+        storagePath = storagePath,
         uri = uri,
         maxSide = maxSide,
-        quality = 88,
-        preserveAlphaIfPng = true
+        quality = 88
     )
 }
 
@@ -194,19 +234,43 @@ suspend fun uploadFileToFirebaseStorage(
     onProgress: (Float) -> Unit = {}
 ): Result<String> = runCatching {
     val ctx = FirebaseApp.getInstance().applicationContext
-    val mime = runCatching { ctx.contentResolver.getType(uri).orEmpty() }.getOrDefault("application/octet-stream")
-    onProgress(0.25f)
+    val mime = runCatching { ctx.contentResolver.getType(uri).orEmpty() }
+        .getOrDefault("application/octet-stream")
+        .ifBlank { "application/octet-stream" }
+    onProgress(0.05f)
+    val storageRef = com.google.firebase.storage.FirebaseStorage.getInstance().reference.child(storagePath)
+    val metadata = com.google.firebase.storage.storageMetadata {
+        contentType = mime
+    }
+    val uploadResult = runCatching {
+        val task = storageRef.putFile(uri, metadata)
+        task.addOnProgressListener { snap ->
+            val total = snap.totalByteCount.coerceAtLeast(1L)
+            val frac = (snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.06f, 0.94f)
+            onProgress(frac)
+        }
+        task.await()
+        onProgress(0.97f)
+        val url = storageRef.downloadUrl.await().toString()
+        onProgress(1f)
+        url
+    }
+    uploadResult.getOrNull()?.takeIf { it.isNotBlank() }?.let { return@runCatching it }
+
+    // Safe small-image inline fallback ONLY if Storage bucket is unreachable and image fits inline budget
     if (mime.startsWith("image/", ignoreCase = true)) {
         val dataUrl = uriToBase64Smart(ctx, uri, maxSide = 760, quality = 80, preserveAlphaIfPng = true)
-        check(dataUrl.isNotBlank()) { "تعذر ضغط الصورة" }
-        onProgress(0.95f)
+        check(dataUrl.isNotBlank()) { "تعذر رفع أو ضغط الصورة" }
+        onProgress(1f)
         return@runCatching dataUrl
     }
     val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        ?: error("تعذر قراءة الملف")
-    check(bytes.size <= 540_000) { "حجم الملف يتجاوز حد التخزين السحابي الحالي (540 KB)" }
-    onProgress(0.95f)
-    "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+        ?: throw (uploadResult.exceptionOrNull() ?: IllegalStateException("تعذر قراءة الملف"))
+    if (bytes.size <= 450_000) {
+        onProgress(1f)
+        return@runCatching "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }
+    throw (uploadResult.exceptionOrNull() ?: IllegalStateException("فشل رفع الملف إلى التخزين السحابي"))
 }
 
 fun uriToBase64Audio(ctx: Context, uri: Uri, maxBytes: Int = 450_000): String? {

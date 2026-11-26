@@ -7,6 +7,7 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.domain.model.GroupAddPrivacy
 import com.wesal.messenger.domain.model.GroupInfo
 import com.wesal.messenger.domain.model.GroupJoinMode
 import com.wesal.messenger.domain.model.GroupJoinRequest
@@ -129,6 +130,30 @@ class GroupRepositoryImpl @Inject constructor(
         return group
     }
 
+    private suspend fun filterAllowedGroupMembers(
+        candidateIds: List<String>,
+        inviterUid: String
+    ): Pair<List<String>, List<String>> {
+        val allowed = mutableListOf<String>()
+        val rejectedNames = mutableListOf<String>()
+        for (targetUid in candidateIds.filter { it.isNotBlank() && it != inviterUid }.distinct()) {
+            val targetUser = userRepository.getUserOnce(targetUid)
+            val label = targetUser?.displayName?.ifBlank { "@${targetUser.publicId}" } ?: targetUid
+            val privacy = targetUser?.groupAddPrivacy ?: GroupAddPrivacy.EVERYONE
+            val canAdd = when (privacy) {
+                GroupAddPrivacy.EVERYONE -> true
+                GroupAddPrivacy.CONTACTS -> userRepository.areContactsAccepted(targetUid)
+                GroupAddPrivacy.NOBODY -> false
+            }
+            if (canAdd) {
+                allowed += targetUid
+            } else {
+                rejectedNames += label
+            }
+        }
+        return allowed to rejectedNames
+    }
+
     override suspend fun createGroup(
         name: String,
         description: String,
@@ -140,9 +165,15 @@ class GroupRepositoryImpl @Inject constructor(
         val trimmedName = name.trim()
         require(trimmedName.isNotBlank()) { "اسم المجموعة مطلوب" }
 
+        val nonSelfCandidates = memberIds.filter { it.isNotBlank() && it != uid }.distinct()
+        val (allowedOthers, rejectedNames) = filterAllowedGroupMembers(nonSelfCandidates, uid)
+        if (nonSelfCandidates.isNotEmpty() && allowedOthers.isEmpty()) {
+            error("تعذر إضافة الأعضاء (${rejectedNames.joinToString("، ")}) بسبب إعدادات خصوصية المجموعات لديهم")
+        }
+
         val groupId = UUID.randomUUID().toString()
         val chatId = "grp_$groupId"
-        val allMembers = (memberIds + uid).distinct()
+        val allMembers = (allowedOthers + uid).distinct()
 
         val avatarUrl = if (avatarUri != null) {
             withContext(Dispatchers.IO) {
@@ -405,16 +436,21 @@ class GroupRepositoryImpl @Inject constructor(
     }
 
     override suspend fun addMembers(groupId: String, newMemberIds: List<String>): Result<Unit> = runCatching {
-        val cleanIds = newMemberIds.filter { it.isNotBlank() }.distinct()
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanIds = newMemberIds.filter { it.isNotBlank() && it != uid }.distinct()
         if (cleanIds.isEmpty()) return@runCatching
+        val (allowedIds, rejectedNames) = filterAllowedGroupMembers(cleanIds, uid)
+        if (allowedIds.isEmpty()) {
+            error("لا يمكن إضافة الأعضاء المحددين (${rejectedNames.joinToString("، ")}) بسبب إعدادات خصوصية المجموعات لديهم")
+        }
         val groupRef = firestore.collection(Constants.COLLECTION_GROUPS).document(groupId)
         val chatId = groupRef.get().await().getString("chatId").orEmpty()
-        groupRef.update("memberIds", FieldValue.arrayUnion(*cleanIds.toTypedArray())).await()
+        groupRef.update("memberIds", FieldValue.arrayUnion(*allowedIds.toTypedArray())).await()
         if (chatId.isNotBlank()) {
             val chatUpdates = hashMapOf<String, Any>(
-                "participantIds" to FieldValue.arrayUnion(*cleanIds.toTypedArray())
+                "participantIds" to FieldValue.arrayUnion(*allowedIds.toTypedArray())
             )
-            cleanIds.forEach { memberUid ->
+            allowedIds.forEach { memberUid ->
                 chatUpdates["unreadCounts.$memberUid"] = 0
             }
             firestore.collection(Constants.COLLECTION_CHATS).document(chatId)

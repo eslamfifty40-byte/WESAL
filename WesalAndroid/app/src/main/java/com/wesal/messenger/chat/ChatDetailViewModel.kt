@@ -11,11 +11,12 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.firebase.firestore.FirebaseFirestoreException
+import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.DisappearingTimer
+import com.wesal.messenger.domain.model.MessageStatus
 import com.wesal.messenger.domain.model.MessageType
 import com.wesal.messenger.domain.model.WesalMessage
 import com.wesal.messenger.domain.model.WesalUser
@@ -34,7 +35,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import com.wesal.messenger.chat.WesalDiag
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -111,6 +111,8 @@ class ChatDetailViewModel @Inject constructor(
     private val _pendingUploads = MutableStateFlow<List<PendingMediaUpload>>(emptyList())
     val pendingUploads: StateFlow<List<PendingMediaUpload>> = _pendingUploads.asStateFlow()
 
+    private val _failedMessages = MutableStateFlow<List<WesalMessage>>(emptyList())
+
     private val _decryptedFiles = MutableStateFlow<Map<String, File>>(emptyMap())
     val decryptedFiles: StateFlow<Map<String, File>> = _decryptedFiles.asStateFlow()
 
@@ -161,9 +163,13 @@ class ChatDetailViewModel @Inject constructor(
 
     val messages: StateFlow<List<WesalMessage>> = combine(
         chatRepository.observeMessages(chatId),
+        _failedMessages,
         _searchQuery
-    ) { all, query ->
-        if (query.isBlank()) all else all.filter { it.text.contains(query, ignoreCase = true) }
+    ) { remote, failed, query ->
+        val merged = if (failed.isEmpty()) remote else (remote + failed)
+        val normQuery = WesalIdUtils.normalizeSearchText(query)
+        if (normQuery.isBlank()) merged
+        else merged.filter { WesalIdUtils.normalizeSearchText(it.text).contains(normQuery) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val recordingState: StateFlow<VoiceRecordingState> = voiceRecorder.state
@@ -174,7 +180,6 @@ class ChatDetailViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private var typingDebounceJob: Job? = null
-    private val sendScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Default)
     private var welcomeTriggeredInSession = false
 
     init {
@@ -283,47 +288,51 @@ class ChatDetailViewModel @Inject constructor(
 
         val reply = _replyingTo.value
         _replyingTo.value = null
-        viewModelScope.launch { chatRepository.setTyping(chatId, false) }
-        // Sends run in an app-lifetime scope: leaving the screen or the ViewModel being cleared
-        // must not cancel a message that is being sent.
-        sendScope.launch {
-            var attempt = 0
-            while (true) {
-                attempt++
-                val result = chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply)
-                val error = result.exceptionOrNull() ?: break
-                if (attempt < 3 && isTransientSendError(error)) {
-                    delay(1500L * attempt)
-                    continue
+        viewModelScope.launch {
+            chatRepository.setTyping(chatId, false)
+            chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply)
+                .onFailure { err ->
+                    val failedId = "failed_${UUID.randomUUID()}"
+                    val failedMsg = WesalMessage(
+                        messageId = failedId,
+                        chatId = chatId,
+                        senderId = myUid,
+                        senderName = "",
+                        type = MessageType.TEXT,
+                        text = trimmed,
+                        replyToMessageId = reply?.messageId,
+                        replyToPreview = reply?.text?.take(80),
+                        status = MessageStatus.FAILED,
+                        timestamp = System.currentTimeMillis()
+                    )
+                    _failedMessages.update { it + failedMsg }
+                    _toastMessage.value = err.localizedMessage ?: "فشل إرسال الرسالة"
                 }
-                val frame = error.stackTrace.firstOrNull { it.className.startsWith("com.wesal") }
-                val scopeActive = viewModelScope.coroutineContext[Job]?.isActive
-                WesalDiag.report(
-                    "خطأ إرسال: ${error.javaClass.simpleName} - ${error.message} " +
-                        "| at ${frame?.fileName}:${frame?.lineNumber} | cause=${error.cause?.javaClass?.simpleName} | vmActive=$scopeActive | try=$attempt"
+        }
+    }
+
+    fun retryFailedMessage(failed: WesalMessage) {
+        if (failed.status != MessageStatus.FAILED) return
+        _failedMessages.update { list -> list.filterNot { it.messageId == failed.messageId } }
+        viewModelScope.launch {
+            val replyStub = if (!failed.replyToMessageId.isNullOrBlank()) {
+                WesalMessage(
+                    messageId = failed.replyToMessageId,
+                    text = failed.replyToPreview.orEmpty()
                 )
-                _toastMessage.value = friendlySendError(error)
-                break
-            }
+            } else null
+            chatRepository.sendTextMessage(chatId, failed.text, replyTo = replyStub)
+                .onFailure { err ->
+                    _failedMessages.update { list ->
+                        list + failed.copy(timestamp = System.currentTimeMillis())
+                    }
+                    _toastMessage.value = err.localizedMessage ?: "فشل إعادة إرسال الرسالة"
+                }
         }
     }
 
-    private fun isTransientSendError(t: Throwable): Boolean {
-        val code = (t as? FirebaseFirestoreException)?.code
-        return code == FirebaseFirestoreException.Code.UNAVAILABLE ||
-            code == FirebaseFirestoreException.Code.DEADLINE_EXCEEDED ||
-            code == FirebaseFirestoreException.Code.ABORTED
-    }
-
-    private fun friendlySendError(t: Throwable): String {
-        val code = (t as? FirebaseFirestoreException)?.code
-        return when (code) {
-            FirebaseFirestoreException.Code.PERMISSION_DENIED ->
-                "تعذر إرسال الرسالة: لا توجد صلاحية (تحقق من قواعد Firestore أو من قبول طلب الاتصال). أعد كتابة الرسالة وحاول مرة أخرى"
-            FirebaseFirestoreException.Code.UNAVAILABLE, FirebaseFirestoreException.Code.DEADLINE_EXCEEDED ->
-                "لا يوجد اتصال بالإنترنت. أعد إرسال الرسالة عند عودة الاتصال"
-            else -> (t.localizedMessage ?: "فشل إرسال الرسالة") + " - أعد كتابة الرسالة وحاول مرة أخرى"
-        }
+    fun dismissFailedMessage(messageId: String) {
+        _failedMessages.update { list -> list.filterNot { it.messageId == messageId } }
     }
 
     fun buildMediaDraft(uri: Uri, type: MessageType, caption: String = "", isViewOnce: Boolean = false): MediaDraftPreview {
@@ -825,6 +834,3 @@ class ChatDetailViewModel @Inject constructor(
         voicePlayer.stop()
     }
 }
-
-
-

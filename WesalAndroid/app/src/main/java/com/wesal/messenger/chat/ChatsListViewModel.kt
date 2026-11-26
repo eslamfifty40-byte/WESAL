@@ -2,6 +2,7 @@ package com.wesal.messenger.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.ContactRequest
@@ -28,8 +29,13 @@ class ChatsListViewModel @Inject constructor(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
+    private val _showArchivedOnly = MutableStateFlow(false)
+    val showArchivedOnly: StateFlow<Boolean> = _showArchivedOnly.asStateFlow()
+
     val showHiddenChats: StateFlow<Boolean> = prefs.hiddenChatsUnlockedSession
     val openHiddenChatsTrigger: StateFlow<Boolean> = prefs.openHiddenChatsTrigger
+
+    private var unlockedViaSearchBar: Boolean = false
 
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
@@ -62,21 +68,40 @@ class ChatsListViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val archivedCount: StateFlow<Int> = combine(
+        chatRepository.observeChats(),
+        hiddenChatIds
+    ) { allChats, hiddenIds ->
+        allChats.count { chat ->
+            val isRequest = !chat.isOfficialWesalChat && !chat.isSupportChat && !chat.isGroup &&
+                (chat.isMessageRequest || chat.requestStatus == "PENDING" || chat.requestStatus == "HELD" || chat.requestStatus == "REJECTED")
+            !isRequest && chat.chatId !in hiddenIds && chat.isArchived
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
     val chats: StateFlow<List<ChatPreview>> = combine(
         chatRepository.observeChats(),
         _searchQuery,
         hiddenChatIds,
-        showHiddenChats
-    ) { allChats, query, hiddenIds, showingHidden ->
+        showHiddenChats,
+        _showArchivedOnly
+    ) { allChats, query, hiddenIds, showingHidden, archivedOnly ->
+        val normQuery = WesalIdUtils.normalizeSearchText(query)
+        val queryIsHiddenPass = showingHidden && query.isNotBlank() && hasHiddenPassword() && verifyHiddenPassword(query)
         allChats.filter { chat ->
             val isRequest = !chat.isOfficialWesalChat && !chat.isSupportChat && !chat.isGroup &&
                 (chat.isMessageRequest || chat.requestStatus == "PENDING" || chat.requestStatus == "HELD" || chat.requestStatus == "REJECTED")
             if (isRequest) return@filter false
             val isHidden = chat.chatId in hiddenIds
-            val visibilityMatch = if (showingHidden) isHidden else !isHidden
-            val queryMatch = query.isBlank() ||
-                chat.title.contains(query, ignoreCase = true) ||
-                chat.lastMessagePreview.contains(query, ignoreCase = true)
+            val visibilityMatch = when {
+                showingHidden -> isHidden
+                archivedOnly -> !isHidden && chat.isArchived
+                else -> !isHidden && !chat.isArchived
+            }
+            val queryMatch = normQuery.isBlank() ||
+                queryIsHiddenPass ||
+                WesalIdUtils.normalizeSearchText(chat.title).contains(normQuery) ||
+                WesalIdUtils.normalizeSearchText(chat.lastMessagePreview).contains(normQuery)
             visibilityMatch && queryMatch
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -134,8 +159,17 @@ class ChatsListViewModel @Inject constructor(
         }
     }
 
+    fun setShowArchivedOnly(show: Boolean) {
+        _showArchivedOnly.value = show
+    }
+
     fun setShowingHiddenChats(showing: Boolean) {
         if (showing) {
+            unlockedViaSearchBar = false
+            _showArchivedOnly.value = false
+            _searchQuery.value = ""
+        } else {
+            unlockedViaSearchBar = false
             _searchQuery.value = ""
         }
         prefs.setHiddenChatsUnlockedSession(showing)
@@ -219,14 +253,13 @@ class ChatsListViewModel @Inject constructor(
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
-        // Hidden chats open only by typing the hidden-chats password into this search box.
-        val candidate = query.trim()
-        if (candidate.length >= 4 && !showHiddenChats.value && prefs.hasHiddenChatsPassword(currentUid)) {
-            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
-                if (prefs.verifyHiddenChatsPassword(currentUid, candidate) && _searchQuery.value == query) {
-                    setShowingHiddenChats(true)
-                }
-            }
+        if (!showHiddenChats.value && query.isNotBlank() && hasHiddenPassword() && verifyHiddenPassword(query)) {
+            unlockedViaSearchBar = true
+            _showArchivedOnly.value = false
+            prefs.setHiddenChatsUnlockedSession(true)
+        } else if (query.isBlank() && unlockedViaSearchBar) {
+            unlockedViaSearchBar = false
+            prefs.setHiddenChatsUnlockedSession(false)
         }
     }
 
@@ -240,6 +273,19 @@ class ChatsListViewModel @Inject constructor(
 
     fun toggleMute(chat: ChatPreview) {
         viewModelScope.launch { chatRepository.toggleMuteChat(chat.chatId, !chat.isMuted) }
+    }
+
+    fun toggleArchive(chat: ChatPreview) {
+        val next = !chat.isArchived
+        viewModelScope.launch {
+            chatRepository.toggleArchiveChat(chat.chatId, next)
+                .onSuccess {
+                    _toastMessage.value = if (next) "تمت أرشفة المحادثة" else "تمت إعادة المحادثة من الأرشيف"
+                }
+                .onFailure {
+                    _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الأرشفة"
+                }
+        }
     }
 
     fun deleteChat(chat: ChatPreview, forEveryone: Boolean = false) {

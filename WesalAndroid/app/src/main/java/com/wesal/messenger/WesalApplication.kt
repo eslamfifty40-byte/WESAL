@@ -200,7 +200,9 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             enableVibration(true)
         }
 
-        val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        // Delete legacy ringing channel so Android never double-rings alongside IncomingCallActivity
+        runCatching { manager.deleteNotificationChannel(Constants.CHANNEL_CALLS_LEGACY) }
+
         val callsChannel = NotificationChannel(
             Constants.CHANNEL_CALLS,
             getString(R.string.channel_calls_name),
@@ -208,14 +210,8 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         ).apply {
             enableLights(true)
             lightColor = 0xFF00C853.toInt()
-            enableVibration(true)
-            setSound(
-                ringtoneUri,
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-            )
+            enableVibration(false)
+            setSound(null, null)
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
         }
 

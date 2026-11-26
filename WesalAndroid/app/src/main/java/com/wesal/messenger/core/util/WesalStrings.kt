@@ -140,7 +140,31 @@ data class WesalStrings(
     val emojiObjects: String,
     val emojiFoodNature: String,
     val emojiEmptyRecent: String,
-    val switchToTextKeyboard: String
+    val switchToTextKeyboard: String,
+    // Ringtones & Notification Sounds
+    val notificationToneTitle: String,
+    val callRingtoneTitle: String,
+    val previewSound: String,
+    val stopPreview: String,
+    val resetDefaultSound: String,
+    val defaultSoundLabel: String,
+    // Support Tickets & Privacy & Broadcast Lists & Nameplate
+    val supportHelpTitle: String,
+    val submitTicketTitle: String,
+    val ticketSubjectLabel: String,
+    val ticketMessageLabel: String,
+    val myTicketsTitle: String,
+    val supportInboxTitle: String,
+    val ticketSubmittedSuccess: String,
+    val groupAddPrivacyTitle: String,
+    val whoCanAddEveryone: String,
+    val whoCanAddContacts: String,
+    val whoCanAddNobody: String,
+    val broadcastListsTitle: String,
+    val newBroadcastList: String,
+    val broadcastListSubtitle: String,
+    val nameplateColorTitle: String,
+    val profileCustomizationTitle: String
 )
 
 val ArabicWesalStrings = WesalStrings(
@@ -269,7 +293,29 @@ val ArabicWesalStrings = WesalStrings(
     emojiObjects = "رموز",
     emojiFoodNature = "طبيعة",
     emojiEmptyRecent = "ستظهر الإيموجي التي تستخدمها هنا",
-    switchToTextKeyboard = "لوحة المفاتيح"
+    switchToTextKeyboard = "لوحة المفاتيح",
+    notificationToneTitle = "نغمة الإشعارات",
+    callRingtoneTitle = "نغمة رنين المكالمات",
+    previewSound = "معاينة الصوت",
+    stopPreview = "إيقاف المعاينة",
+    resetDefaultSound = "استعادة الافتراضي",
+    defaultSoundLabel = "النغمة الافتراضية للهاتف",
+    supportHelpTitle = "المساعدة والدعم الفني",
+    submitTicketTitle = "إرسال تذكرة دعم",
+    ticketSubjectLabel = "عنوان المشكلة / الاستفسار",
+    ticketMessageLabel = "اشرح التفاصيل...",
+    myTicketsTitle = "تذاكر الدعم السابقة",
+    supportInboxTitle = "صندوق الدعم الفني",
+    ticketSubmittedSuccess = "تم إرسال تذكرة الدعم للإدارة بنجاح",
+    groupAddPrivacyTitle = "من يستطيع إضافتي إلى المجموعات؟",
+    whoCanAddEveryone = "الكل",
+    whoCanAddContacts = "جهات اتصالي فقط",
+    whoCanAddNobody = "لا أحد",
+    broadcastListsTitle = "قوائم البث الجماعي",
+    newBroadcastList = "قائمة بث جديدة",
+    broadcastListSubtitle = "رسالة منفصلة لكل مستلم دون كشف الآخرين",
+    nameplateColorTitle = "لون بطاقة الاسم (26 لوناً)",
+    profileCustomizationTitle = "تخصيص المظهر والأيقونة"
 )
 
 val EnglishWesalStrings = WesalStrings(
@@ -398,7 +444,29 @@ val EnglishWesalStrings = WesalStrings(
     emojiObjects = "Objects",
     emojiFoodNature = "Nature",
     emojiEmptyRecent = "Your recently used emojis will appear here",
-    switchToTextKeyboard = "Keyboard"
+    switchToTextKeyboard = "Keyboard",
+    notificationToneTitle = "Notification Tone",
+    callRingtoneTitle = "Call Ringtone",
+    previewSound = "Preview Sound",
+    stopPreview = "Stop Preview",
+    resetDefaultSound = "Reset Default",
+    defaultSoundLabel = "Phone Default Tone",
+    supportHelpTitle = "Help & Support",
+    submitTicketTitle = "Submit Support Ticket",
+    ticketSubjectLabel = "Subject",
+    ticketMessageLabel = "Describe your issue or request...",
+    myTicketsTitle = "My Support Tickets",
+    supportInboxTitle = "Support Tickets Inbox",
+    ticketSubmittedSuccess = "Support ticket sent to WESAL Admin",
+    groupAddPrivacyTitle = "Who can add me to groups?",
+    whoCanAddEveryone = "Everyone",
+    whoCanAddContacts = "My Contacts",
+    whoCanAddNobody = "Nobody",
+    broadcastListsTitle = "Broadcast Lists",
+    newBroadcastList = "New Broadcast List",
+    broadcastListSubtitle = "Individual delivery without exposing recipients",
+    nameplateColorTitle = "Nameplate Color (26 Colors)",
+    profileCustomizationTitle = "Nameplate & Icon Customization"
 )
 
 fun wesalStringsForLanguage(languageTag: String): WesalStrings =
