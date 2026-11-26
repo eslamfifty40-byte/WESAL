@@ -256,6 +256,16 @@ fun NewChatContactsScreen(
                 }
             }
 
+            // Tiny sync diagnostic (read=N wesal=M) so a photo of this screen explains empty lists.
+            if (state.syncDiag.isNotBlank()) {
+                Text(
+                    text = state.syncDiag,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.textMuted,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
             if (activeSection == 0) {
                 OutlinedTextField(
                     value = state.query,
