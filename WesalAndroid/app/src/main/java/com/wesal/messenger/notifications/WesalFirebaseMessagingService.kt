@@ -82,7 +82,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                     // Start the looping ringtone from the push handler itself: the full-screen
                     // activity is not guaranteed to launch, and without this the call is silent.
                     if (incomingCallId.isNotBlank()) {
-                        CallRingingController.start(this, incomingCallId, userSettings.callRingtoneUri)
+                        CallRingingController.start(this@WesalFirebaseMessagingService, incomingCallId, userSettings.callRingtoneUri)
                     }
                 }
                 "GROUP_MESSAGE" -> {
