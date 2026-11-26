@@ -11,6 +11,7 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatPreview
@@ -282,8 +283,36 @@ class ChatDetailViewModel @Inject constructor(
         _replyingTo.value = null
         viewModelScope.launch {
             chatRepository.setTyping(chatId, false)
-            chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply)
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "فشل إرسال الرسالة" }
+            var attempt = 0
+            while (true) {
+                attempt++
+                val result = chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply)
+                val error = result.exceptionOrNull() ?: break
+                if (attempt < 3 && isTransientSendError(error)) {
+                    delay(1500L * attempt)
+                    continue
+                }
+                _toastMessage.value = friendlySendError(error)
+                break
+            }
+        }
+    }
+
+    private fun isTransientSendError(t: Throwable): Boolean {
+        val code = (t as? FirebaseFirestoreException)?.code
+        return code == FirebaseFirestoreException.Code.UNAVAILABLE ||
+            code == FirebaseFirestoreException.Code.DEADLINE_EXCEEDED ||
+            code == FirebaseFirestoreException.Code.ABORTED
+    }
+
+    private fun friendlySendError(t: Throwable): String {
+        val code = (t as? FirebaseFirestoreException)?.code
+        return when (code) {
+            FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                "تعذر إرسال الرسالة: لا توجد صلاحية (تحقق من قواعد Firestore أو من قبول طلب الاتصال). أعد كتابة الرسالة وحاول مرة أخرى"
+            FirebaseFirestoreException.Code.UNAVAILABLE, FirebaseFirestoreException.Code.DEADLINE_EXCEEDED ->
+                "لا يوجد اتصال بالإنترنت. أعد إرسال الرسالة عند عودة الاتصال"
+            else -> (t.localizedMessage ?: "فشل إرسال الرسالة") + " - أعد كتابة الرسالة وحاول مرة أخرى"
         }
     }
 
@@ -786,3 +815,4 @@ class ChatDetailViewModel @Inject constructor(
         voicePlayer.stop()
     }
 }
+
