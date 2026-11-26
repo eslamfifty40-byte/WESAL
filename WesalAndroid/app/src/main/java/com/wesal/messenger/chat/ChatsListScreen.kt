@@ -89,7 +89,8 @@ fun ChatsListScreen(
         }
     }
 
-    val hasHiddenEntryPoint = hiddenCount > 0 || hiddenIds.isNotEmpty() || showHiddenChats || viewModel.hasHiddenPassword()
+    // No lock button: hidden chats open by typing the password in the search box. The back row only shows while open.
+    val hasHiddenEntryPoint = showHiddenChats
 
     Box(
         modifier = Modifier
@@ -133,30 +134,6 @@ fun ChatsListScreen(
                         cursorColor = palette.turquoise
                     )
                 )
-
-                if (hasHiddenEntryPoint) {
-                    IconButton(
-                        onClick = {
-                            if (showHiddenChats) {
-                                viewModel.setShowingHiddenChats(false)
-                            } else if (viewModel.hasHiddenPassword()) {
-                                showUnlockDialog = true
-                            } else {
-                                viewModel.setShowingHiddenChats(true)
-                            }
-                        },
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(CircleShape)
-                            .background(if (showHiddenChats) palette.emerald.copy(alpha = 0.2f) else palette.surface)
-                    ) {
-                        Icon(
-                            imageVector = if (showHiddenChats) Icons.Default.LockOpen else Icons.Default.Lock,
-                            contentDescription = if (strings.isEnglish) "Hidden Chats" else "المحادثات المخفية",
-                            tint = if (showHiddenChats) palette.emerald else palette.turquoise
-                        )
-                    }
-                }
             }
 
             if (hasHiddenEntryPoint) {

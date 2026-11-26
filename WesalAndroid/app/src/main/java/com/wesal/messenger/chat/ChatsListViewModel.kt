@@ -219,6 +219,15 @@ class ChatsListViewModel @Inject constructor(
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
+        // Hidden chats open only by typing the hidden-chats password into this search box.
+        val candidate = query.trim()
+        if (candidate.length >= 4 && !showHiddenChats.value && prefs.hasHiddenChatsPassword(currentUid)) {
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+                if (prefs.verifyHiddenChatsPassword(currentUid, candidate) && _searchQuery.value == query) {
+                    setShowingHiddenChats(true)
+                }
+            }
+        }
     }
 
     fun clearToast() {
