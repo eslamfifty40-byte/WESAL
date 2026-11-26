@@ -748,6 +748,68 @@ fun SettingsScreen(
                     }
                 }
             }
+            val toneCtx = LocalContext.current
+            var toneTick by remember { mutableStateOf(0) }
+            var tonePickCall by remember { mutableStateOf(false) }
+            var tonePreview by remember { mutableStateOf<android.media.Ringtone?>(null) }
+            val tonePicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+                if (res.resultCode == android.app.Activity.RESULT_OK) {
+                    val picked: android.net.Uri? = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        res.data?.getParcelableExtra(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI, android.net.Uri::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        res.data?.getParcelableExtra(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+                    }
+                    com.wesal.messenger.core.util.WesalTones.set(toneCtx, tonePickCall, picked)
+                    tonePreview?.stop()
+                    tonePreview = com.wesal.messenger.core.util.WesalTones.preview(toneCtx, picked)
+                    toneTick++
+                }
+            }
+            fun launchTonePicker(call: Boolean) {
+                tonePickCall = call
+                val type = if (call) android.media.RingtoneManager.TYPE_RINGTONE else android.media.RingtoneManager.TYPE_NOTIFICATION
+                val intent = android.content.Intent(android.media.RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TYPE, type)
+                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
+                    val cur = com.wesal.messenger.core.util.WesalTones.resolve(toneCtx, call)
+                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, cur)
+                }
+                tonePicker.launch(intent)
+            }
+            SettingsRow(
+                Icons.Default.Notifications,
+                if (strings.isEnglish) "Notification tone" else "نغمة الإشعارات",
+                toneTick.let { com.wesal.messenger.core.util.WesalTones.title(toneCtx, false) },
+                trailing = {
+                    if (com.wesal.messenger.core.util.WesalTones.hasCustom(toneCtx, false)) {
+                        Text(
+                            if (strings.isEnglish) "Default" else "افتراضي",
+                            color = WesalColors.current.iconTint,
+                            modifier = Modifier.clickable {
+                                com.wesal.messenger.core.util.WesalTones.reset(toneCtx, false); toneTick++
+                            }.padding(8.dp)
+                        )
+                    }
+                }
+            ) { launchTonePicker(false) }
+            SettingsRow(
+                Icons.Default.Notifications,
+                if (strings.isEnglish) "Ringtone" else "نغمة الرنين",
+                toneTick.let { com.wesal.messenger.core.util.WesalTones.title(toneCtx, true) },
+                trailing = {
+                    if (com.wesal.messenger.core.util.WesalTones.hasCustom(toneCtx, true)) {
+                        Text(
+                            if (strings.isEnglish) "Default" else "افتراضي",
+                            color = WesalColors.current.iconTint,
+                            modifier = Modifier.clickable {
+                                com.wesal.messenger.core.util.WesalTones.reset(toneCtx, true); toneTick++
+                            }.padding(8.dp)
+                        )
+                    }
+                }
+            ) { launchTonePicker(true) }
             SettingsRow(
                 Icons.Default.Storage,
                 if (strings.isEnglish) "Build version" else "نسخة التطبيق",
