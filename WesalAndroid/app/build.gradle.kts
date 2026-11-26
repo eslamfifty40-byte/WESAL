@@ -1,3 +1,5 @@
+import java.time.Instant
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -18,7 +20,7 @@ android {
         targetSdk = 35
         versionCode = 1
         val buildSha = (System.getenv("GITHUB_SHA") ?: "local").take(7)
-        val buildTime = java.time.Instant.now().toString().take(16).replace("T", " ") + " UTC"
+        val buildTime = Instant.now().toString().take(16).replace("T", " ") + " UTC"
         versionName = "1.0.0-$buildSha"
         buildConfigField("String", "BUILD_STAMP", "\"$buildSha | $buildTime\"")
 
