@@ -2,10 +2,12 @@ package com.wesal.messenger.data.repository
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import android.util.Base64
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
@@ -38,6 +40,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.net.URL
 import java.util.UUID
@@ -405,8 +408,12 @@ class ChatRepositoryImpl @Inject constructor(
                     .document(chatId)
                     .collection(Constants.COLLECTION_MESSAGES)
                     .orderBy("timestamp", Query.Direction.ASCENDING)
-                    .addSnapshotListener { snapshot, error ->
-                        if (error != null || snapshot == null) return@addSnapshotListener
+                    .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
+                        if (error != null) {
+                            Log.e("WesalChat", "messages listener failed for chat $chatId: ${error.code} ${error.message}")
+                            return@addSnapshotListener
+                        }
+                        if (snapshot == null) return@addSnapshotListener
                         hasRemoteMessages.set(true)
                         launch(Dispatchers.Default) {
                             val messages = snapshot.documents.mapNotNull { doc ->
@@ -561,7 +568,7 @@ class ChatRepositoryImpl @Inject constructor(
             isEdited = doc.getBoolean("isEdited") ?: false,
             isDeletedForEveryone = isDeletedForEveryone,
             deletedForUsers = deletedFor,
-            status = rawStatus,
+            status = if (senderId == myUid && doc.metadata.hasPendingWrites()) MessageStatus.SENDING else rawStatus,
             timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
         )
     }
@@ -902,8 +909,6 @@ class ChatRepositoryImpl @Inject constructor(
             "timestamp" to now
         )
 
-        chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(messageData).await()
-
         val preview = cleanText.take(80)
         val chatUpdates = hashMapOf<String, Any>(
             "lastMessagePreview" to preview,
@@ -915,7 +920,18 @@ class ChatRepositoryImpl @Inject constructor(
         participants.filter { it != myUid }.forEach { otherUid ->
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
         }
-        chatRef.update(chatUpdates).await()
+        // One atomic write for the message and the chat summary. While offline the write is queued
+        // locally by Firestore (message shows as SENDING) and goes out automatically when back online,
+        // so we only wait a bounded time for the server acknowledgement.
+        val batch = firestore.batch()
+        batch.set(chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId), messageData)
+        batch.update(chatRef, chatUpdates)
+        val commitTask = batch.commit()
+        commitTask.addOnFailureListener { e ->
+            Log.e("WesalChat", "text send commit failed for chat $chatId: ${e.message}")
+        }
+        withTimeoutOrNull(20_000L) { commitTask.await() }
+        Unit
     }
 
     override fun sendMediaMessage(
@@ -1456,3 +1472,4 @@ class ChatRepositoryImpl @Inject constructor(
         chatRef.set(mapOf("unreadCounts.$myUid" to 0), SetOptions.merge()).await()
     }
 }
+
