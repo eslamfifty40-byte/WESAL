@@ -549,6 +549,7 @@ fun ChatDetailScreen(
                 val diagError by WesalDiag.error.collectAsStateWithLifecycle()
                 val diagStatus by WesalDiag.status.collectAsStateWithLifecycle()
                 val diagProbe by WesalDiag.probe.collectAsStateWithLifecycle()
+                val diagClr by WesalDiag.clearResult.collectAsStateWithLifecycle()
                 LaunchedEffect(Unit) {
                     if (WesalDiag.probe.value.isBlank()) {
                         kotlinx.coroutines.delay(6000L)
@@ -566,7 +567,7 @@ fun ChatDetailScreen(
                 }
                 if (diagStatus.isNotBlank()) {
                     androidx.compose.material3.Text(
-                        text = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe",
+                        text = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe | $diagClr",
                         color = Color(0xFFBBBBBB),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -584,7 +585,7 @@ fun ChatDetailScreen(
                             .background(Color(0xFFB00020))
                             .combinedClickable(
                                 onClick = {
-                                    val full = msg + "\n" + diagStatus + " | " + diagProbe
+                                    val full = msg + "\n" + diagStatus + " | " + diagProbe + " | " + diagClr
                                     val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                                         type = "text/plain"
                                         putExtra(android.content.Intent.EXTRA_TEXT, full)
