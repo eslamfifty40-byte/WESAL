@@ -24,6 +24,9 @@ android {
         versionName = "1.0.0-$buildSha"
         buildConfigField("String", "BUILD_STAMP", "\"$buildSha | $buildTime\"")
 
+        // Phones are arm64: shipping only that ABI shrinks the APK a lot (limited mobile data).
+        ndk { abiFilters += "arm64-v8a" }
+
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
