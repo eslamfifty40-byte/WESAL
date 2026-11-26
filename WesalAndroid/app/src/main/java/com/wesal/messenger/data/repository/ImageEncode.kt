@@ -1,5 +1,6 @@
 package com.wesal.messenger.data.repository
 
+import kotlinx.coroutines.tasks.await
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
