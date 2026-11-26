@@ -43,6 +43,8 @@ object Constants {
 
     const val CHANNEL_MESSAGES = "wesal_messages"
     const val CHANNEL_CALLS = "wesal_calls_silent_v2"
+    /** Audible fallback for incoming calls, used ONLY when the full-screen intent cannot fire. */
+    const val CHANNEL_CALLS_AUDIBLE = "wesal_calls_audible_v1"
     const val CHANNEL_CALLS_LEGACY = "wesal_calls"
     const val CHANNEL_STORIES = "wesal_stories"
     const val CHANNEL_CHANNELS = "wesal_channels"

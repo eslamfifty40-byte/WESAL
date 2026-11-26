@@ -4,44 +4,50 @@ import androidx.annotation.DrawableRes
 import androidx.compose.ui.graphics.Color
 import com.wesal.messenger.R
 
+/** Badge outline shapes (spec §6.1: shape + colour are both part of a seal type). */
+enum class VerificationSealShape {
+    STARBURST, CIRCLE, SHIELD, DIAMOND, HEXAGON, OCTAGON
+}
+
 enum class VerificationSealType(
     val key: String,
     val labelAr: String,
     val labelEn: String,
     val primaryHex: Long,
     val secondaryHex: Long,
-    val glowHex: Long
+    val glowHex: Long,
+    val shape: VerificationSealShape = VerificationSealShape.STARBURST
 ) {
     BLUE("BLUE", "الشارة الزرقاء", "Blue Seal", 0xFF1D9BF0L, 0xFF0A66C2L, 0xFF1D9BF0L),
-    BLACK("BLACK", "الشارة السمراء", "Black Seal", 0xFF111827L, 0xFF000000L, 0xFF00D5E8L),
-    GREEN("GREEN", "الشارة الخضراء", "Green Seal", 0xFF00C853L, 0xFF007E33L, 0xFF00E676L),
-    GOLD("GOLD", "الشارة الذهبية", "Gold Seal", 0xFFFFD54FL, 0xFFB8860BL, 0xFFFFD740L),
-    CYAN("CYAN", "الشارة السماوية", "Cyan Seal", 0xFF00D5E8L, 0xFF00838FL, 0xFF00E5FFL),
-    PURPLE("PURPLE", "الشارة البنفسجية", "Purple Seal", 0xFF9C27B0L, 0xFF4A148CL, 0xFFE040FBL),
-    RED("RED", "الشارة الحمراء", "Red Seal", 0xFFFF1744L, 0xFFB71C1CL, 0xFFFF5252L),
-    SILVER("SILVER", "الشارة الفضية", "Silver Seal", 0xFFE2E8F0L, 0xFF64748BL, 0xFFCBD5E1L),
-    ROSE("ROSE", "الشارة الوردية", "Rose Seal", 0xFFEC4899L, 0xFF9D174DL, 0xFFFF80ABL),
-    ORANGE("ORANGE", "الشارة البرتقالية", "Orange Seal", 0xFFFF9100L, 0xFFE65100L, 0xFFFFAB40L),
+    BLACK("BLACK", "الشارة السمراء", "Black Seal", 0xFF111827L, 0xFF000000L, 0xFF00D5E8L, VerificationSealShape.HEXAGON),
+    GREEN("GREEN", "الشارة الخضراء", "Green Seal", 0xFF00C853L, 0xFF007E33L, 0xFF00E676L, VerificationSealShape.CIRCLE),
+    GOLD("GOLD", "الشارة الذهبية", "Gold Seal", 0xFFFFD54FL, 0xFFB8860BL, 0xFFFFD740L, VerificationSealShape.OCTAGON),
+    CYAN("CYAN", "الشارة السماوية", "Cyan Seal", 0xFF00D5E8L, 0xFF00838FL, 0xFF00E5FFL, VerificationSealShape.DIAMOND),
+    PURPLE("PURPLE", "الشارة البنفسجية", "Purple Seal", 0xFF9C27B0L, 0xFF4A148CL, 0xFFE040FBL, VerificationSealShape.HEXAGON),
+    RED("RED", "الشارة الحمراء", "Red Seal", 0xFFFF1744L, 0xFFB71C1CL, 0xFFFF5252L, VerificationSealShape.SHIELD),
+    SILVER("SILVER", "الشارة الفضية", "Silver Seal", 0xFFE2E8F0L, 0xFF64748BL, 0xFFCBD5E1L, VerificationSealShape.CIRCLE),
+    ROSE("ROSE", "الشارة الوردية", "Rose Seal", 0xFFEC4899L, 0xFF9D174DL, 0xFFFF80ABL, VerificationSealShape.DIAMOND),
+    ORANGE("ORANGE", "الشارة البرتقالية", "Orange Seal", 0xFFFF9100L, 0xFFE65100L, 0xFFFFAB40L, VerificationSealShape.OCTAGON),
     INDIGO("INDIGO", "الشارة النيلية", "Indigo Seal", 0xFF6366F1L, 0xFF3730A3L, 0xFF818CF8L),
-    EMERALD("EMERALD", "الشارة الزمردية", "Emerald Seal", 0xFF10B981L, 0xFF065F46L, 0xFF34D399L),
+    EMERALD("EMERALD", "الشارة الزمردية", "Emerald Seal", 0xFF10B981L, 0xFF065F46L, 0xFF34D399L, VerificationSealShape.CIRCLE),
     TURQUOISE("TURQUOISE", "الشارة الفيروزية", "Turquoise Seal", 0xFF06B6D4L, 0xFF0E7490L, 0xFF22D3EEL),
-    CRIMSON("CRIMSON", "الشارة القرمزية", "Crimson Seal", 0xFFDC2626L, 0xFF7F1D1DL, 0xFFF87171L),
-    ROYAL_BLUE("ROYAL_BLUE", "الأزرق الملكي", "Royal Blue Seal", 0xFF2563EBL, 0xFF1E3A8AL, 0xFF60A5FAL),
+    CRIMSON("CRIMSON", "الشارة القرمزية", "Crimson Seal", 0xFFDC2626L, 0xFF7F1D1DL, 0xFFF87171L, VerificationSealShape.SHIELD),
+    ROYAL_BLUE("ROYAL_BLUE", "الأزرق الملكي", "Royal Blue Seal", 0xFF2563EBL, 0xFF1E3A8AL, 0xFF60A5FAL, VerificationSealShape.OCTAGON),
     LIME("LIME", "الشارة الليمونية", "Lime Seal", 0xFF84CC16L, 0xFF3F6212L, 0xFFA3E635L),
     AMBER("AMBER", "الشارة العنبرية", "Amber Seal", 0xFFF59E0BL, 0xFF92400EL, 0xFFFBBF24L),
     MAGENTA("MAGENTA", "الشارة الأرجوانية", "Magenta Seal", 0xFFD946EFL, 0xFF86198FL, 0xFFF0ABACL),
     TEAL("TEAL", "الأزرق المخضر", "Teal Seal", 0xFF14B8A6L, 0xFF115E59L, 0xFF2DD4BFL),
     CORAL("CORAL", "الشارة المرجانية", "Coral Seal", 0xFFFF6B6BL, 0xFFC92A2AL, 0xFFFF8787L),
     VIOLET("VIOLET", "البنفسجي الداكن", "Violet Seal", 0xFF8B5CF6L, 0xFF4C1D95L, 0xFFA78BFAL),
-    PLATINUM("PLATINUM", "الشارة البلاتينية", "Platinum Seal", 0xFFF8FAFCL, 0xFF94A3B8L, 0xFFE2E8F0L),
-    BRONZE("BRONZE", "الشارة البرونزية", "Bronze Seal", 0xFFCD7F32L, 0xFF7C4A15L, 0xFFE6A15CL),
+    PLATINUM("PLATINUM", "الشارة البلاتينية", "Platinum Seal", 0xFFF8FAFCL, 0xFF94A3B8L, 0xFFE2E8F0L, VerificationSealShape.OCTAGON),
+    BRONZE("BRONZE", "الشارة البرونزية", "Bronze Seal", 0xFFCD7F32L, 0xFF7C4A15L, 0xFFE6A15CL, VerificationSealShape.OCTAGON),
     MINT("MINT", "الشارة النعناعية", "Mint Seal", 0xFF00E5A3L, 0xFF008F64L, 0xFF69F0AEL),
-    SAPPHIRE("SAPPHIRE", "الشارة الياقوتية الأزرق", "Sapphire Seal", 0xFF0F52BAL, 0xFF082D69L, 0xFF3B82F6L),
-    RUBY("RUBY", "الشارة الياقوتية الأحمر", "Ruby Seal", 0xFFE0115FL, 0xFF880E4FL, 0xFFFF4081L),
-    PEARL("PEARL", "الشارة اللؤلؤية", "Pearl Seal", 0xFFF1F5F9L, 0xFF475569L, 0xFF00D9E8L),
-    OBSIDIAN("OBSIDIAN", "الأوبسيديان الملكي", "Obsidian Seal", 0xFF1E293BL, 0xFF020617L, 0xFFFFD54FL),
+    SAPPHIRE("SAPPHIRE", "الشارة الياقوتية الأزرق", "Sapphire Seal", 0xFF0F52BAL, 0xFF082D69L, 0xFF3B82F6L, VerificationSealShape.DIAMOND),
+    RUBY("RUBY", "الشارة الياقوتية الأحمر", "Ruby Seal", 0xFFE0115FL, 0xFF880E4FL, 0xFFFF4081L, VerificationSealShape.SHIELD),
+    PEARL("PEARL", "الشارة اللؤلؤية", "Pearl Seal", 0xFFF1F5F9L, 0xFF475569L, 0xFF00D9E8L, VerificationSealShape.CIRCLE),
+    OBSIDIAN("OBSIDIAN", "الأوبسيديان الملكي", "Obsidian Seal", 0xFF1E293BL, 0xFF020617L, 0xFFFFD54FL, VerificationSealShape.HEXAGON),
     NEON_YELLOW("NEON_YELLOW", "الأصفر الفسفوري", "Neon Yellow Seal", 0xFFFACC15L, 0xFFA16207L, 0xFFFEF08AL),
-    COSMIC("COSMIC", "الشارة الكونية", "Cosmic Seal", 0xFF7C3AEDL, 0xFF0EA5E9L, 0xFF38BDF8L);
+    COSMIC("COSMIC", "الشارة الكونية", "Cosmic Seal", 0xFF7C3AEDL, 0xFF0EA5E9L, 0xFF38BDF8L, VerificationSealShape.DIAMOND);
 
     companion object {
         fun fromKey(raw: String?): VerificationSealType =
@@ -297,16 +303,20 @@ data class WesalFrameSpec(
 object WesalFrameCatalog {
     const val DEFAULT_ALL_CUSTOMERS_FRAME_ID = "all_customers"
 
+    // Default frame for EVERY customer: the royal lion ADMIN crest from the reference artwork.
+    // The asset is a 1536x1536 (1:1) transparent square; the user's photo shows through the
+    // circular opening (centre at 39.6% of the height, diameter 49.6% of the width, measured
+    // from the artwork's transparent aperture) and the crest is drawn over it.
     val defaultCustomerFrame = WesalFrameSpec(
         id = DEFAULT_ALL_CUSTOMERS_FRAME_ID,
-        titleAr = "إطار عملاء WESAL الافتراضي",
-        titleEn = "Default WESAL Frame",
+        titleAr = "إطار WESAL الملكي الافتراضي لكل العملاء",
+        titleEn = "Default WESAL Royal Frame (All Customers)",
         category = FrameCategory.DEFAULT_ALL_CUSTOMERS,
-        resId = R.drawable.wesal_frame_all_customers,
+        resId = R.drawable.wesal_frame_royal_admin_1536,
         overlayOnTop = true,
-        accentColorHex = 0xFF00D9E8L,
-        apertureCenterYFraction = 0.50f,
-        apertureDiameterFraction = 0.60f
+        accentColorHex = 0xFFFF3B1FL,
+        apertureCenterYFraction = 0.396f,
+        apertureDiameterFraction = 0.496f
     )
 
     val customerFrames: List<WesalFrameSpec> = listOf(

@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -45,6 +46,7 @@ import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
 import com.google.firebase.firestore.FirebaseFirestore
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.FramePickerItem
 import com.wesal.messenger.core.util.LocalWesalStrings
@@ -61,6 +63,8 @@ import com.wesal.messenger.domain.model.ChannelPostType
 import com.wesal.messenger.domain.model.GlobalAppearanceConfig
 import com.wesal.messenger.domain.model.OfficialAnnouncement
 import com.wesal.messenger.domain.model.SubscriptionRequest
+import com.wesal.messenger.domain.model.SupportTicket
+import com.wesal.messenger.domain.model.SupportTicketMessage
 import com.wesal.messenger.domain.model.SystemWelcomeConfig
 import com.wesal.messenger.domain.model.VerificationAuditLog
 import com.wesal.messenger.domain.model.WesalChannel
@@ -112,7 +116,8 @@ enum class AdminSection(
     CONTENT_REVIEW(19, "مراجعة المحتوى", "Content Review", Icons.Default.RateReview),
     SUBSCRIPTION_REQUESTS(20, "طلبات التوثيق", "Requests", Icons.Default.Badge),
     MODERATORS(21, "المشرفون المساعدون", "Moderators", Icons.Default.SupervisorAccount),
-    GLOBAL_APPEARANCE(22, "مظهر وألوان التطبيق", "App Theme", Icons.Default.Palette);
+    GLOBAL_APPEARANCE(22, "مظهر وألوان التطبيق", "App Theme", Icons.Default.Palette),
+    SUPPORT_TICKETS(23, "تذاكر الدعم", "Support Tickets", Icons.Default.SupportAgent);
 
     fun isAllowedFor(p: AdminPermissions): Boolean {
         if (!p.hasAnyAccess()) return false
@@ -128,6 +133,7 @@ enum class AdminSection(
             ADMIN_SETTINGS -> p.canManageAdmins || p.canCustomizeGlobalTheme
             MODERATORS -> p.canManageAdmins
             GLOBAL_APPEARANCE -> p.canCustomizeGlobalTheme
+            SUPPORT_TICKETS -> p.canManageReports || p.canManageUsersModeration
         }
     }
 }
@@ -207,6 +213,49 @@ class AdminVerificationViewModel @Inject constructor(
 
     val reports: StateFlow<List<AdminReportRecord>> = userRepository.observeAdminReports()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    // Support tickets (spec §9.8): until now observeAllSupportTickets() had NO admin UI
+    // caller, so user support requests never reached the panel. Wired end-to-end here:
+    // list -> thread -> reply / status change (repository already implemented).
+    val supportTickets: StateFlow<List<SupportTicket>> = userRepository.observeAllSupportTickets()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _selectedSupportTicketId = MutableStateFlow<String?>(null)
+    val selectedSupportTicketId: StateFlow<String?> = _selectedSupportTicketId
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val supportTicketMessages: StateFlow<List<SupportTicketMessage>> = _selectedSupportTicketId
+        .flatMapLatest { id ->
+            if (id.isNullOrBlank()) kotlinx.coroutines.flow.flowOf(emptyList())
+            else userRepository.observeSupportTicketMessages(id)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun selectSupportTicket(ticketId: String?) {
+        _selectedSupportTicketId.value = ticketId
+    }
+
+    fun replySupportTicket(ticketId: String, text: String, newStatus: String? = null) {
+        val clean = text.trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.replySupportTicket(ticketId, clean, newStatus)
+                .onSuccess { _statusMessage.value = "تم إرسال الرد على التذكرة ✓" }
+                .onFailure { _statusMessage.value = it.message ?: "فشل إرسال الرد" }
+            _busy.value = false
+        }
+    }
+
+    fun setSupportTicketStatus(ticketId: String, status: String) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.updateSupportTicketStatus(ticketId, status)
+                .onSuccess { _statusMessage.value = "تم تحديث حالة التذكرة: $status" }
+                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث حالة التذكرة" }
+            _busy.value = false
+        }
+    }
 
     val announcements: StateFlow<List<OfficialAnnouncement>> = userRepository.observeOfficialAnnouncements()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -474,6 +523,23 @@ class AdminVerificationViewModel @Inject constructor(
                     refreshAll()
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الأيقونة" }
+            _busy.value = false
+        }
+    }
+
+    fun applyNameplateColor(target: WesalUser, colorKey: String) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.setAccountNameplateColor(target.uid, colorKey)
+                .onSuccess {
+                    _statusMessage.value = if (colorKey.isBlank()) {
+                        "تمت إعادة تعيين لون لوحة الاسم"
+                    } else {
+                        "تم تعيين لون لوحة الاسم بنجاح"
+                    }
+                    refreshAll()
+                }
+                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث لون لوحة الاسم" }
             _busy.value = false
         }
     }
@@ -873,6 +939,9 @@ fun AdminVerificationScreen(
     val welcomeConfig by viewModel.welcomeConfig.collectAsStateWithLifecycle()
     val globalFrameEnabled by viewModel.globalCustomerFrameEnabled.collectAsStateWithLifecycle()
     val reports by viewModel.reports.collectAsStateWithLifecycle()
+    val supportTickets by viewModel.supportTickets.collectAsStateWithLifecycle()
+    val selectedSupportTicketId by viewModel.selectedSupportTicketId.collectAsStateWithLifecycle()
+    val supportTicketMessages by viewModel.supportTicketMessages.collectAsStateWithLifecycle()
     val verificationLogs by viewModel.verificationLogs.collectAsStateWithLifecycle()
     val hiddenLogs by viewModel.hiddenLogs.collectAsStateWithLifecycle()
     val adminActionLogs by viewModel.adminActionLogs.collectAsStateWithLifecycle()
@@ -1163,6 +1232,15 @@ fun AdminVerificationScreen(
                     onReviewReport = { reviewReportTarget = it },
                     onOpenChat = { r -> viewModel.inspectReportedChat(r, onOpenChat) },
                     onOpenUser = onOpenUserProfile
+                )
+
+                AdminSection.SUPPORT_TICKETS -> AdminSupportTicketsSection(
+                    tickets = supportTickets,
+                    selectedTicketId = selectedSupportTicketId,
+                    messages = supportTicketMessages,
+                    onSelectTicket = { viewModel.selectSupportTicket(it) },
+                    onReply = { ticketId, text -> viewModel.replySupportTicket(ticketId, text) },
+                    onStatusChange = { ticketId, status -> viewModel.setSupportTicketStatus(ticketId, status) }
                 )
 
                 AdminSection.BANS_WARNINGS -> AdminBansWarningsSection(
@@ -1486,6 +1564,10 @@ fun AdminVerificationScreen(
             },
             onApplyNeon = { preset, glow, enabled ->
                 viewModel.applyNeon(target, preset, glow, enabled)
+                frameNeonTarget = null
+            },
+            onApplyNameplateColor = { colorKey ->
+                viewModel.applyNameplateColor(target, colorKey)
                 frameNeonTarget = null
             }
         )
@@ -1914,6 +1996,233 @@ private fun SmallAdminChip(text: String, icon: ImageVector, onClick: () -> Unit)
         ) {
             Icon(icon, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(14.dp))
             Text(text, color = palette.textPrimary, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+@Composable
+private fun AdminSupportTicketsSection(
+    tickets: List<SupportTicket>,
+    selectedTicketId: String?,
+    messages: List<SupportTicketMessage>,
+    onSelectTicket: (String?) -> Unit,
+    onReply: (String, String) -> Unit,
+    onStatusChange: (String, String) -> Unit
+) {
+    val palette = WesalColors.current
+    val selectedTicket = tickets.firstOrNull { it.ticketId == selectedTicketId }
+    // State is hoisted unconditionally: remember{} must never be called conditionally,
+    // or switching between the list and thread branches corrupts the slot table.
+    var statusFilter by remember { mutableStateOf("ALL") }
+    var replyText by remember(selectedTicketId) { mutableStateOf("") }
+
+    if (selectedTicket == null) {
+        val filters = listOf("ALL", "OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED")
+        val filtered =
+            if (statusFilter == "ALL") tickets else tickets.filter { it.status == statusFilter }
+        Column(modifier = Modifier.fillMaxSize()) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(filters) { f ->
+                    FilterChip(
+                        selected = statusFilter == f,
+                        onClick = { statusFilter = f },
+                        label = { Text(f) }
+                    )
+                }
+            }
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (filtered.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("لا توجد تذاكر دعم مطابقة", color = palette.textMuted)
+                        }
+                    }
+                }
+                items(filtered, key = { it.ticketId }) { ticket ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = palette.surface),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().clickable { onSelectTicket(ticket.ticketId) }
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    ticket.referenceNumber.ifBlank { ticket.ticketId.take(8) },
+                                    color = palette.turquoise,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                                Text(
+                                    ticket.status,
+                                    color = palette.textSecondary,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            }
+                            Text(
+                                ticket.subject.ifBlank { "طلب دعم" },
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                "${ticket.userName} • ${ticket.userPublicId.ifBlank { ticket.userNumericId }}",
+                                color = palette.textSecondary,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            if (ticket.lastReplyText.isNotBlank()) {
+                                Text(
+                                    ticket.lastReplyText,
+                                    color = palette.textMuted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2
+                                )
+                            }
+                            Text(
+                                formatAdminTime(ticket.updatedAt),
+                                color = palette.textMuted,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+
+    // Thread view for the selected ticket.
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+        ) {
+            IconButton(onClick = { onSelectTicket(null) }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = palette.textPrimary)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "${selectedTicket.referenceNumber.ifBlank { selectedTicket.ticketId.take(8) }} • ${selectedTicket.subject}",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1
+                )
+                Text(
+                    "${selectedTicket.userName} • ${selectedTicket.userPublicId.ifBlank { selectedTicket.userNumericId }} • ${selectedTicket.status}",
+                    color = palette.textSecondary,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1
+                )
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+        ) {
+            listOf("OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED").forEach { status ->
+                FilterChip(
+                    selected = selectedTicket.status == status,
+                    onClick = { onStatusChange(selectedTicket.ticketId, status) },
+                    label = { Text(status, maxLines = 1) }
+                )
+            }
+        }
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = palette.surface),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(selectedTicket.message, color = palette.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            formatAdminTime(selectedTicket.createdAt),
+                            color = palette.textMuted,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+            }
+            items(messages, key = { it.messageId }) { msg ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = if (msg.isFromAdmin) Arrangement.End else Arrangement.Start
+                ) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (msg.isFromAdmin) palette.surfaceElevated else palette.surface
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth(0.85f)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(
+                                if (msg.isFromAdmin) "الدعم" else msg.senderName.ifBlank { selectedTicket.userName },
+                                color = palette.turquoise,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(msg.text, color = palette.textPrimary, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                formatAdminTime(msg.createdAt),
+                                color = palette.textMuted,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp)
+        ) {
+            OutlinedTextField(
+                value = replyText,
+                onValueChange = { replyText = it },
+                label = { Text("رد الدعم…") },
+                modifier = Modifier.weight(1f),
+                maxLines = 4
+            )
+            IconButton(
+                onClick = {
+                    onReply(selectedTicket.ticketId, replyText)
+                    replyText = ""
+                },
+                enabled = replyText.isNotBlank()
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = palette.turquoise)
+            }
         }
     }
 }
@@ -3123,11 +3432,13 @@ private fun AdminFrameAndNeonDialog(
     onDismiss: () -> Unit,
     onApplyFrame: (String, Long, String) -> Unit,
     onApplyIcon: (String, String) -> Unit,
-    onApplyNeon: (NeonColorPreset, Float, Boolean) -> Unit
+    onApplyNeon: (NeonColorPreset, Float, Boolean) -> Unit,
+    onApplyNameplateColor: (String) -> Unit
 ) {
     val palette = WesalColors.current
-    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon
+    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon, 4 = Nameplate colour
     var selectedFrameId by remember(user.uid) { mutableStateOf(user.frameId) }
+    var selectedNameplateKey by remember(user.uid) { mutableStateOf(user.nameplateColor) }
     var selectedIconId by remember(user.uid) { mutableStateOf(user.iconId) }
     var selectedIconUrl by remember(user.uid) { mutableStateOf(WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)) }
     var previewCutout by remember(user.uid) { mutableStateOf(user.photoRemovedBg) }
@@ -3372,6 +3683,7 @@ private fun AdminFrameAndNeonDialog(
                     Tab(selected = modeTab == 1, onClick = { modeTab = 1 }, text = { Text("الإدارة (${WesalFrameLibrary.pickerItems("ADMIN", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 2, onClick = { modeTab = 2 }, text = { Text("الأيقونات (${WesalFrameLibrary.pickerItems("ICON", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 3, onClick = { modeTab = 3 }, text = { Text("النيون", maxLines = 1) })
+                    Tab(selected = modeTab == 4, onClick = { modeTab = 4 }, text = { Text("لون الاسم", maxLines = 1) })
                 }
 
                 if (modeTab in 0..2) {
@@ -3507,6 +3819,59 @@ private fun AdminFrameAndNeonDialog(
                             )
                         }
                     }
+                } else if (modeTab == 4) {
+                    // Nameplate colour grant (owner rule: admin panel only, 10001/10002 or a
+                    // delegated frames/appearance admin). Regular users can no longer pick
+                    // this themselves in ProfileScreen.
+                    Text(
+                        "اختر لون لوحة الاسم لهذا الحساب:",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    ) {
+                        WesalNameplateColorPreset.entries.forEach { preset ->
+                            FilterChip(
+                                selected = selectedNameplateKey.equals(preset.key, ignoreCase = true),
+                                onClick = { selectedNameplateKey = preset.key },
+                                label = { Text(preset.labelAr, maxLines = 1) },
+                                leadingIcon = {
+                                    Box(
+                                        Modifier
+                                            .size(14.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(preset.midHex))
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    val previewPreset = WesalNameplateColorPreset.fromKey(selectedNameplateKey)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        Color(previewPreset.edgeHex),
+                                        Color(previewPreset.centerHex),
+                                        Color(previewPreset.midHex)
+                                    )
+                                )
+                            )
+                            .border(1.dp, Color(previewPreset.borderAccentHex), RoundedCornerShape(14.dp))
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            user.displayName.ifBlank { user.publicId },
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Switch(
@@ -3562,6 +3927,17 @@ private fun AdminFrameAndNeonDialog(
                     onApplyNeon(effectivePreset, neonGlow, neonEnabled)
                 }) {
                     Text("حفظ النيون")
+                }
+                4 -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(onClick = { onApplyNameplateColor("") }) {
+                        Text("إعادة تعيين")
+                    }
+                    Button(
+                        onClick = { onApplyNameplateColor(selectedNameplateKey) },
+                        enabled = selectedNameplateKey.isNotBlank()
+                    ) {
+                        Text("تطبيق اللون")
+                    }
                 }
                 2 -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     OutlinedButton(onClick = { onApplyIcon("", "") }) {
@@ -4186,6 +4562,102 @@ private fun AdminGlobalAppearanceSection(
         item {
             ColorSwatchCard("لون صبغة الأيقونات (Icon Tint)", listOf("افتراضي" to 0L) + accentChoices, draft.iconTintHex) {
                 draft = draft.copy(iconTintHex = it)
+            }
+        }
+
+        item {
+            // Live preview of the DRAFT colours (spec §11: admin sees the result before
+            // publishing). Hex 0 means "app default", so fall back to the live palette.
+            val previewBg = if (draft.backgroundHex != 0L) Color(draft.backgroundHex) else palette.background
+            val previewSurface = if (draft.surfaceHex != 0L) Color(draft.surfaceHex) else palette.surface
+            val previewText = if (draft.textPrimaryHex != 0L) Color(draft.textPrimaryHex) else palette.textPrimary
+            val previewPrimary = if (draft.emeraldHex != 0L) Color(draft.emeraldHex) else palette.emerald
+            val previewAccent = if (draft.turquoiseHex != 0L) Color(draft.turquoiseHex) else palette.turquoise
+            val previewIconTint = if (draft.iconTintHex != 0L) Color(draft.iconTintHex) else previewAccent
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "معاينة مباشرة (قبل الحفظ)",
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(previewBg)
+                            .padding(12.dp)
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(previewSurface)
+                                    .padding(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(previewPrimary),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("و", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        "محادثة تجريبية",
+                                        color = previewText,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        "هكذا ستبدو الألوان على أجهزة الجميع",
+                                        color = previewText.copy(alpha = 0.65f),
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                                Icon(
+                                    Icons.Default.Notifications,
+                                    contentDescription = null,
+                                    tint = previewIconTint
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(previewPrimary)
+                                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                                ) {
+                                    Text("زر أساسي", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(50))
+                                        .background(previewAccent)
+                                        .padding(horizontal = 14.dp, vertical = 7.dp)
+                                ) {
+                                    Text("تمييز", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+                    }
+                    if (!draft.enabled) {
+                        Text(
+                            "تنبيه: المظهر العام غير مفعّل — فعّل المفتاح أعلاه ليصل هذا المظهر لكل الأجهزة.",
+                            color = palette.warning,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
             }
         }
 

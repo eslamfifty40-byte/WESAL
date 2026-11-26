@@ -294,12 +294,16 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     private suspend fun isGlobalCustomerFrameEnabled(): Boolean {
-        val snap = runCatching {
-            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
-                .document("admin_settings")
-                .get()
-                .await()
-        }.getOrNull()
+        // Bounded: this fetch sits on the registration path and must never stall sign-in;
+        // on timeout/failure the historical default (enabled) applies.
+        val snap = withTimeoutOrNull(5_000L) {
+            runCatching {
+                firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                    .document("admin_settings")
+                    .get()
+                    .await()
+            }.getOrNull()
+        }
         return snap?.getBoolean("globalCustomerFrameEnabled") ?: true
     }
 
@@ -397,7 +401,7 @@ class AuthRepositoryImpl @Inject constructor(
         provider: String = "email"
     ): Boolean {
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        val snapshot = userRef.get().await()
+        val snapshot = userRef.get().awaitBounded()
         val pubKey = cryptoManager.getOrCreateIdentityPublicKeyBase64(uid)
         val normalizedPhone = if (phone.isNotBlank()) PhoneUtils.normalizeToE164(phone) ?: phone else ""
         val verifiedPhoneHash = if (phoneVerified && normalizedPhone.isNotBlank()) {
@@ -482,7 +486,9 @@ class AuthRepositoryImpl @Inject constructor(
                 ?: (existingPhone.isNotBlank() && existingEmail.isBlank())
 
             val privSnap = runCatching {
-                userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").get().await()
+                withTimeoutOrNull(8_000L) {
+                    userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").get().await()
+                }
             }.getOrNull()
             val privatePhone = privSnap?.getString("phoneNumber").orEmpty()
             val privateBirthDate = privSnap?.getString("birthDate").orEmpty()
@@ -537,7 +543,10 @@ class AuthRepositoryImpl @Inject constructor(
                 Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.SECONDARY_ADMIN_NUMERIC_ID
                 Constants.SUPER_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.OWNER_ADMIN_NUMERIC_ID
                 WesalIdUtils.isValidNumericId(existingNumericId) -> existingNumericId
-                else -> allocateUniqueNumericId(uid, resolvedEmail)
+                // Bounded: numeric-id allocation is retryable on a later sign-in and must
+                // never hold the current sign-in hostage.
+                else -> withTimeoutOrNull(8_000L) { allocateUniqueNumericId(uid, resolvedEmail) }
+                    ?: existingNumericId
             }
             prefs.upsertSavedAccount(
                 SavedWesalAccount(
@@ -663,12 +672,20 @@ class AuthRepositoryImpl @Inject constructor(
             val cleanPhone = phoneE164?.trim().orEmpty()
             val normalizedPhone = PhoneUtils.normalizeToE164(cleanPhone)
                 ?: throw IllegalArgumentException("يرجى إدخال رقم هاتف دولي صحيح")
-            reserveUniquePhone(uid, normalizedPhone)
+            // Bounded: the uniqueness check must complete or fail with a message — never spin
+            // forever (it is NOT skipped on timeout, to protect phone uniqueness).
+            val phoneReserved = withTimeoutOrNull(12_000L) {
+                reserveUniquePhone(uid, normalizedPhone)
+                true
+            } ?: false
+            if (!phoneReserved) {
+                throw IllegalStateException("انتهت مهلة التحقق من رقم الهاتف، تحقق من الإنترنت وحاول مرة أخرى")
+            }
 
             val validDob = validateBirthDate(birthDate.orEmpty())
 
             val docRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-            val existingSnap = docRef.get().await()
+            val existingSnap = docRef.get().awaitBounded()
             val existingPrivacy = (existingSnap.get("privacySettings") as? Map<String, Any?>)?.toMutableMap()
                 ?: mutableMapOf()
             val hidePhone = (existingPrivacy["hidePhoneNumber"] as? Boolean) ?: false
@@ -704,7 +721,7 @@ class AuthRepositoryImpl @Inject constructor(
                 val dupSnap = firestore.collection(Constants.COLLECTION_USERS)
                     .whereEqualTo("publicId", normalizedId)
                     .get()
-                    .await()
+                    .awaitBounded()
                 if (dupSnap.documents.any { it.id != uid }) {
                     return Result.failure(IllegalArgumentException("معرف وصال @$normalizedId مستخدم بالفعل، اختر معرفاً آخر"))
                 }
@@ -741,22 +758,32 @@ class AuthRepositoryImpl @Inject constructor(
             docRef.collection(Constants.SUBCOLLECTION_PRIVATE)
                 .document("info")
                 .set(privateInfo, SetOptions.merge())
-                .await()
+                .awaitQueued()
 
-            docRef.set(updates, SetOptions.merge()).await()
+            // Queued-bounded: Firestore persists this write locally and syncs it; waiting for a
+            // server ack on a stalled stream was the other half of the "profile setup spins
+            // forever" hang.
+            docRef.set(updates, SetOptions.merge()).awaitQueued(8_000L)
             if (!WesalIdUtils.isValidNumericId(existingSnap.getString("numericId"))) {
-                allocateUniqueNumericId(uid)
+                withTimeoutOrNull(8_000L) { allocateUniqueNumericId(uid) }
             }
             prefs.setCachedStartupProfileState(uid, true)
             prefs.setLocationState(locationGranted, locationGraceStartedAt)
-            syncFcmToken()
-            registerDeviceSession(uid)
+            // Side effects (token + session registration) are bounded and best-effort here:
+            // they must never block profile completion.
+            withTimeoutOrNull(8_000L) { runCatching { syncFcmToken() } }
+            withTimeoutOrNull(8_000L) { runCatching { registerDeviceSession(uid) } }
 
             // Deliver single deterministic official WESAL Messenger welcome message (Sec 15 & Sec 26)
-            runCatching { sendSingleOfficialWelcomeIfNeeded(uid, cleanName) }
+            // Bounded: the welcome write contains unbounded awaits internally and must not
+            // block profile completion (it is retried on later sign-ins via welcomeSent).
+            withTimeoutOrNull(10_000L) { runCatching { sendSingleOfficialWelcomeIfNeeded(uid, cleanName) } }
 
-            val snap = docRef.get().await()
-            val savedUser = snap.toWesalUser().copy(
+            // Bounded read-back: on timeout, fall back to the pre-write snapshot + the fields
+            // just saved instead of hanging the completion flow.
+            val snap = withTimeoutOrNull(8_000L) { docRef.get().await() }
+            val savedUser = (snap?.toWesalUser() ?: existingSnap.toWesalUser().copy(profileCompleted = true)).copy(
+                displayName = cleanName,
                 phoneNumber = normalizedPhone,
                 birthDate = validDob
             )
@@ -909,24 +936,29 @@ class AuthRepositoryImpl @Inject constructor(
             if (uid != null) {
                 val sessionId = prefs.getOrCreateDeviceSessionId()
                 runCatching {
-                    val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-                    userRef.collection(Constants.COLLECTION_SESSIONS)
-                        .document(sessionId)
-                        .delete()
-                        .await()
-                    val remainingSessions = runCatching {
-                        userRef.collection(Constants.COLLECTION_SESSIONS).get().await()
-                            .documents.count { !it.id.startsWith("link_") }
-                    }.getOrDefault(0)
-                    userRef.update(
-                        mapOf(
-                            "isOnline" to false,
-                            "lastSeen" to FieldValue.serverTimestamp(),
-                            "lastHeartbeatAt" to 0L,
-                            "fcmToken" to "",
-                            "activeSessionsCount" to remainingSessions
-                        )
-                    ).await()
+                    // Bounded: server-side sign-out cleanup is best-effort and must never
+                    // prevent the LOCAL sign-out below (a stalled stream here used to leave
+                    // the user stuck "signed in" until the app was killed).
+                    withTimeoutOrNull(6_000L) {
+                        val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+                        userRef.collection(Constants.COLLECTION_SESSIONS)
+                            .document(sessionId)
+                            .delete()
+                            .await()
+                        val remainingSessions = runCatching {
+                            userRef.collection(Constants.COLLECTION_SESSIONS).get().await()
+                                .documents.count { !it.id.startsWith("link_") }
+                        }.getOrDefault(0)
+                        userRef.update(
+                            mapOf(
+                                "isOnline" to false,
+                                "lastSeen" to FieldValue.serverTimestamp(),
+                                "lastHeartbeatAt" to 0L,
+                                "fcmToken" to "",
+                                "activeSessionsCount" to remainingSessions
+                            )
+                        ).await()
+                    }
                 }
             }
 
@@ -1224,4 +1256,15 @@ class AuthRepositoryImpl @Inject constructor(
  */
 private suspend fun <T> Task<T>.awaitQueued(timeoutMs: Long = 6_000L) {
     withTimeoutOrNull(timeoutMs) { await() }
+}
+
+/**
+ * Reads on the sign-in path must be bounded too: a Firestore get() on a stalled gRPC stream
+ * can suspend forever, which is exactly what froze login/registration on a permanent spinner
+ * (killing and reopening the app "fixed" it because a fresh stream was created). On timeout
+ * this throws a clear, retryable error instead of hanging.
+ */
+private suspend fun <T> Task<T>.awaitBounded(timeoutMs: Long = 12_000L): T {
+    return withTimeoutOrNull(timeoutMs) { await() }
+        ?: throw IllegalStateException("انتهت مهلة الاتصال بالخادم، تحقق من الإنترنت وحاول مرة أخرى")
 }

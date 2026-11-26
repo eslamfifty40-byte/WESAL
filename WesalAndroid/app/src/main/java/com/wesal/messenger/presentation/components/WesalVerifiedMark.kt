@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.Dp
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.VerificationSealShape
 import com.wesal.messenger.core.util.VerificationSealType
 import kotlin.math.PI
 import kotlin.math.cos
@@ -61,19 +62,50 @@ fun WesalVerifiedMark(
                 center = c
             )
         }
-        val star = Path()
-        val n = 24
-        for (i in 0 until n) {
-            val ang = PI * 2 * i / n - PI / 2
-            val r = if (i % 2 == 0) s * 0.46f else s * 0.38f
-            val x = c.x + (r * cos(ang)).toFloat()
-            val y = c.y + (r * sin(ang)).toFloat()
-            if (i == 0) star.moveTo(x, y) else star.lineTo(x, y)
+        // Badge SHAPE comes from the seal type the admin granted (spec §6.1): the same
+        // shape renders in the profile, chat list, chat screen, search and contacts,
+        // because every surface draws through this one composable.
+        val badgePath = Path()
+        fun polygon(sides: Int, radius: Float, rotation: Double = -PI / 2) {
+            for (i in 0 until sides) {
+                val ang = PI * 2 * i / sides + rotation
+                val x = c.x + (radius * cos(ang)).toFloat()
+                val y = c.y + (radius * sin(ang)).toFloat()
+                if (i == 0) badgePath.moveTo(x, y) else badgePath.lineTo(x, y)
+            }
+            badgePath.close()
         }
-        star.close()
-        drawPath(star, resolvedFill)
+        when (sealType.shape) {
+            VerificationSealShape.STARBURST -> {
+                val n = 24
+                for (i in 0 until n) {
+                    val ang = PI * 2 * i / n - PI / 2
+                    val r = if (i % 2 == 0) s * 0.46f else s * 0.38f
+                    val x = c.x + (r * cos(ang)).toFloat()
+                    val y = c.y + (r * sin(ang)).toFloat()
+                    if (i == 0) badgePath.moveTo(x, y) else badgePath.lineTo(x, y)
+                }
+                badgePath.close()
+            }
+            VerificationSealShape.CIRCLE -> {
+                badgePath.addOval(androidx.compose.ui.geometry.Rect(center = c, radius = s * 0.45f))
+            }
+            VerificationSealShape.SHIELD -> {
+                badgePath.moveTo(c.x, s * 0.06f)
+                badgePath.lineTo(s * 0.82f, s * 0.16f)
+                badgePath.lineTo(s * 0.82f, s * 0.48f)
+                badgePath.quadraticBezierTo(s * 0.82f, s * 0.78f, c.x, s * 0.95f)
+                badgePath.quadraticBezierTo(s * 0.18f, s * 0.78f, s * 0.18f, s * 0.48f)
+                badgePath.lineTo(s * 0.18f, s * 0.16f)
+                badgePath.close()
+            }
+            VerificationSealShape.DIAMOND -> polygon(4, s * 0.48f)
+            VerificationSealShape.HEXAGON -> polygon(6, s * 0.47f)
+            VerificationSealShape.OCTAGON -> polygon(8, s * 0.47f, -PI / 2 + PI / 8)
+        }
+        drawPath(badgePath, resolvedFill)
         drawPath(
-            path = star,
+            path = badgePath,
             color = borderStrokeColor,
             style = Stroke(width = s * 0.055f, join = StrokeJoin.Round)
         )

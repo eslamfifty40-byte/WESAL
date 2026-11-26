@@ -49,25 +49,21 @@ export const onNewMessagePush = onDocumentCreated(
       const token = userData?.fcmToken;
       if (!token) continue;
 
-      const hiddenChatIds: string[] = userData?.hiddenChatIds || [];
-      const isHiddenForRecipient = hiddenChatIds.includes(chatId);
-
+      // Hidden-chat notification suppression is CLIENT-side only, by design:
+      // the Android app keeps hidden chat IDs in per-account encrypted local storage and
+      // WesalFirebaseMessagingService suppresses those notifications on-device.
+      // A previous server branch read `users/{uid}.hiddenChatIds`, a field the app never
+      // writes — and must not write: user docs are readable by any signed-in user under
+      // the current rules, so storing the hidden list there would leak it. Branch removed.
       await admin.messaging().send({
         token,
-        data: isHiddenForRecipient
-          ? {
-              type: "HIDDEN_MESSAGE",
-              messageId: event.params.messageId,
-              title: "WESAL Messenger",
-              body: "لديك رسالة جديدة"
-            }
-          : {
-              type: isGroup ? "GROUP_MESSAGE" : "MESSAGE",
-              messageId: event.params.messageId,
-              chatId,
-              title,
-              body
-            },
+        data: {
+          type: isGroup ? "GROUP_MESSAGE" : "MESSAGE",
+          messageId: event.params.messageId,
+          chatId,
+          title,
+          body
+        },
         android: {
           priority: "high"
         }

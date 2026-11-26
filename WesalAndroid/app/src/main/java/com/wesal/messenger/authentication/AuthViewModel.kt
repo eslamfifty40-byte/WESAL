@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.time.Period
 import javax.inject.Inject
@@ -54,6 +55,21 @@ class AuthViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(AuthUiState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
+
+    /**
+     * Hard ceiling for every auth operation. The repository bounds its own Firestore calls,
+     * but this guarantees the loading spinner ALWAYS resolves — success, failure, or a clear
+     * timeout message — and can never spin forever (the owner's "kill and reopen" symptom).
+     */
+    private suspend fun <T> authCall(block: suspend () -> Result<T>): Result<T> =
+        withTimeoutOrNull(AUTH_TIMEOUT_MS) { block() }
+            ?: Result.failure(
+                IllegalStateException("انتهت مهلة الاتصال بالخادم، تحقق من الإنترنت وحاول مرة أخرى")
+            )
+
+    private companion object {
+        const val AUTH_TIMEOUT_MS = 45_000L
+    }
 
     val savedAccounts: StateFlow<List<SavedWesalAccount>> = authRepository.observeSavedAccounts()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -125,7 +141,7 @@ class AuthViewModel @Inject constructor(
         val openSupport = _uiState.value.pendingSupportOnAuth
         _uiState.update { it.copy(isLoading = true, errorMessage = null, infoMessage = null, supportAuthPromptMessage = null) }
         viewModelScope.launch {
-            authRepository.signInWithGoogleIdToken(idToken)
+            authCall { authRepository.signInWithGoogleIdToken(idToken) }
                 .onSuccess { needsSetup ->
                     if (openSupport) {
                         val supportRes = chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
@@ -200,10 +216,12 @@ class AuthViewModel @Inject constructor(
         val openSupport = state.pendingSupportOnAuth
         _uiState.update { it.copy(isLoading = true, errorMessage = null, infoMessage = null, supportAuthPromptMessage = null) }
         viewModelScope.launch {
-            val result = if (state.isSignUpMode) {
-                authRepository.signUpWithEmail(email, password, fullName)
-            } else {
-                authRepository.signInWithEmail(email, password)
+            val result = authCall {
+                if (state.isSignUpMode) {
+                    authRepository.signUpWithEmail(email, password, fullName)
+                } else {
+                    authRepository.signInWithEmail(email, password)
+                }
             }
             result.onSuccess { needsSetup ->
                 if (openSupport) {
@@ -251,7 +269,7 @@ class AuthViewModel @Inject constructor(
         }
         _uiState.update { it.copy(isLoading = true, errorMessage = null, infoMessage = null) }
         viewModelScope.launch {
-            authRepository.sendPasswordReset(email)
+            authCall { authRepository.sendPasswordReset(email) }
                 .onSuccess {
                     _uiState.update {
                         it.copy(
@@ -278,7 +296,7 @@ class AuthViewModel @Inject constructor(
         }
         _uiState.update { it.copy(isLoading = true, errorMessage = null, supportAuthPromptMessage = null) }
         viewModelScope.launch {
-            val guestRes = authRepository.signInGuestForSupport()
+            val guestRes = authCall { authRepository.signInGuestForSupport() }
             if (guestRes.isSuccess) {
                 val chatRes = chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
                 chatRes.onSuccess { chatId ->
@@ -367,17 +385,20 @@ class AuthViewModel @Inject constructor(
 
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
-            authRepository.completeUserProfile(
-                displayName = displayName,
-                bio = bio,
-                photoUri = photoUri,
-                wesalId = cleanWesalId,
-                phoneE164 = e164Phone,
-                birthDate = birthDateIso.trim(),
-                hideBirthDate = hideBirthDate,
-                locationGranted = locationGranted,
-                locationGraceStartedAt = locationGraceStartedAt
-            ).onSuccess {
+            val result = authCall {
+                authRepository.completeUserProfile(
+                    displayName = displayName,
+                    bio = bio,
+                    photoUri = photoUri,
+                    wesalId = cleanWesalId,
+                    phoneE164 = e164Phone,
+                    birthDate = birthDateIso.trim(),
+                    hideBirthDate = hideBirthDate,
+                    locationGranted = locationGranted,
+                    locationGraceStartedAt = locationGraceStartedAt
+                )
+            }
+            result.onSuccess {
                 _uiState.update { it.copy(isLoading = false, navigateToHome = true) }
             }.onFailure { err ->
                 _uiState.update {

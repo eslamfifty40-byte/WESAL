@@ -3,8 +3,10 @@ package com.wesal.messenger.presentation
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -105,6 +107,30 @@ fun WesalNavHost(
                 launchSingleTop = true
             }
             onConsumePendingInvite()
+        }
+    }
+
+    // uid → uid account switch while inside the app: reset the back stack to Home so no
+    // screen (or nav-scoped ViewModel) keeps showing the previous account. Previously only
+    // the uid → null case below was handled, so after a switch the UI stayed on the old
+    // account's screens until the app was restarted (audit §3.4). Switches that go through
+    // the login routes are excluded — those flows navigate to Home themselves.
+    var lastKnownAuthUid by remember { mutableStateOf(authUid) }
+    LaunchedEffect(authUid, currentRoute) {
+        val uid = authUid
+        if (uid != null) {
+            val previous = lastKnownAuthUid
+            if (previous != null && previous != uid &&
+                currentRoute != null &&
+                currentRoute != Routes.PHONE_LOGIN &&
+                !currentRoute.startsWith("add_account")
+            ) {
+                navController.navigate(Routes.HOME) {
+                    popUpTo(navController.graph.id) { inclusive = true }
+                    launchSingleTop = true
+                }
+            }
+            lastKnownAuthUid = uid
         }
     }
 

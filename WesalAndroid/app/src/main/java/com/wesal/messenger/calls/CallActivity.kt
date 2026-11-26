@@ -118,6 +118,8 @@ class CallActivity : AppCompatActivity() {
                 }
 
                 val connState by webRtcManager.connectionState.collectAsStateWithLifecycle()
+                val iceState by webRtcManager.iceConnectionState.collectAsStateWithLifecycle()
+                val turnConfigured by webRtcManager.turnConfigured.collectAsStateWithLifecycle()
                 val remoteVideo by webRtcManager.remoteVideoTrack.collectAsStateWithLifecycle()
                 val localVideo by webRtcManager.localVideoTrackFlow.collectAsStateWithLifecycle()
                 val audioRoute by webRtcManager.audioRoute.collectAsStateWithLifecycle()
@@ -163,6 +165,21 @@ class CallActivity : AppCompatActivity() {
                             putExtra("isVideo", isVideo)
                         }
                     )
+
+                    // Real ICE-restart signaling: when the WebRTC layer reports the media path
+                    // died (network switch, ICE FAILED/DISCONNECTED), the caller produces a fresh
+                    // restart offer into the call doc; the callee asks the caller to do so.
+                    webRtcManager.onIceRestartNeeded = {
+                        if (!isFinishingCall) {
+                            if (!isIncoming) {
+                                produceRestartOffer()
+                            } else if (initialCallId.isNotBlank()) {
+                                lifecycleScope.launch {
+                                    callRepository.requestIceRestart(initialCallId)
+                                }
+                            }
+                        }
+                    }
 
                     webRtcManager.startSession(isVideo) { candidate ->
                         val cid = activeCallId
@@ -261,6 +278,26 @@ class CallActivity : AppCompatActivity() {
                         }
                     } else if (connState == PeerConnection.PeerConnectionState.FAILED) {
                         callStatusLabel = if (strings.isEnglish) "Connection lost — retrying..." else "انقطع الاتصال — جاري إعادة المحاولة..."
+                    }
+                }
+
+                // ICE-level drops (e.g. Wi-Fi ↔ mobile switch) now trigger a real restart in
+                // WebRtcCallManager; surface that honestly instead of a frozen "connected" timer.
+                LaunchedEffect(iceState, connState, turnConfigured) {
+                    if (connState != PeerConnection.PeerConnectionState.CONNECTED &&
+                        (iceState == PeerConnection.IceConnectionState.DISCONNECTED ||
+                            iceState == PeerConnection.IceConnectionState.FAILED)
+                    ) {
+                        callStatusLabel = when {
+                            !turnConfigured && iceState == PeerConnection.IceConnectionState.FAILED ->
+                                if (strings.isEnglish) {
+                                    "Connection lost — retrying... (no TURN server in this build)"
+                                } else {
+                                    "انقطع الاتصال — جاري إعادة المحاولة... (لا يوجد خادم TURN في هذه النسخة)"
+                                }
+                            else ->
+                                if (strings.isEnglish) "Connection lost — retrying..." else "انقطع الاتصال — جاري إعادة المحاولة..."
+                        }
                     }
                 }
 
@@ -475,18 +512,43 @@ class CallActivity : AppCompatActivity() {
                 }
         }
         lifecycleScope.launch {
-            var answerApplied = false
+            var appliedAnswerGeneration = -1L
+            var appliedOfferGeneration = 0L // generation 0 is the initial offer, applied before this listener starts (callee)
+            var handledRestartRequestAt = 0L
             callRepository.observeCall(callId).collect { call ->
                 if (call == null || isFinishingCall) return@collect
                 if (isCaller && (call.status == CallStatus.RINGING || call.calleeRingingAck) &&
-                    !answerApplied && webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED
+                    appliedAnswerGeneration < 0L && webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED
                 ) {
                     onStatus(ringingText)
                 }
-                if (isCaller && !answerApplied && call.answerSdp.isNotBlank()) {
-                    answerApplied = true
+                // Apply the answer for the CURRENT offer generation only — after an ICE restart
+                // the callee writes a fresh answer for the new generation, and it must be applied
+                // too (the old one-shot flag silently dropped every renegotiated answer).
+                if (isCaller && call.answerSdp.isNotBlank() &&
+                    appliedAnswerGeneration != call.iceRestartGeneration
+                ) {
+                    appliedAnswerGeneration = call.iceRestartGeneration
                     webRtcManager.setRemoteAnswer(call.answerSdp)
                     onStatus(connectedText)
+                }
+                // Callee asked (through the doc) for a restart: caller produces the offer.
+                if (isCaller && call.iceRestartRequestedAt > handledRestartRequestAt &&
+                    call.iceRestartRequestedAt > 0L
+                ) {
+                    handledRestartRequestAt = call.iceRestartRequestedAt
+                    produceRestartOffer()
+                }
+                // Caller signalled a restart offer: callee re-answers it.
+                if (!isCaller && call.iceRestartGeneration > appliedOfferGeneration &&
+                    call.offerSdp.isNotBlank()
+                ) {
+                    appliedOfferGeneration = call.iceRestartGeneration
+                    webRtcManager.setRemoteOfferAndCreateAnswer(call.offerSdp) { answerSdp ->
+                        lifecycleScope.launch {
+                            callRepository.submitAnswer(callId, answerSdp)
+                        }
+                    }
                 }
                 when (call.status) {
                     CallStatus.REJECTED -> {
@@ -507,6 +569,17 @@ class CallActivity : AppCompatActivity() {
                     }
                     else -> Unit
                 }
+            }
+        }
+    }
+
+    /** Caller side of an ICE restart: fresh offer (IceRestart=true) written to the call doc. */
+    private fun produceRestartOffer() {
+        val cid = activeCallId
+        if (cid.isBlank() || isFinishingCall) return
+        webRtcManager.createRestartOffer { restartSdp ->
+            lifecycleScope.launch {
+                callRepository.submitRestartOffer(cid, restartSdp)
             }
         }
     }

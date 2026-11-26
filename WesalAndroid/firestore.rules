@@ -50,6 +50,33 @@ service cloud.firestore {
       );
     }
 
+    // Spec §10.3 — server-side ban enforcement.
+    // A ban used to be client-only: a banned user with a modified client (or raw API
+    // access) could keep reading/writing everything. This helper makes the ban bite in
+    // rules for the social surfaces (chats/messages/groups/stories/calls below).
+    // Safety properties:
+    //  - Field or user doc absent  => NOT banned (legitimate users are never locked out
+    //    by a missing field; older docs predate the ban fields).
+    //  - isBanned == true and banExpiresAt == 0/absent => permanent ban.
+    //  - Timed ban lifts automatically once banExpiresAt (epoch millis) has passed.
+    //  - Super admins are exempt (the client already forbids banning protected admins;
+    //    this keeps moderation working even if a doc were mis-flagged).
+    //  - The users collection itself is NOT gated by this helper, so a banned user can
+    //    still read their own doc and see their ban status/reason in the client.
+    // Remaining limit (documented in FIXLOG_P2): rules cannot revoke an already-issued
+    // Firebase Auth token or set custom claims — that needs a backend (Admin SDK /
+    // Cloud Function), which this repo does not deploy for WESAL yet.
+    function isCurrentlyBanned() {
+      return isSignedIn() &&
+        !isSuperAdmin() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isBanned', false) == true &&
+        (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) == 0 ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) > request.time.toMillis()
+        );
+    }
+
     function isChatParticipant(chatId) {
       return isSignedIn() &&
         request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds;
@@ -240,12 +267,12 @@ service cloud.firestore {
 
     // Chats & E2EE Messages (direct chat creation requires ACCEPTED contact request; official WESAL & support chats allowed)
     match /chats/{chatId} {
-      allow read: if isSignedIn() && (
+      allow read: if isSignedIn() && !isCurrentlyBanned() && (
         request.auth.uid in resource.data.participantIds ||
         chatId == ('wesal_official_' + request.auth.uid) ||
         isAdminOrMod()
       );
-      allow create: if isSignedIn() && (
+      allow create: if isSignedIn() && !isCurrentlyBanned() && (
         (
           chatId == ('wesal_official_' + request.auth.uid) &&
           request.resource.data.isOfficialWesalChat == true &&
@@ -266,7 +293,7 @@ service cloud.firestore {
           )
         )
       );
-      allow update: if isSignedIn() && (
+      allow update: if isSignedIn() && !isCurrentlyBanned() && (
         request.auth.uid in resource.data.participantIds ||
         chatId == ('wesal_official_' + request.auth.uid) ||
         isAdminOrMod()
@@ -274,10 +301,10 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
 
       match /messages/{messageId} {
-        allow read: if isChatParticipant(chatId) ||
+        allow read: if !isCurrentlyBanned() && (isChatParticipant(chatId) ||
           chatId == ('wesal_official_' + request.auth.uid) ||
-          isAdminOrMod();
-        allow create: if isSignedIn() && (
+          isAdminOrMod());
+        allow create: if isSignedIn() && !isCurrentlyBanned() && (
           (isChatParticipant(chatId) && request.resource.data.senderId == request.auth.uid) ||
           (
             request.resource.data.senderId in ['WESAL_SYSTEM', 'wesal_system'] &&
@@ -285,7 +312,7 @@ service cloud.firestore {
             (chatId == ('wesal_official_' + request.auth.uid) || isAdminOrMod())
           )
         );
-        allow update: if isChatParticipant(chatId) && (
+        allow update: if !isCurrentlyBanned() && isChatParticipant(chatId) && (
           resource.data.senderId == request.auth.uid ||
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'deletedForUsers'])
         );
@@ -295,18 +322,18 @@ service cloud.firestore {
 
     // Groups
     match /groups/{groupId} {
-      allow read: if isSignedIn() && request.auth.uid in resource.data.memberIds;
-      allow create: if isSignedIn() &&
+      allow read: if isSignedIn() && !isCurrentlyBanned() && request.auth.uid in resource.data.memberIds;
+      allow create: if isSignedIn() && !isCurrentlyBanned() &&
         request.resource.data.creatorId == request.auth.uid &&
         request.auth.uid in request.resource.data.adminIds &&
         request.auth.uid in request.resource.data.memberIds;
-      allow update: if isGroupAdmin(groupId) || (
+      allow update: if !isCurrentlyBanned() && (isGroupAdmin(groupId) || (
         isSignedIn() &&
         request.auth.uid in resource.data.memberIds &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'adminIds']) &&
         resource.data.memberIds.removeAll([request.auth.uid]) == request.resource.data.memberIds &&
         resource.data.adminIds.removeAll([request.auth.uid]) == request.resource.data.adminIds
-      );
+      ));
       allow delete: if false;
     }
 
@@ -370,9 +397,9 @@ service cloud.firestore {
 
     // Stories (24h TTL enforced in query & client)
     match /stories/{storyId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
-      allow update: if isSignedIn() && (
+      allow read: if isSignedIn() && !isCurrentlyBanned();
+      allow create: if isSignedIn() && !isCurrentlyBanned() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if isSignedIn() && !isCurrentlyBanned() && (
         resource.data.ownerUid == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewerIds'])
       );
@@ -390,15 +417,15 @@ service cloud.firestore {
 
     // WebRTC Calls Signaling
     match /calls/{callId} {
-      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
-      allow create: if isSignedIn() &&
+      allow read: if isSignedIn() && !isCurrentlyBanned() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn() && !isCurrentlyBanned() &&
         request.resource.data.callerId == request.auth.uid &&
         request.auth.uid in request.resource.data.participants;
-      allow update: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow update: if isSignedIn() && !isCurrentlyBanned() && request.auth.uid in resource.data.participants;
       allow delete: if false;
 
       match /candidates/{candidateId} {
-        allow read, create: if isSignedIn() &&
+        allow read, create: if isSignedIn() && !isCurrentlyBanned() &&
           request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participants;
       }
     }

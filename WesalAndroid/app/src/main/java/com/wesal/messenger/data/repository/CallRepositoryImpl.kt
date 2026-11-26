@@ -148,6 +148,8 @@ class CallRepositoryImpl @Inject constructor(
                         ringingAt = doc.getLong("ringingAt") ?: 0L,
                         offerSdp = doc.getString("offerSdp").orEmpty(),
                         answerSdp = doc.getString("answerSdp").orEmpty(),
+                        iceRestartGeneration = doc.getLong("iceRestartGeneration") ?: 0L,
+                        iceRestartRequestedAt = doc.getLong("iceRestartRequestedAt") ?: 0L,
                         startedAt = doc.getLong("startedAt") ?: 0L,
                         endedAt = doc.getLong("endedAt") ?: 0L,
                         durationSeconds = doc.getLong("durationSeconds") ?: 0L
@@ -181,6 +183,8 @@ class CallRepositoryImpl @Inject constructor(
             "ringingAt" to 0L,
             "offerSdp" to offerSdp,
             "answerSdp" to "",
+            "iceRestartGeneration" to 0L,
+            "iceRestartRequestedAt" to 0L,
             "deletedForUsers" to emptyList<String>(),
             "startedAt" to System.currentTimeMillis(),
             "endedAt" to 0L,
@@ -230,6 +234,47 @@ class CallRepositoryImpl @Inject constructor(
                     "status" to CallStatus.ACTIVE.raw
                 )
             ).await()
+    }
+
+    override suspend fun submitRestartOffer(callId: String, offerSdp: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val callRef = firestore.collection(Constants.COLLECTION_CALLS).document(callId)
+        firestore.runTransaction { tx ->
+            val snap = tx.get(callRef)
+            if (!snap.exists()) return@runTransaction
+            // Only the caller may re-offer; a restart never resurrects a finished call.
+            if (snap.getString("callerId") != uid) return@runTransaction
+            val status = CallStatus.fromRaw(snap.getString("status"))
+            if (status == CallStatus.ENDED || status == CallStatus.REJECTED || status == CallStatus.MISSED) {
+                return@runTransaction
+            }
+            val nextGeneration = (snap.getLong("iceRestartGeneration") ?: 0L) + 1L
+            tx.update(
+                callRef,
+                mapOf(
+                    "offerSdp" to offerSdp,
+                    "answerSdp" to "",
+                    "iceRestartGeneration" to nextGeneration,
+                    "iceRestartRequestedAt" to 0L
+                )
+            )
+        }.await()
+    }
+
+    override suspend fun requestIceRestart(callId: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val callRef = firestore.collection(Constants.COLLECTION_CALLS).document(callId)
+        firestore.runTransaction { tx ->
+            val snap = tx.get(callRef)
+            if (!snap.exists()) return@runTransaction
+            val participants = (snap.get("participants") as? List<*>)?.filterIsInstance<String>().orEmpty()
+            if (uid !in participants) return@runTransaction
+            val status = CallStatus.fromRaw(snap.getString("status"))
+            if (status == CallStatus.ENDED || status == CallStatus.REJECTED || status == CallStatus.MISSED) {
+                return@runTransaction
+            }
+            tx.update(callRef, "iceRestartRequestedAt", System.currentTimeMillis())
+        }.await()
     }
 
     override suspend fun addIceCandidate(

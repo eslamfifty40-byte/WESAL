@@ -10,6 +10,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.decode.VideoFrameDecoder
@@ -35,6 +36,8 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     @Inject lateinit var firebaseAuth: FirebaseAuth
     @Inject lateinit var firestore: FirebaseFirestore
     @Inject lateinit var userPrefs: com.wesal.messenger.data.local.UserPreferencesDataStore
+    @Inject lateinit var chatRepository: com.wesal.messenger.domain.repository.ChatRepository
+    @Inject lateinit var wesalDao: com.wesal.messenger.data.local.dao.WesalDao
     private val appScope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
     )
@@ -78,32 +81,48 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                 .build()
             firestore.firestoreSettings = settings
         }
-        clearStuckWriteQueueOnce()
+        // NOTE: clearPersistence() is intentionally NOT called any more. The previous
+        // "clear the stuck write queue once per build" step discarded Firestore's queued
+        // (not-yet-acknowledged) writes — those queued writes are the user's pending messages,
+        // so the clear silently lost messages that had not reached the server (spec §1.3).
+        // Pending sends are now protected properly: they live in the per-account outbox
+        // (UserPreferencesDataStore) and are retried with stable message ids until they land.
+        com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=disabled-preserve-queue"
     }
 
     /**
-     * A write that never gets acknowledged keeps the whole local write queue blocked, and the queue is saved
-     * on disk, so every later write waits behind it even after reinstalling over the old build.
-     * Clear the local cache once per build version, before Firestore is used. The server data is not touched.
+     * Retries every persisted pending (outbox) message for the signed-in account, once per
+     * process per account. Sends are serialized through OutboxSendGuard and use the original
+     * message ids, so a message that landed before the app died is never duplicated.
      */
-    private fun clearStuckWriteQueueOnce() {
-        runCatching {
-            val sp = getSharedPreferences("wesal_diag", MODE_PRIVATE)
-            val key = "fs_cache_cleared_v2"
-            if (sp.getBoolean(key, false)) {
-                com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=done-before"
-                return
+    private val outboxFlushedForUids = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    private fun flushOutboxOnce(uid: String) {
+        if (!outboxFlushedForUids.add(uid)) return
+        appScope.launch {
+            runCatching {
+                val pending = userPrefs.pendingOutboxMessages()
+                for (entry in pending) {
+                    val replyStub = if (!entry.replyToMessageId.isNullOrBlank()) {
+                        com.wesal.messenger.domain.model.WesalMessage(
+                            messageId = entry.replyToMessageId,
+                            text = entry.replyToPreview.orEmpty()
+                        )
+                    } else null
+                    val result = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
+                        chatRepository.sendTextMessage(
+                            chatId = entry.chatId,
+                            text = entry.text,
+                            replyTo = replyStub,
+                            forwardedFromName = entry.forwardedFromName,
+                            clientMessageId = entry.messageId
+                        )
+                    }
+                    if (result.isSuccess) {
+                        userPrefs.removeOutboxMessage(entry.messageId)
+                    }
+                }
             }
-            firestore.clearPersistence()
-                .addOnSuccessListener {
-                    sp.edit().putBoolean(key, true).apply()
-                    com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=OK"
-                }
-                .addOnFailureListener { e ->
-                    com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=ERR:${e.javaClass.simpleName}"
-                }
-        }.onFailure {
-            com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=EXC:${it.javaClass.simpleName}"
         }
     }
 
@@ -111,9 +130,31 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
      * Remember every signed-in account on the device right away, from the Firebase Auth user only.
      * Saving used to happen only after server writes finished, so accounts were lost when Firestore stalled.
      */
+    /** Last account seen signed in during this process (survives intermediate sign-outs). */
+    @Volatile
+    private var lastKnownSignedInUid: String? = null
+
     private fun rememberSignedInAccountLocally() {
         firebaseAuth.addAuthStateListener { a ->
             val u = a.currentUser ?: return@addAuthStateListener
+            // Direct uid → uid switch (e.g. Google credential sign-in replaces the current
+            // user WITHOUT going through signOut, which is the path that used to clear the
+            // caches): the Room read-through caches have no owner-uid column, so the previous
+            // account's cached chats/messages would otherwise bleed into the new account
+            // until the first remote snapshot. Clearing is safe: these tables are caches of
+            // server data and are rebuilt by the existing listeners; nothing is lost.
+            val previousUid = lastKnownSignedInUid
+            if (previousUid != null && previousUid != u.uid) {
+                appScope.launch {
+                    runCatching {
+                        wesalDao.clearAllChats()
+                        wesalDao.clearAllMessages()
+                    }
+                    runCatching { coil.Coil.imageLoader(this@WesalApplication).memoryCache?.clear() }
+                }
+            }
+            lastKnownSignedInUid = u.uid
+            flushOutboxOnce(u.uid)
             appScope.launch {
                 runCatching {
                     val known = userPrefs.savedAccountsFlow.first().any { it.uid == u.uid }
@@ -215,6 +256,29 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
         }
 
+        // Audible fallback channel: used ONLY when the full-screen intent cannot fire
+        // (e.g. Android 14+ full-screen permission denied). In the normal path the incoming
+        // call activity itself plays the ringtone over the silent channel above, so the two
+        // never ring at the same time — exactly one audible source per call.
+        val callsAudibleChannel = NotificationChannel(
+            Constants.CHANNEL_CALLS_AUDIBLE,
+            getString(R.string.channel_calls_name),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            enableLights(true)
+            lightColor = 0xFF00C853.toInt()
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0L, 600L, 400L, 600L, 1000L)
+            setSound(
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+            )
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+        }
+
         val storiesChannel = NotificationChannel(
             Constants.CHANNEL_STORIES,
             getString(R.string.channel_stories_name),
@@ -234,7 +298,7 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         )
 
         manager.createNotificationChannels(
-            listOf(messagesChannel, callsChannel, storiesChannel, channelsChannel, systemChannel)
+            listOf(messagesChannel, callsChannel, callsAudibleChannel, storiesChannel, channelsChannel, systemChannel)
         )
     }
 }

@@ -38,6 +38,20 @@ object WesalIdUtils {
         return num in 10_000L..1_000_000L
     }
 
+    /**
+     * Spec §4.5 range for user-facing numeric-ID SEARCH: 10000..100000.
+     * Deliberately narrower than [isValidNumericId]: IDs were historically allocated up to
+     * 1,000,000, and the exact resolvers (findExactUserByNumericId / findUserByPublicIdOrUid,
+     * invite links, QR) must keep resolving those accounts — so only the search surface is
+     * restricted to the spec range, never the resolvers.
+     */
+    fun isSpecSearchNumericId(raw: String?): Boolean {
+        val cleaned = normalizeDigits(raw?.trim().orEmpty())
+        if (cleaned.isBlank() || !cleaned.all { it.isDigit() }) return false
+        val num = cleaned.toLongOrNull() ?: return false
+        return num in 10_000L..100_000L
+    }
+
     fun extractNumericIdQuery(rawInput: String): String {
         val trimmed = normalizeDigits(rawInput)
             .trim()

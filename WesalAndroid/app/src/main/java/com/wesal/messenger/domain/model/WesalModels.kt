@@ -2,6 +2,24 @@ package com.wesal.messenger.domain.model
 
 import kotlinx.serialization.Serializable
 
+/**
+ * A text message that has not been confirmed sent yet. Persisted per account in DataStore
+ * BEFORE the send is attempted, so a killed/restarted app never loses a pending message:
+ * on relaunch it is retried with the SAME messageId (the send path is idempotent for a
+ * caller-supplied id), then removed from the outbox once the send succeeds.
+ */
+@Serializable
+data class PendingOutboxMessage(
+    val messageId: String = "",
+    val chatId: String = "",
+    val text: String = "",
+    val replyToMessageId: String? = null,
+    val replyToPreview: String? = null,
+    val forwardedFromName: String? = null,
+    val timestamp: Long = System.currentTimeMillis(),
+    val attempts: Int = 0
+)
+
 @Serializable
 data class SavedWesalAccount(
     val uid: String = "",
@@ -472,6 +490,14 @@ data class WesalMessage(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+/** Sync state of the chats list (spec §13.3): loading must always stop, errors must surface. */
+enum class ChatListSyncStatus { LOADING, READY, ERROR }
+
+data class ChatListSyncState(
+    val status: ChatListSyncStatus = ChatListSyncStatus.LOADING,
+    val errorMessage: String? = null
+)
+
 data class ChatPreview(
     val chatId: String = "",
     val isGroup: Boolean = false,
@@ -700,6 +726,10 @@ data class CallRecord(
     val ringingAt: Long = 0L,
     val offerSdp: String = "",
     val answerSdp: String = "",
+    /** Incremented every time the caller signals an ICE-restart offer; the callee re-answers when it changes. */
+    val iceRestartGeneration: Long = 0L,
+    /** Set by the callee when its ICE dies; the caller watches it and produces the restart offer. */
+    val iceRestartRequestedAt: Long = 0L,
     val deletedForUsers: List<String> = emptyList(),
     val startedAt: Long = System.currentTimeMillis(),
     val endedAt: Long = 0L,

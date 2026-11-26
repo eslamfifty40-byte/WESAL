@@ -401,10 +401,11 @@ fun WesalAvatar(
                                     scaleY = 1.22f
                                     translationY = -this.size.height * 0.03f
                                 }
-                                activeFrame != null -> Modifier.graphicsLayer {
-                                    scaleX = 1.14f
-                                    scaleY = 1.14f
-                                }
+                                // Framed photos are NOT zoomed any more: ContentScale.Crop with
+                                // TopCenter already fills the frame's circular opening exactly,
+                                // so the whole photo (and the face at the top) stays visible
+                                // inside the opening, matching the 1536x1536 reference artwork.
+                                activeFrame != null -> Modifier
                                 else -> Modifier
                             }
                         )

@@ -49,7 +49,6 @@ import coil.compose.AsyncImage
 import com.wesal.messenger.authentication.CountryCatalog
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.theme.WesalColors
-import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
@@ -320,33 +319,10 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    fun updateSelfCustomization(
-        nameplateColor: String? = null,
-        iconId: String? = null,
-        iconUrl: String? = null,
-        isEn: Boolean
-    ) {
-        viewModelScope.launch {
-            _uiStatus.value = ProfileUiStatus(isSaving = true)
-            userRepository.updateSelfCustomization(
-                nameplateColor = nameplateColor,
-                iconId = iconId,
-                iconUrl = iconUrl
-            )
-                .onSuccess {
-                    _uiStatus.value = ProfileUiStatus(
-                        message = if (isEn) "Customization saved ✓" else "تم حفظ التخصيص على حسابك ✓",
-                        isError = false
-                    )
-                }
-                .onFailure { err ->
-                    _uiStatus.value = ProfileUiStatus(
-                        message = err.localizedMessage ?: if (isEn) "Failed to save customization" else "تعذر حفظ التخصيص",
-                        isError = true
-                    )
-                }
-        }
-    }
+    // The self-customization entry point was removed with the ProfileScreen picker
+    // (owner rule 2026-11-27): nameplate colour / icon changes now go through the admin
+    // panel only (AdminVerificationViewModel.applyNameplateColor / applyIcon), and
+    // UserRepositoryImpl.updateSelfCustomization refuses them for non-owner accounts.
 }
 
 private enum class PendingCropKind {
@@ -796,109 +772,22 @@ fun ProfileScreen(
                     }
                 }
 
-                // Self-Customization Card: 26 Nameplate Colors + Animated Profile Icon Picker
-                val availableIcons = WesalFrameLibrary.pickerItems("ICON", includeHiddenAndDeleted = false)
-                Surface(
-                    color = palette.surface,
-                    shape = RoundedCornerShape(14.dp),
-                    border = BorderStroke(1.dp, palette.border),
-                    modifier = Modifier.fillMaxWidth()
+                // Owner rule (2026-11-27): nameplate colour + animated icon are granted ONLY
+                // from the admin panel (admins 10001/10002) — the self-service picker that
+                // used to live here was removed. Users keep whatever an admin granted them;
+                // this read-only note just explains where it comes from.
+                if (user?.iconId?.isNotBlank() == true ||
+                    !user?.nameplateColor.isNullOrBlank() && user?.nameplateColor != "CRIMSON"
                 ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(
-                            text = strings.profileCustomizationTitle,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = palette.textPrimary,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = strings.nameplateColorTitle,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = palette.textSecondary
-                        )
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            WesalNameplateColorPreset.entries.forEach { preset ->
-                                val selected = WesalNameplateColorPreset.fromKey(user?.nameplateColor) == preset
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            androidx.compose.ui.graphics.Brush.linearGradient(
-                                                listOf(Color(preset.edgeHex), Color(preset.midHex), Color(preset.centerHex))
-                                            )
-                                        )
-                                        .border(
-                                            width = if (selected) 2.5.dp else 1.dp,
-                                            color = if (selected) Color(preset.borderAccentHex) else palette.border,
-                                            shape = CircleShape
-                                        )
-                                        .clickable(enabled = !uiStatus.isSaving) {
-                                            viewModel.updateSelfCustomization(nameplateColor = preset.key, isEn = strings.isEnglish)
-                                        }
-                                )
-                            }
-                        }
-
-                        if (availableIcons.isNotEmpty()) {
-                            Text(
-                                text = if (strings.isEnglish) "Animated Profile Icon" else "الأيقونة المتحركة بجانب الصورة",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = palette.textSecondary
-                            )
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val noIconSelected = user?.iconId.isNullOrBlank() && user?.iconUrl.isNullOrBlank()
-                                FilterChip(
-                                    selected = noIconSelected,
-                                    enabled = !uiStatus.isSaving,
-                                    onClick = {
-                                        viewModel.updateSelfCustomization(iconId = "", iconUrl = "", isEn = strings.isEnglish)
-                                    },
-                                    label = { Text(if (strings.isEnglish) "None" else "بدون أيقونة", maxLines = 1) }
-                                )
-                                availableIcons.forEach { item ->
-                                    val selected = user?.iconId == item.id
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = if (selected) palette.surfaceElevated else palette.background,
-                                        border = BorderStroke(
-                                            width = if (selected) 2.dp else 1.dp,
-                                            color = if (selected) palette.emerald else palette.border
-                                        ),
-                                        modifier = Modifier
-                                            .size(46.dp)
-                                            .clickable(enabled = !uiStatus.isSaving) {
-                                                viewModel.updateSelfCustomization(
-                                                    iconId = item.id,
-                                                    iconUrl = item.imageUrl,
-                                                    isEn = strings.isEnglish
-                                                )
-                                            }
-                                    ) {
-                                        Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(5.dp)) {
-                                            AsyncImage(
-                                                model = wesalImageModel(item.imageUrl),
-                                                contentDescription = item.title,
-                                                modifier = Modifier.fillMaxSize(),
-                                                contentScale = ContentScale.Fit
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Your name colour and icon are set by WESAL admins"
+                        } else {
+                            "لون اسمك وأيقونتك يحددهما إدارة WESAL من لوحة الإدارة"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary
+                    )
                 }
             }
 

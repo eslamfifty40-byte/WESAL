@@ -14,12 +14,19 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.wesal.messenger.BuildConfig
+import com.wesal.messenger.core.network.NetworkMonitor
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.webrtc.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -33,7 +40,8 @@ enum class CallAudioRoute {
 
 @Singleton
 class WebRtcCallManager @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val networkMonitor: NetworkMonitor
 ) {
     val eglBase: EglBase = EglBase.create()
 
@@ -54,6 +62,28 @@ class WebRtcCallManager @Inject constructor(
 
     private val _connectionState = MutableStateFlow(PeerConnection.PeerConnectionState.NEW)
     val connectionState: StateFlow<PeerConnection.PeerConnectionState> = _connectionState.asStateFlow()
+
+    private val _iceConnectionState = MutableStateFlow(PeerConnection.IceConnectionState.NEW)
+    val iceConnectionState: StateFlow<PeerConnection.IceConnectionState> = _iceConnectionState.asStateFlow()
+
+    /** True when at least one TURN server was configured (from BuildConfig, i.e. CI secrets / gradle properties). */
+    private val _turnConfigured = MutableStateFlow(false)
+    val turnConfigured: StateFlow<Boolean> = _turnConfigured.asStateFlow()
+
+    /**
+     * Set by CallActivity. Invoked when ICE needs a real restart: the caller side must create a
+     * restart offer and signal it; the callee side must ask the caller (via the call doc) to do so.
+     * Invoked at most once per disconnect episode (see [triggerIceRestart]).
+     */
+    @Volatile
+    var onIceRestartNeeded: (() -> Unit)? = null
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var pendingIceRestartRunnable: Runnable? = null
+    @Volatile private var iceRestartSignalledForEpisode = false
+    @Volatile private var iceRestartAwaitingRenegotiation = false
+    private var networkMonitorJob: Job? = null
+    private val managerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private val _remoteVideoTrack = MutableStateFlow<VideoTrack?>(null)
     val remoteVideoTrack: StateFlow<VideoTrack?> = _remoteVideoTrack.asStateFlow()
@@ -91,6 +121,21 @@ class WebRtcCallManager @Inject constructor(
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
         )
         val turnUrls = parseTurnUrls(BuildConfig.TURN_URL)
+        // TURN credentials come only from BuildConfig (gradle properties / CI secrets) — never
+        // hard-code them here. When TURN is absent the call still tries STUN-only, but degrade
+        // loudly: media will fail behind symmetric NAT / many mobile carriers, and that must be
+        // visible in logs and UI state instead of looking like a silent "no audio" bug.
+        _turnConfigured.value = turnUrls.isNotEmpty()
+        if (turnUrls.isEmpty()) {
+            Log.w(
+                TAG,
+                "TURN is NOT configured for this build (WESAL_TURN_URL is empty): calls rely on " +
+                    "STUN only and audio/video may not connect on restrictive networks. " +
+                    "Supply TURN via CI secrets / gradle properties — do not commit credentials."
+            )
+        } else {
+            Log.i(TAG, "TURN configured: ${turnUrls.size} server(s) in addition to STUN.")
+        }
         turnUrls.forEach { url ->
             val builder = PeerConnection.IceServer.builder(url)
             if (BuildConfig.TURN_USERNAME.isNotBlank()) {
@@ -115,6 +160,7 @@ class WebRtcCallManager @Inject constructor(
         pendingRemoteCandidates.clear()
 
         _connectionState.value = PeerConnection.PeerConnectionState.NEW
+        _iceConnectionState.value = PeerConnection.IceConnectionState.NEW
         val rtcConfig = PeerConnection.RTCConfiguration(buildIceServers()).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
@@ -122,7 +168,27 @@ class WebRtcCallManager @Inject constructor(
 
         peerConnection = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
-            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {}
+            override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
+                if (state == null) return
+                _iceConnectionState.value = state
+                when (state) {
+                    PeerConnection.IceConnectionState.CONNECTED,
+                    PeerConnection.IceConnectionState.COMPLETED -> {
+                        // Healthy again: cancel any pending restart and re-arm the episode flag.
+                        cancelPendingIceRestart()
+                        iceRestartSignalledForEpisode = false
+                    }
+                    PeerConnection.IceConnectionState.DISCONNECTED -> {
+                        // Brief drops often heal on their own; give ICE a grace window first,
+                        // then do a real restart (re-offer) instead of dying silently.
+                        scheduleIceRestart(ICE_DISCONNECT_GRACE_MS)
+                    }
+                    PeerConnection.IceConnectionState.FAILED -> {
+                        triggerIceRestart()
+                    }
+                    else -> Unit
+                }
+            }
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {}
             override fun onIceCandidate(candidate: IceCandidate?) {
@@ -132,7 +198,20 @@ class WebRtcCallManager @Inject constructor(
             override fun onAddStream(stream: MediaStream?) {}
             override fun onRemoveStream(stream: MediaStream?) {}
             override fun onDataChannel(channel: DataChannel?) {}
-            override fun onRenegotiationNeeded() {}
+            override fun onRenegotiationNeeded() {
+                // Fires after restartIce(): if a restart was requested, the signaling layer
+                // (CallActivity) must now produce/send the restart offer — previously this
+                // callback was empty, so restartIce() could never take effect.
+                if (iceRestartAwaitingRenegotiation) {
+                    iceRestartAwaitingRenegotiation = false
+                    val listener = onIceRestartNeeded
+                    if (listener != null) {
+                        listener.invoke()
+                    } else {
+                        Log.w(TAG, "ICE restart renegotiation needed but no signaling listener is set.")
+                    }
+                }
+            }
             override fun onAddTrack(receiver: RtpReceiver?, streams: Array<out MediaStream>?) {
                 val track = receiver?.track()
                 if (track is VideoTrack) {
@@ -143,7 +222,12 @@ class WebRtcCallManager @Inject constructor(
                 if (newState != null) {
                     _connectionState.value = newState
                     if (newState == PeerConnection.PeerConnectionState.DISCONNECTED) {
-                        peerConnection?.restartIce()
+                        scheduleIceRestart(ICE_DISCONNECT_GRACE_MS)
+                    } else if (newState == PeerConnection.PeerConnectionState.FAILED) {
+                        triggerIceRestart()
+                    } else if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
+                        cancelPendingIceRestart()
+                        iceRestartSignalledForEpisode = false
                     }
                 }
             }
@@ -188,6 +272,105 @@ class WebRtcCallManager @Inject constructor(
             else -> CallAudioRoute.EARPIECE
         }
         setAudioRoute(initialRoute)
+        startNetworkMonitoring()
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // ICE restart / reconnect. restartIce() alone is a no-op unless a NEW offer with the
+    // iceRestart flag is created and signalled to the peer — that is what this machinery does:
+    // it flags the PeerConnection, and onRenegotiationNeeded() hands over to the signaling
+    // listener (CallActivity), which sends the restart offer (caller) or asks the caller to.
+    // ---------------------------------------------------------------------------------------------
+
+    private fun scheduleIceRestart(delayMs: Long) {
+        if (iceRestartSignalledForEpisode || pendingIceRestartRunnable != null) return
+        val runnable = Runnable {
+            pendingIceRestartRunnable = null
+            triggerIceRestart()
+        }
+        pendingIceRestartRunnable = runnable
+        mainHandler.postDelayed(runnable, delayMs)
+    }
+
+    private fun cancelPendingIceRestart() {
+        pendingIceRestartRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingIceRestartRunnable = null
+    }
+
+    private fun triggerIceRestart() {
+        cancelPendingIceRestart()
+        val pc = peerConnection ?: return
+        if (iceRestartSignalledForEpisode) return
+        iceRestartSignalledForEpisode = true
+        iceRestartAwaitingRenegotiation = true
+        Log.i(TAG, "ICE restart triggered (iceState=${_iceConnectionState.value}, turnConfigured=${_turnConfigured.value})")
+        runCatching { pc.restartIce() }
+        // Some stacks never fire onRenegotiationNeeded after restartIce(); if it has not
+        // consumed the flag shortly, hand over to the signaling listener directly so the
+        // restart offer is still produced instead of stalling forever.
+        mainHandler.postDelayed({
+            if (iceRestartAwaitingRenegotiation) {
+                iceRestartAwaitingRenegotiation = false
+                val listener = onIceRestartNeeded
+                if (listener != null) {
+                    listener.invoke()
+                } else {
+                    Log.w(TAG, "ICE restart needed but no signaling listener is set.")
+                }
+            }
+        }, ICE_RENEGOTIATION_FALLBACK_MS)
+    }
+
+    /**
+     * Watches connectivity while a session is live: when the device switches network
+     * (Wi-Fi ↔ mobile) or regains connectivity and ICE is not healthy, force a real restart.
+     */
+    private fun startNetworkMonitoring() {
+        networkMonitorJob?.cancel()
+        networkMonitorJob = managerScope.launch {
+            var wasOnline = networkMonitor.isCurrentlyConnected()
+            networkMonitor.isOnline.collect { online ->
+                val regained = online && !wasOnline
+                wasOnline = online
+                if (!regained) return@collect
+                val ice = _iceConnectionState.value
+                if (peerConnection != null &&
+                    ice != PeerConnection.IceConnectionState.CONNECTED &&
+                    ice != PeerConnection.IceConnectionState.COMPLETED &&
+                    ice != PeerConnection.IceConnectionState.CHECKING
+                ) {
+                    Log.i(TAG, "Connectivity regained during call with ICE=$ice — restarting ICE.")
+                    iceRestartSignalledForEpisode = false
+                    triggerIceRestart()
+                }
+            }
+        }
+    }
+
+    private fun stopNetworkMonitoring() {
+        networkMonitorJob?.cancel()
+        networkMonitorJob = null
+    }
+
+    /** Creates an offer with the mandatory IceRestart flag set, for renegotiation after a drop. */
+    fun createRestartOffer(onSdpCreated: (String) -> Unit) {
+        val constraints = MediaConstraints().apply {
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "true"))
+            mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+        }
+        peerConnection?.createOffer(object : SdpObserver {
+            override fun onCreateSuccess(desc: SessionDescription?) {
+                if (desc == null) return
+                peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
+                onSdpCreated(desc.description)
+            }
+            override fun onSetSuccess() {}
+            override fun onCreateFailure(error: String?) {
+                Log.w(TAG, "ICE restart offer creation failed: $error")
+            }
+            override fun onSetFailure(error: String?) {}
+        }, constraints)
     }
 
     private fun registerAudioMonitoring() {
@@ -522,6 +705,12 @@ class WebRtcCallManager @Inject constructor(
     }
 
     fun endSession() {
+        stopNetworkMonitoring()
+        cancelPendingIceRestart()
+        iceRestartSignalledForEpisode = false
+        iceRestartAwaitingRenegotiation = false
+        onIceRestartNeeded = null
+        _iceConnectionState.value = PeerConnection.IceConnectionState.CLOSED
         unregisterAudioMonitoring()
         runCatching { videoCapturer?.stopCapture() }
         videoCapturer?.dispose()
@@ -585,6 +774,10 @@ class WebRtcCallManager @Inject constructor(
     }
 
     companion object {
+        private const val TAG = "WesalCalls"
+        private const val ICE_DISCONNECT_GRACE_MS = 3_000L
+        private const val ICE_RENEGOTIATION_FALLBACK_MS = 1_200L
+
         fun parseTurnUrls(raw: String): List<String> = raw
             .split(',', ';', '\n')
             .map { it.trim() }

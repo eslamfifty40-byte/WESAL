@@ -96,6 +96,32 @@ object FirestoreRest {
         "projects/$PROJECT_ID/databases/$DB_ID/documents/$docPath"
 
     /**
+     * True = document exists on the server, false = it does not (404), null = could not tell
+     * (network/auth error). Used by the send path to stay idempotent: if a timed-out SDK write
+     * actually landed, its message document exists and the send must not be repeated (a repeat
+     * would duplicate the message and double-increment the unread counter).
+     */
+    suspend fun documentExists(auth: FirebaseAuth, docPath: String): Boolean? =
+        withContext(Dispatchers.IO) {
+            withTimeoutOrNull(10_000L) {
+                runCatching {
+                    val c = open("$BASE/$docPath", idToken(auth), "GET")
+                    c.doOutput = false
+                    val code = c.responseCode
+                    runCatching {
+                        (if (code >= 400) c.errorStream else c.inputStream)?.close()
+                    }
+                    c.disconnect()
+                    when (code) {
+                        200 -> true
+                        404 -> false
+                        else -> null
+                    }
+                }.getOrNull()
+            }
+        }
+
+    /**
      * Commits a text message: sets the message document and updates the chat summary with
      * unread-count increments, in one commit. Returns the HTTP status code.
      */

@@ -142,6 +142,7 @@ interface UserRepository {
         durationLabel: String = ""
     ): Result<Unit>
     suspend fun setAccountIcon(targetUid: String, iconId: String, iconUrl: String): Result<Unit>
+    suspend fun setAccountNameplateColor(targetUid: String, colorKey: String): Result<Unit>
     suspend fun setGlobalCustomerFrameEnabled(enabled: Boolean): Result<Int>
     suspend fun setGlobalCustomerDefaults(
         enabled: Boolean,
@@ -218,6 +219,8 @@ interface UserRepository {
 
 interface ChatRepository {
     fun observeChats(): Flow<List<ChatPreview>>
+    /** Loading/error state for the chats list, driven by the same snapshot listener. */
+    fun observeChatListState(): Flow<com.wesal.messenger.domain.model.ChatListSyncState>
     fun observeMessages(chatId: String): Flow<List<WesalMessage>>
     suspend fun getOrCreateDirectChat(peerUid: String): Result<String>
     suspend fun openSupportChatByNumericId(targetNumericId: String = com.wesal.messenger.core.util.Constants.OWNER_ADMIN_NUMERIC_ID): Result<String>
@@ -227,7 +230,8 @@ interface ChatRepository {
         chatId: String,
         text: String,
         replyTo: WesalMessage? = null,
-        forwardedFromName: String? = null
+        forwardedFromName: String? = null,
+        clientMessageId: String? = null
     ): Result<Unit>
     fun sendMediaMessage(
         chatId: String,
@@ -395,6 +399,10 @@ interface CallRepository {
     suspend fun initiateCall(callee: WesalUser, isVideo: Boolean, offerSdp: String): Result<String>
     suspend fun acknowledgeIncomingRing(callId: String): Result<Unit>
     suspend fun submitAnswer(callId: String, answerSdp: String): Result<Unit>
+    /** Caller only: stores a fresh ICE-restart offer, clears the old answer, bumps iceRestartGeneration. */
+    suspend fun submitRestartOffer(callId: String, offerSdp: String): Result<Unit>
+    /** Callee side: asks the caller (through the call doc) to produce an ICE-restart offer. */
+    suspend fun requestIceRestart(callId: String): Result<Unit>
     suspend fun addIceCandidate(callId: String, sdpMid: String, sdpMLineIndex: Int, candidate: String, fromCaller: Boolean)
     fun observeRemoteIceCandidates(callId: String, listenForCaller: Boolean): Flow<Triple<String, Int, String>>
     suspend fun updateCallStatus(callId: String, status: CallStatus, durationSeconds: Long = 0L)

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
+import com.wesal.messenger.domain.model.ChatListSyncState
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.ContactRequestStatus
@@ -48,7 +49,24 @@ class ChatsListViewModel @Inject constructor(
         .map { it.lockedChatIds }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
 
-    val messageRequestChats: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
+    // One shared subscription to the chats listener for the whole screen (previously every
+    // derived flow opened its own). The retry key lets the error state re-subscribe after
+    // Firestore dropped the listener on error (spec §13.3: loading stops, error + retry).
+    private val _chatsRetryKey = MutableStateFlow(0)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val allChatsSource: StateFlow<List<ChatPreview>> = _chatsRetryKey
+        .flatMapLatest { chatRepository.observeChats() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val chatListState: StateFlow<ChatListSyncState> = chatRepository.observeChatListState()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ChatListSyncState())
+
+    fun retryChats() {
+        _chatsRetryKey.value += 1
+    }
+
+    val messageRequestChats: StateFlow<List<ChatPreview>> = allChatsSource
         .map { allChats ->
             allChats.filter { chat ->
                 !chat.isOfficialWesalChat && !chat.isSupportChat && !chat.isGroup &&
@@ -69,7 +87,7 @@ class ChatsListViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val archivedCount: StateFlow<Int> = combine(
-        chatRepository.observeChats(),
+        allChatsSource,
         hiddenChatIds
     ) { allChats, hiddenIds ->
         allChats.count { chat ->
@@ -80,7 +98,7 @@ class ChatsListViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
     val chats: StateFlow<List<ChatPreview>> = combine(
-        chatRepository.observeChats(),
+        allChatsSource,
         _searchQuery,
         hiddenChatIds,
         showHiddenChats,
@@ -107,7 +125,7 @@ class ChatsListViewModel @Inject constructor(
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val hiddenCount: StateFlow<Int> = combine(
-        chatRepository.observeChats(),
+        allChatsSource,
         hiddenChatIds
     ) { allChats, hiddenIds ->
         allChats.count { it.chatId in hiddenIds }

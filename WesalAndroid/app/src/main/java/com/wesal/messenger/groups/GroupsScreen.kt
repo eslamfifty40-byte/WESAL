@@ -100,7 +100,9 @@ class GroupsViewModel @Inject constructor(
         }
         searchJob = viewModelScope.launch {
             delay(250L)
-            searchedUsers.value = userRepository.searchUsers(query)
+            // searchUsers throws when every lookup failed (network/rules) so the UI can
+            // distinguish failure from "no results" — never crash the screen on it.
+            searchedUsers.value = runCatching { userRepository.searchUsers(query) }.getOrDefault(emptyList())
         }
     }
 

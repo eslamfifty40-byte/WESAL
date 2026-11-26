@@ -35,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -166,7 +167,11 @@ class ChatDetailViewModel @Inject constructor(
         _failedMessages,
         _searchQuery
     ) { remote, failed, query ->
-        val merged = if (failed.isEmpty()) remote else (remote + failed)
+        // Local echoes (SENDING / FAILED, backed by the persistent outbox) are shown until the
+        // real message arrives from the server; once it does, the echo with the same id is dropped.
+        val remoteIds = remote.mapTo(HashSet()) { it.messageId }
+        val localOnly = failed.filterNot { it.messageId in remoteIds }
+        val merged = if (localOnly.isEmpty()) remote else (remote + localOnly)
         val normQuery = WesalIdUtils.normalizeSearchText(query)
         if (normQuery.isBlank()) merged
         else merged.filter { WesalIdUtils.normalizeSearchText(it.text).contains(normQuery) }
@@ -185,6 +190,41 @@ class ChatDetailViewModel @Inject constructor(
     init {
         viewModelScope.launch { chatRepository.markChatAsRead(chatId) }
         observeAutoWelcome()
+        restoreOutboxForThisChat()
+    }
+
+    /**
+     * Reloads this chat's persisted pending messages (they survive process death now) and
+     * retries each once with its original messageId — the send path is idempotent for a
+     * caller-supplied id, so a message that actually landed before the app died is not duplicated.
+     */
+    private fun restoreOutboxForThisChat() {
+        viewModelScope.launch {
+            val pending = runCatching { prefs.pendingOutboxMessages() }.getOrDefault(emptyList())
+                .filter { it.chatId == chatId }
+            if (pending.isEmpty()) return@launch
+            pending.forEach { entry ->
+                _failedMessages.update { list ->
+                    if (list.any { it.messageId == entry.messageId }) list else list + WesalMessage(
+                        messageId = entry.messageId,
+                        chatId = chatId,
+                        senderId = myUid,
+                        senderName = "",
+                        type = MessageType.TEXT,
+                        text = entry.text,
+                        replyToMessageId = entry.replyToMessageId,
+                        replyToPreview = entry.replyToPreview,
+                        forwardedFromName = entry.forwardedFromName,
+                        status = MessageStatus.FAILED,
+                        timestamp = entry.timestamp
+                    )
+                }
+            }
+            pending.forEach { entry ->
+                val echo = _failedMessages.value.firstOrNull { it.messageId == entry.messageId }
+                if (echo != null) retryFailedMessage(echo)
+            }
+        }
     }
 
     private fun observeAutoWelcome() {
@@ -288,43 +328,103 @@ class ChatDetailViewModel @Inject constructor(
 
         val reply = _replyingTo.value
         _replyingTo.value = null
+        // Optimistic local echo with a REAL SENDING status and a stable messageId. The entry is
+        // written to the persistent outbox BEFORE the network attempt, so killing the app
+        // mid-send never loses the message; the same id makes every retry idempotent.
+        val messageId = UUID.randomUUID().toString()
+        val echo = WesalMessage(
+            messageId = messageId,
+            chatId = chatId,
+            senderId = myUid,
+            senderName = "",
+            type = MessageType.TEXT,
+            text = trimmed,
+            replyToMessageId = reply?.messageId,
+            replyToPreview = reply?.text?.take(80),
+            status = MessageStatus.SENDING,
+            timestamp = System.currentTimeMillis()
+        )
+        _failedMessages.update { it + echo }
         viewModelScope.launch {
+            prefs.enqueueOutboxMessage(
+                com.wesal.messenger.domain.model.PendingOutboxMessage(
+                    messageId = messageId,
+                    chatId = chatId,
+                    text = trimmed,
+                    replyToMessageId = reply?.messageId,
+                    replyToPreview = reply?.text?.take(80),
+                    timestamp = echo.timestamp
+                )
+            )
             chatRepository.setTyping(chatId, false)
-            chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply)
+            val sendResult = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
+                chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply, clientMessageId = messageId)
+            }
+            sendResult
+                .onSuccess {
+                    prefs.removeOutboxMessage(messageId)
+                    _failedMessages.update { list -> list.filterNot { it.messageId == messageId } }
+                }
                 .onFailure { err ->
-                    val failedId = "failed_${UUID.randomUUID()}"
-                    val failedMsg = WesalMessage(
-                        messageId = failedId,
-                        chatId = chatId,
-                        senderId = myUid,
-                        senderName = "",
-                        type = MessageType.TEXT,
-                        text = trimmed,
-                        replyToMessageId = reply?.messageId,
-                        replyToPreview = reply?.text?.take(80),
-                        status = MessageStatus.FAILED,
-                        timestamp = System.currentTimeMillis()
-                    )
-                    _failedMessages.update { it + failedMsg }
+                    _failedMessages.update { list ->
+                        list.map {
+                            if (it.messageId == messageId) {
+                                it.copy(status = MessageStatus.FAILED, timestamp = System.currentTimeMillis())
+                            } else it
+                        }
+                    }
                     _toastMessage.value = err.localizedMessage ?: "فشل إرسال الرسالة"
                 }
         }
     }
 
     fun retryFailedMessage(failed: WesalMessage) {
-        if (failed.status != MessageStatus.FAILED) return
-        _failedMessages.update { list -> list.filterNot { it.messageId == failed.messageId } }
+        if (failed.status != MessageStatus.FAILED && failed.status != MessageStatus.SENDING) return
+        // Entries created by older in-memory-only code used a "failed_..." id that is not a real
+        // message id; give those a fresh stable id (and outbox entry) before retrying.
+        val effectiveId = if (failed.messageId.startsWith("failed_")) {
+            UUID.randomUUID().toString()
+        } else {
+            failed.messageId
+        }
+        val sending = failed.copy(messageId = effectiveId, status = MessageStatus.SENDING)
+        _failedMessages.update { list ->
+            list.map { if (it.messageId == failed.messageId) sending else it }
+        }
         viewModelScope.launch {
+            prefs.enqueueOutboxMessage(
+                com.wesal.messenger.domain.model.PendingOutboxMessage(
+                    messageId = effectiveId,
+                    chatId = chatId,
+                    text = failed.text,
+                    replyToMessageId = failed.replyToMessageId,
+                    replyToPreview = failed.replyToPreview,
+                    forwardedFromName = failed.forwardedFromName,
+                    timestamp = failed.timestamp,
+                    attempts = 1
+                )
+            )
             val replyStub = if (!failed.replyToMessageId.isNullOrBlank()) {
                 WesalMessage(
                     messageId = failed.replyToMessageId,
                     text = failed.replyToPreview.orEmpty()
                 )
             } else null
-            chatRepository.sendTextMessage(chatId, failed.text, replyTo = replyStub)
+            val retryResult = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
+                chatRepository.sendTextMessage(chatId, failed.text, replyTo = replyStub, clientMessageId = effectiveId)
+            }
+            retryResult
+                .onSuccess {
+                    prefs.removeOutboxMessage(effectiveId)
+                    _failedMessages.update { list -> list.filterNot { it.messageId == effectiveId } }
+                }
                 .onFailure { err ->
                     _failedMessages.update { list ->
-                        list + failed.copy(timestamp = System.currentTimeMillis())
+                        list.map {
+                            if (it.messageId == effectiveId) {
+                                it.copy(status = MessageStatus.FAILED, timestamp = System.currentTimeMillis())
+                            } else it
+                        }
                     }
                     _toastMessage.value = err.localizedMessage ?: "فشل إعادة إرسال الرسالة"
                 }
@@ -333,6 +433,7 @@ class ChatDetailViewModel @Inject constructor(
 
     fun dismissFailedMessage(messageId: String) {
         _failedMessages.update { list -> list.filterNot { it.messageId == messageId } }
+        viewModelScope.launch { prefs.removeOutboxMessage(messageId) }
     }
 
     fun buildMediaDraft(uri: Uri, type: MessageType, caption: String = "", isViewOnce: Boolean = false): MediaDraftPreview {

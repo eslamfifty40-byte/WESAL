@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Android 12+ (API 31+) launch screen, platform attributes.
+
+      The base values/themes.xml only sets the AndroidX SplashScreen *compat* attributes
+      (windowSplashScreenAnimatedIcon etc.). On API 31+ the platform splash ignores those
+      and falls back to showing the adaptive launcher icon centred on the splash
+      background — which is exactly the "small icon on a dark screen" the owner reported.
+
+      Here we set the real platform attributes:
+      - background = the app's own window background (@color/wesal_black, same as
+        Theme.Wesal's android:windowBackground), so the starting window is visually
+        identical to the first app frame;
+      - animated icon AND its background = fully transparent, so no icon is drawn at all.
+
+      Android always shows a system starting window; with a transparent icon and a
+      background that matches the app, that window becomes an invisible plain transition
+      straight into the home UI. MainActivity does not hold the splash
+      (setKeepOnScreenCondition { false }), so nothing keeps it on screen.
+    -->
+    <style name="Theme.Wesal.Splash" parent="Theme.SplashScreen">
+        <item name="android:windowSplashScreenBackground">@color/wesal_black</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
+        <item name="postSplashScreenTheme">@style/Theme.Wesal</item>
+    </style>
+</resources>

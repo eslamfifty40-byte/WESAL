@@ -1,5 +1,7 @@
 package com.wesal.messenger.chat
 
+import android.app.Activity
+import android.view.WindowManager
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +19,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -43,6 +47,7 @@ fun ChatsListScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val chats by viewModel.chats.collectAsStateWithLifecycle()
+    val chatListState by viewModel.chatListState.collectAsStateWithLifecycle()
     val messageRequestChats by viewModel.messageRequestChats.collectAsStateWithLifecycle()
     val incomingContactRequests by viewModel.incomingContactRequests.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
@@ -54,6 +59,22 @@ fun ChatsListScreen(
     val lockedIds by viewModel.lockedChatIds.collectAsStateWithLifecycle()
     val openHiddenTrigger by viewModel.openHiddenChatsTrigger.collectAsStateWithLifecycle()
     val toastMsg by viewModel.toastMessage.collectAsStateWithLifecycle()
+
+    // Spec §8.3: while the hidden-chats list is unlocked and visible, FLAG_SECURE keeps it
+    // out of Android Recents thumbnails and screenshots. Cleared as soon as the hidden
+    // view closes or this screen leaves composition (normal list stays unprotected).
+    val secureContext = LocalContext.current
+    val secureActivity = remember(secureContext) { secureContext as? Activity }
+    DisposableEffect(showHiddenChats, secureActivity) {
+        if (showHiddenChats) {
+            secureActivity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            if (showHiddenChats) {
+                secureActivity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
+    }
 
     var selectedChatForMenu by remember { mutableStateOf<ChatPreview?>(null) }
     var deleteConfirmChat by remember { mutableStateOf<ChatPreview?>(null) }
@@ -261,6 +282,67 @@ fun ChatsListScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
+                    // Spec §13.3: while the first snapshot is in flight show a loading
+                    // indicator (it always stops: the repository publishes READY/ERROR from
+                    // the snapshot listener); on listener error show the reason + retry
+                    // instead of a misleading "no chats" empty state.
+                    val syncStatus = chatListState.status
+                    if (!showHiddenChats &&
+                        syncStatus == com.wesal.messenger.domain.model.ChatListSyncStatus.LOADING
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            CircularProgressIndicator(color = palette.turquoise)
+                            Text(
+                                text = if (strings.isEnglish) "Loading chats…" else "جاري تحميل المحادثات…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = palette.textSecondary
+                            )
+                        }
+                    } else if (!showHiddenChats &&
+                        syncStatus == com.wesal.messenger.domain.model.ChatListSyncStatus.ERROR
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CloudOff,
+                                contentDescription = null,
+                                tint = palette.turquoise.copy(alpha = 0.6f),
+                                modifier = Modifier.size(56.dp)
+                            )
+                            Text(
+                                text = if (strings.isEnglish) {
+                                    "Couldn't load chats"
+                                } else {
+                                    "تعذّر تحميل المحادثات"
+                                },
+                                style = MaterialTheme.typography.titleMedium,
+                                color = palette.textPrimary
+                            )
+                            chatListState.errorMessage?.let { reason ->
+                                Text(
+                                    text = reason,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = palette.textSecondary
+                                )
+                            }
+                            Button(
+                                onClick = { viewModel.retryChats() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = palette.turquoise,
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Text(if (strings.isEnglish) "Retry" else "إعادة المحاولة")
+                            }
+                        }
+                    } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -296,6 +378,7 @@ fun ChatsListScreen(
                             style = MaterialTheme.typography.bodyMedium,
                             color = palette.textSecondary
                         )
+                    }
                     }
                 }
             } else {

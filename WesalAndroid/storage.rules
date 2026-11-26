@@ -73,6 +73,58 @@ service firebase.storage {
       allow delete: if isSignedIn();
     }
 
+    // Actual chat-media upload paths used by the app (ChatRepositoryImpl.sendMediaMessage
+    // writes to "<folder>/{chatId}/{messageId}<ext>"). These prefixes were missing, so every
+    // video/document upload fell through to default-deny and always failed, and images only
+    // survived via a base64 fallback. Participant-level checks cannot be done from Storage
+    // rules here (the app uses a named, non-default Firestore database, which cross-service
+    // firestore.get() from Storage rules cannot read), so these blocks deliberately mirror
+    // the existing chat_media/voice_notes/shared_files style: signed-in users + size cap.
+    match /images/{chatId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
+    }
+
+    match /videos/{chatId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
+    }
+
+    match /voices/{chatId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
+    }
+
+    match /audios/{chatId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
+    }
+
+    match /documents/{chatId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && underMaxSize();
+      allow delete: if isSignedIn();
+    }
+
+    // Story audio uploads (StoryRepositoryImpl writes "stories_audio/{uid}/{storyId}.m4a");
+    // mirrors stories_media: the uploader's own uid is part of the path and is enforced.
+    match /stories_audio/{userId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && request.auth.uid == userId && underMaxSize();
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Shared chat wallpaper (ChatRepositoryImpl writes "chat_wallpapers/{chatId}.jpg").
+    match /chat_wallpapers/{fileName} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && isImageOrBinaryUnder10Mb();
+      allow delete: if isSignedIn();
+    }
+
     match /voice_notes/{chatId}/{fileName} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn() && underMaxSize();

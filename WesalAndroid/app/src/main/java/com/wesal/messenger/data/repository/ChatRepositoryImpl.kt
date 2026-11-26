@@ -25,6 +25,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
@@ -32,6 +35,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.net.URL
 import java.util.UUID
@@ -39,6 +43,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** Max time a message write may wait for the Firestore SDK before the REST fallback takes over. */
+private const val SEND_WRITE_TIMEOUT_MS = 15_000L
 
 @Singleton
 class ChatRepositoryImpl @Inject constructor(
@@ -50,6 +57,15 @@ class ChatRepositoryImpl @Inject constructor(
 ) : ChatRepository {
 
     private data class CachedUserEntry(val user: WesalUser, val fetchedAtMs: Long)
+
+    // Chats-list sync state (spec §13.3): the snapshot listener below used to swallow its
+    // errors, so a failed first load looked exactly like an empty account. The state is
+    // published here so the list UI can show loading (which always stops) and error+retry.
+    private val _chatListState = MutableStateFlow(ChatListSyncState())
+    private val chatListStateFlow: StateFlow<ChatListSyncState> = _chatListState.asStateFlow()
+
+    override fun observeChatListState(): Flow<ChatListSyncState> = chatListStateFlow
+
     private val userCache = ConcurrentHashMap<String, CachedUserEntry>()
     private val userCacheTtlMs = 20_000L
     private val deliveredThrottleMs = ConcurrentHashMap<String, Long>()
@@ -82,9 +98,11 @@ class ChatRepositoryImpl @Inject constructor(
         userCache.clear()
         deliveredThrottleMs.clear()
         if (uid == null) {
+            _chatListState.value = ChatListSyncState(ChatListSyncStatus.READY)
             flowOf(emptyList())
         } else {
             callbackFlow {
+                _chatListState.value = ChatListSyncState(ChatListSyncStatus.LOADING)
                 val hasRemoteEmission = AtomicBoolean(false)
                 launch(Dispatchers.IO) {
                     val cached = runCatching { wesalDao.observeChats().firstOrNull() }.getOrNull()
@@ -113,8 +131,18 @@ class ChatRepositoryImpl @Inject constructor(
                 val registration = firestore.collection(Constants.COLLECTION_CHATS)
                     .whereArrayContains("participantIds", uid)
                     .addSnapshotListener { snapshot, error ->
-                        if (error != null || snapshot == null) return@addSnapshotListener
+                        if (error != null || snapshot == null) {
+                            // Surface the failure instead of swallowing it: the chats UI
+                            // shows an error state with retry (Firestore drops the listener
+                            // after an error, so retry re-subscribes via a fresh collection).
+                            _chatListState.value = ChatListSyncState(
+                                status = ChatListSyncStatus.ERROR,
+                                errorMessage = error?.message ?: "تعذر تحميل المحادثات"
+                            )
+                            return@addSnapshotListener
+                        }
                         hasRemoteEmission.set(true)
+                        _chatListState.value = ChatListSyncState(ChatListSyncStatus.READY)
                         launch(Dispatchers.IO) {
                             val now = System.currentTimeMillis()
                             val missingPeerUids = snapshot.documents
@@ -855,7 +883,8 @@ class ChatRepositoryImpl @Inject constructor(
         chatId: String,
         text: String,
         replyTo: WesalMessage?,
-        forwardedFromName: String?
+        forwardedFromName: String?,
+        clientMessageId: String?
     ): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         val me = fetchUserCached(myUid)
@@ -876,7 +905,9 @@ class ChatRepositoryImpl @Inject constructor(
         val disappearingSec = chatSnap.getLong("disappearingDurationSec") ?: 0L
         val now = System.currentTimeMillis()
         val disappearingExpiresAt = if (disappearingSec > 0L) now + disappearingSec * 1000L else 0L
-        val messageId = UUID.randomUUID().toString()
+        // A caller-supplied id (outbox) makes retries idempotent: the same message document is
+        // rewritten instead of a second copy being created when the first attempt actually landed.
+        val messageId = clientMessageId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val cleanText = text.trim()
         require(cleanText.isNotEmpty()) { "الرسالة فارغة" }
 
@@ -905,8 +936,6 @@ class ChatRepositoryImpl @Inject constructor(
             "timestamp" to now
         )
 
-        chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(messageData).await()
-
         val preview = cleanText.take(80)
         val chatUpdates = hashMapOf<String, Any>(
             "lastMessagePreview" to preview,
@@ -918,7 +947,57 @@ class ChatRepositoryImpl @Inject constructor(
         participants.filter { it != myUid }.forEach { otherUid ->
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
         }
-        chatRef.update(chatUpdates).await()
+
+        // Atomic write: message + chat summary commit together (previously two separate
+        // awaits — if the second failed, the peer's chat list never bumped, and a retry created
+        // a duplicate message with a fresh id). Bounded by a timeout: the Firestore gRPC write
+        // stream can stall silently, and an unbounded await left the send hanging forever.
+        val messageRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId)
+        val batch = firestore.batch()
+        batch.set(messageRef, messageData)
+        batch.update(chatRef, chatUpdates)
+        val sdkCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
+            // A commit that THROWS (permission/network) must also reach the REST fallback
+            // below — withTimeoutOrNull alone only converts timeouts, not exceptions.
+            runCatching { batch.commit().await() }.isSuccess
+        } ?: false
+
+        if (!sdkCommitted) {
+            // REST fallback (this path existed in FirestoreRest but was never wired in).
+            // First check whether the timed-out batch actually landed: both write paths are
+            // atomic, so an existing message document means the summary was applied too, and
+            // repeating the commit would double-increment unread counts. If the check itself
+            // is inconclusive (null), do NOT risk a double commit: fail the send instead —
+            // the outbox keeps the message and a retry reuses the same message id.
+            val messageDocPath =
+                "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
+            val alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
+            check(alreadyLanded != null) {
+                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة من صندوق الصادر"
+            }
+            if (alreadyLanded == false) {
+                val chatScalarFields = hashMapOf<String, Any?>(
+                    "lastMessagePreview" to preview,
+                    "lastMessageTime" to now,
+                    "lastMessageSenderId" to myUid,
+                    "lastMessageStatus" to MessageStatus.SENT.raw,
+                    "deletedForUsers" to emptyList<String>()
+                )
+                val httpCode = runCatching {
+                    FirestoreRest.commitTextMessage(
+                        auth = auth,
+                        chatDocPath = "${Constants.COLLECTION_CHATS}/$chatId",
+                        messageDocPath = messageDocPath,
+                        messageData = messageData,
+                        chatScalarFields = chatScalarFields,
+                        unreadIncrementUids = participants.filter { it != myUid }
+                    )
+                }.getOrDefault(-1)
+                check(httpCode in 200..299) {
+                    "تعذر إرسال الرسالة (SDK timeout, REST fallback code=$httpCode)"
+                }
+            }
+        }
     }
 
     override fun sendMediaMessage(
@@ -1191,7 +1270,6 @@ class ChatRepositoryImpl @Inject constructor(
             "status" to MessageStatus.SENT.raw,
             "timestamp" to now
         )
-        chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(msg).await()
         val chatUpdates = hashMapOf<String, Any>(
             "lastMessagePreview" to if (isLive) "موقع مباشر ($liveDurationMinutes د)" else "موقع جغرافي",
             "lastMessageTime" to now,
@@ -1202,7 +1280,42 @@ class ChatRepositoryImpl @Inject constructor(
         participants.filter { it != myUid }.forEach { otherUid ->
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
         }
-        chatRef.update(chatUpdates).await()
+        // Same atomic + timeout + REST-fallback pattern as sendTextMessage.
+        val locationBatch = firestore.batch()
+        locationBatch.set(chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId), msg)
+        locationBatch.update(chatRef, chatUpdates)
+        val locationCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
+            runCatching { locationBatch.commit().await() }.isSuccess
+        } ?: false
+        if (!locationCommitted) {
+            val messageDocPath =
+                "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
+            val alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
+            check(alreadyLanded != null) {
+                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة لاحقًا"
+            }
+            if (alreadyLanded == false) {
+                val httpCode = runCatching {
+                    FirestoreRest.commitTextMessage(
+                        auth = auth,
+                        chatDocPath = "${Constants.COLLECTION_CHATS}/$chatId",
+                        messageDocPath = messageDocPath,
+                        messageData = msg,
+                        chatScalarFields = hashMapOf(
+                            "lastMessagePreview" to chatUpdates["lastMessagePreview"],
+                            "lastMessageTime" to now,
+                            "lastMessageSenderId" to myUid,
+                            "lastMessageStatus" to MessageStatus.SENT.raw,
+                            "deletedForUsers" to emptyList<String>()
+                        ),
+                        unreadIncrementUids = participants.filter { it != myUid }
+                    )
+                }.getOrDefault(-1)
+                check(httpCode in 200..299) {
+                    "تعذر إرسال الموقع (SDK timeout, REST fallback code=$httpCode)"
+                }
+            }
+        }
     }
 
     override suspend fun setChatDisappearingTimer(chatId: String, durationSeconds: Long): Result<Unit> = runCatching {

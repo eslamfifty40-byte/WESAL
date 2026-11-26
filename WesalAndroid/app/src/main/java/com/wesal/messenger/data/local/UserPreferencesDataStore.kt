@@ -32,6 +32,14 @@ import javax.inject.Singleton
 
 private val Context.wesalDataStore by preferencesDataStore(name = "wesal_settings_prefs")
 
+/**
+ * Process-wide lock serializing outbox sends (app-start flush + in-chat retry + fresh sends),
+ * so the same pending message can never be in flight twice at once.
+ */
+object OutboxSendGuard {
+    val mutex = kotlinx.coroutines.sync.Mutex()
+}
+
 data class AppUserSettings(
     val darkTheme: Boolean = true,
     val fontScale: Float = 1.0f,
@@ -435,6 +443,53 @@ class UserPreferencesDataStore @Inject constructor(
             json.decodeFromString<List<SavedWesalAccount>>(raw)
         }.getOrDefault(emptyList())
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Pending-message outbox (per account). Written BEFORE a send is attempted and cleared only
+    // after the send succeeds, so pending text messages survive process death / app restart.
+    // -----------------------------------------------------------------------------------------
+
+    private fun decodeOutbox(raw: String?): List<com.wesal.messenger.domain.model.PendingOutboxMessage> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.decodeFromString<List<com.wesal.messenger.domain.model.PendingOutboxMessage>>(raw)
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun enqueueOutboxMessage(entry: com.wesal.messenger.domain.model.PendingOutboxMessage) {
+        if (entry.messageId.isBlank() || entry.chatId.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val uid = resolveActiveUid(prefs)
+            val key = strKey(uid, "pending_outbox_json")
+            val current = decodeOutbox(prefs[key]).filterNot { it.messageId == entry.messageId }
+            prefs[key] = json.encodeToString(current + entry)
+        }
+    }
+
+    suspend fun removeOutboxMessage(messageId: String) {
+        if (messageId.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val uid = resolveActiveUid(prefs)
+            val key = strKey(uid, "pending_outbox_json")
+            val current = decodeOutbox(prefs[key])
+            val updated = current.filterNot { it.messageId == messageId }
+            if (updated.size != current.size) {
+                prefs[key] = json.encodeToString(updated)
+            }
+        }
+    }
+
+    suspend fun pendingOutboxMessages(): List<com.wesal.messenger.domain.model.PendingOutboxMessage> {
+        val prefs = context.wesalDataStore.data.first()
+        val uid = resolveActiveUid(prefs)
+        return decodeOutbox(prefs[strKey(uid, "pending_outbox_json")])
+    }
+
+    fun outboxFlow(): Flow<List<com.wesal.messenger.domain.model.PendingOutboxMessage>> =
+        context.wesalDataStore.data.map { prefs ->
+            val uid = resolveActiveUid(prefs)
+            decodeOutbox(prefs[strKey(uid, "pending_outbox_json")])
+        }
 
     private fun decodeStringList(raw: String?): List<String> {
         if (raw.isNullOrBlank()) return emptyList()

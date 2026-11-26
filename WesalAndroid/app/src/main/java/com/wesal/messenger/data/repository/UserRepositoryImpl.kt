@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.time.Period
 import java.util.UUID
@@ -487,7 +488,10 @@ class UserRepositoryImpl @Inject constructor(
     /**
      * Global Active User Search:
      * Searches all active, non-hidden, non-banned, non-deleted accounts by displayName,
-     * @username (publicId), or numeric WESAL ID (10000..1000000).
+     * @username (publicId), or numeric WESAL ID. Numeric-ID search is EXACT-only and limited
+     * to the spec §4.5 range (10000..100000); name search uses a bounded paginated scan.
+     * Throws IllegalStateException when every lookup failed so callers can show an error
+     * instead of a misleading empty result.
      */
     override suspend fun searchUsers(query: String): List<WesalUser> {
         val trimmed = query.trim()
@@ -511,28 +515,22 @@ class UserRepositoryImpl @Inject constructor(
             .removePrefix("ID:")
             .removePrefix("id:")
             .trim()
-        val numericQuery = WesalIdUtils.extractSearchNumericIdQuery(trimmed)
+        // Spec §4.5: numeric-ID SEARCH is exact-only and limited to the spec range
+        // 10000..100000. Prefix/contains matching (and the old "1001" special case) are gone:
+        // a partial ID must never return other people's accounts. Exact resolvers used by
+        // invite links/QR (findExactUserByNumericId) are untouched and keep their wider range.
+        val searchNumericId = normalizedDigits.takeIf { WesalIdUtils.isSpecSearchNumericId(it) }.orEmpty()
         val cleanHandle = WesalIdUtils.normalize(trimmed)
+        val anyLookupSucceeded = java.util.concurrent.atomic.AtomicBoolean(false)
 
         coroutineScope {
-            val exactNumDef = if (numericQuery.isNotBlank()) {
+            val exactNumDef = if (searchNumericId.isNotBlank()) {
                 async {
                     getQueryCachedOrServer(
                         usersCollection
-                            .whereEqualTo("numericId", numericQuery)
+                            .whereEqualTo("numericId", searchNumericId)
                             .limit(5)
-                    )
-                }
-            } else null
-            val prefixNumDef = if (numericQuery.isNotBlank()) {
-                async {
-                    getQueryCachedOrServer(
-                        usersCollection
-                            .orderBy("numericId")
-                            .whereGreaterThanOrEqualTo("numericId", numericQuery)
-                            .whereLessThanOrEqualTo("numericId", "$numericQuery\uf8ff")
-                            .limit(15)
-                    )
+                    )?.also { anyLookupSucceeded.set(true) }
                 }
             } else null
             val exactHandleDef = if (cleanHandle.length >= 2) {
@@ -541,42 +539,54 @@ class UserRepositoryImpl @Inject constructor(
                         usersCollection
                             .whereEqualTo("publicId", cleanHandle)
                             .limit(5)
-                    )
+                    )?.also { anyLookupSucceeded.set(true) }
                 }
             } else null
 
             exactNumDef?.await()?.documents?.forEach { consider(it.toWesalUser()) }
-            prefixNumDef?.await()?.documents?.forEach { doc ->
-                val user = doc.toWesalUser()
-                if (WesalIdUtils.isValidNumericId(user.numericId) || user.numericId == "1001") {
-                    consider(user)
-                }
-            }
             exactHandleDef?.await()?.documents?.forEach { consider(it.toWesalUser()) }
         }
 
-        // Only scan recent active pool if fast indexed lookups found fewer than 5 matches
-        if (results.size < 5) {
+        // Name/handle search: bounded paginated scan (5 pages x 120 = up to 600 newest users,
+        // previously only the 120 newest were ever scanned, so older accounts were unfindable).
+        // Numeric "contains" matching is intentionally NOT done here (exact-only, see above).
+        if (results.size < 5 && searchNumericId.isBlank()) {
             val normalizedQueryText = WesalIdUtils.normalizeSearchText(trimmed)
-            val poolSnap = getQueryCachedOrServer(
-                usersCollection
+            var lastDoc: com.google.firebase.firestore.DocumentSnapshot? = null
+            var pagesFetched = 0
+            while (pagesFetched < 5 && results.size < 20) {
+                var pageQuery = usersCollection
                     .orderBy("createdAt", Query.Direction.DESCENDING)
                     .limit(120)
-            ) ?: getQueryCachedOrServer(usersCollection.limit(120))
-
-            poolSnap?.documents?.forEach { doc ->
-                val u = doc.toWesalUser()
-                val normalizedName = WesalIdUtils.normalizeSearchText(u.displayName)
-                val nameMatch = u.displayName.contains(trimmed, ignoreCase = true) ||
-                    (normalizedQueryText.isNotBlank() && normalizedName.contains(normalizedQueryText))
-                val handleMatch = cleanHandle.length >= 2 && u.publicId.contains(cleanHandle, ignoreCase = true)
-                val idMatch = normalizedDigits.length >= 2 &&
-                    normalizedDigits.all { it.isDigit() } &&
-                    u.numericId.contains(normalizedDigits)
-                if (nameMatch || handleMatch || idMatch) {
-                    consider(u)
+                if (lastDoc != null) pageQuery = pageQuery.startAfter(lastDoc!!)
+                var poolSnap = getQueryCachedOrServer(pageQuery)
+                if (poolSnap == null && pagesFetched == 0) {
+                    poolSnap = getQueryCachedOrServer(usersCollection.limit(120))
                 }
+                if (poolSnap == null) break
+                anyLookupSucceeded.set(true)
+                pagesFetched++
+                val docs = poolSnap.documents
+                if (docs.isEmpty()) break
+                lastDoc = docs.last()
+                docs.forEach { doc ->
+                    val u = doc.toWesalUser()
+                    val normalizedName = WesalIdUtils.normalizeSearchText(u.displayName)
+                    val nameMatch = u.displayName.contains(trimmed, ignoreCase = true) ||
+                        (normalizedQueryText.isNotBlank() && normalizedName.contains(normalizedQueryText))
+                    val handleMatch = cleanHandle.length >= 2 && u.publicId.contains(cleanHandle, ignoreCase = true)
+                    if (nameMatch || handleMatch) {
+                        consider(u)
+                    }
+                }
+                if (docs.size < 120) break
             }
+        }
+
+        // Failure must not look like "no results": if every lookup failed, surface the error.
+        // Callers (ContactsViewModel / CallHistoryScreen / GroupsScreen) all runCatching this.
+        if (results.isEmpty() && !anyLookupSucceeded.get()) {
+            throw IllegalStateException("تعذر إجراء البحث حاليًا، تحقق من الاتصال وحاول مرة أخرى")
         }
 
         return results.values.sortedWith(
@@ -612,6 +622,12 @@ class UserRepositoryImpl @Inject constructor(
         if (distinct.isEmpty()) return emptyMap()
         val currentUid = auth.currentUser?.uid
         val matched = java.util.concurrent.ConcurrentHashMap<String, WesalUser>()
+        // Failure tracking: the cached-or-server helpers below swallow every error into null,
+        // which used to make a failed lookup indistinguishable from "nobody is registered" —
+        // every contact then fell into the invite section and the registered section vanished
+        // with no error shown. Bounded (15s) so a stalled stream cannot hang the sync either.
+        val failedPrimaryChunks = java.util.concurrent.atomic.AtomicInteger(0)
+        val chunks = distinct.chunked(30)
 
         fun considerUserDoc(hash: String, doc: DocumentSnapshot) {
             if (!doc.exists() || hash.isBlank()) return
@@ -630,12 +646,15 @@ class UserRepositoryImpl @Inject constructor(
         }
 
         coroutineScope {
-            distinct.chunked(30).map { chunk ->
+            chunks.map { chunk ->
                 async(Dispatchers.IO) {
-                    val snap = getQueryCachedOrServer(
-                        firestore.collection(Constants.COLLECTION_USERS)
-                            .whereIn("phoneHash", chunk)
-                    )
+                    val snap = withTimeoutOrNull(15_000L) {
+                        getQueryCachedOrServer(
+                            firestore.collection(Constants.COLLECTION_USERS)
+                                .whereIn("phoneHash", chunk)
+                        )
+                    }
+                    if (snap == null) failedPrimaryChunks.incrementAndGet()
                     snap?.documents?.forEach { doc ->
                         val hash = doc.getString("phoneHash").orEmpty()
                         considerUserDoc(hash, doc)
@@ -644,10 +663,12 @@ class UserRepositoryImpl @Inject constructor(
                     // Fallback lookup via phone_uniqueness for legacy accounts missing phoneHash on /users
                     val missingHashes = chunk.filter { !matched.containsKey(it) }
                     if (missingHashes.isNotEmpty()) {
-                        val lockSnap = getQueryCachedOrServer(
-                            firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
-                                .whereIn(FieldPath.documentId(), missingHashes)
-                        )
+                        val lockSnap = withTimeoutOrNull(15_000L) {
+                            getQueryCachedOrServer(
+                                firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                                    .whereIn(FieldPath.documentId(), missingHashes)
+                            )
+                        }
                         val missingTargets = lockSnap?.documents
                             ?.mapNotNull { lockDoc ->
                                 val hash = lockDoc.id
@@ -660,13 +681,19 @@ class UserRepositoryImpl @Inject constructor(
                         if (missingTargets.isNotEmpty()) {
                             missingTargets.map { (hash, ownerUid) ->
                                 async(Dispatchers.IO) {
-                                    getDocCachedOrServer(ownerUid)?.let { uDoc -> considerUserDoc(hash, uDoc) }
+                                    withTimeoutOrNull(10_000L) { getDocCachedOrServer(ownerUid) }
+                                        ?.let { uDoc -> considerUserDoc(hash, uDoc) }
                                 }
                             }.awaitAll()
                         }
                     }
                 }
             }.awaitAll()
+        }
+        // Total lookup failure must surface as an error (ContactsViewModel shows it), not as a
+        // silently empty "registered" section. Partial failures keep the matches that did load.
+        if (matched.isEmpty() && failedPrimaryChunks.get() >= chunks.size && chunks.isNotEmpty()) {
+            throw IllegalStateException("تعذر التحقق من جهات الاتصال المسجلة على WESAL، تحقق من الإنترنت وحاول مرة أخرى")
         }
         return matched
     }
@@ -2136,6 +2163,39 @@ class UserRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun setAccountNameplateColor(targetUid: String, colorKey: String): Result<Unit> = runCatching {
+        // Owner rule (2026-11-27): nameplate colours are granted ONLY from the admin panel
+        // (admins 10001/10002 or a delegated admin holding canManageFramesAndNeon) — the
+        // self-service card was removed from ProfileScreen and updateSelfCustomization()
+        // refuses nameplate/icon changes for non-owner accounts.
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageFramesAndNeon) { "صلاحية إدارة الإطارات والمظهر مطلوبة" }
+        val targetRef = firestore.collection(Constants.COLLECTION_USERS).document(targetUid)
+        val snap = targetRef.get().await()
+        require(snap.exists()) { "الحساب غير موجود" }
+        val targetUser = snap.toWesalUser(includePrivateUnredacted = true)
+        if (!perms.isFullSuperAdmin) {
+            require(!Constants.isProtectedAdminNumericId(targetUser.numericId) && !Constants.isSuperAdminEmail(targetUser.email)) {
+                "لا يمكن تعديل مظهر الإدارة إلا من المشرف الأعلى"
+            }
+        }
+
+        val cleanKey = colorKey.trim().uppercase()
+        targetRef.set(
+            mapOf("nameplateColor" to cleanKey),
+            SetOptions.merge()
+        ).await()
+
+        writeAdminActionLog(
+            action = if (cleanKey.isBlank()) "NAMEPLATE_COLOR_RESET" else "NAMEPLATE_COLOR_GRANTED",
+            targetUid = targetUid,
+            targetNumericId = targetUser.numericId,
+            targetPublicId = targetUser.publicId,
+            targetName = targetUser.displayName,
+            details = if (cleanKey.isBlank()) "إعادة تعيين لون لوحة الاسم" else "تعيين لون لوحة الاسم: $cleanKey"
+        )
+    }
+
     override suspend fun getGlobalCustomerFrameEnabled(): Boolean {
         val snap = runCatching {
             firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG).document("global_appearance").get().await()
@@ -3502,6 +3562,18 @@ class UserRepositoryImpl @Inject constructor(
         photoRemovedBg: Boolean?
     ): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        // Owner rule (2026-11-27): nameplate colour + account icon are admin-granted only
+        // (admin panel, numeric IDs 10001/10002). The self-service card was removed from
+        // ProfileScreen; this guard keeps the repository honest too — a non-owner account
+        // can no longer change its own nameplate/icon through this legacy path. Other
+        // fields (e.g. photoRemovedBg) are unaffected.
+        if (nameplateColor != null || iconId != null || iconUrl != null) {
+            val mySnap = firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
+            val myNumericId = mySnap.get("numericId")?.toString().orEmpty()
+            require(myNumericId in Constants.ADMIN_NUMERIC_IDS) {
+                "تخصيص لون الاسم والأيقونة متاح من لوحة الإدارة فقط"
+            }
+        }
         val updates = hashMapOf<String, Any>()
         if (nameplateColor != null) {
             updates["nameplateColor"] = nameplateColor.trim().ifBlank { "CRIMSON" }

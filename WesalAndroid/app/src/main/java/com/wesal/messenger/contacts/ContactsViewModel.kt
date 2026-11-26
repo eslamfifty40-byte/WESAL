@@ -83,12 +83,35 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch {
             val showLoader = _uiState.value.wesalContacts.isEmpty() && _uiState.value.nonWesalContacts.isEmpty()
             _uiState.update { it.copy(isLoadingContacts = showLoader, error = null) }
+            // Device contacts load independently of the WESAL lookup: if the lookup fails, the
+            // list must still render (with an error), never silently look empty.
+            val deviceList = runCatching { PhoneContactsHelper.loadDeviceContacts(context) }
+                .getOrElse { err ->
+                    _uiState.update {
+                        it.copy(
+                            isLoadingContacts = false,
+                            error = err.localizedMessage ?: "تعذر قراءة جهات الاتصال"
+                        )
+                    }
+                    return@launch
+                }
+            val hashes = deviceList
+                .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
+                .distinct()
+            val matchedByHash = runCatching { userRepository.findUsersByPhoneHashes(hashes) }
+                .getOrElse { err ->
+                    _uiState.update {
+                        it.copy(
+                            isLoadingContacts = false,
+                            wesalContacts = emptyList(),
+                            nonWesalContacts = deviceList.sortedBy { c -> c.displayName.trim().lowercase() },
+                            error = err.localizedMessage
+                                ?: "تعذر التحقق من جهات الاتصال المسجلة على WESAL"
+                        )
+                    }
+                    return@launch
+                }
             runCatching {
-                val deviceList = PhoneContactsHelper.loadDeviceContacts(context)
-                val hashes = deviceList
-                    .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
-                    .distinct()
-                val matchedByHash = userRepository.findUsersByPhoneHashes(hashes)
 
                 val matched = mutableListOf<MatchedWesalContact>()
                 val unmatched = mutableListOf<DeviceContact>()

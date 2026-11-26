@@ -188,16 +188,19 @@ object WesalFrameLibrary {
     fun resolve(frameId: String?, expiresAt: Long): ResolvedFrame? {
         if (frameId.isNullOrBlank()) return null
         if (frameId == ADMIN_FRAME_ID) {
-            // Opening of the artwork: centre at 39% of the height, diameter 45.8% of the width.
+            // Same 1536x1536 (1:1) royal artwork every customer gets by default, so an admin
+            // photo and a customer photo render in exactly the same shape and dimensions.
+            // Opening of the artwork (measured from its transparent aperture): centre at
+            // 39.6% of the height, diameter 49.6% of the width.
             return ResolvedFrame(
                 id = ADMIN_FRAME_ID,
-                resId = com.wesal.messenger.R.drawable.wesal_frame_admin,
+                resId = com.wesal.messenger.R.drawable.wesal_frame_royal_admin_1536,
                 imageUrl = "",
                 glow = Color(0xFFFF3B1F),
                 animated = true,
                 animationStyle = "PULSE_GLOW",
-                apertureCenterYFraction = 0.3906f,
-                apertureDiameterFraction = 0.4583f
+                apertureCenterYFraction = 0.396f,
+                apertureDiameterFraction = 0.496f
             )
         }
         if (expiresAt > 0L && System.currentTimeMillis() > expiresAt) return null

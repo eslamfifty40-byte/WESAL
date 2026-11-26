@@ -89,6 +89,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
 
@@ -231,16 +232,31 @@ class SettingsViewModel @Inject constructor(
     fun switchToGoogleIdToken(idToken: String, isEn: Boolean, onComplete: (Boolean) -> Unit) {
         viewModelScope.launch {
             isSwitchingAccount.value = true
-            authRepository.signInWithGoogleIdToken(idToken)
-                .onSuccess { isNewProfile ->
+            // Hard ceiling: switching must resolve in place — success, failure, or a timeout
+            // message — never the previous endless switching spinner that needed a restart.
+            val result = withTimeoutOrNull(45_000L) {
+                authRepository.signInWithGoogleIdToken(idToken)
+            }
+            when {
+                result == null -> {
+                    isSwitchingAccount.value = false
+                    statusMessage.value = if (isEn) {
+                        "Switching timed out — check your connection and try again"
+                    } else {
+                        "انتهت مهلة التبديل، تحقق من الاتصال وحاول مرة أخرى"
+                    }
+                }
+                result.isSuccess -> {
                     isSwitchingAccount.value = false
                     statusMessage.value = if (isEn) "Account switched successfully" else "تم تبديل الحساب بنجاح"
-                    onComplete(isNewProfile)
+                    onComplete(result.getOrNull() ?: false)
                 }
-                .onFailure { err ->
+                else -> {
                     isSwitchingAccount.value = false
-                    statusMessage.value = err.localizedMessage ?: if (isEn) "Failed to switch Google account" else "تعذر تبديل حساب Google"
+                    statusMessage.value = result.exceptionOrNull()?.localizedMessage
+                        ?: if (isEn) "Failed to switch Google account" else "تعذر تبديل حساب Google"
                 }
+            }
         }
     }
 
@@ -364,7 +380,9 @@ class SettingsViewModel @Inject constructor(
     fun signOut(onSignedOut: () -> Unit) {
         viewModelScope.launch {
             prefs.setHiddenChatsUnlockedSession(false)
-            authRepository.signOut()
+            // Bounded (the repository also bounds its server cleanup): signing out locally
+            // must always complete and navigate away.
+            withTimeoutOrNull(15_000L) { authRepository.signOut() }
             onSignedOut()
         }
     }

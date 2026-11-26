@@ -71,6 +71,10 @@ class IncomingCallActivity : AppCompatActivity() {
             return
         }
 
+        // This screen is now the single ringing source: cancel the heads-up notification first
+        // so the audible fallback channel (used when the full-screen intent could not fire)
+        // never rings at the same time as this activity's own ringtone.
+        cancelIncomingNotification(callId)
         startRingingAndVibration()
         // Notify caller genuinely that this callee device is actively ringing now
         lifecycleScope.launch {

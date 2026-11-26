@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Share
@@ -32,6 +33,9 @@ import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
+import com.wesal.messenger.presentation.components.WesalQrScannerDialog
+import com.wesal.messenger.presentation.components.saveQrBitmapToGallery
+import com.wesal.messenger.presentation.components.shareQrBitmapViaFileProvider
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -50,6 +54,7 @@ fun AccountShareScreen(
     BackHandler(onBack = onBack)
 
     var showEnterInviteDialog by remember { mutableStateOf(false) }
+    var showQrScanner by remember { mutableStateOf(false) }
 
     val numericId = user?.numericId.orEmpty()
     val publicId = user?.publicId.orEmpty()
@@ -248,7 +253,92 @@ fun AccountShareScreen(
                     color = palette.textPrimary
                 )
             }
+
+            // Scan a friend's QR (camera or gallery) — resolves through the same invite
+            // landing path as a typed ID, which handles deleted/hidden/unavailable accounts.
+            Button(
+                onClick = { showQrScanner = true },
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = palette.turquoise, contentColor = palette.onAccent)
+            ) {
+                Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (strings.isEnglish) "Scan a Friend's QR Code" else "مسح رمز QR لصديق",
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            if (deepLink.isNotBlank()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            saveQrBitmapToGallery(context, deepLink)
+                                .onSuccess {
+                                    Toast.makeText(
+                                        context,
+                                        if (strings.isEnglish) "QR code saved to gallery ✓" else "تم حفظ رمز QR في المعرض ✓",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                .onFailure { err ->
+                                    Toast.makeText(context, err.localizedMessage ?: "Error", Toast.LENGTH_SHORT).show()
+                                }
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (strings.isEnglish) "Save QR" else "حفظ QR", color = palette.turquoise, fontWeight = FontWeight.Bold)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            shareQrBitmapViaFileProvider(context, deepLink, shareMessage)
+                                .onFailure { err ->
+                                    Toast.makeText(context, err.localizedMessage ?: "Error", Toast.LENGTH_SHORT).show()
+                                }
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (strings.isEnglish) "Share QR" else "مشاركة QR", color = palette.emerald, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
         }
+    }
+
+    if (showQrScanner) {
+        WesalQrScannerDialog(
+            onDismiss = { showQrScanner = false },
+            onQrDetected = { raw ->
+                showQrScanner = false
+                // QR payload is "<base>/join?id=<numericId|publicId>" and contains ONLY the
+                // public ID (no e-mail/phone/UID). Extract it exactly like the manual entry.
+                val cleaned = raw.trim()
+                    .substringAfter("id=", raw.trim())
+                    .substringBefore("&")
+                    .removePrefix("@")
+                    .trim()
+                if (cleaned.isNotBlank()) {
+                    onOpenInviteId(cleaned)
+                } else {
+                    Toast.makeText(
+                        context,
+                        if (strings.isEnglish) "This QR code is not a WESAL account" else "رمز QR هذا ليس حساب WESAL",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        )
     }
 
     if (showEnterInviteDialog) {
