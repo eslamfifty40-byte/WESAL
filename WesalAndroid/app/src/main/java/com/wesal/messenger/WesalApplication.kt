@@ -215,6 +215,23 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
         }
 
+        // Incoming-call UI channel: HIGH importance for the full-screen intent, but
+        // intentionally sound-less - CallRingingController plays the looping ringtone
+        // from the push handler, so the tone never double-rings or plays only once.
+        // Vibration stays enabled so a background incoming call still buzzes.
+        val callsRingChannel = NotificationChannel(
+            Constants.CHANNEL_CALLS_RING,
+            getString(R.string.channel_calls_name),
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            enableLights(true)
+            lightColor = 0xFF00C853.toInt()
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0L, 600L, 400L, 600L)
+            setSound(null, null)
+            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+        }
+
         val storiesChannel = NotificationChannel(
             Constants.CHANNEL_STORIES,
             getString(R.string.channel_stories_name),
@@ -234,7 +251,7 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         )
 
         manager.createNotificationChannels(
-            listOf(messagesChannel, callsChannel, storiesChannel, channelsChannel, systemChannel)
+            listOf(messagesChannel, callsChannel, callsRingChannel, storiesChannel, channelsChannel, systemChannel)
         )
     }
 }

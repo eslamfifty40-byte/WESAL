@@ -16,6 +16,7 @@ import com.wesal.messenger.MainActivity
 import com.wesal.messenger.R
 import com.wesal.messenger.calls.CallActionReceiver
 import com.wesal.messenger.calls.CallActivity
+import com.wesal.messenger.calls.CallRingingController
 import com.wesal.messenger.calls.IncomingCallActivity
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -69,14 +70,20 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             when (type) {
                 "INCOMING_CALL" -> {
                     if (!userSettings.notificationsCalls) return@launch
+                    val incomingCallId = data["callId"].orEmpty()
                     showIncomingCallNotification(
-                        callId = data["callId"].orEmpty(),
+                        callId = incomingCallId,
                         callerUid = data["callerId"].orEmpty(),
                         callerName = data["callerName"] ?: rawTitle,
                         callerAvatar = data["callerAvatar"].orEmpty(),
                         callerVerified = data["callerVerified"] == "true",
                         isVideo = data["isVideo"] == "true"
                     )
+                    // Start the looping ringtone from the push handler itself: the full-screen
+                    // activity is not guaranteed to launch, and without this the call is silent.
+                    if (incomingCallId.isNotBlank()) {
+                        CallRingingController.start(this, incomingCallId, userSettings.callRingtoneUri)
+                    }
                 }
                 "GROUP_MESSAGE" -> {
                     if (!userSettings.notificationsGroups) return@launch
@@ -238,13 +245,12 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, Constants.CHANNEL_CALLS)
+        val notification = NotificationCompat.Builder(this, Constants.CHANNEL_CALLS_RING)
             .setSmallIcon(R.drawable.ic_wesal_notification)
             .setContentTitle(callerName)
             .setContentText(if (isVideo) "مكالمة فيديو واردة" else "مكالمة صوتية واردة")
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setSilent(true)
             .setOngoing(true)
             .setAutoCancel(false)
             .setFullScreenIntent(fullScreenPendingIntent, true)

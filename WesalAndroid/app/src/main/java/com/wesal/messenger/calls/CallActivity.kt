@@ -70,6 +70,8 @@ class CallActivity : AppCompatActivity() {
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Answering (from the notification action or the incoming screen) stops the ring loop
+        CallRingingController.stop()
         // Strict screenshot & screen-recording protection during active calls
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 

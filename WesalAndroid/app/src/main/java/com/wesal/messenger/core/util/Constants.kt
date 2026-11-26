@@ -43,6 +43,7 @@ object Constants {
 
     const val CHANNEL_MESSAGES = "wesal_messages"
     const val CHANNEL_CALLS = "wesal_calls_silent_v2"
+    const val CHANNEL_CALLS_RING = "wesal_calls_ring_v3"
     const val CHANNEL_CALLS_LEGACY = "wesal_calls"
     const val CHANNEL_STORIES = "wesal_stories"
     const val CHANNEL_CHANNELS = "wesal_channels"
