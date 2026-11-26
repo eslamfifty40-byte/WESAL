@@ -1,3 +1,5 @@
+import java.time.Instant
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -17,7 +19,10 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "1.0.0"
+        val buildSha = (System.getenv("GITHUB_SHA") ?: "local").take(7)
+        val buildTime = Instant.now().toString().take(16).replace("T", " ") + " UTC"
+        versionName = "1.0.0-$buildSha"
+        buildConfigField("String", "BUILD_STAMP", "\"$buildSha | $buildTime\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -183,3 +188,4 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 }
+

@@ -3,6 +3,7 @@ package com.wesal.messenger.data.repository
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import com.wesal.messenger.chat.WesalDiag
 import android.util.Base64
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
@@ -416,6 +417,7 @@ class ChatRepositoryImpl @Inject constructor(
                     .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                         if (error != null) {
                             Log.e("WesalChat", "messages listener failed for chat $chatId: ${error.code} ${error.message}")
+                            WesalDiag.report("خطأ قراءة الرسائل: ${error.code} - ${error.message}")
                             return@addSnapshotListener
                         }
                         if (snapshot == null) return@addSnapshotListener
@@ -934,8 +936,10 @@ class ChatRepositoryImpl @Inject constructor(
         val commitTask = batch.commit()
         commitTask.addOnFailureListener { e ->
             Log.e("WesalChat", "text send commit failed for chat $chatId: ${e.message}")
+            WesalDiag.report("فشل الإرسال: ${(e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code ?: e.javaClass.simpleName} - ${e.message}")
         }
-        withTimeoutOrNull(20_000L) { commitTask.await() }
+        val acked = withTimeoutOrNull(20_000L) { commitTask.await(); true }
+        if (acked == null) WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية (النت أو الصلاحيات)")
         Unit
     }
 
@@ -1477,4 +1481,5 @@ class ChatRepositoryImpl @Inject constructor(
         chatRef.set(mapOf("unreadCounts.$myUid" to 0), SetOptions.merge()).await()
     }
 }
+
 

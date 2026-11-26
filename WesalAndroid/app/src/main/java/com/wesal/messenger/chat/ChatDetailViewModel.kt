@@ -34,6 +34,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import com.wesal.messenger.chat.WesalDiag
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
@@ -292,6 +293,7 @@ class ChatDetailViewModel @Inject constructor(
                     delay(1500L * attempt)
                     continue
                 }
+                WesalDiag.report("خطأ إرسال: ${error.javaClass.simpleName} - ${error.message}")
                 _toastMessage.value = friendlySendError(error)
                 break
             }
@@ -815,4 +817,5 @@ class ChatDetailViewModel @Inject constructor(
         voicePlayer.stop()
     }
 }
+
 

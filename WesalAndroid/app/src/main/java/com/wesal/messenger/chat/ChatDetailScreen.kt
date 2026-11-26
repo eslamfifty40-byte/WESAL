@@ -546,6 +546,18 @@ fun ChatDetailScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
+                val diagError by WesalDiag.error.collectAsStateWithLifecycle()
+                diagError?.let { msg ->
+                    androidx.compose.material3.Text(
+                        text = msg + "  (اضغط للإخفاء)",
+                        color = Color.White,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFFB00020))
+                            .clickable { WesalDiag.error.value = null }
+                            .padding(8.dp)
+                    )
+                }
                 if (chat?.isMessageRequest == true || chat?.requestStatus == "PENDING" || chat?.requestStatus == "HELD") {
                     Surface(
                         color = palette.surfaceElevated,
@@ -2177,3 +2189,4 @@ private fun MessageBubble(
         }
     }
 }
+
