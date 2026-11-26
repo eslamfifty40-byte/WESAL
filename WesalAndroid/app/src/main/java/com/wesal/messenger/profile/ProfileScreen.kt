@@ -103,6 +103,9 @@ class ProfileViewModel @Inject constructor(
     val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     val profileVisitors: StateFlow<List<ProfileVisitor>> = userRepository.observeProfileVisitors()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -368,6 +371,7 @@ fun ProfileScreen(
     val clipboard = LocalClipboardManager.current
     val uiScope = rememberCoroutineScope()
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
+    val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val visitors by viewModel.profileVisitors.collectAsStateWithLifecycle()
     val uiStatus by viewModel.uiStatus.collectAsStateWithLifecycle()
 
@@ -796,7 +800,8 @@ fun ProfileScreen(
                     }
                 }
 
-                // Self-Customization Card: 26 Nameplate Colors + Animated Profile Icon Picker
+                // Self-Customization Card: 26 Nameplate Colors + Animated Profile Icon Picker (admin only)
+                if (isSuperAdmin) {
                 val availableIcons = WesalFrameLibrary.pickerItems("ICON", includeHiddenAndDeleted = false)
                 Surface(
                     color = palette.surface,
@@ -899,6 +904,7 @@ fun ProfileScreen(
                             }
                         }
                     }
+                }
                 }
             }
 
