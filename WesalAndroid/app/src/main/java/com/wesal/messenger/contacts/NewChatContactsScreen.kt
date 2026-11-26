@@ -257,9 +257,14 @@ fun NewChatContactsScreen(
             }
 
             // Tiny sync diagnostic (read=N wesal=M) so a photo of this screen explains empty lists.
-            if (state.syncDiag.isNotBlank()) {
+            val contactsDiag = when {
+                !contactsPermission.status.isGranted ->
+                    if (strings.isEnglish) "contacts: PERMISSION DENIED - tap Allow below" else "جهات الاتصال: الإذن مرفوض - اضغط سماح بالأسفل"
+                else -> state.syncDiag
+            }
+            if (contactsDiag.isNotBlank()) {
                 Text(
-                    text = state.syncDiag,
+                    text = contactsDiag,
                     style = MaterialTheme.typography.labelSmall,
                     color = palette.textMuted,
                     modifier = Modifier.fillMaxWidth()
