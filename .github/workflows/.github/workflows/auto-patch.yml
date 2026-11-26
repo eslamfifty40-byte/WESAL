@@ -1,0 +1,319 @@
+name: WESAL Auto Patch + Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ORG_GRADLE_PROJECT_WESAL_TURN_URL: ${{ secrets.WESAL_TURN_URL }}
+  ORG_GRADLE_PROJECT_WESAL_TURN_USERNAME: ${{ secrets.WESAL_TURN_USERNAME }}
+  ORG_GRADLE_PROJECT_WESAL_TURN_CREDENTIAL: ${{ secrets.WESAL_TURN_CREDENTIAL }}
+
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create rollback point
+        run: git push origin HEAD:refs/heads/backup/pre-patch-${{ github.run_id }}
+
+      - name: Apply visual patch
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          B = pathlib.Path("WesalAndroid/app/src/main/java/com/wesal/messenger")
+          LIB, GEO = B/"core/util/WesalFrameLibrary.kt", B/"core/util/WesalFrameGeometry.kt"
+          CMP, CAT = B/"presentation/components/WesalComponents.kt", B/"core/util/WesalFrameCatalog.kt"
+          PNG = pathlib.Path("WesalAndroid/app/src/main/res/drawable-nodpi/wesal_frame_admin_40.png")
+          for p in (LIB, CMP, CAT):
+              if not p.exists(): sys.exit("MISSING FILE: %s" % p)
+
+          def ind(l): return l[:len(l)-len(l.lstrip())]
+          def find1(lines, m):
+              h = [i for i,l in enumerate(lines) if m in l]
+              if len(h) != 1: sys.exit("MARKER NOT UNIQUE (%d): %s" % (len(h), m))
+              return h[0]
+          def after(t, m, new, comma=False):
+              L = t.split("\n"); i = find1(L, m); s = ind(L[i])
+              if comma and not L[i].rstrip().endswith(","): L[i] = L[i].rstrip() + ","
+              L[i+1:i+1] = [s+x for x in new]; return "\n".join(L)
+          def repl(t, m, new):
+              L = t.split("\n"); i = find1(L, m); s = ind(L[i])
+              L[i:i+1] = [s+x for x in new]; return "\n".join(L)
+
+          GEO_SRC = '''package com.wesal.messenger.core.util
+
+          import android.graphics.Bitmap
+          import android.graphics.Canvas
+          import android.graphics.Paint
+          import android.graphics.PorterDuff
+          import android.graphics.PorterDuffXfermode
+          import android.graphics.Rect
+          import kotlin.math.abs
+          import kotlin.math.cos
+          import kotlin.math.max
+          import kotlin.math.min
+          import kotlin.math.roundToInt
+          import kotlin.math.sin
+
+          data class FrameAperture(
+              val centerYFraction: Float,
+              val diameterFraction: Float
+          )
+
+          object WesalFrameGeometry {
+
+              const val FALLBACK_CENTER_Y = 0.41f
+              const val FALLBACK_DIAMETER = 0.50f
+
+              fun toSquare(src: Bitmap, side: Int = 512): Bitmap {
+                  val s = side.coerceAtLeast(64)
+                  if (src.width == s && src.height == s) return src
+                  val out = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+                  val scale = min(s.toFloat() / src.width, s.toFloat() / src.height)
+                  val w = (src.width * scale).roundToInt().coerceAtLeast(1)
+                  val h = (src.height * scale).roundToInt().coerceAtLeast(1)
+                  val left = ((s - w) / 2f).roundToInt()
+                  val top = ((s - h) / 2f).roundToInt()
+                  val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+                  Canvas(out).drawBitmap(src, null, Rect(left, top, left + w, top + h), paint)
+                  return out
+              }
+
+              fun detectAperture(src: Bitmap): FrameAperture? {
+                  val n = 220
+                  val bmp = if (max(src.width, src.height) > n) Bitmap.createScaledBitmap(src, n, n, true) else src
+                  val w = bmp.width
+                  val h = bmp.height
+                  if (w < 32 || h < 32) return null
+                  val px = IntArray(w * h)
+                  bmp.getPixels(px, 0, w, 0, 0, w, h)
+                  val opaque = BooleanArray(w * h) { (px[it] ushr 24) >= 40 }
+                  val inf = 1 shl 20
+                  val dist = IntArray(w * h)
+                  for (i in dist.indices) {
+                      val x = i % w
+                      val y = i / w
+                      dist[i] = if (opaque[i] || x == 0 || y == 0 || x == w - 1 || y == h - 1) 0 else inf
+                  }
+                  val a = 1000
+                  val b = 1414
+                  for (y in 1 until h - 1) for (x in 1 until w - 1) {
+                      val i = y * w + x
+                      if (dist[i] == 0) continue
+                      var v = dist[i]
+                      v = min(v, dist[i - 1] + a)
+                      v = min(v, dist[i - w] + a)
+                      v = min(v, dist[i - w - 1] + b)
+                      v = min(v, dist[i - w + 1] + b)
+                      dist[i] = v
+                  }
+                  for (y in h - 2 downTo 1) for (x in w - 2 downTo 1) {
+                      val i = y * w + x
+                      if (dist[i] == 0) continue
+                      var v = dist[i]
+                      v = min(v, dist[i + 1] + a)
+                      v = min(v, dist[i + w] + a)
+                      v = min(v, dist[i + w + 1] + b)
+                      v = min(v, dist[i + w - 1] + b)
+                      dist[i] = v
+                  }
+                  var best = 0
+                  var bestI = -1
+                  for (y in (h * 0.15f).toInt() until (h * 0.80f).toInt()) {
+                      for (x in (w * 0.28f).toInt() until (w * 0.72f).toInt()) {
+                          val i = y * w + x
+                          if (dist[i] > best) { best = dist[i]; bestI = i }
+                      }
+                  }
+                  if (bestI < 0) return null
+                  val r = best / 1000f
+                  val cx = (bestI % w).toFloat()
+                  val cy = (bestI / w).toFloat()
+                  val dFrac = (2f * r) / w
+                  if (dFrac < 0.22f || dFrac > 0.85f) return null
+                  if (abs(cx / w - 0.5f) > 0.12f) return null
+                  var solid = 0
+                  var total = 0
+                  for (k in 0 until 48) {
+                      val ang = Math.PI * 2 * k / 48
+                      val sx = (cx + r * 1.14f * cos(ang)).roundToInt()
+                      val sy = (cy + r * 1.14f * sin(ang)).roundToInt()
+                      if (sx in 0 until w && sy in 0 until h) {
+                          total++
+                          if (opaque[sy * w + sx]) solid++
+                      }
+                  }
+                  if (total < 24 || solid.toFloat() / total < 0.65f) return null
+                  return FrameAperture(cy / h, dFrac)
+              }
+
+              fun punchAperture(src: Bitmap, aperture: FrameAperture): Bitmap {
+                  val out = src.copy(Bitmap.Config.ARGB_8888, true)
+                  val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                      xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+                  }
+                  val side = min(out.width, out.height).toFloat()
+                  val r = side * aperture.diameterFraction.coerceIn(0.10f, 0.90f) / 2f
+                  Canvas(out).drawCircle(
+                      out.width / 2f,
+                      out.height * aperture.centerYFraction.coerceIn(0.05f, 0.95f),
+                      r,
+                      paint
+                  )
+                  return out
+              }
+
+              fun normalize(src: Bitmap, targetSide: Int = 512): Pair<Bitmap, FrameAperture> {
+                  val square = toSquare(src, targetSide)
+                  val aperture = detectAperture(square) ?: FrameAperture(FALLBACK_CENTER_Y, FALLBACK_DIAMETER)
+                  return punchAperture(square, aperture) to aperture
+              }
+          }
+          '''
+          GEO.write_text("\n".join(l[10:] if l.startswith("          ") else l for l in GEO_SRC.split("\n")).strip() + "\n", encoding="utf-8")
+
+          NEW_PROC = '''    private suspend fun processAndStore(ctx: Context, uri: Uri, name: String): Triple<String, Long, FrameAperture> = withContext(Dispatchers.IO) {
+                  val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 512) ?: error("تعذر قراءة الصورة")
+                  val clean = FrameImageProcessor.makeBackgroundTransparent(bmp)
+                  val (normalized, aperture) = WesalFrameGeometry.normalize(clean, 512)
+                  val glow = FrameImageProcessor.dominantGlow(normalized)
+                  val out = ByteArrayOutputStream()
+                  normalized.compress(Bitmap.CompressFormat.PNG, 100, out)
+                  var bytes = out.toByteArray()
+                  var side = 460
+                  while (bytes.size > 560_000 && side >= 180) {
+                      val sc = side.toFloat() / maxOf(normalized.width, normalized.height).coerceAtLeast(1)
+                      val bm = Bitmap.createScaledBitmap(
+                          normalized,
+                          (normalized.width * sc).toInt().coerceAtLeast(1),
+                          (normalized.height * sc).toInt().coerceAtLeast(1),
+                          true
+                      )
+                      val o2 = ByteArrayOutputStream()
+                      bm.compress(Bitmap.CompressFormat.PNG, 100, o2)
+                      bytes = o2.toByteArray()
+                      side -= 70
+                  }
+                  check(bytes.size <= 760_000) { "حجم الإطار كبير جدًا؛ يرجى اختيار صورة أصغر" }
+                  Triple("data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP), glow, aperture)
+              }
+          '''
+          NEW_PROC = "\n".join(l[10:] if l.startswith("          ") else l for l in NEW_PROC.split("\n")).rstrip()
+
+          lib = LIB.read_text(encoding="utf-8")
+          if "apertureCenterY" in lib:
+              print("SKIP: library already patched")
+          else:
+              lib = after(lib, "val createdAt: Long = 0L",
+                  ["val apertureCenterY: Float = 0f,", "val apertureDiameter: Float = 0f"], comma=True)
+              lib = after(lib, 'createdAt = d.getLong("createdAt") ?: 0L',
+                  ['apertureCenterY = (d.getDouble("apertureCenterY") ?: 0.0).toFloat(),',
+                   'apertureDiameter = (d.getDouble("apertureDiameter") ?: 0.0).toFloat()'], comma=True)
+              lib = repl(lib, "val cy = builtin?.apertureCenterYFraction",
+                  ["val cy = doc?.apertureCenterY?.takeIf { it > 0f }", "    ?: builtin?.apertureCenterYFraction ?: 0.50f"])
+              lib = repl(lib, "val dFrac = builtin?.apertureDiameterFraction",
+                  ["val dFrac = doc?.apertureDiameter?.takeIf { it > 0f }", "    ?: builtin?.apertureDiameterFraction ?: 0.62f"])
+              a = lib.index("    private suspend fun processAndStore(")
+              b = lib.index("    private suspend fun processAndStoreRawGif(", a)
+              lib = lib[:a] + NEW_PROC + "\n\n" + lib[b:]
+              lib = repl(lib, "val (url, glow) = if (isGif)", [
+                  "val (url, glow, aperture) = if (isGif) {",
+                  "    val (u, g) = processAndStoreRawGif(ctx, uri, id)",
+                  "    Triple(u, g, FrameAperture(WesalFrameGeometry.FALLBACK_CENTER_Y, WesalFrameGeometry.FALLBACK_DIAMETER))",
+                  "} else processAndStore(ctx, uri, id)"])
+              lib = after(lib, '"createdAt" to System.currentTimeMillis(),',
+                  ['"apertureCenterY" to aperture.centerYFraction,', '"apertureDiameter" to aperture.diameterFraction,'])
+              a = lib.index("suspend fun replaceFrameImage(")
+              b = lib.index("suspend fun setHidden(", a)
+              seg = lib[a:b]
+              if 'val (url, glow) = processAndStore(' not in seg: sys.exit("replaceFrameImage marker missing")
+              seg = seg.replace('val (url, glow) = processAndStore(', 'val (url, glow, aperture) = processAndStore(')
+              if '"glowColor" to glow,' not in seg: sys.exit("glowColor marker missing")
+              seg = seg.replace('"glowColor" to glow,',
+                  '"glowColor" to glow,\n            "apertureCenterY" to aperture.centerYFraction,\n            "apertureDiameter" to aperture.diameterFraction,')
+              lib = lib[:a] + seg + lib[b:]
+              LIB.write_text(lib, encoding="utf-8")
+              print("PATCHED: WesalFrameLibrary.kt")
+
+          c = CMP.read_text(encoding="utf-8")
+          old = 'activeFrame?.id == "admin_39" -> Color(0xFFFF1744)'
+          new = 'activeFrame?.id == "admin_39" || activeFrame?.id == "admin_40" -> Color(0xFFFF1744)'
+          if new in c:
+              print("SKIP: components already patched")
+          elif old in c:
+              CMP.write_text(c.replace(old, new), encoding="utf-8"); print("PATCHED: WesalComponents.kt")
+          else:
+              sys.exit("WesalComponents marker missing")
+
+          if PNG.exists():
+              k = CAT.read_text(encoding="utf-8")
+              if '"admin_40"' in k:
+                  print("SKIP: admin_40 already in catalog")
+              else:
+                  m = '        WesalFrameSpec("admin_39",'
+                  if m not in k: sys.exit("catalog marker missing")
+                  entry = ('        WesalFrameSpec("admin_40", "إطار الأسد الملكي (ADMIN)", "Royal Lions ADMIN Crest", '
+                           'FrameCategory.ADMIN, R.drawable.wesal_frame_admin_40, true, 0xFFFF1744L, '
+                           'apertureCenterYFraction = 0.41f, apertureDiameterFraction = 0.50f, '
+                           'defaultAnimated = true, defaultAnimationStyle = "PULSE_GLOW"),\n')
+                  CAT.write_text(k.replace(m, entry + m), encoding="utf-8"); print("PATCHED: catalog admin_40")
+          else:
+              print("NOTICE: wesal_frame_admin_40.png not found -> catalog entry skipped (no build break)")
+          PY
+
+      - name: Commit changes
+        run: |
+          git config user.name "wesal-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --stat
+          git commit -m "fix(frames): auto aperture detection + square normalization for any uploaded frame" || echo "nothing to commit"
+          git push origin HEAD:${{ github.ref_name }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-35 build-tools;34.0.0 build-tools;35.0.0"
+      - run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+      - name: Clean / Test / Build
+        working-directory: WesalAndroid
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:clean --no-daemon --max-workers=1
+          ./gradlew :app:testDebugUnitTest --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
+          ./gradlew :app:assembleDebug --no-daemon --max-workers=1 --stacktrace -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m -XX:+UseG1GC -Dfile.encoding=UTF-8"
+
+      - name: Verify APK
+        working-directory: WesalAndroid
+        run: |
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          unzip -tq app/build/outputs/apk/debug/app-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: WESAL-patched-debug-apk
+          path: WesalAndroid/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wesal-test-reports
+          if-no-files-found: ignore
+          path: |
+            WesalAndroid/app/build/reports/tests/
+            WesalAndroid/app/build/test-results/
+          retention-days: 14
