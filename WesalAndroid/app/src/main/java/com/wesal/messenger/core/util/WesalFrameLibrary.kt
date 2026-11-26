@@ -13,7 +13,13 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asExecutor
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -86,6 +92,12 @@ object WesalFrameLibrary {
 
     private var authHooked = false
 
+    // The library holds base64 frame images inside Firestore docs, so reading it is heavy. It must never
+    // compete with login and the first screen: start it a moment later and process snapshots off the main thread.
+    private val startScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var startJob: Job? = null
+    private const val START_DELAY_MS = 2500L
+
     /** Call once from Application.onCreate: (re)starts the listener whenever a user signs in. */
     fun startWithAuth() {
         if (authHooked) return
@@ -93,7 +105,16 @@ object WesalFrameLibrary {
             authHooked = true
             com.google.firebase.auth.FirebaseAuth.getInstance().addAuthStateListener { fa ->
                 stop()
-                if (fa.currentUser != null) start() else docs = emptyMap()
+                if (fa.currentUser != null) {
+                    startJob?.cancel()
+                    startJob = startScope.launch {
+                        delay(START_DELAY_MS)
+                        start()
+                    }
+                } else {
+                    startJob?.cancel()
+                    docs = emptyMap()
+                }
             }
         }
     }
@@ -102,7 +123,7 @@ object WesalFrameLibrary {
         if (registration != null) return
         runCatching {
             registration = db().collection(COLLECTION)
-                .addSnapshotListener { snap, error ->
+                .addSnapshotListener(Dispatchers.Default.asExecutor()) { snap, error ->
                     if (error != null || snap == null) return@addSnapshotListener
                     val map = HashMap<String, FrameDoc>()
                     for (d in snap.documents) {
@@ -126,12 +147,13 @@ object WesalFrameLibrary {
                             createdAt = d.getLong("createdAt") ?: 0L
                         )
                     }
-                    docs = map
+                    if (map != docs) docs = map
                 }
         }
     }
 
     fun stop() {
+        startJob?.cancel()
         runCatching { registration?.remove() }
         registration = null
     }
@@ -570,3 +592,4 @@ object FrameImageProcessor {
         return (c.toLong() and 0xFFFFFFFFL) or 0xFF000000L
     }
 }
+
