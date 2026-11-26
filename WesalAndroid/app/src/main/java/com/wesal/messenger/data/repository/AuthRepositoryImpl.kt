@@ -39,6 +39,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import com.google.android.gms.tasks.Task
 import java.time.LocalDate
 import java.time.Period
 import javax.inject.Inject
@@ -305,7 +307,7 @@ class AuthRepositoryImpl @Inject constructor(
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
         val cleanEmail = email.trim()
         if (Constants.SUPER_ADMIN_EMAIL.equals(cleanEmail, ignoreCase = true)) {
-            userRef.set(mapOf("numericId" to Constants.OWNER_ADMIN_NUMERIC_ID), SetOptions.merge()).await()
+            userRef.set(mapOf("numericId" to Constants.OWNER_ADMIN_NUMERIC_ID), SetOptions.merge()).awaitQueued()
             return Constants.OWNER_ADMIN_NUMERIC_ID
         }
         if (Constants.SECONDARY_ADMIN_EMAIL.equals(cleanEmail, ignoreCase = true)) {
@@ -373,14 +375,14 @@ class AuthRepositoryImpl @Inject constructor(
                         .await()
                 }.getOrNull()
                 if (conflict != null && conflict.documents.none { it.id != uid }) {
-                    userRef.set(mapOf("numericId" to candidate), SetOptions.merge()).await()
+                    userRef.set(mapOf("numericId" to candidate), SetOptions.merge()).awaitQueued()
                     return candidate
                 }
             }
         }
 
         val fallback = WesalIdUtils.generateRandomNumericCandidate()
-        userRef.set(mapOf("numericId" to fallback), SetOptions.merge()).await()
+        userRef.set(mapOf("numericId" to fallback), SetOptions.merge()).awaitQueued()
         return fallback
     }
 
@@ -445,8 +447,8 @@ class AuthRepositoryImpl @Inject constructor(
                     "recordProfileVisits" to true
                 )
             )
-            userRef.set(newUserMap, SetOptions.merge()).await()
-            val assignedNumericId = allocateUniqueNumericId(uid, email)
+            userRef.set(newUserMap, SetOptions.merge()).awaitQueued()
+            val assignedNumericId = kotlinx.coroutines.withTimeoutOrNull(8_000L) { allocateUniqueNumericId(uid, email) }.orEmpty()
             prefs.upsertSavedAccount(
                 SavedWesalAccount(
                     uid = uid,
@@ -530,7 +532,7 @@ class AuthRepositoryImpl @Inject constructor(
                     updateMap["numericId"] = Constants.OWNER_ADMIN_NUMERIC_ID
                 }
             }
-            userRef.set(updateMap, SetOptions.merge()).await()
+            userRef.set(updateMap, SetOptions.merge()).awaitQueued()
             val finalNumericId = when {
                 Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.SECONDARY_ADMIN_NUMERIC_ID
                 Constants.SUPER_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.OWNER_ADMIN_NUMERIC_ID
@@ -818,7 +820,7 @@ class AuthRepositoryImpl @Inject constructor(
         val now = System.currentTimeMillis()
         val existingMsgs = runCatching { chatRef.collection(Constants.COLLECTION_MESSAGES).limit(1).get().await() }.getOrNull()
         if (existingMsgs != null && !existingMsgs.isEmpty) {
-            userRef.set(mapOf("welcomeSent" to true), SetOptions.merge()).await()
+            userRef.set(mapOf("welcomeSent" to true), SetOptions.merge()).awaitQueued()
             return
         }
 
@@ -856,7 +858,7 @@ class AuthRepositoryImpl @Inject constructor(
             )
         ).await()
 
-        userRef.set(mapOf("welcomeSent" to true), SetOptions.merge()).await()
+        userRef.set(mapOf("welcomeSent" to true), SetOptions.merge()).awaitQueued()
     }
 
     override suspend fun syncFcmToken() {
@@ -866,7 +868,7 @@ class AuthRepositoryImpl @Inject constructor(
             firestore.collection(Constants.COLLECTION_USERS)
                 .document(uid)
                 .update("fcmToken", token)
-                .await()
+                .awaitQueued()
         }
     }
 
@@ -884,7 +886,7 @@ class AuthRepositoryImpl @Inject constructor(
             val sessionsCol = firestore.collection(Constants.COLLECTION_USERS)
                 .document(uid)
                 .collection(Constants.COLLECTION_SESSIONS)
-            sessionsCol.document(sessionId).set(sessionData, SetOptions.merge()).await()
+            sessionsCol.document(sessionId).set(sessionData, SetOptions.merge()).awaitQueued()
             val activeCount = runCatching {
                 sessionsCol.get().await().documents.count { !it.id.startsWith("link_") }
             }.getOrDefault(1).coerceAtLeast(1)
@@ -1214,4 +1216,12 @@ class AuthRepositoryImpl @Inject constructor(
             else -> e.localizedMessage?.takeIf { it.isNotBlank() } ?: fallback
         }
     }
+}
+
+/**
+ * Firestore writes are queued locally and acknowledged by the server later. When the server is slow to ack,
+ * waiting for it must never freeze sign-in: give it a few seconds, then carry on (the write still goes out).
+ */
+private suspend fun <T> Task<T>.awaitQueued(timeoutMs: Long = 6_000L) {
+    withTimeoutOrNull(timeoutMs) { await() }
 }
