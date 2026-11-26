@@ -865,9 +865,17 @@ class AuthRepositoryImpl @Inject constructor(
         val uid = currentUserId ?: return
         runCatching {
             val token = messaging.token.await()
+            val fields = hashMapOf<String, Any>("fcmToken" to token)
+            // Self-heal: every signed-in account publishes a one-way hash of its
+            // auth email so friends can find it by address-book email even when
+            // the account hides its phone number or registered via Google.
+            val emailHash = auth.currentUser?.email?.trim()?.lowercase()
+                ?.takeIf { it.contains('@') }
+                ?.let { PhoneUtils.sha256Hash(it) }
+            if (!emailHash.isNullOrBlank()) fields["emailHash"] = emailHash
             firestore.collection(Constants.COLLECTION_USERS)
                 .document(uid)
-                .update("fcmToken", token)
+                .set(fields, SetOptions.merge())
                 .awaitQueued()
         }
     }
