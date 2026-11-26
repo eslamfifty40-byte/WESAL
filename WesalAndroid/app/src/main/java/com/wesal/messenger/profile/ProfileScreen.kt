@@ -576,13 +576,9 @@ fun ProfileScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Cover Banner + Circular Avatar Header
-            Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.BottomCenter
-            ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Box(
+            // Cover banner on its own; the framed avatar sits fully below it (no overlap).
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(16f / 9f)
@@ -686,12 +682,11 @@ fun ProfileScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(64.dp))
-                }
+                    Spacer(Modifier.height(12.dp))
 
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
+                        .align(Alignment.CenterHorizontally)
                         .clickable(enabled = !uiStatus.isSaving) {
                             activeCropKind = PendingCropKind.AVATAR
                             showSourceSheetFor = PendingCropKind.AVATAR
