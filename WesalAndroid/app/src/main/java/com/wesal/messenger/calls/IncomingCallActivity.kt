@@ -188,7 +188,7 @@ class IncomingCallActivity : AppCompatActivity() {
 
     private fun startRingingAndVibration() {
         runCatching {
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val uri = com.wesal.messenger.core.util.WesalTones.resolve(this, true) ?: return@runCatching
             ringtone = RingtoneManager.getRingtone(this, uri)?.apply {
                 audioAttributes = AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_REQUEST)

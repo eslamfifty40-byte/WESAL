@@ -72,7 +72,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                 "GROUP_MESSAGE" -> {
                     if (!userSettings.notificationsGroups) return@launch
                     showStandardNotification(
-                        channelId = Constants.CHANNEL_MESSAGES,
+                        channelId = com.wesal.messenger.core.util.WesalTones.channelId(this@WesalFirebaseMessagingService, false),
                         title = title,
                         body = body,
                         chatId = if (isHiddenChat) null else chatId,
@@ -94,7 +94,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                 else -> {
                     if (!userSettings.notificationsMessages) return@launch
                     showStandardNotification(
-                        channelId = Constants.CHANNEL_MESSAGES,
+                        channelId = com.wesal.messenger.core.util.WesalTones.channelId(this@WesalFirebaseMessagingService, false),
                         title = title,
                         body = body,
                         chatId = if (isHiddenChat) null else chatId,
@@ -193,7 +193,7 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, Constants.CHANNEL_CALLS)
+        val notification = NotificationCompat.Builder(this, com.wesal.messenger.core.util.WesalTones.channelId(this, true))
             .setSmallIcon(R.drawable.ic_wesal_notification)
             .setContentTitle(callerName)
             .setContentText(if (isVideo) "مكالمة فيديو واردة" else "مكالمة صوتية واردة")
