@@ -1066,11 +1066,11 @@ class ChatRepositoryImpl @Inject constructor(
                         require(rawBytes.size <= 540_000) {
                             when (type) {
                                 MessageType.AUDIO, MessageType.VOICE ->
-                                    "حجم الملف الصوتي يتجاوز الحد المباشر (540 KB) المتاح حالياً"
+                                    "الملف الصوتي كبير (${rawBytes.size / 1024} KB) والحد 540 KB. سجّل رسالة أقصر أو اختر ملفاً أصغر"
                                 MessageType.VIDEO ->
-                                    "حجم الفيديو يتجاوز الحد المباشر (540 KB) المتاح حالياً"
+                                    "الفيديو كبير (${rawBytes.size / 1024} KB) والحد 540 KB. اختر فيديو أقصر أو أصغر"
                                 else ->
-                                    "حجم المستند يتجاوز الحد المباشر (540 KB) المتاح حالياً"
+                                    "المستند كبير (${rawBytes.size / 1024} KB) والحد 540 KB. اختر ملفاً أصغر"
                             }
                         }
                         resolvedSizeBytes = rawBytes.size.toLong()
