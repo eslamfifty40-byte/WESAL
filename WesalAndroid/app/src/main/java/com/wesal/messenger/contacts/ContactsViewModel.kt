@@ -125,8 +125,8 @@ class ContactsViewModel @Inject constructor(
                 val sortedUnmatched = unmatched.sortedBy {
                     it.displayName.trim().lowercase()
                 }
-                Pair(sortedMatched, sortedUnmatched)
-            }.onSuccess { (matched, unmatched) ->
+                Triple(sortedMatched, sortedUnmatched, emailMatchCount)
+            }.onSuccess { (matched, unmatched, emailMatchCount) ->
                 _uiState.update {
                     it.copy(
                         isLoadingContacts = false,
