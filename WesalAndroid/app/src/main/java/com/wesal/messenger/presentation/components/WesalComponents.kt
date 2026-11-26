@@ -354,11 +354,20 @@ fun WesalAvatar(
                     if (detectedCutout || activeFrame != null || neonPreset != NeonColorPreset.NONE) {
                         Modifier.background(
                             Brush.radialGradient(
-                                colors = listOf(
-                                    innerBackdropColor.copy(alpha = 0.58f),
-                                    innerBackdropColor.copy(alpha = 0.22f),
-                                    if (detectedCutout) innerBackdropColor.copy(alpha = 0.04f) else palette.surface.copy(alpha = 0.96f)
-                                )
+                                colors = if (detectedCutout) {
+                                    // Solid-ish backdrop behind transparent cutouts, like the reference artwork.
+                                    listOf(
+                                        innerBackdropColor.copy(alpha = 0.95f),
+                                        innerBackdropColor.copy(alpha = 0.55f),
+                                        innerBackdropColor.copy(alpha = 0.18f)
+                                    )
+                                } else {
+                                    listOf(
+                                        innerBackdropColor.copy(alpha = 0.58f),
+                                        innerBackdropColor.copy(alpha = 0.22f),
+                                        palette.surface.copy(alpha = 0.96f)
+                                    )
+                                }
                             )
                         )
                     } else Modifier
@@ -397,9 +406,8 @@ fun WesalAvatar(
                         .then(
                             when {
                                 detectedCutout && activeFrame != null -> Modifier.graphicsLayer {
-                                    scaleX = 1.22f
-                                    scaleY = 1.22f
-                                    translationY = -this.size.height * 0.03f
+                                    scaleX = 1.25f
+                                    scaleY = 1.25f
                                 }
                                 activeFrame != null -> Modifier.graphicsLayer {
                                     scaleX = 1.14f
@@ -414,8 +422,10 @@ fun WesalAvatar(
                                 Modifier.border(borderWidth, borderColor, CircleShape)
                             } else Modifier
                         ),
-                    contentScale = ContentScale.Crop,
-                    alignment = Alignment.TopCenter
+                    // Cutouts: Fit the whole person inside the circle (no head/feet cropping),
+                    // centered, over the backdrop - regular photos keep the Crop fill.
+                    contentScale = if (detectedCutout) ContentScale.Fit else ContentScale.Crop,
+                    alignment = if (detectedCutout) Alignment.Center else Alignment.TopCenter
                 )
             } else if (fallbackResId != null) {
                 Image(
