@@ -53,13 +53,13 @@ object NetProbe {
                 }
             } ?: "srv=TIMEOUT"
         }
-                val write = async {
+        val write = async {
             val uid = auth.currentUser?.uid ?: return@async "wr=NOUSER"
             val t0 = System.currentTimeMillis()
             withTimeoutOrNull(12000L) {
                 runCatching {
                     firestore.collection("users").document(uid)
-                        .update("lastActivityPing", System.currentTimeMillis()).await()
+                        .update("lastHeartbeatAt", System.currentTimeMillis()).await()
                     "wr=OK(${System.currentTimeMillis() - t0}ms)"
                 }.getOrElse { e ->
                     val code = (e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code
