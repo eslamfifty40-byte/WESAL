@@ -25,6 +25,7 @@ class CallActionReceiver : BroadcastReceiver() {
 
         context.getSystemService(NotificationManager::class.java)?.cancel(callId.hashCode())
 
+        CallRingingController.stop(callId)
         val pendingResult = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
