@@ -1,10 +1,6 @@
 package com.wesal.messenger.calls
 
 import android.app.NotificationManager
-import android.media.AudioAttributes
-import android.media.Ringtone
-import android.media.RingtoneManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.VibrationEffect
@@ -39,7 +35,6 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -47,10 +42,7 @@ class IncomingCallActivity : AppCompatActivity() {
 
     @Inject lateinit var callRepository: CallRepository
     @Inject lateinit var prefs: UserPreferencesDataStore
-    private var ringtone: Ringtone? = null
     private var vibrator: Vibrator? = null
-    @Volatile
-    private var ringingStopped = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -191,36 +183,8 @@ class IncomingCallActivity : AppCompatActivity() {
     }
 
     private fun startRingingAndVibration() {
-        ringingStopped = false
-        lifecycleScope.launch {
-            // Never let a stalled preference read silence the ring: cap it, then fall back to the
-            // system default ringtone, and fall back again if the saved custom uri cannot play.
-            val savedRingtoneUri = withTimeoutOrNull(1500L) {
-                runCatching { prefs.getCallRingtoneUriForCurrentAccount() }.getOrDefault("")
-            }.orEmpty()
-            if (ringingStopped || isFinishing || isDestroyed) return@launch
-            fun buildTone(uri: Uri?): Ringtone? =
-                uri?.let { runCatching { RingtoneManager.getRingtone(this@IncomingCallActivity, it) }.getOrNull() }
-            runCatching {
-                val defaultUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                val customUri = savedRingtoneUri.takeIf { it.isNotBlank() }
-                    ?.let { runCatching { Uri.parse(it) }.getOrNull() }
-                val tone = buildTone(customUri)
-                    ?: buildTone(defaultUri)
-                    ?: buildTone(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
-                if (!ringingStopped && !isFinishing && !isDestroyed && tone != null) {
-                    tone.audioAttributes = AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                        .build()
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        tone.isLooping = true
-                    }
-                    ringtone = tone
-                    runCatching { tone.play() }
-                }
-            }
-        }
+        // The looping ringtone is started by CallRingingController from the push handler
+        // (this activity is not guaranteed to launch); here we only vibrate.
         runCatching {
             val vib = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 getSystemService(VibratorManager::class.java)?.defaultVibrator
@@ -240,8 +204,7 @@ class IncomingCallActivity : AppCompatActivity() {
     }
 
     private fun stopRingingAndVibration() {
-        ringingStopped = true
-        runCatching { ringtone?.stop() }
+        CallRingingController.stop()
         runCatching { vibrator?.cancel() }
     }
 
