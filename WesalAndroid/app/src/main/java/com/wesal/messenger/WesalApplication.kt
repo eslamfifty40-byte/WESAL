@@ -78,6 +78,33 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                 .build()
             firestore.firestoreSettings = settings
         }
+        clearStuckWriteQueueOnce()
+    }
+
+    /**
+     * A write that never gets acknowledged keeps the whole local write queue blocked, and the queue is saved
+     * on disk, so every later write waits behind it even after reinstalling over the old build.
+     * Clear the local cache once per build version, before Firestore is used. The server data is not touched.
+     */
+    private fun clearStuckWriteQueueOnce() {
+        runCatching {
+            val sp = getSharedPreferences("wesal_diag", MODE_PRIVATE)
+            val key = "fs_cache_cleared_v2"
+            if (sp.getBoolean(key, false)) {
+                com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=done-before"
+                return
+            }
+            firestore.clearPersistence()
+                .addOnSuccessListener {
+                    sp.edit().putBoolean(key, true).apply()
+                    com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=OK"
+                }
+                .addOnFailureListener { e ->
+                    com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=ERR:${e.javaClass.simpleName}"
+                }
+        }.onFailure {
+            com.wesal.messenger.chat.WesalDiag.clearResult.value = "clr=EXC:${it.javaClass.simpleName}"
+        }
     }
 
     /**

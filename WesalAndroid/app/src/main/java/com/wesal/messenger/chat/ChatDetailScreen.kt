@@ -79,7 +79,7 @@ import com.wesal.messenger.voice.VoicePlaybackState
 import kotlinx.coroutines.launch
 import java.io.File
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatDetailScreen(
     onBack: () -> Unit,
@@ -549,6 +549,7 @@ fun ChatDetailScreen(
                 val diagError by WesalDiag.error.collectAsStateWithLifecycle()
                 val diagStatus by WesalDiag.status.collectAsStateWithLifecycle()
                 val diagProbe by WesalDiag.probe.collectAsStateWithLifecycle()
+                val diagClr by WesalDiag.clearResult.collectAsStateWithLifecycle()
                 LaunchedEffect(Unit) {
                     if (WesalDiag.probe.value.isBlank()) {
                         kotlinx.coroutines.delay(6000L)
@@ -566,7 +567,7 @@ fun ChatDetailScreen(
                 }
                 if (diagStatus.isNotBlank()) {
                     androidx.compose.material3.Text(
-                        text = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe",
+                        text = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe | $diagClr",
                         color = Color(0xFFBBBBBB),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -575,13 +576,29 @@ fun ChatDetailScreen(
                     )
                 }
                 diagError?.let { msg ->
+                    val diagCtx = androidx.compose.ui.platform.LocalContext.current
                     androidx.compose.material3.Text(
-                        text = msg + "  (اضغط للإخفاء)",
+                        text = msg + "  (اضغط للمشاركة · اضغط مطولاً للإخفاء)",
                         color = Color.White,
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(Color(0xFFB00020))
-                            .clickable { WesalDiag.error.value = null }
+                            .combinedClickable(
+                                onClick = {
+                                    val full = msg + "\n" + diagStatus + " | " + diagProbe + " | " + diagClr
+                                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(android.content.Intent.EXTRA_TEXT, full)
+                                    }
+                                    runCatching {
+                                        diagCtx.startActivity(
+                                            android.content.Intent.createChooser(send, "مشاركة التشخيص")
+                                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                        )
+                                    }
+                                },
+                                onLongClick = { WesalDiag.error.value = null }
+                            )
                             .padding(8.dp)
                     )
                 }

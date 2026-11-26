@@ -981,19 +981,23 @@ class ChatRepositoryImpl @Inject constructor(
         // One atomic write for the message and the chat summary. While offline the write is queued
         // locally by Firestore (message shows as SENDING) and goes out automatically when back online,
         // so we only wait a bounded time for the server acknowledgement.
-        val batch = firestore.batch()
-        batch.set(chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId), messageData)
-        batch.update(chatRef, chatUpdates)
-        val commitTask = batch.commit()
-        commitTask.addOnFailureListener { e ->
-            Log.e("WesalChat", "text send commit failed for chat $chatId: ${e.message}")
-            WesalDiag.report("فشل الإرسال: ${(e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code ?: e.javaClass.simpleName} - ${e.message}")
+        // Two independent writes (no batch) so a stall can be pinned on the message write or on the chat summary.
+        val msgTask = chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(messageData)
+        msgTask.addOnFailureListener { e ->
+            Log.e("WesalChat", "text send failed for chat $chatId: ${e.message}")
+            WesalDiag.report("فشل كتابة الرسالة: ${(e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code ?: e.javaClass.simpleName} - ${e.message}")
         }
-        val acked = withTimeoutOrNull(20_000L) { commitTask.await(); true }
+        val sumTask = chatRef.update(chatUpdates)
+        sumTask.addOnFailureListener { e ->
+            Log.e("WesalChat", "chat summary update failed for chat $chatId: ${e.message}")
+            WesalDiag.report("فشل تحديث المحادثة: ${(e as? com.google.firebase.firestore.FirebaseFirestoreException)?.code ?: e.javaClass.simpleName} - ${e.message}")
+        }
+        val acked = withTimeoutOrNull(20_000L) { msgTask.await(); true }
         if (acked == null) {
-            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. جاري الفحص...")
+            val sumDone = sumTask.isComplete
+            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. msgwrite=PENDING summary=${if (sumDone) "DONE" else "PENDING"}. جاري الفحص...")
             val probe = runCatching { NetProbe.run(firestore, auth) }.getOrElse { "probe failed: ${it.javaClass.simpleName}" }
-            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. فحص: $probe")
+            WesalDiag.report("السيرفر لم يؤكد الإرسال خلال 20 ثانية. msgwrite=PENDING summary=${if (sumTask.isComplete) "DONE" else "PENDING"} فحص: $probe")
         }
         Unit
     }
