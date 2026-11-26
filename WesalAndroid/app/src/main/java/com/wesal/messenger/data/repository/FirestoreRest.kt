@@ -1,5 +1,6 @@
 package com.wesal.messenger.data.repository
 
+import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
@@ -27,12 +28,18 @@ object FirestoreRest {
         return user.getIdToken(false).await().token ?: error("NOTOKEN")
     }
 
-    private fun open(url: String, token: String, method: String): HttpURLConnection {
+    /** The SDK attaches an App Check token to every request automatically; raw REST must send it
+     *  explicitly or an enforced App Check rejects the call with 401/403 and fakes a rules problem. */
+    private suspend fun appCheckToken(): String? =
+        runCatching { FirebaseAppCheck.getInstance().getToken(false).await().token }.getOrNull()
+
+    private fun open(url: String, token: String, appCheck: String?, method: String): HttpURLConnection {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 8000
         c.readTimeout = 12000
         c.requestMethod = method
         c.setRequestProperty("Authorization", "Bearer $token")
+        if (!appCheck.isNullOrBlank()) c.setRequestProperty("X-Firebase-AppCheck", appCheck)
         c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
         c.doOutput = true
         return c
@@ -59,7 +66,7 @@ object FirestoreRest {
                             JSONObject().put("integerValue", System.currentTimeMillis().toString())
                         )
                     )
-                    val c = open("$BASE/users/$uid?updateMask.fieldPaths=lastHeartbeatAt", idToken(auth), "PATCH")
+                    val c = open("$BASE/users/$uid?updateMask.fieldPaths=lastHeartbeatAt", idToken(auth), appCheckToken(), "PATCH")
                     post(c, fields).toString()
                 }.getOrElse { "ERR:${it.javaClass.simpleName}" }
             } ?: "TIMEOUT"
@@ -132,7 +139,7 @@ object FirestoreRest {
             .put("updateMask", JSONObject().put("fieldPaths", mask))
             .put("updateTransforms", transforms)
         val body = JSONObject().put("writes", JSONArray().put(msgWrite).put(chatWrite))
-        val c = open("$BASE:commit", idToken(auth), "POST")
+        val c = open("$BASE:commit", idToken(auth), appCheckToken(), "POST")
         post(c, body)
     }
 }
