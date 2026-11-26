@@ -445,7 +445,12 @@ class GroupRepositoryImpl @Inject constructor(
         }
         val groupRef = firestore.collection(Constants.COLLECTION_GROUPS).document(groupId)
         val chatId = groupRef.get().await().getString("chatId").orEmpty()
-        groupRef.update("memberIds", FieldValue.arrayUnion(*allowedIds.toTypedArray())).await()
+        // Add members one update at a time: the security rules evaluate each added
+        // member against their group-add privacy setting, which is only expressible
+        // for a single added member per write.
+        for (memberUid in allowedIds) {
+            groupRef.update("memberIds", FieldValue.arrayUnion(memberUid)).await()
+        }
         if (chatId.isNotBlank()) {
             val chatUpdates = hashMapOf<String, Any>(
                 "participantIds" to FieldValue.arrayUnion(*allowedIds.toTypedArray())

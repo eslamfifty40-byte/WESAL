@@ -293,6 +293,32 @@ service cloud.firestore {
       }
     }
 
+    // Group-add privacy: honors each user's "who can add me to groups" setting.
+    // EVERYONE: anyone may add them. CONTACTS: only accepted contacts may add them.
+    // NOBODY: nobody may add them directly (self-join and approved join requests still work).
+    function groupAddPrivacyAllows(adderUid, targetUid) {
+      let priv = get(/databases/$(database)/documents/users/$(targetUid)).data.get('groupAddPrivacy', 'EVERYONE');
+      return priv == 'EVERYONE' || (priv == 'CONTACTS' && areContactsAccepted(adderUid, targetUid));
+    }
+
+    function hasPendingJoinRequest(groupId, targetUid) {
+      return exists(/databases/$(database)/documents/groups/$(groupId)/join_requests/$(targetUid)) &&
+        get(/databases/$(database)/documents/groups/$(groupId)/join_requests/$(targetUid)).data.status == 'PENDING';
+    }
+
+    // Members added by a group admin must be added one at a time and must pass the
+    // target's privacy setting, unless they asked to join themselves.
+    function addedMembersRespectPrivacy(groupId) {
+      let added = request.resource.data.memberIds.removeAll(resource.data.memberIds);
+      return added.size() == 0 || (
+        added.size() == 1 && (
+          added[0] == request.auth.uid ||
+          hasPendingJoinRequest(groupId, added[0]) ||
+          groupAddPrivacyAllows(request.auth.uid, added[0])
+        )
+      );
+    }
+
     // Groups
     match /groups/{groupId} {
       allow read: if isSignedIn() && request.auth.uid in resource.data.memberIds;
@@ -300,12 +326,16 @@ service cloud.firestore {
         request.resource.data.creatorId == request.auth.uid &&
         request.auth.uid in request.resource.data.adminIds &&
         request.auth.uid in request.resource.data.memberIds;
-      allow update: if isGroupAdmin(groupId) || (
+      allow update: if (isGroupAdmin(groupId) && addedMembersRespectPrivacy(groupId)) || (
         isSignedIn() &&
-        request.auth.uid in resource.data.memberIds &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'adminIds']) &&
-        resource.data.memberIds.removeAll([request.auth.uid]) == request.resource.data.memberIds &&
-        resource.data.adminIds.removeAll([request.auth.uid]) == request.resource.data.adminIds
+        resource.data.adminIds.removeAll([request.auth.uid]) == request.resource.data.adminIds &&
+        (
+          // self-remove (leave group)
+          resource.data.memberIds.removeAll([request.auth.uid]) == request.resource.data.memberIds ||
+          // self-add (join an open / invite-only group yourself)
+          request.resource.data.memberIds.removeAll([request.auth.uid]) == resource.data.memberIds
+        )
       );
       allow delete: if false;
     }
