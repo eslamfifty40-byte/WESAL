@@ -526,8 +526,8 @@ fun UserProfileDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 val detailScope = rememberCoroutineScope()
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                // Cover banner on its own; the framed avatar sits fully below it (no overlap).
+                Column(modifier = Modifier.fillMaxWidth()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -604,10 +604,9 @@ fun UserProfileDetailScreen(
                                 }
                             }
                         }
-                        Spacer(Modifier.height(64.dp))
-                    }
+                        Spacer(Modifier.height(12.dp))
 
-                    Box(modifier = Modifier.clickable(enabled = showAvatar) { fullscreenMediaUrl = target.photoUrl }) {
+                    Box(modifier = Modifier.align(Alignment.CenterHorizontally).clickable(enabled = showAvatar) { fullscreenMediaUrl = target.photoUrl }) {
                         WesalAvatar(
                             imageUrl = if (showAvatar) target.photoUrl else "",
                             name = target.displayName.ifBlank { target.publicId },
