@@ -322,7 +322,7 @@ suspend fun uploadFileToFirebaseStorage(
     }
     var sessionUriDelivered = false
     task.addOnProgressListener { snap ->
-        val sessionUri = snap.sessionUri
+        val sessionUri = snap.uploadSessionUri
         if (!sessionUriDelivered && sessionUri != null) {
             sessionUriDelivered = true
             runCatching { onSessionUri(sessionUri) }

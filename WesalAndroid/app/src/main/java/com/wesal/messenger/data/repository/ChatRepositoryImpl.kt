@@ -1403,7 +1403,7 @@ class ChatRepositoryImpl @Inject constructor(
         waveform: List<Int>,
         caption: String,
         isViewOnce: Boolean,
-        clientMessageId: String? = null
+        clientMessageId: String?
     ): Flow<Result<Float>> = callbackFlow {
         val myUid = auth.currentUser?.uid
         if (myUid == null) {
@@ -1684,7 +1684,7 @@ class ChatRepositoryImpl @Inject constructor(
         val liveExpiresAt = if (isLive) now + liveDurationMinutes * 60_000L else 0L
         val disappearingExpiresAt = if (disappearingSec > 0L) now + disappearingSec * 1000L else 0L
 
-        val msg = mapOf(
+        val msg = hashMapOf<String, Any>(
             "messageId" to messageId,
             "chatId" to chatId,
             "senderId" to myUid,

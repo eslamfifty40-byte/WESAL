@@ -491,7 +491,7 @@ class GroupRepositoryImpl @Inject constructor(
             functions.getHttpsCallable("changeGroupMembership")
                 .call(mapOf("groupId" to groupId, "memberIds" to allowedIds))
                 .await()
-                .data as? Map<*, *>
+                .getData() as? Map<*, *>
         } catch (e: FirebaseFunctionsException) {
             when (e.code) {
                 FirebaseFunctionsException.Code.UNAVAILABLE,

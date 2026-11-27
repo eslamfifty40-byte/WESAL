@@ -378,7 +378,7 @@ class AuthRepositoryImpl @Inject constructor(
                     .call(mapOf("phone" to normalized))
                     .await()
             }
-            val channel = (result.data as? Map<*, *>)?.get("channel")?.toString()
+            val channel = (result.getData() as? Map<*, *>)?.get("channel")?.toString()
                 ?.takeIf { it.isNotBlank() } ?: "sms"
             Result.success(channel)
         } catch (e: CancellationException) {
@@ -397,7 +397,7 @@ class AuthRepositoryImpl @Inject constructor(
                     .call(mapOf("phone" to normalized, "code" to code.trim()))
                     .await()
             }
-            val data = verifyResult.data as? Map<*, *>
+            val data = verifyResult.getData() as? Map<*, *>
             val customToken = data?.get("customToken")?.toString()?.takeIf { it.isNotBlank() }
                 ?: error("تعذر إتمام تسجيل الدخول بالرقم، حاول مرة أخرى")
 
