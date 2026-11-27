@@ -28,8 +28,8 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
-import com.google.firebase.firestore.SetOptions
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.PresenceWriteGate
 import com.wesal.messenger.core.util.PerfTrace
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -270,6 +270,14 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     private fun updateUserPresence(isOnline: Boolean) {
         val uid = firebaseAuth.currentUser?.uid ?: return
         val now = System.currentTimeMillis()
+        // Scaling pass: this lifecycle writer and the repository heartbeat
+        // share PresenceWriteGate, so a foreground/background transition is
+        // stamped by whichever of them runs first and the other stands
+        // down — previously both wrote, and each also maintained a
+        // presence/{uid} document that nothing in the app ever reads.
+        if (!PresenceWriteGate.shouldWriteNow(uid, isOnline, "", "", now)) {
+            return
+        }
         val updates = hashMapOf<String, Any>(
             "isOnline" to isOnline,
             "lastSeen" to FieldValue.serverTimestamp(),
@@ -283,17 +291,13 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         firestore.collection(Constants.COLLECTION_USERS)
             .document(uid)
             .update(updates)
-        firestore.collection(Constants.COLLECTION_PRESENCE)
-            .document(uid)
-            .set(
-                mapOf(
-                    "uid" to uid,
-                    "isOnline" to isOnline,
-                    "lastHeartbeatAt" to if (isOnline) now else 0L,
-                    "updatedAt" to now
-                ),
-                SetOptions.merge()
-            )
+        PresenceWriteGate.recordWriteNow(
+            uid,
+            isOnline,
+            if (isOnline) null else "NONE",
+            if (isOnline) null else "",
+            now
+        )
     }
 
     private fun createNotificationChannels() {

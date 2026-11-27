@@ -23,6 +23,7 @@ import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.GiftGrantLogic
 import com.wesal.messenger.core.util.WelcomeGiftLogic
 import com.wesal.messenger.core.util.PhoneDiscoveryLogic
+import com.wesal.messenger.core.util.PresenceWriteGate
 import com.wesal.messenger.core.util.UserSearchLogic
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.PhoneOtpLogic
@@ -245,7 +246,11 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
 
     val lastHeartbeatAt = getLong("lastHeartbeatAt") ?: 0L
     val rawOnline = getBoolean("isOnline") ?: false
-    val effectiveOnline = rawOnline && (lastHeartbeatAt == 0L || (now - lastHeartbeatAt) <= Constants.PRESENCE_ONLINE_TTL_MS)
+    // Scaling pass: the freshness window matches the gated heartbeat
+    // cadence (PresenceWriteGate) — with refreshes up to 5 minutes apart,
+    // the raw 75 s TTL would flicker a foregrounded user offline between
+    // refreshes. A clean exit still flips isOnline=false at once.
+    val effectiveOnline = rawOnline && PresenceWriteGate.isWithinFreshnessWindow(lastHeartbeatAt, now)
 
     val email = getString("email").orEmpty()
     // Round 6 fix: the old fallback `?: (phone.isNotBlank() && email.isBlank())`
@@ -1675,6 +1680,15 @@ class UserRepositoryImpl @Inject constructor(
     ) {
         val uid = auth.currentUser?.uid ?: return
         val now = System.currentTimeMillis()
+        // Scaling pass: PresenceWriteGate is the single choke point for
+        // every presence writer. Transitions and activity changes write at
+        // once; steady-state heartbeats land at most once per
+        // HEARTBEAT_REFRESH_MS instead of on every 25 s loop tick. The
+        // second historical write — the presence/{uid} document — is gone:
+        // nothing in the codebase ever reads that collection.
+        if (!PresenceWriteGate.shouldWriteNow(uid, isOnline, activityType, activityChatId, now)) {
+            return
+        }
         val device = "${Build.MANUFACTURER} ${Build.MODEL}"
         val appVer = BuildConfig.VERSION_NAME
         val updates = mutableMapOf<String, Any>(
@@ -1690,23 +1704,32 @@ class UserRepositoryImpl @Inject constructor(
             updates["lastActivityParticipantsCount"] = participantsCount
             updates["lastActivityAt"] = now
         }
-        runCatching {
-            firestore.collection(Constants.COLLECTION_USERS).document(uid).set(updates, SetOptions.merge()).await()
+        if (!isOnline) {
+            // The gate can now make this repository write the one offline
+            // stamp that lands (the Application lifecycle writer consults
+            // the same gate), so it carries the activity clearing the
+            // Application path has always stamped on exit.
+            updates["lastActivityType"] = "NONE"
+            updates["lastActivityChatId"] = ""
+            updates["lastActivityParticipantsCount"] = 0
         }
-        runCatching {
-            firestore.collection(Constants.COLLECTION_PRESENCE).document(uid).set(
-                mapOf(
-                    "uid" to uid,
-                    "isOnline" to isOnline,
-                    "lastHeartbeatAt" to now,
-                    "deviceName" to device,
-                    "appVersion" to appVer,
-                    "activityType" to activityType,
-                    "activityChatId" to activityChatId,
-                    "participantsCount" to participantsCount
-                ),
-                SetOptions.merge()
-            ).await()
+        val written = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS).document(uid).set(updates, SetOptions.merge()).await()
+        }.isSuccess
+        if (written) {
+            val stampedActivityType = when {
+                activityType.isNotBlank() -> activityType
+                !isOnline -> "NONE"
+                else -> null
+            }
+            val stampedActivityChatId = when {
+                activityType.isNotBlank() -> activityChatId
+                !isOnline -> ""
+                else -> null
+            }
+            PresenceWriteGate.recordWriteNow(
+                uid, isOnline, stampedActivityType, stampedActivityChatId, now
+            )
         }
     }
 

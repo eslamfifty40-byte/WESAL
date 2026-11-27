@@ -431,6 +431,12 @@ class StoryRepositoryImpl @Inject constructor(
             val ownerUid = storySnap.getString("ownerUid").orEmpty()
             if (uid == ownerUid) return@runCatching
 
+            // Scaling pass: the arrayUnion below is a billed write even
+            // when the uid is already listed — the snapshot just fetched
+            // says whether it is, so a repeat view costs zero writes.
+            val alreadyListed = (storySnap.get("viewerIds") as? List<*>)
+                ?.any { it?.toString() == uid } == true
+
             val viewerDocRef = storyRef.collection("viewers").document(uid)
             val existingViewer = viewerDocRef.get().await()
             if (!existingViewer.exists()) {
@@ -456,7 +462,9 @@ class StoryRepositoryImpl @Inject constructor(
                     )
                 ).await()
             }
-            storyRef.update("viewerIds", FieldValue.arrayUnion(uid)).await()
+            if (!alreadyListed) {
+                storyRef.update("viewerIds", FieldValue.arrayUnion(uid)).await()
+            }
         }
     }
 

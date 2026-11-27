@@ -193,6 +193,10 @@ class ChatRepositoryImpl @Inject constructor(
     private val userCacheTtlMs = 20_000L
     private val deliveredThrottleMs = ConcurrentHashMap<String, Long>()
 
+    // Scaling pass: per-chat throttle for the mapper's identical
+    // lastMessageStatus = DELIVERED stamps (see mapAndDecryptMessage).
+    private val lastMessageStatusThrottleMs = ConcurrentHashMap<String, Long>()
+
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
         auth.addAuthStateListener(listener)
@@ -239,6 +243,7 @@ class ChatRepositoryImpl @Inject constructor(
     private fun chatsFlow(uid: String?, limit: Long?, paged: Boolean): Flow<List<ChatPreview>> {
         userCache.clear()
         deliveredThrottleMs.clear()
+        lastMessageStatusThrottleMs.clear()
         if (uid == null) {
             if (paged) _chatListState.value = ChatListSyncState(ChatListSyncStatus.READY)
             return flowOf(emptyList())
@@ -980,9 +985,17 @@ class ChatRepositoryImpl @Inject constructor(
         val rawStatus = MessageStatus.fromRaw(doc.getString("status"))
         if (senderId != myUid && senderId != "wesal_system" && rawStatus == MessageStatus.SENT) {
             runCatching { doc.reference.update("status", MessageStatus.DELIVERED.raw) }
-            runCatching {
-                firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-                    .update("lastMessageStatus", MessageStatus.DELIVERED.raw)
+            // Scaling pass: a burst of SENT messages each used to rewrite
+            // the chat doc's lastMessageStatus with the identical value.
+            // The first stamp in the window lands it; the rest are no-ops.
+            val stampNowMs = System.currentTimeMillis()
+            val lastStampMs = lastMessageStatusThrottleMs[chatId] ?: 0L
+            if (stampNowMs - lastStampMs >= 5_000L) {
+                lastMessageStatusThrottleMs[chatId] = stampNowMs
+                runCatching {
+                    firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+                        .update("lastMessageStatus", MessageStatus.DELIVERED.raw)
+                }
             }
         }
 
@@ -2177,7 +2190,14 @@ class ChatRepositoryImpl @Inject constructor(
         runCatching {
             val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
             val chatSnap = chatRef.get().await()
-            chatRef.update("unreadCounts.$myUid", 0).await()
+            // Scaling pass: the zeroing write is billed even when the
+            // counter is already 0 (the common case once receipts are
+            // batched) — the snapshot just fetched says so, so skip it.
+            val myUnreadCount = ((chatSnap.get("unreadCounts") as? Map<*, *>)
+                ?.get(myUid) as? Number)?.toInt() ?: 0
+            if (myUnreadCount > 0) {
+                chatRef.update("unreadCounts.$myUid", 0).await()
+            }
 
             val me = fetchUserCached(myUid)
             if (me?.privacySettings?.readReceiptsEnabled == false) {
@@ -2216,7 +2236,9 @@ class ChatRepositoryImpl @Inject constructor(
                 // unread messages are still reached.
                 if (unreadSnap.size() < 450) break
             }
-            if (chatSnap.getString("lastMessageSenderId") != myUid) {
+            if (chatSnap.getString("lastMessageSenderId") != myUid &&
+                chatSnap.getString("lastMessageStatus") != MessageStatus.READ.raw
+            ) {
                 chatRef.update("lastMessageStatus", MessageStatus.READ.raw)
                 anyUpdated = true
             }

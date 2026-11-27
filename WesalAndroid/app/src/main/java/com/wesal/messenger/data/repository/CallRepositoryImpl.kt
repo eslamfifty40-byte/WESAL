@@ -466,6 +466,12 @@ class CallRepositoryImpl @Inject constructor(
             )
             if (status == CallStatus.ENDED || status == CallStatus.REJECTED || status == CallStatus.MISSED) {
                 updates["endedAt"] = now
+                // Scaling pass: the SDP blobs are signaling, consumed only
+                // while the call is live — clear them from the history doc
+                // in the same write so they are not carried (and re-streamed
+                // to every history listener) forever.
+                updates["offerSdp"] = ""
+                updates["answerSdp"] = ""
             }
             val callRef = firestore.collection(Constants.COLLECTION_CALLS).document(callId)
             callRef.update(updates).await()
@@ -487,6 +493,26 @@ class CallRepositoryImpl @Inject constructor(
                         durationSeconds = durationSeconds,
                         timestamp = startedAt
                     )
+                }
+            }
+            if (status == CallStatus.ENDED || status == CallStatus.REJECTED || status == CallStatus.MISSED) {
+                // Scaling pass: signaling cleanup. The call document
+                // itself is the call-history record and deliberately
+                // stays; the candidates subcollection is pure ICE
+                // signaling — read only during the live call — and is
+                // deleted here so it cannot accumulate forever. Runs on
+                // whichever side stamps the terminal status; a second run
+                // finds an empty subcollection and costs no writes.
+                runCatching {
+                    val candidatesRef = callRef.collection(Constants.SUBCOLLECTION_CANDIDATES)
+                    while (true) {
+                        val snap = candidatesRef.limit(400).get().await()
+                        if (snap.isEmpty) break
+                        val batch = firestore.batch()
+                        snap.documents.forEach { batch.delete(it.reference) }
+                        batch.commit().await()
+                        if (snap.size() < 400) break
+                    }
                 }
             }
         }

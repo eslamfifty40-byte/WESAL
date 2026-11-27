@@ -1,6 +1,7 @@
 package com.wesal.messenger.admin
 
 import com.wesal.messenger.core.util.ErrorCopy
+import com.wesal.messenger.core.util.PresenceWriteGate
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -168,7 +169,7 @@ enum class AdminUserFilter(val labelAr: String, val isPrimaryChip: Boolean = fal
 
     fun matches(u: WesalUser, now: Long): Boolean {
         val dayMs = 24L * 60L * 60L * 1000L
-        val online = u.isOnline || (maxOf(u.lastHeartbeatAt, u.lastSeen) > 0L && now - maxOf(u.lastHeartbeatAt, u.lastSeen) <= Constants.PRESENCE_ONLINE_TTL_MS)
+        val online = u.isOnline || (maxOf(u.lastHeartbeatAt, u.lastSeen) > 0L && PresenceWriteGate.isWithinFreshnessWindow(maxOf(u.lastHeartbeatAt, u.lastSeen), now))
         val isDeleted = u.deletedAt > 0L || u.deletedPermanent
         return when (this) {
             ALL -> !isDeleted
@@ -1709,7 +1710,7 @@ fun AdminVerificationScreen(
                 AdminSection.ONLINE_NOW -> {
                     val now = System.currentTimeMillis()
                     val onlineUsers = users.filter { u ->
-                        u.isOnline || (maxOf(u.lastHeartbeatAt, u.lastSeen) > 0L && now - maxOf(u.lastHeartbeatAt, u.lastSeen) <= Constants.PRESENCE_ONLINE_TTL_MS)
+                        u.isOnline || (maxOf(u.lastHeartbeatAt, u.lastSeen) > 0L && PresenceWriteGate.isWithinFreshnessWindow(maxOf(u.lastHeartbeatAt, u.lastSeen), now))
                     }
                     AdminOnlineUsersSection(
                         onlineUsers = onlineUsers,

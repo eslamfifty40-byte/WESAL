@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.ContactsSyncGuard
 import com.wesal.messenger.domain.model.AppEventItem
 import com.wesal.messenger.domain.model.ChatListSyncState
 import com.wesal.messenger.domain.model.ContactLabelList
@@ -126,6 +127,13 @@ class ContactsViewModel @Inject constructor(
     @Volatile
     private var lastMatchedByHash: Map<String, WesalUser> = emptyMap()
 
+    /** Scaling pass: fingerprint + time of the last SUCCESSFUL sync (see ContactsSyncGuard). */
+    @Volatile
+    private var lastSuccessfulSyncFingerprint: Int? = null
+
+    @Volatile
+    private var lastSuccessfulSyncAtMs: Long = 0L
+
     /** Uid the current uiState belongs to; the auth collector resets ONLY on a real change. */
     @Volatile
     private var lastAuthUid: String? = null
@@ -163,6 +171,8 @@ class ContactsViewModel @Inject constructor(
                     liveUpdatesJob = null
                     lastDeviceList = emptyList()
                     lastMatchedByHash = emptyMap()
+                    lastSuccessfulSyncFingerprint = null
+                    lastSuccessfulSyncAtMs = 0L
                     _uiState.value = ContactsUiState()
                     if (uid.isNullOrBlank()) return@collect
                     if (previousUid != null) {
@@ -225,6 +235,24 @@ class ContactsViewModel @Inject constructor(
                 .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
                 .distinct()
             lastDeviceList = deviceList
+            // Scaling pass: ON_RESUME fires a full sync on every return to
+            // this screen, and the bulk-invite flow bounces the user to
+            // WhatsApp and back per contact — an unchanged phone book with
+            // a still-fresh successful sync skips the whole lookup (the
+            // live listeners keep the list current while the screen is
+            // open, and any phone-book change alters the fingerprint).
+            val syncFingerprint = ContactsSyncGuard.fingerprint(hashes)
+            if (ContactsSyncGuard.shouldSkipSync(
+                    force = force,
+                    currentFingerprint = syncFingerprint,
+                    lastSuccessfulFingerprint = lastSuccessfulSyncFingerprint,
+                    lastSuccessfulAtMs = lastSuccessfulSyncAtMs,
+                    nowMs = System.currentTimeMillis()
+                )
+            ) {
+                _uiState.update { it.copy(isLoadingContacts = false) }
+                return@launch
+            }
             val matchedByHash = runCatching { userRepository.findUsersByPhoneHashes(hashes) }
                 .getOrElse { err ->
                     _uiState.update {
@@ -258,6 +286,8 @@ class ContactsViewModel @Inject constructor(
                 }
                 lastMatchedByHash = matchedByHash
                 val syncAt = System.currentTimeMillis()
+                lastSuccessfulSyncFingerprint = syncFingerprint
+                lastSuccessfulSyncAtMs = syncAt
                 _uiState.update {
                     it.copy(
                         isLoadingContacts = false,

@@ -11,6 +11,8 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.core.util.ReadReceiptBatcher
+import com.wesal.messenger.core.util.TypingSignalGate
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -306,8 +308,15 @@ class ChatDetailViewModel @Inject constructor(
     private var typingDebounceJob: Job? = null
     private var welcomeTriggeredInSession = false
 
+    // Scaling pass: typing writes are transition-gated (TypingSignalGate)
+    // and read receipts are batched (ReadReceiptBatcher) — see markRead()
+    // and onInputTextChanged().
+    private val typingGate = TypingSignalGate()
+    private val readReceiptBatcher = ReadReceiptBatcher()
+    private var readFlushJob: Job? = null
+
     init {
-        viewModelScope.launch { chatRepository.markChatAsRead(chatId) }
+        markRead()
         observeAutoWelcome()
         restoreOutboxForThisChat()
     }
@@ -397,18 +406,54 @@ class ChatDetailViewModel @Inject constructor(
         viewModelScope.launch { prefs.recordRecentEmoji(emoji) }
     }
 
+    /**
+     * Scaling pass: receipt requests are batched through
+     * [ReadReceiptBatcher]. The first request (chat open) flushes at once;
+     * requests during an active conversation coalesce into one trailing
+     * sweep every [ReadReceiptBatcher.DEFAULT_INTERVAL_MS]; leaving the
+     * chat flushes the remainder (see onCleared). Visible behaviour —
+     * badge clears on open, blue ticks land promptly — is unchanged; the
+     * full sweep no longer re-runs on every message-count change.
+     */
     fun markRead() {
+        when (val decision = readReceiptBatcher.onReadRequested(System.currentTimeMillis())) {
+            ReadReceiptBatcher.Decision.FlushNow -> flushReadReceipts()
+            is ReadReceiptBatcher.Decision.Schedule -> {
+                readFlushJob?.cancel()
+                readFlushJob = viewModelScope.launch {
+                    delay(decision.delayMs)
+                    flushReadReceipts()
+                }
+            }
+            ReadReceiptBatcher.Decision.AlreadyScheduled -> Unit
+        }
+    }
+
+    private fun flushReadReceipts() {
+        readReceiptBatcher.markFlushed(System.currentTimeMillis())
         viewModelScope.launch { chatRepository.markChatAsRead(chatId) }
     }
 
     fun onInputTextChanged(text: String) {
         if (chatPreview.value?.isOfficialWesalChat == true) return
+        // Scaling pass: the gate turns per-keystroke writes into
+        // transition writes — true once when typing starts (plus a slow
+        // refresh during long typing), false when the text empties or
+        // the 2.5 s idle timer below fires.
+        when (typingGate.onTextChanged(text.isBlank(), System.currentTimeMillis())) {
+            TypingSignalGate.Action.SEND_TRUE ->
+                viewModelScope.launch { chatRepository.setTyping(chatId, true) }
+            TypingSignalGate.Action.SEND_FALSE ->
+                viewModelScope.launch { chatRepository.setTyping(chatId, false) }
+            TypingSignalGate.Action.NONE -> Unit
+        }
         typingDebounceJob?.cancel()
-        typingDebounceJob = viewModelScope.launch {
-            chatRepository.setTyping(chatId, text.isNotBlank())
-            if (text.isNotBlank()) {
+        if (text.isNotBlank()) {
+            typingDebounceJob = viewModelScope.launch {
                 delay(2500L)
-                chatRepository.setTyping(chatId, false)
+                if (typingGate.onStopTimer() == TypingSignalGate.Action.SEND_FALSE) {
+                    chatRepository.setTyping(chatId, false)
+                }
             }
         }
     }
@@ -498,7 +543,9 @@ class ChatDetailViewModel @Inject constructor(
                     timestamp = echo.timestamp
                 )
             )
-            chatRepository.setTyping(chatId, false)
+            if (typingGate.onMessageSent() == TypingSignalGate.Action.SEND_FALSE) {
+                chatRepository.setTyping(chatId, false)
+            }
             val sendResult = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
                 chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply, clientMessageId = messageId)
             }
@@ -1167,5 +1214,20 @@ class ChatDetailViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         voicePlayer.stop()
+        // Scaling pass: leaving the chat flushes any batched read receipts
+        // and clears a still-live typing signal. viewModelScope is being
+        // torn down, so both go out on a detached IO scope, best-effort —
+        // the same end state the un-batched code produced, minus its
+        // per-message sweeps.
+        val flushReceipts = readReceiptBatcher.hasPending()
+        val clearTyping = typingGate.onStopTimer() == TypingSignalGate.Action.SEND_FALSE
+        if (flushReceipts || clearTyping) {
+            kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + Dispatchers.IO
+            ).launch {
+                if (clearTyping) runCatching { chatRepository.setTyping(chatId, false) }
+                if (flushReceipts) runCatching { chatRepository.markChatAsRead(chatId) }
+            }
+        }
     }
 }
