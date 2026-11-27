@@ -589,8 +589,8 @@ fun ChatDetailScreen(
                                     wesalNeonTextStyle(
                                         baseStyle = MaterialTheme.typography.labelSmall,
                                         neonColorKey = activeTypingGlowColor,
-                                        intensity = maxOf(headerNeonIntensity, headerVerifGlowIntensity),
-                                        baseColor = palette.emerald
+                                        glowIntensity = maxOf(headerNeonIntensity, headerVerifGlowIntensity),
+                                        fallbackColor = palette.emerald
                                     )
                                 } else {
                                     MaterialTheme.typography.labelSmall
