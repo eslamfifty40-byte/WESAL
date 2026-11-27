@@ -164,6 +164,7 @@ class UserPreferencesDataStore @Inject constructor(
         val DEVICE_SESSION_ID = stringPreferencesKey("device_session_id")
         val SAVED_ACCOUNTS_JSON = stringPreferencesKey("saved_accounts_json")
         val PENDING_INVITE_ID = stringPreferencesKey("pending_invite_id")
+        val PENDING_PROFILE_JSON = stringPreferencesKey("pending_profile_json")
         val MANUAL_INVITE_ID = stringPreferencesKey("manual_invite_id")
         val PENDING_CHANNEL_INVITE = stringPreferencesKey("pending_channel_invite")
         val CACHED_UID = stringPreferencesKey("cached_uid")
@@ -666,6 +667,27 @@ class UserPreferencesDataStore @Inject constructor(
 
     suspend fun clearPendingOtp() {
         // Legacy cleanup only (OTP flow disabled per Sec 8)
+    }
+
+    /**
+     * Round 13 (Addendum J): the queued profile-completion record
+     * (PendingProfileLogic JSON). Written when a registration save hits
+     * an infrastructure failure so the user can enter the app at once;
+     * AuthRepositoryImpl.retryPendingProfileCompletion re-applies it in
+     * the background and clears it once the commit lands.
+     */
+    val pendingProfileJsonFlow: Flow<String?> = context.wesalDataStore.data.map { prefs ->
+        prefs[GlobalKeys.PENDING_PROFILE_JSON]
+    }
+
+    suspend fun setPendingProfileJson(json: String?) {
+        context.wesalDataStore.edit { prefs ->
+            if (json.isNullOrBlank()) {
+                prefs.remove(GlobalKeys.PENDING_PROFILE_JSON)
+            } else {
+                prefs[GlobalKeys.PENDING_PROFILE_JSON] = json
+            }
+        }
     }
 
     suspend fun setPendingInviteId(id: String) {

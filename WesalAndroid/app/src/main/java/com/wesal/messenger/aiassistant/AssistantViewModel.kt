@@ -26,6 +26,7 @@ import com.wesal.messenger.voice.VoiceRecordingState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,9 +109,30 @@ class AssistantViewModel @Inject constructor(
 
     // ------------------------------------------------------------- sending
 
+    /**
+     * Round 13 (Item I.1): the in-flight ask's job + generation. The old
+     * code launched an anonymous coroutine and REFUSED every new send
+     * while one was in flight — the owner could neither stop a slow
+     * reply («بيكتب...») nor ask something else. Now: a visible stop
+     * control calls [cancelInFlight], and sending a new message
+     * SUPERSEDES the old ask (its late reply is dropped by the
+     * generation guard in [AssistantLogic.replyApplies]).
+     */
+    private var askJob: Job? = null
+    private var askGeneration: Int = 0
+
+    /** Stops the in-flight reply: typing indicator clears at once and the composer re-enables. */
+    fun cancelInFlight() {
+        if (!_isSending.value && askJob == null) return
+        askGeneration++
+        askJob?.cancel()
+        askJob = null
+        _isSending.value = false
+    }
+
     fun sendText(rawText: String) {
         val text = rawText.trim()
-        if (text.isBlank() || _isSending.value) return
+        if (text.isBlank()) return
         dispatch(
             AssistantMessage(
                 id = UUID.randomUUID().toString(),
@@ -128,7 +150,8 @@ class AssistantViewModel @Inject constructor(
      * backend is asked to explain the photo, via AssistantLogic).
      */
     fun sendImage(uri: Uri, caption: String) {
-        if (_isSending.value) return
+        // Round 13 (Item I.1): no longer refused while a reply is in
+        // flight — dispatching supersedes the previous ask.
         viewModelScope.launch {
             val file = runCatching { prepareImageFile(uri) }.getOrNull()
             if (file == null) {
@@ -158,10 +181,8 @@ class AssistantViewModel @Inject constructor(
     }
 
     fun stopAndSendVoiceRecording() {
-        if (_isSending.value) {
-            voiceRecorder.cancelRecording()
-            return
-        }
+        // Round 13 (Item I.1): a voice note sent mid-reply supersedes
+        // the in-flight ask instead of being silently discarded.
         val rec = voiceRecorder.stopRecording() ?: return
         val recorded = rec.outputFile ?: return
         viewModelScope.launch {
@@ -199,6 +220,9 @@ class AssistantViewModel @Inject constructor(
 
     /** Wipes the local conversation (history + media files) for this uid. */
     fun clearConversation() {
+        // Round 13 (Item I.1): a reply in flight must not resurrect a
+        // message into the just-wiped conversation.
+        cancelInFlight()
         voicePlayer.stop()
         val mediaFiles = _messages.value.map { it.mediaPath }.filter { it.isNotBlank() }
         _messages.value = emptyList()
@@ -213,6 +237,12 @@ class AssistantViewModel @Inject constructor(
     // ------------------------------------------------------------ pipeline
 
     private fun dispatch(userMessage: AssistantMessage) {
+        // Round 13 (Item I.1): supersede any in-flight ask — cancel its
+        // job and bump the generation so its late reply/error (the
+        // blocking socket read is not interruptible) is dropped instead
+        // of appended over the new exchange.
+        askJob?.cancel()
+        val generation = ++askGeneration
         _messages.update { AssistantLogic.capHistory(it + userMessage) }
         // Round 10 (item 6): a new exchange un-archives the chats-list row.
         if (uid.isNotBlank()) {
@@ -221,36 +251,44 @@ class AssistantViewModel @Inject constructor(
         }
         persist()
         _isSending.value = true
-        viewModelScope.launch {
+        askJob = viewModelScope.launch {
             try {
                 val attachment = buildAttachmentFor(userMessage)
                 val payload = AssistantLogic.buildPayload(_messages.value, attachment)
                 val reply = askWithTokenRetry(payload)
-                _messages.update {
-                    AssistantLogic.capHistory(
-                        it + AssistantMessage(
-                            id = UUID.randomUUID().toString(),
-                            role = AssistantRole.ASSISTANT,
-                            text = reply,
-                            createdAtMs = System.currentTimeMillis()
+                if (AssistantLogic.replyApplies(generation, askGeneration)) {
+                    _messages.update {
+                        AssistantLogic.capHistory(
+                            it + AssistantMessage(
+                                id = UUID.randomUUID().toString(),
+                                role = AssistantRole.ASSISTANT,
+                                text = reply,
+                                createdAtMs = System.currentTimeMillis()
+                            )
                         )
-                    )
+                    }
                 }
             } catch (e: SupabaseAssistantException) {
-                appendErrorNotice(
-                    if (e.status == 429) {
-                        AssistantLogic.ERROR_DAILY_LIMIT
-                    } else {
-                        AssistantLogic.ERROR_GENERIC
-                    }
-                )
+                if (AssistantLogic.replyApplies(generation, askGeneration)) {
+                    appendErrorNotice(
+                        if (e.status == 429) {
+                            AssistantLogic.ERROR_DAILY_LIMIT
+                        } else {
+                            AssistantLogic.ERROR_GENERIC
+                        }
+                    )
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                appendErrorNotice(AssistantLogic.ERROR_GENERIC)
+                if (AssistantLogic.replyApplies(generation, askGeneration)) {
+                    appendErrorNotice(AssistantLogic.ERROR_GENERIC)
+                }
             } finally {
-                _isSending.value = false
-                persist()
+                if (AssistantLogic.replyApplies(generation, askGeneration)) {
+                    _isSending.value = false
+                    persist()
+                }
             }
         }
     }

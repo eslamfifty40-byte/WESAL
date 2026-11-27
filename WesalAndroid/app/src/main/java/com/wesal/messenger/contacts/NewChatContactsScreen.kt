@@ -50,6 +50,7 @@ import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.presentation.components.PhoneNumberText
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
@@ -689,6 +690,7 @@ fun NewChatContactsScreen(
                             }
                         }
                         OutlinedTextField(
+                            colors = wesalFieldColors(),
                             value = broadcastText,
                             onValueChange = { broadcastText = it },
                             label = { Text(if (strings.isEnglish) "Broadcast message" else "نص الرسالة الجماعية للأعمال") },
@@ -1369,6 +1371,7 @@ fun NewChatContactsScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = nameInput,
                         onValueChange = { nameInput = it },
                         label = { Text(if (strings.isEnglish) "Full Name" else "الاسم") },
@@ -1376,6 +1379,7 @@ fun NewChatContactsScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = phoneInput,
                         onValueChange = { phoneInput = it },
                         label = { Text(strings.phoneNumberLabel) },
@@ -1439,6 +1443,7 @@ fun NewChatContactsScreen(
             title = { Text(if (strings.isEnglish) "Create List" else "إنشاء قائمة جديدة", color = palette.textPrimary) },
             text = {
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = listName,
                     onValueChange = { listName = it },
                     label = { Text(if (strings.isEnglish) "List Name" else "اسم القائمة") },
@@ -1472,6 +1477,7 @@ fun NewChatContactsScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = title,
                         onValueChange = { title = it },
                         label = { Text(if (strings.isEnglish) "Title" else "عنوان المناسبة") },
@@ -1479,12 +1485,14 @@ fun NewChatContactsScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = desc,
                         onValueChange = { desc = it },
                         label = { Text(if (strings.isEnglish) "Details" else "التفاصيل") },
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = loc,
                         onValueChange = { loc = it },
                         label = { Text(if (strings.isEnglish) "Location" else "المكان (اختياري)") },

@@ -26,6 +26,7 @@ import com.wesal.messenger.core.util.UserSearchLogic
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
+import com.wesal.messenger.core.util.SubscriptionGrantLogic
 import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFrameCatalog
@@ -212,18 +213,21 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
     // account like any other — a frame granted/set on it is honoured, and the
     // golden ADMIN crest is only its DEFAULT when no live frame is set (or the
     // set frame expired), so the official presence never renders unframed.
-    // The secondary admin account (10002) keeps the historical always-crest rule.
-    val isOfficialAccount = numericIdRaw == Constants.OWNER_ADMIN_NUMERIC_ID
+    // Round 13 (Addendum E/E2 — PROVEN break): the secondary admin account
+    // (10002) previously kept an unconditional always-crest rule here, so a
+    // frame the admin panel granted it (e.g. cust_18 from an approved
+    // verification request) was WRITTEN to the doc but NEVER read back —
+    // approval looked successful and the frame simply never appeared. Both
+    // admin accounts now share the official rule: a live granted/set frame
+    // wins; the crest is only the default when no live frame is set.
     val officialFrameLive = effRawFrameId.isNotBlank() && !(effFrameExpiresAt > 0L && now > effFrameExpiresAt)
     val activeFrameId = when {
-        isOfficialAccount -> if (officialFrameLive) effRawFrameId else WesalFrameLibrary.ADMIN_FRAME_ID
-        isAdminAccount -> WesalFrameLibrary.ADMIN_FRAME_ID
+        isAdminAccount -> if (officialFrameLive) effRawFrameId else WesalFrameLibrary.ADMIN_FRAME_ID
         effFrameExpiresAt > 0L && now > effFrameExpiresAt -> ""
         else -> effRawFrameId
     }
     val activeFrameExpiresAt = when {
-        isOfficialAccount -> if (officialFrameLive) effFrameExpiresAt else 0L
-        isAdminAccount -> 0L
+        isAdminAccount -> if (officialFrameLive) effFrameExpiresAt else 0L
         else -> effFrameExpiresAt
     }
 
@@ -2019,8 +2023,29 @@ class UserRepositoryImpl @Inject constructor(
         }
     }
 
+    // Round 13 (Item A): short-TTL cache for the caller's OWN admin
+    // permissions. Every grant op used to pay up to three sequential
+    // Source.SERVER round trips (super-admins doc + user doc inside
+    // isSuperAdmin(), then the moderators doc) BEFORE its actual write —
+    // a large slice of the panel's "long load" on a slow connection.
+    // 45s is short enough that a permission change lands quickly;
+    // setModeratorPermissions also invalidates the cache immediately.
+    private var cachedAdminPermissions: Pair<String, Pair<Long, AdminPermissions>>? = null
+
     private suspend fun getCurrentAdminPermissions(): AdminPermissions {
         val uid = auth.currentUser?.uid ?: return AdminPermissions(active = false)
+        val cached = cachedAdminPermissions
+        if (cached != null && cached.first == uid &&
+            System.currentTimeMillis() - cached.second.first < 45_000L
+        ) {
+            return cached.second.second
+        }
+        val perms = computeCurrentAdminPermissions(uid)
+        cachedAdminPermissions = uid to (System.currentTimeMillis() to perms)
+        return perms
+    }
+
+    private suspend fun computeCurrentAdminPermissions(uid: String): AdminPermissions {
         if (isSuperAdmin()) return AdminPermissions.fullSuperAdmin(uid)
         val snap = runCatching {
             firestore.collection(Constants.COLLECTION_MODERATORS).document(uid).get(Source.SERVER).await()
@@ -2069,6 +2094,7 @@ class UserRepositoryImpl @Inject constructor(
         val modRef = firestore.collection(Constants.COLLECTION_MODERATORS).document(targetUid)
         if (permissions == null) {
             modRef.delete().await()
+            cachedAdminPermissions = null
             writeAdminActionLog(
                 action = "MODERATOR_REVOKED",
                 targetUid = targetUid,
@@ -2095,6 +2121,9 @@ class UserRepositoryImpl @Inject constructor(
                 "updatedAt" to System.currentTimeMillis()
             )
             modRef.set(data, SetOptions.merge()).await()
+            // Round 13 (Item A): a permission write invalidates the
+            // short-TTL permissions cache so the change applies at once.
+            cachedAdminPermissions = null
             writeAdminActionLog(
                 action = "MODERATOR_UPDATED",
                 targetUid = targetUid,
@@ -2379,6 +2408,43 @@ class UserRepositoryImpl @Inject constructor(
         require(snap.exists()) { "الطلب غير موجود" }
         val req = snap.toSubscriptionRequest()
 
+        // Round 13 (Addendum E/E2 — PROVEN break): the old order flipped
+        // the request status to APPROVED FIRST and applied the grants
+        // afterwards, with the frame grant wrapped in a swallowing
+        // runCatching — so ANY grant-write failure produced exactly the
+        // owner's device evidence: «تمت الموافقة» on the card, nothing on
+        // the account, no error anywhere. The order is now atomic from
+        // the admin's point of view: grants FIRST (the pure plan from
+        // SubscriptionGrantLogic; a failure anywhere aborts the review,
+        // the request stays PENDING, and the panel shows the error),
+        // the status flip LAST.
+        if (approved && req.userUid.isNotBlank()) {
+            val plan = SubscriptionGrantLogic.planFor(
+                desiredSeal = req.desiredSeal,
+                desiredGlowColor = req.desiredGlowColor,
+                desiredFrameId = req.desiredFrameId
+            )
+            setAccountVerification(
+                targetUid = req.userUid,
+                verified = true,
+                note = adminNote.ifBlank { "تمت الموافقة على طلب التوثيق" },
+                verificationType = plan.sealKey,
+                expiresAt = plan.expiresAt,
+                durationLabel = "دائم",
+                glowEnabled = true,
+                glowIntensity = 0.78f,
+                verificationGlowColor = plan.glowKey
+            ).getOrThrow()
+            if (plan.applyFrame) {
+                setAccountFrame(
+                    targetUid = req.userUid,
+                    frameId = plan.frameId.orEmpty(),
+                    expiresAt = plan.expiresAt,
+                    durationLabel = "دائم"
+                ).getOrThrow()
+            }
+        }
+
         val newStatus = if (approved) "APPROVED" else "REJECTED"
         val now = System.currentTimeMillis()
         reqRef.set(
@@ -2390,30 +2456,6 @@ class UserRepositoryImpl @Inject constructor(
             ),
             SetOptions.merge()
         ).await()
-
-        if (approved && req.userUid.isNotBlank()) {
-            setAccountVerification(
-                targetUid = req.userUid,
-                verified = true,
-                note = adminNote.ifBlank { "تمت الموافقة على طلب التوثيق" },
-                verificationType = req.desiredSeal,
-                expiresAt = 0L,
-                durationLabel = "دائم",
-                glowEnabled = true,
-                glowIntensity = 0.78f,
-                verificationGlowColor = req.desiredGlowColor
-            ).getOrThrow()
-            if (req.desiredFrameId.isNotBlank()) {
-                runCatching {
-                    setAccountFrame(
-                        targetUid = req.userUid,
-                        frameId = req.desiredFrameId,
-                        expiresAt = 0L,
-                        durationLabel = "دائم"
-                    )
-                }
-            }
-        }
 
         writeAdminActionLog(
             action = if (approved) "SUBSCRIPTION_APPROVED" else "SUBSCRIPTION_REJECTED",
@@ -2733,10 +2775,19 @@ class UserRepositoryImpl @Inject constructor(
             } else "إلغاء التوثيق",
             "timestamp" to now
         )
-        firestore.collection(Constants.COLLECTION_VERIFICATION_LOGS)
-            .document(operationId)
-            .set(logData)
-            .await()
+        // Round 13 (Item A): the audit-log write is NOT part of the grant —
+        // it used to be awaited in the critical path (one more sequential
+        // round trip after the user-doc write, and a log failure failed
+        // the whole grant). It now lands in the background; the grant
+        // returns as soon as the user doc itself is written.
+        backgroundScope.launch {
+            runCatching {
+                firestore.collection(Constants.COLLECTION_VERIFICATION_LOGS)
+                    .document(operationId)
+                    .set(logData)
+                    .await()
+            }
+        }
     }
 
     override suspend fun setAccountFrame(

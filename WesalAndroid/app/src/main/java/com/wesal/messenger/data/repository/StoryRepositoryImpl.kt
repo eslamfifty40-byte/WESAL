@@ -38,6 +38,24 @@ class StoryRepositoryImpl @Inject constructor(
     private val networkMonitor: NetworkMonitor
 ) : StoryRepository {
 
+    /**
+     * Round 13 (Item D clarification — defense in depth): the ONLY
+     * `isOfficial` value any publish path may stamp. The composer's
+     * request is ANDed with the author's OWN admin status, read from
+     * the author doc the publish already fetched — a non-admin's story
+     * is stamped false even if the official composer flag were somehow
+     * reached. numericId is normalized across its string/number
+     * representations before the check.
+     */
+    private fun effectiveIsOfficialFor(
+        userSnap: com.google.firebase.firestore.DocumentSnapshot,
+        requested: Boolean
+    ): Boolean {
+        val numericId = (userSnap.get("numericId") as? Number)?.toLong()?.toString()
+            ?: userSnap.getString("numericId").orEmpty()
+        return OfficialStoryLogic.effectiveIsOfficial(requested, numericId)
+    }
+
     private suspend fun fetchAcceptedContactIds(myUid: String): Set<String> {
         if (myUid.isBlank()) return emptySet()
         val contacts = mutableSetOf<String>()
@@ -225,7 +243,7 @@ class StoryRepositoryImpl @Inject constructor(
             "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
             "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
             "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
-            "isOfficial" to isOfficial,
+            "isOfficial" to effectiveIsOfficialFor(userSnap, isOfficial),
             "type" to StoryType.TEXT.raw,
             "textContent" to text.trim(),
             "backgroundColorHex" to backgroundColorHex,
@@ -297,7 +315,7 @@ class StoryRepositoryImpl @Inject constructor(
                     "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
                     "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
                     "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
-                    "isOfficial" to isOfficial,
+                    "isOfficial" to effectiveIsOfficialFor(userSnap, isOfficial),
                     "type" to if (isVideo) StoryType.VIDEO.raw else StoryType.IMAGE.raw,
                     "textContent" to "",
                     "backgroundColorHex" to backgroundColorHex,
@@ -378,7 +396,7 @@ class StoryRepositoryImpl @Inject constructor(
                     "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
                     "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
                     "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
-                    "isOfficial" to isOfficial,
+                    "isOfficial" to effectiveIsOfficialFor(userSnap, isOfficial),
                     "type" to StoryType.AUDIO.raw,
                     "textContent" to "",
                     "backgroundColorHex" to backgroundColorHex,

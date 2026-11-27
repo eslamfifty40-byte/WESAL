@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.PendingProfileLogic
 import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalIdUtils
@@ -105,6 +106,13 @@ class AuthViewModel @Inject constructor(
         // only ever masked a stalled stream.
         const val AUTH_TIMEOUT_MS = 20_000L
         const val PHONE_AUTH_TIMEOUT_MS = 60_000L
+
+        // Round 13 (Addendum J): profile completion gets its own ceiling,
+        // aligned with the repository's internally bounded chain (phone
+        // reservation + snapshot + duplicate check + queued write +
+        // read-back) instead of the shared 20s auth ceiling that used to
+        // pre-empt it and trap new users on the form.
+        const val PROFILE_SAVE_TIMEOUT_MS = 60_000L
     }
 
     val savedAccounts: StateFlow<List<SavedWesalAccount>> = authRepository.observeSavedAccounts()
@@ -677,7 +685,11 @@ class AuthViewModel @Inject constructor(
             if (cleanInviterId.isNotBlank()) {
                 runCatching { prefs.setManualInviteId(cleanInviterId) }
             }
-            val result = authCall {
+            // Round 13 (Addendum J): the save gets a ceiling aligned with
+            // the repository's own bounded chain (the old shared 20s auth
+            // ceiling fired while the repository was still legitimately
+            // working, and its failure trapped the user on this form).
+            val result = withTimeoutOrNull(PROFILE_SAVE_TIMEOUT_MS) {
                 authRepository.completeUserProfile(
                     displayName = displayName,
                     bio = bio,
@@ -689,12 +701,60 @@ class AuthViewModel @Inject constructor(
                     locationGranted = locationGranted,
                     locationGraceStartedAt = locationGraceStartedAt
                 )
-            }
+            } ?: Result.failure(
+                IllegalStateException("انتهت مهلة الاتصال بالخادم، تحقق من الإنترنت وحاول مرة أخرى")
+            )
             result.onSuccess {
+                runCatching { prefs.setPendingProfileJson(null) }
                 _uiState.update { it.copy(isLoading = false, navigateToHome = true) }
             }.onFailure { err ->
-                _uiState.update {
-                    it.copy(isLoading = false, errorMessage = err.localizedMessage ?: "تعذر حفظ الملف الشخصي")
+                if (PendingProfileLogic.isUserFixable(err)) {
+                    // Duplicate @ID / a phone owned by another account / a
+                    // banned number: the user fixes it here, with the
+                    // exact message — queueing a claim that can never
+                    // land would be a silent lie.
+                    _uiState.update {
+                        it.copy(isLoading = false, errorMessage = err.localizedMessage ?: "تعذر حفظ الملف الشخصي")
+                    }
+                } else {
+                    // INFRASTRUCTURE failure (timeout / quota / network):
+                    // a registration save must never dead-end. Persist
+                    // the form locally, stamp the startup cache complete,
+                    // enter the app NOW, and let the background retry
+                    // (immediately, and again on every launch) commit it.
+                    val uid = authRepository.currentUserId.orEmpty()
+                    if (uid.isNotBlank()) {
+                        runCatching {
+                            prefs.setPendingProfileJson(
+                                PendingProfileLogic.toJson(
+                                    PendingProfileLogic.PendingProfile(
+                                        uid = uid,
+                                        displayName = displayName.trim(),
+                                        bio = bio.trim(),
+                                        wesalId = cleanWesalId,
+                                        phoneE164 = e164Phone,
+                                        birthDateIso = birthDateIso.trim(),
+                                        hideBirthDate = hideBirthDate,
+                                        locationGranted = locationGranted,
+                                        locationGraceStartedAt = locationGraceStartedAt,
+                                        photoUriString = photoUri?.toString().orEmpty(),
+                                        savedAtMs = System.currentTimeMillis()
+                                    )
+                                )
+                            )
+                            prefs.setCachedStartupProfileState(uid, true)
+                        }
+                        viewModelScope.launch {
+                            runCatching { authRepository.retryPendingProfileCompletion() }
+                        }
+                    }
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            infoMessage = "سيتم حفظ بياناتك تلقائياً — بنكمّل الحفظ في الخلفية",
+                            navigateToHome = true
+                        )
+                    }
                 }
             }
         }

@@ -1206,6 +1206,43 @@ class ChatRepositoryImpl @Inject constructor(
         }
     }
 
+    // ------------------------------------------------------------------
+    // Round 13 (Item C): instant support-chat open. The admin uid behind
+    // a numeric id is resolved once and cached on-device; afterwards the
+    // deterministic chat id is computable locally, entry points navigate
+    // immediately, and the ensure below runs in the background.
+    // ------------------------------------------------------------------
+
+    private val supportCachePrefs by lazy {
+        context.getSharedPreferences("wesal_support_cache", Context.MODE_PRIVATE)
+    }
+
+    private fun cachedAdminUid(targetNumericId: String): String? =
+        supportCachePrefs.getString("admin_uid_$targetNumericId", null)?.takeIf { it.isNotBlank() }
+
+    private fun storeAdminUid(targetNumericId: String, uid: String) {
+        supportCachePrefs.edit().putString("admin_uid_$targetNumericId", uid).apply()
+    }
+
+    override fun directChatIdFor(peerUid: String): String? {
+        val myUid = auth.currentUser?.uid ?: return null
+        if (peerUid.isBlank() || peerUid == myUid) return null
+        val sorted = listOf(myUid, peerUid).sorted()
+        return "dm_${sorted[0]}_${sorted[1]}"
+    }
+
+    override fun cachedSupportChatId(targetNumericId: String): String? {
+        val cleanTarget = targetNumericId.trim().ifBlank { Constants.OWNER_ADMIN_NUMERIC_ID }
+        val adminUid = cachedAdminUid(cleanTarget) ?: return null
+        return directChatIdFor(adminUid)
+    }
+
+    override fun ensureSupportChatInBackground(targetNumericId: String) {
+        ioScope.launch {
+            runCatching { openSupportChatByNumericId(targetNumericId) }
+        }
+    }
+
     override suspend fun openSupportChatByNumericId(targetNumericId: String): Result<String> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         val cleanTarget = targetNumericId.trim().ifBlank { Constants.OWNER_ADMIN_NUMERIC_ID }
@@ -1213,15 +1250,20 @@ class ChatRepositoryImpl @Inject constructor(
             "حساب الدعم الرسمي المعتمد هو ${Constants.OWNER_ADMIN_NUMERIC_ID} فقط"
         }
 
-        val colQuery = firestore.collection(Constants.COLLECTION_USERS)
-            .whereEqualTo("numericId", cleanTarget)
-            .limit(5)
-        val snap = runCatching { colQuery.get(Source.SERVER).await() }.getOrNull()
-            ?: colQuery.get().await()
-        val adminDoc = snap.documents.firstOrNull { it.getString("numericId")?.trim() == cleanTarget }
-            ?: error("تعذر العثور على حساب إدارة WESAL ($cleanTarget) في قاعدة البيانات")
-
-        val adminUid = adminDoc.getString("uid")?.takeIf { it.isNotBlank() } ?: adminDoc.id
+        // Round 13 (Item C): a previously resolved admin uid is cached
+        // on-device, so repeat opens skip the users query entirely.
+        val adminUid = cachedAdminUid(cleanTarget) ?: run {
+            val colQuery = firestore.collection(Constants.COLLECTION_USERS)
+                .whereEqualTo("numericId", cleanTarget)
+                .limit(5)
+            val snap = runCatching { colQuery.get(Source.SERVER).await() }.getOrNull()
+                ?: colQuery.get().await()
+            val adminDoc = snap.documents.firstOrNull { it.getString("numericId")?.trim() == cleanTarget }
+                ?: error("تعذر العثور على حساب إدارة WESAL ($cleanTarget) في قاعدة البيانات")
+            val resolved = adminDoc.getString("uid")?.takeIf { it.isNotBlank() } ?: adminDoc.id
+            storeAdminUid(cleanTarget, resolved)
+            resolved
+        }
         require(adminUid != myUid) { "أنت مسجّل الدخول حالياً بحساب الإدارة ($cleanTarget)" }
 
         val sortedIds = listOf(myUid, adminUid).sorted()

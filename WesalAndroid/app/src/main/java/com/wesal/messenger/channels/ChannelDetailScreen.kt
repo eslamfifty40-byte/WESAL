@@ -60,6 +60,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 private val QUICK_CHANNEL_REACTIONS = listOf("👍", "❤️", "🔥", "👏", "😂")
 
@@ -548,6 +549,7 @@ fun ChannelDetailScreen(
             title = { Text(if (strings.isEnglish) "Edit Post" else "تعديل المنشور", color = palette.textPrimary) },
             text = {
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = editText,
                     onValueChange = { editText = it },
                     maxLines = 6,

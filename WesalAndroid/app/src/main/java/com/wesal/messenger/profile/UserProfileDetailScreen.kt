@@ -82,6 +82,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import javax.inject.Inject
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 @HiltViewModel
 class UserProfileDetailViewModel @Inject constructor(
@@ -1312,6 +1313,7 @@ fun UserProfileDetailScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
+                            colors = wesalFieldColors(),
                             value = newListName,
                             onValueChange = { newListName = it },
                             label = { Text(if (strings.isEnglish) "New list name" else "اسم قائمة جديدة") },
@@ -1376,6 +1378,7 @@ fun UserProfileDetailScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = nameInput,
                         onValueChange = { nameInput = it },
                         label = { Text(if (strings.isEnglish) "Contact Name" else "اسم جهة الاتصال") },
@@ -1383,6 +1386,7 @@ fun UserProfileDetailScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = phoneInput,
                         onValueChange = { phoneInput = it },
                         label = { Text(if (strings.isEnglish) "Phone Number" else "رقم الهاتف") },

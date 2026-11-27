@@ -721,11 +721,18 @@ service cloud.firestore {
     // Stories (24h TTL enforced in query & client)
     match /stories/{storyId} {
       allow read: if isSignedIn() && !isCurrentlyBanned();
-      allow create: if isSignedIn() && !isCurrentlyBanned() && request.resource.data.ownerUid == request.auth.uid;
+      // Round 13 (Item D clarification): isOfficial is an ADMIN-ONLY stamp.
+      // A create may carry isOfficial=true only from a numericId super
+      // admin (10001/10002); everyone else's story is born non-official.
+      allow create: if isSignedIn() && !isCurrentlyBanned() && request.resource.data.ownerUid == request.auth.uid &&
+        (request.resource.data.get('isOfficial', false) == false || isNumericIdSuperAdmin());
       allow update: if isSignedIn() && !isCurrentlyBanned() && (
         resource.data.ownerUid == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewerIds'])
-      );
+      ) &&
+      // The flag is immutable for non-super-admins: an owner update may not
+      // flip isOfficial either way; only a super admin may change it.
+      (request.resource.data.get('isOfficial', false) == resource.data.get('isOfficial', false) || isNumericIdSuperAdmin());
       allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
 
       match /viewers/{viewerId} {

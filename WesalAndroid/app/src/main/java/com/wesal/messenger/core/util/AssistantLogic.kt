@@ -207,6 +207,18 @@ object AssistantLogic {
      *   is the newest message, and a bracketed placeholder when it is an
      *   older history entry; a captioned media message sends its caption.
      */
+    /**
+     * Round 13 (Item I.1): interrupt/supersede guard. Every dispatched
+     * ask carries a generation number; cancelling (stop button) or
+     * sending a newer message bumps the current generation. A late
+     * reply — or a late error — from a superseded ask must NEVER be
+     * appended: the blocking socket read behind the ask is not
+     * interruptible, so this generation check is what makes "stop"
+     * take effect the moment the read eventually returns.
+     */
+    fun replyApplies(dispatchGeneration: Int, currentGeneration: Int): Boolean =
+        dispatchGeneration == currentGeneration
+
     fun buildPayload(
         history: List<AssistantMessage>,
         attachmentForLast: AssistantPayloadMedia? = null

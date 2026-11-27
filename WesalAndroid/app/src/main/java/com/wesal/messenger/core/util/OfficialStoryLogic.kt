@@ -24,6 +24,27 @@ object OfficialStoryLogic {
     fun bypassesAudienceFilter(isOfficial: Boolean): Boolean = isOfficial
 
     /**
+     * Round 13 (Item D clarification — defense in depth): may this author
+     * publish an OFFICIAL story at all? Only the admin accounts (numericId
+     * in [Constants.ADMIN_NUMERIC_IDS]) may. The Settings row is hidden
+     * from everyone else, but the publish path itself re-checks here so a
+     * non-admin can never get a story stamped official even if the
+     * composer flag were somehow reached. [authorNumericId] is the
+     * author's OWN user-doc numericId (string or number representation —
+     * callers normalize before calling).
+     */
+    fun canPublishOfficial(authorNumericId: String): Boolean =
+        authorNumericId.trim() in Constants.ADMIN_NUMERIC_IDS
+
+    /**
+     * The `isOfficial` value a publish may actually stamp: the composer's
+     * request ANDed with the author's admin status. A regular user's
+     * story is ALWAYS stamped false, whatever the caller passed.
+     */
+    fun effectiveIsOfficial(requested: Boolean, authorNumericId: String): Boolean =
+        requested && canPublishOfficial(authorNumericId)
+
+    /**
      * Pinned-first ordering for a flat story list: official stories
      * first (newest first among themselves), then regular stories
      * (newest first) — a regular-only list comes out purely

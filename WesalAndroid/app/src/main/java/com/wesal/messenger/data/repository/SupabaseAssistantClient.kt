@@ -40,8 +40,12 @@ class SupabaseAssistantException(
  * - 200: `{"reply": "..."}`. Errors: 401 unauthenticated, 429 daily free
  *   limit, 5xx generic.
  *
- * The read timeout is longer than the phone client's (60s vs 30s): an LLM
+ * The read timeout is longer than the phone client's (45s vs 30s): an LLM
  * answer legitimately takes longer to generate than an OTP dispatch.
+ * Round 13 (Item I.2): trimmed from 60s — the backend's model chain is
+ * being given a ~40s total budget with fast per-model failover (see
+ * FIXLOG_R13), so a client ceiling of 45s surfaces the honest error
+ * shortly after the server gives up instead of hanging a full minute.
  */
 @Singleton
 class SupabaseAssistantClient @Inject constructor() {
@@ -53,8 +57,8 @@ class SupabaseAssistantClient @Inject constructor() {
     private fun request(jsonBody: JSONObject): HttpResult {
         val c = URL(functionUrl).openConnection() as HttpURLConnection
         try {
-            c.connectTimeout = 10_000
-            c.readTimeout = 60_000
+            c.connectTimeout = 8_000
+            c.readTimeout = 45_000
             c.requestMethod = "POST"
             c.setRequestProperty("Authorization", "Bearer ${Constants.SUPABASE_ANON_KEY}")
             c.setRequestProperty("apikey", Constants.SUPABASE_ANON_KEY)

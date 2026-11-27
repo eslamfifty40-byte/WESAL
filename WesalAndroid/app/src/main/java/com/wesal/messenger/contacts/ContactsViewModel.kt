@@ -602,6 +602,14 @@ class ContactsViewModel @Inject constructor(
     }
 
     fun openSupportChat10001(onChatReady: (String) -> Unit) {
+        // Round 13 (Item C): same instant-open fast path as Settings —
+        // cached deterministic id navigates now, ensure runs behind it.
+        val cachedId = chatRepository.cachedSupportChatId(Constants.OWNER_ADMIN_NUMERIC_ID)
+        if (cachedId != null) {
+            chatRepository.ensureSupportChatInBackground(Constants.OWNER_ADMIN_NUMERIC_ID)
+            onChatReady(cachedId)
+            return
+        }
         viewModelScope.launch {
             chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
                 .onSuccess { chatId -> onChatReady(chatId) }

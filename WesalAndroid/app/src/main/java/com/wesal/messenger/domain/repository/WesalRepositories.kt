@@ -100,6 +100,16 @@ interface AuthRepository {
         locationGranted: Boolean = false,
         locationGraceStartedAt: Long = 0L
     ): Result<WesalUser>
+
+    /**
+     * Round 13 (Addendum J): re-applies a locally queued profile
+     * completion (see PendingProfileLogic) for the CURRENT account.
+     * Returns true when no pending record remains afterwards (committed,
+     * or dropped because its failure is user-fixable and can never land);
+     * false when an infrastructure failure kept it queued for a later
+     * retry. Never throws.
+     */
+    suspend fun retryPendingProfileCompletion(): Boolean
     suspend fun syncFcmToken()
     suspend fun signOut(): Result<Unit>
     suspend fun deleteAccountPermanently(passwordForReauth: String? = null, googleIdTokenForReauth: String? = null): Result<Unit>
@@ -375,6 +385,28 @@ interface ChatRepository {
      */
     suspend fun fetchChatMessagesForGallery(chatId: String, maxMessages: Int = 2000): List<WesalMessage>
     suspend fun getOrCreateDirectChat(peerUid: String): Result<String>
+
+    /**
+     * Round 13 (Item C): the deterministic direct-chat id for [peerUid]
+     * (`dm_<sorted uids>`), computed locally with no I/O — null when
+     * signed out or the peer is the caller. Lets open-chat entry points
+     * navigate INSTANTLY and run creation/ensure in the background.
+     */
+    fun directChatIdFor(peerUid: String): String?
+
+    /**
+     * Round 13 (Item C): the support-chat id for [targetNumericId] when
+     * the admin uid is already resolved on this device (cached by a
+     * previous open), else null. No I/O.
+     */
+    fun cachedSupportChatId(targetNumericId: String = com.wesal.messenger.core.util.Constants.OWNER_ADMIN_NUMERIC_ID): String?
+
+    /**
+     * Round 13 (Item C): runs the full support-chat ensure (chat doc
+     * create/update + the personalized welcome, exactly once) on a
+     * background scope so the chat screen never waits for it.
+     */
+    fun ensureSupportChatInBackground(targetNumericId: String = com.wesal.messenger.core.util.Constants.OWNER_ADMIN_NUMERIC_ID)
     suspend fun openSupportChatByNumericId(targetNumericId: String = com.wesal.messenger.core.util.Constants.OWNER_ADMIN_NUMERIC_ID): Result<String>
     suspend fun ensureOfficialWelcomeChat(displayName: String, forceResend: Boolean = false): Result<Unit>
     suspend fun setChatOfficialWallpaper(chatId: String, wallpaperUrl: String?): Result<Unit>

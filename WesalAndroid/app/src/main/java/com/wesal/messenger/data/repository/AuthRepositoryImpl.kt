@@ -24,6 +24,7 @@ import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.PhoneOtpLogic
+import com.wesal.messenger.core.util.PendingProfileLogic
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.PhoneVerificationMirror
 import com.wesal.messenger.core.util.WesalFrameCatalog
@@ -1412,20 +1413,41 @@ class AuthRepositoryImpl @Inject constructor(
             val normalizedPhone = PhoneUtils.normalizeToE164(cleanPhone)
                 ?: throw IllegalArgumentException("يرجى إدخال رقم هاتف دولي صحيح")
             // Bounded: the uniqueness check must complete or fail with a message — never spin
-            // forever (it is NOT skipped on timeout, to protect phone uniqueness).
-            val phoneReserved = withTimeoutOrNull(12_000L) {
-                reserveUniquePhone(uid, normalizedPhone)
-                true
-            } ?: false
-            if (!phoneReserved) {
-                throw IllegalStateException("انتهت مهلة التحقق من رقم الهاتف، تحقق من الإنترنت وحاول مرة أخرى")
+            // forever. Round 13 (Addendum J): an INFRASTRUCTURE failure of the
+            // reservation (timeout / quota / network) no longer aborts the
+            // completion — the profile write below is queued (awaitQueued),
+            // the number stays UNVERIFIED (no phoneHash is stamped for an
+            // unverified completion phone), and the pending-profile retry
+            // re-runs this whole function — reservation included — until it
+            // lands. Only USER-FIXABLE outcomes (a number owned by another
+            // account, a banned number) still block, with their exact
+            // messages; verification-time uniqueness remains enforced by
+            // the Supabase registry regardless.
+            val reservationError: Throwable? = try {
+                val done = withTimeoutOrNull(12_000L) {
+                    reserveUniquePhone(uid, normalizedPhone)
+                    true
+                } ?: false
+                if (done) null else IllegalStateException("phone reservation timed out")
+            } catch (e: Exception) {
+                e
+            }
+            if (reservationError != null && PendingProfileLogic.isUserFixable(reservationError)) {
+                throw reservationError
             }
 
             val validDob = validateBirthDate(birthDate.orEmpty())
 
             val docRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-            val existingSnap = docRef.get().awaitBounded()
-            val existingPrivacy = (existingSnap.get("privacySettings") as? Map<String, Any?>)?.toMutableMap()
+            // Round 13 (Addendum J): a stalled snapshot read must not trap
+            // registration either — fall back to the local cache, and if
+            // even that is unavailable proceed with NO snapshot: the
+            // snapshot-derived writes below are then skipped (privacy
+            // settings are never clobbered blind) instead of the whole
+            // completion aborting before its queued write is even issued.
+            val existingSnap = runCatching { docRef.get().awaitBounded() }.getOrNull()
+                ?: runCatching { docRef.get(com.google.firebase.firestore.Source.CACHE).await() }.getOrNull()
+            val existingPrivacy = (existingSnap?.get("privacySettings") as? Map<String, Any?>)?.toMutableMap()
                 ?: mutableMapOf()
             val hidePhone = (existingPrivacy["hidePhoneNumber"] as? Boolean) ?: false
             existingPrivacy["hideBirthDate"] = hideBirthDate
@@ -1446,8 +1468,8 @@ class AuthRepositoryImpl @Inject constructor(
             val authVerifiedPhone = auth.currentUser?.phoneNumber
                 ?.takeIf { it.isNotBlank() }
                 ?.let { PhoneUtils.normalizeToE164(it) }
-            val docVerifiedPhone = if (existingSnap.getBoolean("isPhoneVerified") == true) {
-                existingSnap.getString("phoneNumber")
+            val docVerifiedPhone = if (existingSnap?.getBoolean("isPhoneVerified") == true) {
+                existingSnap?.getString("phoneNumber")
                     ?.takeIf { it.isNotBlank() }
                     ?.let { PhoneUtils.normalizeToE164(it) }
             } else {
@@ -1459,7 +1481,6 @@ class AuthRepositoryImpl @Inject constructor(
             val updates = hashMapOf<String, Any>(
                 "displayName" to cleanName,
                 "bio" to bio.trim().ifBlank { "أستخدم تطبيق WESAL" },
-                "privacySettings" to existingPrivacy,
                 "birthDate" to if (hideBirthDate) "" else validDob,
                 "phoneNumber" to if (hidePhone) "" else normalizedPhone,
                 "phoneHash" to if (!hidePhone && completedPhoneVerified) {
@@ -1475,11 +1496,18 @@ class AuthRepositoryImpl @Inject constructor(
                 "lastSeen" to FieldValue.serverTimestamp(),
                 "lastHeartbeatAt" to System.currentTimeMillis()
             )
+            // Round 13 (Addendum J): privacy settings are re-written from
+            // the snapshot's existing map — only when a snapshot was
+            // actually read. With no snapshot the key is left untouched
+            // rather than clobbered with a near-empty map.
+            if (existingSnap != null) {
+                updates["privacySettings"] = existingPrivacy
+            }
 
             // Assign the admin-configured global customer frame/icon if the user has
             // none and the global option is enabled (single global_appearance reader).
-            val currentFrameId = existingSnap.getString("frameId").orEmpty()
-            val currentIconId = existingSnap.getString("iconId").orEmpty()
+            val currentFrameId = existingSnap?.getString("frameId").orEmpty()
+            val currentIconId = existingSnap?.getString("iconId").orEmpty()
             if (currentFrameId.isBlank() || currentIconId.isBlank()) {
                 val globalDefaults = readGlobalCustomerDefaults()
                 if (globalDefaults.enabled) {
@@ -1499,15 +1527,22 @@ class AuthRepositoryImpl @Inject constructor(
                 require(WesalIdUtils.isValid(normalizedId)) {
                     "معرف وصال (Wesal ID) يجب أن يتكون من 4 إلى 30 حرفاً بالإنجليزية أو أرقام أو _"
                 }
-                val dupSnap = firestore.collection(Constants.COLLECTION_USERS)
-                    .whereEqualTo("publicId", normalizedId)
-                    .get()
-                    .awaitBounded()
-                if (dupSnap.documents.any { it.id != uid }) {
+                // Round 13 (Addendum J): the duplicate pre-check is
+                // best-effort — an infrastructure failure of the CHECK
+                // (timeout/quota) proceeds with the claim instead of
+                // trapping registration; only a duplicate actually FOUND
+                // blocks, as a user-fixable error.
+                val dupSnap = runCatching {
+                    firestore.collection(Constants.COLLECTION_USERS)
+                        .whereEqualTo("publicId", normalizedId)
+                        .get()
+                        .awaitBounded()
+                }.getOrNull()
+                if (dupSnap != null && dupSnap.documents.any { it.id != uid }) {
                     return Result.failure(IllegalArgumentException("معرف وصال @$normalizedId مستخدم بالفعل، اختر معرفاً آخر"))
                 }
                 updates["publicId"] = normalizedId
-            } else if (existingSnap.getString("publicId").isNullOrBlank()) {
+            } else if (existingSnap?.getString("publicId").isNullOrBlank()) {
                 updates["publicId"] = WesalIdUtils.generateDefault(uid)
             }
 
@@ -1551,7 +1586,7 @@ class AuthRepositoryImpl @Inject constructor(
             // server ack on a stalled stream was the other half of the "profile setup spins
             // forever" hang.
             docRef.set(updates, SetOptions.merge()).awaitQueued(8_000L)
-            if (!WesalIdUtils.isValidNumericId(existingSnap.getString("numericId"))) {
+            if (!WesalIdUtils.isValidNumericId(existingSnap?.getString("numericId"))) {
                 withTimeoutOrNull(8_000L) { allocateUniqueNumericId(uid) }
             }
             // Manual referral attribution (round 3): the optional "who invited you" id
@@ -1583,7 +1618,9 @@ class AuthRepositoryImpl @Inject constructor(
             // Bounded read-back: on timeout, fall back to the pre-write snapshot + the fields
             // just saved instead of hanging the completion flow.
             val snap = withTimeoutOrNull(8_000L) { docRef.get().await() }
-            val savedUser = (snap?.toWesalUser() ?: existingSnap.toWesalUser().copy(profileCompleted = true)).copy(
+            val savedUser = (snap?.toWesalUser()
+                ?: existingSnap?.toWesalUser()?.copy(profileCompleted = true)
+                ?: WesalUser(uid = uid, profileCompleted = true)).copy(
                 displayName = cleanName,
                 phoneNumber = normalizedPhone,
                 birthDate = validDob
@@ -1610,6 +1647,48 @@ class AuthRepositoryImpl @Inject constructor(
             Result.success(savedUser)
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    /**
+     * Round 13 (Addendum J): background re-apply of a queued profile
+     * completion. Reads the DataStore record the auth view model persisted
+     * when the original save hit an infrastructure failure, and re-runs
+     * [completeUserProfile] with the stored fields for the CURRENT
+     * account only. The record is cleared when the commit lands — and
+     * also when the retry fails USER-FIXABLY (a claim that can never
+     * land must not retry forever; the user can re-edit from Profile).
+     * An infrastructure failure keeps the record for the next launch.
+     */
+    override suspend fun retryPendingProfileCompletion(): Boolean {
+        val uid = currentUserId ?: return true
+        val pending = PendingProfileLogic.fromJson(
+            runCatching { prefs.pendingProfileJsonFlow.first() }.getOrNull()
+        ) ?: return true
+        if (pending.uid != uid) return true
+        val photoUri = pending.photoUriString.takeIf { it.isNotBlank() }
+            ?.let { runCatching { Uri.parse(it) }.getOrNull() }
+        val result = completeUserProfile(
+            displayName = pending.displayName,
+            bio = pending.bio,
+            photoUri = photoUri,
+            wesalId = pending.wesalId,
+            phoneE164 = pending.phoneE164,
+            birthDate = pending.birthDateIso,
+            hideBirthDate = pending.hideBirthDate,
+            locationGranted = pending.locationGranted,
+            locationGraceStartedAt = pending.locationGraceStartedAt
+        )
+        return when {
+            result.isSuccess -> {
+                prefs.setPendingProfileJson(null)
+                true
+            }
+            PendingProfileLogic.isUserFixable(result.exceptionOrNull()) -> {
+                prefs.setPendingProfileJson(null)
+                true
+            }
+            else -> false
         }
     }
 

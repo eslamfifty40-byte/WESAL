@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 @HiltViewModel
 class SupportTicketsViewModel @Inject constructor(
@@ -277,6 +278,7 @@ fun WesalSupportTicketsDialog(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             OutlinedTextField(
+                                colors = wesalFieldColors(),
                                 value = replyText,
                                 onValueChange = { replyText = it },
                                 placeholder = { Text(if (strings.isEnglish) "Write a reply..." else "اكتب ردًا...") },
@@ -318,6 +320,7 @@ fun WesalSupportTicketsDialog(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             OutlinedTextField(
+                                colors = wesalFieldColors(),
                                 value = subject,
                                 onValueChange = { subject = it },
                                 label = { Text(strings.ticketSubjectLabel) },
@@ -325,6 +328,7 @@ fun WesalSupportTicketsDialog(
                                 modifier = Modifier.fillMaxWidth()
                             )
                             OutlinedTextField(
+                                colors = wesalFieldColors(),
                                 value = description,
                                 onValueChange = { description = it },
                                 label = { Text(strings.ticketMessageLabel) },

@@ -251,7 +251,20 @@ fun WesalTheme(
             onBackground = palette.textPrimary,
             surface = palette.surface,
             onSurface = palette.textPrimary,
-            onSurfaceVariant = palette.textSecondary
+            onSurfaceVariant = palette.textSecondary,
+            // Round 13 (Item H): the container slots are what Material 3
+            // actually paints text-field and card containers from — they
+            // used to stay at the BASE scheme's values while surface /
+            // onSurface moved to the palette, so a remapped appearance
+            // could pair a light container with light text (the owner's
+            // white-ghost typing in light mode). They now follow the
+            // palette like every other slot.
+            surfaceVariant = palette.surfaceElevated,
+            surfaceContainer = palette.surface,
+            surfaceContainerLow = palette.background,
+            surfaceContainerHigh = palette.surfaceElevated,
+            surfaceContainerHighest = palette.surfaceElevated,
+            surfaceContainerLowest = palette.background
         )
     } else {
         baseColorScheme

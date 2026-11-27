@@ -206,6 +206,10 @@ class MainViewModel @Inject constructor(
 
                 // Background verification without blocking cold launch
                 launch { authRepository.syncFcmToken() }
+                // Round 13 (Addendum J): re-apply a queued profile
+                // completion from a save that hit an infrastructure
+                // failure — background only, never gates the first frame.
+                launch { runCatching { authRepository.retryPendingProfileCompletion() } }
                 launch {
                     val userResult = runCatching { userRepository.getUserOnce(uid) }
                     val user = userResult.getOrNull()

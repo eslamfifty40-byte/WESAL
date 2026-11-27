@@ -43,6 +43,7 @@ import com.wesal.messenger.presentation.components.MessageStatusTick
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalVerifiedBadge
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 @Composable
 fun ChatsListScreen(
@@ -294,20 +295,43 @@ fun ChatsListScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    // Spec §13.3: while the first snapshot is in flight show a loading
-                    // indicator (it always stops: the repository publishes READY/ERROR from
-                    // the snapshot listener); on listener error show the reason + retry
+                    // Spec §13.3: on listener error show the reason + retry
                     // instead of a misleading "no chats" empty state.
+                    // Round 13 (Addendum G): LOADING no longer takes over
+                    // the screen — the old full-screen «جاري تحميل
+                    // المحادثات…» spinner WAS the cold-start hang the owner
+                    // kept hitting whenever the first server snapshot was
+                    // slow (fresh install / exhausted quota): Home now
+                    // renders its normal empty state immediately and the
+                    // sync shows only as a thin progress line at the top;
+                    // the list fills in by itself when the snapshot lands.
                     val syncStatus = chatListState.status
                     if (!showHiddenChats &&
                         syncStatus == com.wesal.messenger.domain.model.ChatListSyncStatus.LOADING
                     ) {
                         Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.padding(24.dp)
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            CircularProgressIndicator(color = palette.turquoise)
+                            LinearProgressIndicator(
+                                color = palette.turquoise,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(48.dp))
+                            Icon(
+                                imageVector = Icons.Default.ChatBubbleOutline,
+                                contentDescription = null,
+                                tint = palette.turquoise.copy(alpha = 0.6f),
+                                modifier = Modifier.size(56.dp)
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                text = if (strings.isEnglish) "No chats yet" else "لا توجد محادثات حتى الآن",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = palette.textPrimary
+                            )
                             Text(
                                 text = if (strings.isEnglish) "Loading chats…" else "جاري تحميل المحادثات…",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -885,6 +909,7 @@ fun ChatsListScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = pass,
                         onValueChange = { pass = it; errMsg = null },
                         label = { Text(if (strings.isEnglish) "Password (4+ chars)" else "كلمة المرور (4 أحرف فأكثر)") },
@@ -903,6 +928,7 @@ fun ChatsListScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = confirmPass,
                         onValueChange = { confirmPass = it; errMsg = null },
                         label = { Text(if (strings.isEnglish) "Confirm password" else "تأكيد كلمة المرور") },
@@ -912,6 +938,7 @@ fun ChatsListScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = question,
                         onValueChange = { question = it },
                         label = { Text(if (strings.isEnglish) "Recovery question (optional)" else "سؤال استعادة (اختياري)") },
@@ -919,6 +946,7 @@ fun ChatsListScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = answer,
                         onValueChange = { answer = it },
                         label = { Text(if (strings.isEnglish) "Recovery answer" else "إجابة الاستعادة") },
@@ -1181,6 +1209,7 @@ fun ChatsListScreen(
             title = { Text(if (strings.isEnglish) "Report Request" else "إبلاغ عن طلب مراسلة", color = palette.warning) },
             text = {
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = reason,
                     onValueChange = { reason = it },
                     label = { Text(if (strings.isEnglish) "Reason" else "سبب البلاغ") },
@@ -1219,6 +1248,7 @@ fun ChatsListScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (viewModel.hasAnyPinConfigured()) {
                         OutlinedTextField(
+                            colors = wesalFieldColors(),
                             value = pinInput,
                             onValueChange = { pinInput = it; pinErr = null },
                             label = { Text(if (strings.isEnglish) "Enter PIN / Password" else "أدخل رمز الحماية") },

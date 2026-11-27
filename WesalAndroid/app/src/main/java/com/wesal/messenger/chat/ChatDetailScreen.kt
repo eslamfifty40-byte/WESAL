@@ -85,6 +85,7 @@ import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.voice.VoicePlaybackState
 import kotlinx.coroutines.launch
 import java.io.File
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class, ExperimentalFoundationApi::class)
 @Composable
@@ -1595,6 +1596,7 @@ fun ChatDetailScreen(
                         color = palette.textSecondary
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = reportReason,
                         onValueChange = { reportReason = it },
                         label = { Text(if (strings.isEnglish) "Reason" else "سبب البلاغ") },
@@ -2003,6 +2005,7 @@ private fun MediaDraftPreviewScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = draft.caption,
                     onValueChange = { onUpdateDraft(draft.copy(caption = it)) },
                     placeholder = { Text(if (strings.isEnglish) "Add caption (optional)..." else "إضافة وصف أو نص (اختياري)...") },

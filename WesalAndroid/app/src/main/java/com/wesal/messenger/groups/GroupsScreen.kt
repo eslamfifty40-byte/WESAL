@@ -58,6 +58,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 @HiltViewModel
 class GroupsViewModel @Inject constructor(
@@ -885,6 +886,7 @@ fun GroupsScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = listName,
                         onValueChange = { listName = it },
                         label = { Text(if (strings.isEnglish) "List Name" else "اسم قائمة البث") },
@@ -892,6 +894,7 @@ fun GroupsScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = searchBQuery,
                         onValueChange = {
                             searchBQuery = it
@@ -989,6 +992,7 @@ fun GroupsScreen(
                         style = MaterialTheme.typography.bodySmall
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = msgText,
                         onValueChange = { msgText = it },
                         label = { Text(if (strings.isEnglish) "Message" else "نص الرسالة") },
@@ -1443,6 +1447,7 @@ fun GroupInfoScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = editName,
                         onValueChange = { editName = it },
                         label = { Text(if (strings.isEnglish) "Group Name" else "اسم المجموعة") },
@@ -1450,6 +1455,7 @@ fun GroupInfoScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = editDesc,
                         onValueChange = { editDesc = it },
                         label = { Text(if (strings.isEnglish) "Description" else "الوصف") },

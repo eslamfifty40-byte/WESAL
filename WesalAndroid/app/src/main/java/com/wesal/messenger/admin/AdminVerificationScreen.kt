@@ -56,6 +56,7 @@ import com.wesal.messenger.core.util.FrameAnimationPolicy
 import com.wesal.messenger.core.util.FramePickerItem
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.SubscriptionGrantLogic
 import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import com.wesal.messenger.core.util.VerificationDurationOption
 import com.wesal.messenger.core.util.VerificationSealType
@@ -97,6 +98,7 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import javax.inject.Inject
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 enum class AdminSection(
     val number: Int,
@@ -334,13 +336,38 @@ class AdminVerificationViewModel @Inject constructor(
      * That reload was the "saving a frame spins forever" the owner reported.
      * A grant now patches the already-loaded lists in memory instead: zero
      * extra Firestore reads, and the busy state clears as soon as the grant
-     * write (+ its audit log) lands. refreshAll() remains for structural ops
-     * (delete / warn / subscription review) where counts genuinely change.
+     * write (+ its audit log) lands.
+     *
+     * Round 13 (Item A): the same treatment now covers EVERY single-user
+     * op that used to end in refreshAll() — subscription review, warn,
+     * ban/unban, hide, delete — plus a users-only refresh for the two
+     * BULK global-default ops (their batch genuinely rewrites many docs,
+     * but stats/welcome/team-channel/channels never change there).
+     * refreshAll() remains only for the manual refresh button and the
+     * panel's first load.
      */
     private fun patchUserLocally(uid: String, transform: (WesalUser) -> WesalUser) {
         _users.value = _users.value.map { if (it.uid == uid) transform(it) else it }
         _searchResults.value = _searchResults.value.map { if (it.uid == uid) transform(it) else it }
         _inspectedUser.value?.takeIf { it.uid == uid }?.let { _inspectedUser.value = transform(it) }
+    }
+
+    /** Round 13 (Item A): drop a user from the loaded lists in memory (delete ops). */
+    private fun removeUserLocally(uid: String) {
+        _users.value = _users.value.filterNot { it.uid == uid }
+        _searchResults.value = _searchResults.value.filterNot { it.uid == uid }
+        if (_inspectedUser.value?.uid == uid) _inspectedUser.value = null
+    }
+
+    /** Round 13 (Item A): re-fetch ONLY the users list (bulk global ops). */
+    private fun refreshUsersOnly() {
+        viewModelScope.launch {
+            runCatching {
+                val allUsers = userRepository.getAdminUsersList(limit = 250)
+                _users.value = allUsers
+                if (_searchQuery.value.isBlank()) _searchResults.value = allUsers
+            }
+        }
     }
 
     // §9.6: last official-chat/channel photo set from the identity editor card.
@@ -614,7 +641,9 @@ class AdminVerificationViewModel @Inject constructor(
                     } else {
                         "تم إيقاف الإطار الافتراضي لـ $updatedCount حساب"
                     }
-                    refreshAll()
+                    // Item A (r13): the batch rewrote many users — refresh
+                    // ONLY the users list, not stats/welcome/channels.
+                    refreshUsersOnly()
                 }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر تطبيق الإطار الجماعي" }
             _busy.value = false
@@ -637,7 +666,8 @@ class AdminVerificationViewModel @Inject constructor(
                     } else {
                         "تم إيقاف التعيين الجماعي لـ $updatedCount حساب ✓"
                     }
-                    refreshAll()
+                    // Item A (r13): users-only refresh (see toggle above).
+                    refreshUsersOnly()
                 }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ الإعدادات الجماعية" }
             _busy.value = false
@@ -724,9 +754,10 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.adminDeleteUser(target.uid, permanent)
                 .onSuccess {
-                    if (_inspectedUser.value?.uid == target.uid) _inspectedUser.value = null
                     _statusMessage.value = if (permanent) "تم حذف الحساب نهائيًا" else "تم تعطيل الحساب"
-                    refreshAll()
+                    // Item A (r13): local removal instead of refreshAll()
+                    // (removeUserLocally also clears the inspected user).
+                    removeUserLocally(target.uid)
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل حذف الحساب" }
             _busy.value = false
@@ -758,12 +789,38 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun reviewSubscription(reqId: String, approved: Boolean, note: String) {
+        // Round 13 (Items A + E): capture the request first so the grant
+        // can be mirrored into the loaded user lists the moment the
+        // review lands — the request row itself updates through its own
+        // live listener, and NO refreshAll() re-walk follows the write.
+        val req = subscriptionRequests.value.firstOrNull { it.requestId == reqId }
         runOp("sub_review_$reqId") {
             _busy.value = true
             userRepository.reviewSubscriptionRequest(reqId, approved, note)
                 .onSuccess {
                     _statusMessage.value = if (approved) "تمت الموافقة ومنح التوثيق للمستخدم ✓" else "تم رفض الطلب"
-                    refreshAll()
+                    if (approved && req != null && req.userUid.isNotBlank()) {
+                        val plan = SubscriptionGrantLogic.planFor(
+                            req.desiredSeal, req.desiredGlowColor, req.desiredFrameId
+                        )
+                        patchUserLocally(req.userUid) {
+                            it.copy(
+                                isVerified = true,
+                                verificationType = plan.sealKey,
+                                verificationGlowColor = plan.glowKey,
+                                verificationGlowEnabled = true,
+                                verificationGlowIntensity = 0.78f,
+                                verificationExpiresAt = 0L,
+                                frameId = if (plan.applyFrame) plan.frameId.orEmpty() else it.frameId,
+                                frameExpiresAt = if (plan.applyFrame) 0L else it.frameExpiresAt,
+                                grantedFrameIds = if (plan.applyFrame) {
+                                    (it.grantedFrameIds + plan.frameId.orEmpty()).distinct()
+                                } else {
+                                    it.grantedFrameIds
+                                }
+                            )
+                        }
+                    }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر معالجة الطلب" }
             _busy.value = false
@@ -780,7 +837,8 @@ class AdminVerificationViewModel @Inject constructor(
             userRepository.warnUser(target.uid, reason)
                 .onSuccess {
                     _statusMessage.value = "تم إرسال الإنذار الرسمي إلى ${target.displayName.ifBlank { target.numericId }}"
-                    refreshAll()
+                    // Item A (r13): local patch instead of refreshAll().
+                    patchUserLocally(target.uid) { it.copy(warningsCount = it.warningsCount + 1) }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر إرسال الإنذار" }
             _busy.value = false
@@ -797,7 +855,8 @@ class AdminVerificationViewModel @Inject constructor(
             userRepository.deleteAccountPermanently(target.uid, reason)
                 .onSuccess {
                     _statusMessage.value = "تم حذف الحساب نهائيًا"
-                    refreshAll()
+                    // Item A (r13): local removal instead of refreshAll().
+                    removeUserLocally(target.uid)
                 }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر حذف الحساب" }
             _busy.value = false
@@ -824,7 +883,15 @@ class AdminVerificationViewModel @Inject constructor(
             userRepository.banUser(target.uid, permanent, expiresAt, reason, blockIdentifiers)
                 .onSuccess {
                     _statusMessage.value = if (permanent) "تم حظر الحساب نهائياً" else "تم تطبيق الحظر المؤقت بنجاح"
-                    refreshAll()
+                    // Item A (r13): local patch instead of refreshAll().
+                    patchUserLocally(target.uid) {
+                        it.copy(
+                            isBanned = true,
+                            banType = if (permanent) "PERMANENT" else "TEMPORARY",
+                            banExpiresAt = expiresAt,
+                            banReason = reason
+                        )
+                    }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تطبيق الحظر" }
             _busy.value = false
@@ -837,7 +904,10 @@ class AdminVerificationViewModel @Inject constructor(
             userRepository.unbanUser(target.uid, note = "رفع الحظر من لوحة الإدارة")
                 .onSuccess {
                     _statusMessage.value = "تم رفع الحظر عن الحساب"
-                    refreshAll()
+                    // Item A (r13): local patch instead of refreshAll().
+                    patchUserLocally(target.uid) {
+                        it.copy(isBanned = false, banType = "", banExpiresAt = 0L, banReason = "")
+                    }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر رفع الحظر" }
             _busy.value = false
@@ -850,7 +920,8 @@ class AdminVerificationViewModel @Inject constructor(
             userRepository.setAccountHiddenFromSearch(target.uid, hidden, reason)
                 .onSuccess {
                     _statusMessage.value = if (hidden) "تم إخفاء الحساب من البحث" else "تم إعادة إظهار الحساب"
-                    refreshAll()
+                    // Item A (r13): local patch instead of refreshAll().
+                    patchUserLocally(target.uid) { it.copy(hiddenFromSearch = hidden) }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر تحديث حالة الإخفاء" }
             _busy.value = false
@@ -1000,6 +1071,19 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun openDirectChatWithUser(uid: String, onOpenChat: (String) -> Unit) {
+        // Round 13 (Item C): direct-chat ids are deterministic, so the
+        // panel navigates instantly and the create/ensure completes in
+        // the background (its failure still surfaces as a status message
+        // for when the admin returns to the panel).
+        val instantId = chatRepository.directChatIdFor(uid)
+        if (instantId != null) {
+            onOpenChat(instantId)
+            runOp("open_chat_$uid") {
+                chatRepository.getOrCreateDirectChat(uid)
+                    .onFailure { _statusMessage.value = it.message ?: "تعذر فتح المحادثة" }
+            }
+            return
+        }
         runOp("open_chat_$uid") {
             chatRepository.getOrCreateDirectChat(uid)
                 .onSuccess { chatId -> onOpenChat(chatId) }
@@ -1101,6 +1185,7 @@ private fun AdminInlineSearchBar(
 ) {
     val palette = WesalColors.current
     OutlinedTextField(
+        colors = wesalFieldColors(),
         value = query,
         onValueChange = onQueryChange,
         placeholder = { Text(placeholder, maxLines = 1, overflow = TextOverflow.Ellipsis) },
@@ -1408,6 +1493,7 @@ fun AdminVerificationScreen(
 
                 AdminSection.SEARCH -> Column(modifier = Modifier.fillMaxSize()) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = searchQuery,
                         onValueChange = viewModel::updateSearch,
                         placeholder = { Text("ابحث بـ WESAL ID (مثل 10001) أو @username أو الاسم أو البريد أو UID") },
@@ -1847,6 +1933,7 @@ fun AdminVerificationScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${target.displayName} (ID: ${target.numericId})", color = palette.textSecondary)
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = reason,
                         onValueChange = { reason = it },
                         label = { Text("سبب الإنذار") },
@@ -1894,6 +1981,7 @@ fun AdminVerificationScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${target.displayName} (ID: ${target.numericId})", color = palette.textSecondary)
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = reason,
                         onValueChange = { reason = it },
                         label = { Text("السبب (يُسجل في سجل الإخفاء)") },
@@ -2500,6 +2588,7 @@ private fun AdminSupportTicketsSection(
             modifier = Modifier.fillMaxWidth().padding(12.dp)
         ) {
             OutlinedTextField(
+                colors = wesalFieldColors(),
                 value = replyText,
                 onValueChange = { replyText = it },
                 label = { Text("رد الدعم…") },
@@ -3357,6 +3446,7 @@ private fun AdminWesalTeamSection(
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("نشر منشور سريع في قناة فريق وصال", color = palette.textPrimary, fontWeight = FontWeight.Bold)
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = postText,
                     onValueChange = { postText = it },
                     label = { Text("نص المنشور الرسمي") },
@@ -3404,6 +3494,7 @@ private fun AdminWelcomeConfigSection(
                         Switch(checked = enabled, onCheckedChange = { enabled = it })
                     }
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = template,
                         onValueChange = { template = it },
                         label = { Text("نص رسالة الترحيب (استخدم [اسم المستخدم])") },
@@ -3487,6 +3578,7 @@ private fun AdminAnnouncementsSection(
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("إرسال إعلان رسمي لجميع المستخدمين (محادثة WESAL Messenger)", color = palette.textPrimary, fontWeight = FontWeight.Bold)
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = title,
                         onValueChange = { title = it },
                         label = { Text("عنوان الإعلان") },
@@ -3494,6 +3586,7 @@ private fun AdminAnnouncementsSection(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = body,
                         onValueChange = { body = it },
                         label = { Text("نص الإعلان الرسمي") },
@@ -3737,6 +3830,7 @@ private fun AdminSettingsSection(
                         Switch(checked = updMandatory, onCheckedChange = { updMandatory = it })
                     }
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = updLatest,
                         onValueChange = { updLatest = it.filter { ch -> ch.isDigit() } },
                         label = { Text("أحدث إصدار متاح (latestVersionCode)") },
@@ -3745,6 +3839,7 @@ private fun AdminSettingsSection(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = updMinSupported,
                         onValueChange = { updMinSupported = it.filter { ch -> ch.isDigit() } },
                         label = { Text("أدنى إصدار مدعوم (minSupportedVersionCode)") },
@@ -3753,6 +3848,7 @@ private fun AdminSettingsSection(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = updApkUrl,
                         onValueChange = { updApkUrl = it },
                         label = { Text("رابط تحميل الـ APK (فارغ = الرابط الرسمي الافتراضي)") },
@@ -3760,12 +3856,14 @@ private fun AdminSettingsSection(
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = updMessageAr,
                         onValueChange = { updMessageAr = it },
                         label = { Text("رسالة التحديث (عربي)") },
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = updMessageEn,
                         onValueChange = { updMessageEn = it },
                         label = { Text("Update message (English)") },
@@ -4048,6 +4146,7 @@ private fun AdminVerificationDialog(
                     selectedDuration == VerificationDurationOption.CUSTOM_MONTHS
                 ) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = customCountText,
                         onValueChange = { if (it.length <= 3) customCountText = it.filter(Char::isDigit) },
                         label = {
@@ -4066,6 +4165,7 @@ private fun AdminVerificationDialog(
                 }
 
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = note,
                     onValueChange = { note = it },
                     label = { Text("ملاحظة التوثيق") },
@@ -4194,6 +4294,7 @@ private fun AdminFrameAndNeonDialog(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = uploadName,
                         onValueChange = { uploadName = it },
                         label = { Text("الاسم") },
@@ -4254,6 +4355,7 @@ private fun AdminFrameAndNeonDialog(
             title = { Text("تعديل الاسم", color = palette.textPrimary) },
             text = {
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = newTitle,
                     onValueChange = { newTitle = it },
                     label = { Text("الاسم الجديد") },
@@ -4597,6 +4699,7 @@ private fun AdminFrameAndNeonDialog(
                         }
                         if (selectedDuration == VerificationDurationOption.CUSTOM_DAYS) {
                             OutlinedTextField(
+                                colors = wesalFieldColors(),
                                 value = customCount,
                                 onValueChange = { customCount = it.filter(Char::isDigit).take(3) },
                                 label = { Text("عدد الأيام") },
@@ -4802,6 +4905,7 @@ private fun AdminBanDialog(
                     }
                     if (durationOpt != VerificationDurationOption.MONTH_1) {
                         OutlinedTextField(
+                            colors = wesalFieldColors(),
                             value = customCount,
                             onValueChange = { customCount = it.filter(Char::isDigit).take(3) },
                             label = { Text("المدة") },
@@ -4816,6 +4920,7 @@ private fun AdminBanDialog(
                     Switch(checked = blockIdentifiers, onCheckedChange = { blockIdentifiers = it })
                 }
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = reason,
                     onValueChange = { reason = it },
                     label = { Text("سبب الحظر (إلزامي)") },
@@ -4874,6 +4979,7 @@ private fun AdminReportReviewDialog(
                     }
                 }
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = resolution,
                     onValueChange = { resolution = it },
                     label = { Text("الإجراء المتخذ") },
@@ -4881,6 +4987,7 @@ private fun AdminReportReviewDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = note,
                     onValueChange = { note = it },
                     label = { Text("ملاحظة المشرف الأعلى") },
@@ -4986,6 +5093,7 @@ private fun AdminSubscriptionRequestsSection(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("${req.userName} (ID: ${req.userNumericId})", color = palette.textSecondary)
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = note,
                         onValueChange = { note = it },
                         label = { Text("ملاحظة أو رد للمستخدم") },
@@ -5248,6 +5356,7 @@ private fun AdminModeratorsSection(
             Text("إضافة مشرف مساعد من المستخدمين", color = palette.textPrimary, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
             OutlinedTextField(
+                colors = wesalFieldColors(),
                 value = search,
                 onValueChange = { search = it },
                 placeholder = { Text("ابحث بالاسم أو المعرف أو @username لإضافته كمشرف") },

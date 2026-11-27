@@ -233,6 +233,7 @@ fun WesalEmojiKeyboard(
                     )
                 }
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = search,
                     onValueChange = { search = it },
                     placeholder = { Text(strings.emojiSearchPlaceholder, style = MaterialTheme.typography.bodySmall) },

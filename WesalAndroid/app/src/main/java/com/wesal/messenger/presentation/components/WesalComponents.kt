@@ -27,6 +27,8 @@ import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.TextFieldColors
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -169,6 +171,48 @@ private class OpaqueFitHolder {
  * its visual edges land exactly on the screen edges while its siblings
  * keep the page padding.
  */
+/**
+ * Round 13 (Items B + H): the ONE color set for text inputs on themed
+ * surfaces. Text, cursor, label, placeholder and container ALL come
+ * from the active [WesalPalette] — dark text on light surfaces in
+ * light mode, light text on dark surfaces in dark mode — never from
+ * the ambient Material scheme (whose container slots the theme does
+ * not fully remap when an admin global appearance or a personal preset
+ * is active) and never hard-coded. Every OutlinedTextField on a themed
+ * surface passes `colors = wesalFieldColors()`; the only exceptions
+ * are fields painted over media/camera (story + camera captions) and
+ * the login flow's fixed branded dark artwork, where white is the
+ * design on an always-dark background.
+ */
+@Composable
+fun wesalFieldColors(): TextFieldColors {
+    val palette = WesalColors.current
+    return OutlinedTextFieldDefaults.colors(
+        focusedTextColor = palette.textPrimary,
+        unfocusedTextColor = palette.textPrimary,
+        disabledTextColor = palette.textMuted,
+        errorTextColor = palette.textPrimary,
+        focusedContainerColor = palette.surfaceElevated,
+        unfocusedContainerColor = palette.surfaceElevated,
+        disabledContainerColor = palette.surfaceElevated,
+        errorContainerColor = palette.surfaceElevated,
+        cursorColor = palette.turquoise,
+        errorCursorColor = palette.error,
+        focusedBorderColor = palette.turquoise,
+        unfocusedBorderColor = palette.border,
+        disabledBorderColor = palette.border,
+        errorBorderColor = palette.error,
+        focusedLabelColor = palette.textSecondary,
+        unfocusedLabelColor = palette.textSecondary,
+        disabledLabelColor = palette.textMuted,
+        errorLabelColor = palette.error,
+        focusedPlaceholderColor = palette.textMuted,
+        unfocusedPlaceholderColor = palette.textMuted,
+        disabledPlaceholderColor = palette.textMuted,
+        errorPlaceholderColor = palette.textMuted
+    )
+}
+
 fun Modifier.pageBleed(horizontalPadding: Dp): Modifier =
     this.then(
         Modifier.layout { measurable, constraints ->
@@ -383,11 +427,23 @@ fun WesalAvatar(
     // only as a crown-margin sliver (see FramedCutoutLayout).
     // The aperture window opens for a verified cutout OR the legacy flag; the
     // strip window (below) opens for verified bounds ONLY.
-    // Round 9 (item 7): a user-framed photo NEVER takes the cutout path — its
-    // baked composition renders through the normal-photo branch below (square
-    // source into the aperture disc = exact fit, glow disc behind its
-    // transparent margins), exactly as framed in the crop editor.
-    val framedCutout = activeFrame != null && !isUserFramed && (verifiedBounds != null || detectedCutout)
+    // Round 9 (item 7): a user-framed photo's baked composition renders
+    // through the normal-photo branch below (square source into the
+    // aperture disc = exact fit, glow disc behind its transparent
+    // margins), exactly as framed in the crop editor.
+    // Round 13 (Addendum F — PROVEN divergence): that exclusion used to
+    // apply to CUTOUT photos too, so the SAME photo in the SAME frame
+    // rendered two ways — every real surface passes isUserFramed (the
+    // Settings header squeezed the figure into the aperture disc,
+    // smaller and lower, glow gap above the head), while the
+    // subscription dialog's «معاينة حية للطلب» preview does NOT pass it
+    // and took the bounds path (figure fills the ring, head high — the
+    // owner's ACCEPTED output). The cutout path therefore no longer
+    // excludes user-framed photos: a verified/detected cutout takes the
+    // bounds geometry at EVERY site, preview included. isUserFramed
+    // keeps governing only OPAQUE photos (no cutout evidence), whose
+    // editor composition still renders as-is.
+    val framedCutout = activeFrame != null && (verifiedBounds != null || detectedCutout)
     // Corner-alpha probe for uncached, unflagged framed photos (drives cutout detection).
     val needSoftwareCheck = activeFrame != null && cachedCutout == null && !isCutout
     val popOutStrip = containerSize * 0.10f
@@ -402,7 +458,7 @@ fun WesalAvatar(
     // AlphaBoundsTransformation from its input bitmap), never from a delivered drawable.
     // Null until verified bounds are known; the legacy full-canvas rendering covers the
     // first frame(s) until then (bounds cache makes later binds synchronous).
-    val cutoutTransform: FramedCutoutTransform? = if (verifiedBounds != null && activeFrame != null && !isUserFramed) {
+    val cutoutTransform: FramedCutoutTransform? = if (verifiedBounds != null && activeFrame != null) {
         detectedBoundsRecord?.let { record ->
             FramedCutoutLayout.compute(
                 containerPx = containerPx.toFloat(),

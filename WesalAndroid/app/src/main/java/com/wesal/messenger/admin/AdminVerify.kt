@@ -26,6 +26,7 @@ import com.wesal.messenger.presentation.components.WesalVerifiedBadge
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.UUID
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 private const val ADMIN_DB = "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424"
 
@@ -196,6 +197,7 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                 false -> Text("غير مصرح لك بدخول هذه الصفحة (حسابات الإدارة المعتمدة فقط)")
                 true -> {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = query,
                         onValueChange = { query = it },
                         label = { Text("معرّف WESAL الرقمي أو @username") },

@@ -87,6 +87,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.net.URL
 import javax.inject.Inject
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 private val STORY_BG_COLORS = listOf(
     0xFF064E3BL,
@@ -776,19 +777,12 @@ fun StoriesScreen(
                         OutlinedTextField(
                             value = draftCaption,
                             onValueChange = { draftCaption = it },
-                            placeholder = { Text("أضف نصاً أو وصفاً للحالة...", color = WesalTextMuted) },
+                            placeholder = { Text("أضف نصاً أو وصفاً للحالة...", color = palette.textMuted) },
                             singleLine = true,
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = WesalTextPrimary,
-                                unfocusedTextColor = WesalTextPrimary,
-                                cursorColor = WesalTurquoise,
-                                focusedBorderColor = WesalTurquoise,
-                                unfocusedBorderColor = WesalSurfaceBorder,
-                                focusedPlaceholderColor = WesalTextMuted,
-                                unfocusedPlaceholderColor = WesalTextMuted,
-                                focusedContainerColor = WesalSurfaceElevated,
-                                unfocusedContainerColor = WesalSurfaceElevated
-                            ),
+                            // Round 13 (Item H): was hard-coded to the DARK
+                            // palette constants in every theme — now follows
+                            // the active palette like every themed field.
+                            colors = wesalFieldColors(),
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(24.dp)
                         )
@@ -1806,6 +1800,7 @@ fun StoriesScreen(
                         }
                     }
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = audioCaption,
                         onValueChange = { audioCaption = it },
                         label = { Text(if (strings.isEnglish) "Voice note caption (optional)" else "وصف الحالة الصوتية (اختياري)") },
@@ -1886,6 +1881,7 @@ fun StoriesScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = storyText,
                         onValueChange = { storyText = it },
                         label = { Text(if (strings.isEnglish) "Write your story..." else "اكتب حالتك...") },
@@ -2556,6 +2552,7 @@ private fun PromoteStoryDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
+                    colors = wesalFieldColors(),
                     value = note,
                     onValueChange = { note = it },
                     label = { Text(if (strings.isEnglish) "Promotion note (optional)" else "رسالة الترويج (اختياري)") },

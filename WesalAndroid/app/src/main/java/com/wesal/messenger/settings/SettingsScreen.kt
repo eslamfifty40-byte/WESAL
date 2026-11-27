@@ -100,6 +100,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
+import com.wesal.messenger.presentation.components.wesalFieldColors
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -369,6 +370,17 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun openSupportChatWith10001(isEn: Boolean, onOpenChat: (String) -> Unit) {
+        // Round 13 (Item C): open DIRECTLY like it used to — when the
+        // deterministic chat id is already known on this device, navigate
+        // NOW and let the ensure + personalized welcome finish in the
+        // background. Only the first-ever open (admin uid not yet cached)
+        // still resolves over the network before navigating.
+        val cachedId = chatRepository.cachedSupportChatId(Constants.OWNER_ADMIN_NUMERIC_ID)
+        if (cachedId != null) {
+            chatRepository.ensureSupportChatInBackground(Constants.OWNER_ADMIN_NUMERIC_ID)
+            onOpenChat(cachedId)
+            return
+        }
         viewModelScope.launch {
             chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
                 .onSuccess(onOpenChat)
@@ -1232,6 +1244,7 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodyMedium
                     )
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = passwordForReauth,
                         onValueChange = { passwordForReauth = it },
                         label = { Text(if (strings.isEnglish) "Password (if email login)" else "كلمة المرور (لحسابات البريد)") },
@@ -1414,6 +1427,7 @@ fun SettingsScreen(
                     if (!recoveryMode) {
                         if (hasExisting) {
                             OutlinedTextField(
+                                colors = wesalFieldColors(),
                                 value = currentPass,
                                 onValueChange = { currentPass = it },
                                 label = { Text(if (strings.isEnglish) "Current Password" else "كلمة المرور الحالية") },
@@ -1433,6 +1447,7 @@ fun SettingsScreen(
                             )
                         }
                         OutlinedTextField(
+                            colors = wesalFieldColors(),
                             value = newPass,
                             onValueChange = { newPass = it },
                             label = { Text(if (strings.isEnglish) "New Password (letters/numbers)" else "كلمة المرور الجديدة (حروف وأرقام)") },
@@ -1451,6 +1466,7 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                         OutlinedTextField(
+                            colors = wesalFieldColors(),
                             value = recoveryQ,
                             onValueChange = { recoveryQ = it },
                             label = { Text(if (strings.isEnglish) "Recovery Question" else "سؤال الاستعادة") },
@@ -1458,6 +1474,7 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
                         OutlinedTextField(
+                            colors = wesalFieldColors(),
                             value = recoveryA,
                             onValueChange = { recoveryA = it },
                             label = { Text(if (strings.isEnglish) "Recovery Answer" else "إجابة سؤال الاستعادة") },
@@ -1473,6 +1490,7 @@ fun SettingsScreen(
                         if (existingQ.isNotBlank()) {
                             Text(existingQ, color = palette.turquoise, fontWeight = FontWeight.SemiBold)
                             OutlinedTextField(
+                                colors = wesalFieldColors(),
                                 value = resetAnswer,
                                 onValueChange = { resetAnswer = it },
                                 label = { Text(if (strings.isEnglish) "Answer" else "إجابتك") },
@@ -2051,6 +2069,13 @@ fun SettingsScreen(
                                     frameId = selectedFrameId,
                                     frameExpiresAt = 0L,
                                     isCutout = cutoutPreview,
+                                    // Round 13 (Addendum F): pass the same
+                                    // flag every real surface passes, so the
+                                    // preview is truthful for opaque
+                                    // user-framed photos too (cutouts now
+                                    // render identically either way — the
+                                    // unified bounds geometry).
+                                    isUserFramed = user?.photoUserFramed == true,
                                     iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
                                     neonColor = selectedGlow.key,
                                     neonGlowIntensity = 0.85f
@@ -2266,6 +2291,7 @@ fun SettingsScreen(
                     }
 
                     OutlinedTextField(
+                        colors = wesalFieldColors(),
                         value = requestNote,
                         onValueChange = { requestNote = it },
                         label = { Text(if (strings.isEnglish) "Reason / Notes (Optional)" else "ملاحظة أو سبب الطلب (اختياري)") },
