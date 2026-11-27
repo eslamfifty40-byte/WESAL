@@ -26,7 +26,7 @@ package com.wesal.messenger.core.util
  * Fit rule derived from those proportions:
  * - HEIGHT-FIRST, BOTTOM-ANCHORED: the rendered person height is
  *   aperture x (1 - [HEAD_CLEARANCE_APERTURE_FRACTION] + [BOTTOM_OVERFLOW_APERTURE_FRACTION])
- *   = 1.21 x aperture; the bounding-box BOTTOM is anchored at
+ *   = 1.15 x aperture; the bounding-box BOTTOM is anchored at
  *   apertureBottom + [BOTTOM_OVERFLOW_APERTURE_FRACTION] x aperture and the box top
  *   therefore lands exactly [HEAD_CLEARANCE_APERTURE_FRACTION] x aperture below the
  *   aperture's top edge — head inside the ring, clear of the crown zone.
@@ -44,8 +44,8 @@ package com.wesal.messenger.core.util
  * BEFORE (pop-out math): person top ~663px (0.28xD ABOVE the aperture top, in the
  * crown zone), person bottom ~780px -> void of ~64px = 0.45xD of bare glow disc
  * inside the ring below the body; rendered person height ~0.83xD.
- * AFTER (this math): person top = apertureTop + 0.04xD, person bottom =
- * apertureBottom + 0.25xD (behind the plaque), rendered height 1.21xD, void = 0.
+ * AFTER (this math): person top = apertureTop + 0.10xD, person bottom =
+ * apertureBottom + 0.25xD (behind the plaque), rendered height 1.15xD, void = 0.
  *
  * Pure math, no Android classes — unit-tested on the JVM.
  */
@@ -73,9 +73,13 @@ object FramedCutoutLayout {
      * Round 6: the person's bounding-box top lands this far (fraction of the
      * aperture diameter) BELOW the aperture's top inner edge — head near the top
      * INSIDE the ring, clear of the crown/ornament zone above the ring.
-     * Reference composite: ~0.00-0.03; 0.04 keeps a hair of safety margin.
+     * Reference composite: ~0.00-0.03. Raised to 0.10 on the owner's explicit
+     * demand (2026-11-27, zoomed screenshot): the frame must NEVER touch the
+     * face or the hair — 0.10 keeps the hair fully clear of the ring's inner
+     * ornament band (incl. the flame wisps that lick inside the aperture)
+     * even under zoom, at the cost of a slightly smaller figure.
      */
-    const val HEAD_CLEARANCE_APERTURE_FRACTION = 0.04f
+    const val HEAD_CLEARANCE_APERTURE_FRACTION = 0.10f
 
     /**
      * Round 6: the person's bounding-box bottom lands this far (fraction of the

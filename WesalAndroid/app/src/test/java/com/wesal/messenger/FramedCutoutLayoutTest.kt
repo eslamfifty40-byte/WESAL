@@ -13,10 +13,10 @@ import org.junit.Test
  *
  * Round-6 geometry (item 10 — replaces the round-4 pop-out spec the owner rejected
  * on device): HEIGHT-FIRST, BOTTOM-ANCHORED, head INSIDE the ring.
- * - person height = aperture x (1 - 0.04 clearance + 0.25 overflow) = 1.21 x aperture;
+ * - person height = aperture x (1 - 0.10 clearance + 0.25 overflow) = 1.15 x aperture;
  * - box bottom anchored at apertureBottom + 0.25 x aperture (torso continues behind
  *   the frame's bottom artwork — no void inside the ring);
- * - box top lands at apertureTop + 0.04 x aperture (head near the top INSIDE the
+ * - box top lands at apertureTop + 0.10 x aperture (head near the top INSIDE the
  *   ring, clear of the crown ornament zone);
  * - rendered width capped at 1.35 x aperture (bottom anchor kept when it binds);
  * - the over-frame strip is just the 2%-of-container crown-margin sliver.
@@ -90,7 +90,7 @@ class FramedCutoutLayoutTest {
         // Person occupies 90% of the canvas width, like the owner's reference composite.
         val bounds = AlphaBounds(0.05f, 0.02f, 0.95f, 0.98f, 0.15f)
         val t = compute(bounds, 640, 640)
-        // Height-first: person height is exactly the round-6 target (1.21 x aperture).
+        // Height-first: person height is exactly the round-6 target (1.15 x aperture).
         assertEquals(targetPersonH, personHeight(t, bounds), 1f)
         assertEquals(targetPersonH / (bounds.height * 640f), t.scale, 0.001f)
         // Head top lands exactly at the clearance point inside the ring.
@@ -118,7 +118,7 @@ class FramedCutoutLayoutTest {
 
     @Test
     fun tallFullBody_heightFirstKeepsHeadInsideAndBottomFilled() {
-        // Narrow full-body person: height-first fit makes him 1.21 x aperture tall
+        // Narrow full-body person: height-first fit makes him 1.15 x aperture tall
         // and narrower than the aperture (glow at the sides, like the reference's
         // side glow) — the old width-first/guard math exploded him to 2.1 x aperture.
         val bounds = AlphaBounds(0.30f, 0f, 0.70f, 1f, 0.6f)
