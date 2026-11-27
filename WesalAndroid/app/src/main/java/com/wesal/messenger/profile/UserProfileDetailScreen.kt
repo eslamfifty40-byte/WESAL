@@ -23,9 +23,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -648,10 +646,11 @@ fun UserProfileDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 val detailScope = rememberCoroutineScope()
-                // Round 5, FIX 2 (same definitive spec as ProfileScreen): the
-                // cover renders FULLY (Fit over a blurred backdrop) and the
-                // framed avatar block sits fully BELOW it with a clear gap
-                // strip — no overlap over the cover.
+                // Cover header: round 7 — the cover is ONE clean image
+                // filling its band edge-to-edge (Crop, top-biased; no
+                // blurred ghost backdrop, no scrim), and the framed avatar
+                // block sits fully BELOW it with a clear gap strip — no
+                // overlap over the cover.
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
@@ -672,27 +671,20 @@ fun UserProfileDetailScreen(
                                 )
                         ) {
                             if (showCover) {
-                                // FIX 2 (a): blurred/enlarged backdrop + the
-                                // FULL cover with ContentScale.Fit on top —
-                                // the design is never hard-cropped.
-                                AsyncImage(
-                                    model = wesalImageModel(target.coverUrl),
-                                    contentDescription = null,
-                                    modifier = Modifier.fillMaxSize().scale(1.15f).blur(24.dp),
-                                    contentScale = ContentScale.Crop
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .matchParentSize()
-                                        .background(palette.background.copy(alpha = 0.35f))
-                                )
+                                // Round 7 (owner's cover spec): ONE clean
+                                // image fills the band edge-to-edge —
+                                // ContentScale.Crop biased to the TOP so
+                                // faces near the top are not cut. No blurred
+                                // ghost copy, no scrim. The fullscreen tap
+                                // rides this single image.
                                 AsyncImage(
                                     model = wesalImageModel(target.coverUrl),
                                     contentDescription = null,
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .clickable { fullscreenMediaUrl = target.coverUrl },
-                                    contentScale = ContentScale.Fit
+                                    contentScale = ContentScale.Crop,
+                                    alignment = Alignment.TopCenter
                                 )
                                 Surface(
                                     color = palette.background.copy(alpha = 0.72f),

@@ -31,9 +31,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -785,12 +783,13 @@ fun ProfileScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Cover Banner + framed avatar header (round 5, FIX 2 — owner's
-            // definitive spec): (a) the cover photo renders FULLY —
-            // ContentScale.Fit over a blurred/enlarged backdrop of the same
-            // image, never a hard crop; (b) the framed avatar block sits fully
-            // BELOW the cover with a clear gap strip between cover bottom and
-            // frame top (the cutout head pop-out renders into that gap);
+            // Cover Banner + framed avatar header: (a) round 7 — the cover
+            // is ONE clean image filling its band edge-to-edge
+            // (ContentScale.Crop, top-biased; NO blurred ghost backdrop and
+            // NO scrim — the owner rejected both outright); (b) the framed
+            // avatar block sits fully BELOW the cover with a clear gap strip
+            // between cover bottom and frame top (the cutout head pop-out
+            // renders into that gap) on the plain surface colour;
             // (c) inside the frame, WesalAvatar's opaque frame-coloured glow
             // disc guarantees the cover never shows through the aperture.
             Column(
@@ -810,30 +809,17 @@ fun ProfileScreen(
                     ) {
                         val coverPreview = selectedCoverUri?.toString() ?: user?.coverUrl.orEmpty()
                         if (coverPreview.isNotBlank()) {
-                            // FIX 2 (a): FULL cover, never hard-cropped — a
-                            // blurred, slightly enlarged Crop copy fills the
-                            // 16:9 band as backdrop, a subtle scrim settles
-                            // it, and the complete cover draws on top with
-                            // ContentScale.Fit (same treatment as the
-                            // Settings account card). Modifier.blur needs
-                            // API 31+; below that it no-ops and the darkened
-                            // backdrop still fills the band.
-                            AsyncImage(
-                                model = wesalImageModel(coverPreview),
-                                contentDescription = null,
-                                modifier = Modifier.fillMaxSize().scale(1.15f).blur(24.dp),
-                                contentScale = ContentScale.Crop
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .background(palette.background.copy(alpha = 0.35f))
-                            )
+                            // Round 7 (owner's cover spec): ONE clean image
+                            // fills the 16:9 band edge-to-edge —
+                            // ContentScale.Crop biased to the TOP of the
+                            // image so faces near the top are not cut. No
+                            // blurred ghost copy behind it, no scrim wash.
                             AsyncImage(
                                 model = wesalImageModel(coverPreview),
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Fit
+                                contentScale = ContentScale.Crop,
+                                alignment = Alignment.TopCenter
                             )
                         } else {
                             Column(

@@ -32,9 +32,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -700,43 +698,21 @@ fun SettingsScreen(
                             .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                     ) {
                     if (coverUrl.isNotBlank()) {
-                        // Round-4 (report option c): the 120dp band centre-cropped a
-                        // portrait cover and cut the owner's face. Now the band draws
-                        // the cover TWICE: a blurred, darkened Crop copy as backdrop
-                        // (fills the band), and the FULL cover with ContentScale.Fit
-                        // on top — no part of the cover is ever cut, for portrait and
-                        // landscape covers alike. (Modifier.blur needs API 31+; on
-                        // older devices it no-ops and the darkened Crop backdrop
-                        // still fills the band behind the complete Fit cover.)
-                        AsyncImage(
-                            model = wesalImageModel(coverUrl),
-                            contentDescription = null,
-                            // Slight overscale: blur fades the outermost ~radius of
-                            // pixels, and the band must stay covered edge to edge.
-                            modifier = Modifier.fillMaxSize().scale(1.15f).blur(24.dp),
-                            contentScale = ContentScale.Crop
-                        )
-                        // Round 6 (item 6): IDENTICAL three-layer treatment to
-                        // ProfileScreen's cover (round-5 FIX 2) — blurred 1.15x
-                        // Crop backdrop + 0.35 scrim + full image with
-                        // ContentScale.Fit, NOTHING else on top. The extra
-                        // vertical surface gradient this card used to draw over
-                        // the Fit image (0.18 -> 0.45 -> 0.72) washed the cover
-                        // out and was why the owner said the Settings cover is
-                        // "not shown as agreed" even after FIX 2; it is removed.
-                        // The name/ID text no longer sits on the cover at all
-                        // (avatar band is fully below it), so no legibility
-                        // scrim is needed here.
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .background(palette.background.copy(alpha = 0.35f))
-                        )
+                        // Round 7 (owner's cover spec): ONE clean image fills
+                        // the 120dp band edge-to-edge — ContentScale.Crop
+                        // biased to the TOP of the image, so enlarging a
+                        // portrait cover to fill the band never cuts the
+                        // face at the top. NO blurred ghost copy behind it
+                        // and NO scrim: the owner rejected the blurred
+                        // backdrop appearing around the photo. (Rounds 4-6
+                        // drew the cover twice — blurred Crop backdrop +
+                        // Fit copy + scrim; all gone.)
                         AsyncImage(
                             model = wesalImageModel(coverUrl),
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Fit
+                            contentScale = ContentScale.Crop,
+                            alignment = Alignment.TopCenter
                         )
                     }
                         Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
