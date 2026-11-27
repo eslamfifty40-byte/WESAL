@@ -1,6 +1,5 @@
 package com.wesal.messenger
 
-import com.google.firebase.firestore.FirebaseFirestoreException
 import com.wesal.messenger.core.util.ErrorCopy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -11,39 +10,34 @@ import java.io.IOException
 /**
  * Round 13 (Addendum L/L5): raw SDK exception text must NEVER reach a
  * screen; our own authored Arabic guard messages must survive.
+ *
+ * The Firestore code mapping is exercised through
+ * [ErrorCopy.forCodeName] because local JVM unit tests cannot
+ * initialize Firebase exception classes (ExceptionInInitializerError);
+ * `ErrorCopy.friendly` delegates to it via `error.code.name`.
  */
 class ErrorCopyTest {
 
     @Test
-    fun quotaException_mapsToQuotaCopy_neverRawText() {
-        val raw = FirebaseFirestoreException(
-            "RESOURCE_EXHAUSTED: Quota limit exceeded. project_number: 255196025471",
-            FirebaseFirestoreException.Code.RESOURCE_EXHAUSTED
-        )
-        assertEquals(ErrorCopy.QUOTA_AR, ErrorCopy.friendly(raw, "fallback"))
+    fun quotaCode_mapsToQuotaCopy_neverRawText() {
+        assertEquals(ErrorCopy.QUOTA_AR, ErrorCopy.forCodeName("RESOURCE_EXHAUSTED", "fallback"))
     }
 
     @Test
     fun unavailableAndDeadline_mapToConnectionCopy() {
-        val un = FirebaseFirestoreException(
-            "UNAVAILABLE: io.grpc.StatusRuntimeException",
-            FirebaseFirestoreException.Code.UNAVAILABLE
-        )
-        assertEquals(ErrorCopy.CONNECTION_AR, ErrorCopy.friendly(un, "fallback"))
-        val dl = FirebaseFirestoreException(
-            "DEADLINE_EXCEEDED",
-            FirebaseFirestoreException.Code.DEADLINE_EXCEEDED
-        )
-        assertEquals(ErrorCopy.CONNECTION_AR, ErrorCopy.friendly(dl, "fallback"))
+        assertEquals(ErrorCopy.CONNECTION_AR, ErrorCopy.forCodeName("UNAVAILABLE", "fallback"))
+        assertEquals(ErrorCopy.CONNECTION_AR, ErrorCopy.forCodeName("DEADLINE_EXCEEDED", "fallback"))
     }
 
     @Test
     fun permissionDenied_mapsToNotAllowed() {
-        val pd = FirebaseFirestoreException(
-            "PERMISSION_DENIED: Missing or insufficient permissions.",
-            FirebaseFirestoreException.Code.PERMISSION_DENIED
-        )
-        assertEquals(ErrorCopy.NOT_ALLOWED_AR, ErrorCopy.friendly(pd, "fallback"))
+        assertEquals(ErrorCopy.NOT_ALLOWED_AR, ErrorCopy.forCodeName("PERMISSION_DENIED", "fallback"))
+    }
+
+    @Test
+    fun unknownCode_collapsesToFallback() {
+        assertEquals("fallback", ErrorCopy.forCodeName("INTERNAL", "fallback"))
+        assertEquals("fallback", ErrorCopy.forCodeName("NOT_FOUND", "fallback"))
     }
 
     @Test
@@ -69,7 +63,15 @@ class ErrorCopyTest {
     }
 
     @Test
-    fun arabicWithTechnicalMarkers_isNotAuthored() {
+    fun rawQuotaText_isNotAuthored() {
+        // The exact string class from the owner's screenshots: even if
+        // such text arrived wrapped in a plain exception, it must
+        // never be treated as authored copy.
+        assertFalse(
+            ErrorCopy.isAuthored(
+                "RESOURCE_EXHAUSTED: Quota limit exceeded. project_number: 255196025471"
+            )
+        )
         assertFalse(ErrorCopy.isAuthored("خطأ RESOURCE_EXHAUSTED في Firestore"))
         assertTrue(ErrorCopy.isAuthored("تعذر حفظ البيانات — حاول مرة أخرى"))
         assertFalse(ErrorCopy.isAuthored("plain english text"))

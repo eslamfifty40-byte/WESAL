@@ -52,18 +52,25 @@ object ErrorCopy {
     fun friendly(error: Throwable?, fallback: String = GENERIC_AR): String {
         if (error == null) return fallback
         if (error is FirebaseFirestoreException) {
-            return when (error.code) {
-                FirebaseFirestoreException.Code.RESOURCE_EXHAUSTED -> QUOTA_AR
-                FirebaseFirestoreException.Code.UNAVAILABLE,
-                FirebaseFirestoreException.Code.DEADLINE_EXCEEDED -> CONNECTION_AR
-                FirebaseFirestoreException.Code.PERMISSION_DENIED -> NOT_ALLOWED_AR
-                else -> fallback
-            }
+            return forCodeName(error.code.name, fallback)
         }
         if (error is IOException) return CONNECTION_AR
         val msg = error.message?.trim().orEmpty()
         return if (msg.isNotEmpty() && isAuthored(msg)) msg else fallback
     }
+
+    /**
+     * The Firestore code → copy mapping, keyed by code NAME so it is
+     * pure and unit-testable (local JVM tests cannot initialize
+     * Firebase exception classes).
+     */
+    internal fun forCodeName(codeName: String, fallback: String): String =
+        when (codeName) {
+            "RESOURCE_EXHAUSTED" -> QUOTA_AR
+            "UNAVAILABLE", "DEADLINE_EXCEEDED" -> CONNECTION_AR
+            "PERMISSION_DENIED" -> NOT_ALLOWED_AR
+            else -> fallback
+        }
 
     /** True only for our own user-facing Arabic copy, never SDK text. */
     internal fun isAuthored(msg: String): Boolean =
