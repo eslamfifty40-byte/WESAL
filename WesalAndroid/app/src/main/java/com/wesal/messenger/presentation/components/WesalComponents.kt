@@ -76,7 +76,6 @@ import android.graphics.drawable.Drawable
 import android.util.Log
 import android.widget.Toast
 import com.wesal.messenger.BuildConfig
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.filled.ContentCopy
 import coil.compose.AsyncImage
