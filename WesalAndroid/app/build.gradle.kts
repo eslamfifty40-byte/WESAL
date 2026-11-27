@@ -194,6 +194,11 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)
+    // Round 11: the real org.json for JVM unit tests — the Android stub in
+    // the unit-test classpath throws "not mocked" for every method, which
+    // made pure JSON codecs (ContactsCacheCodec) untestable. Test-only:
+    // the app keeps using the framework org.json at runtime.
+    testImplementation("org.json:json:20240303")
 
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
