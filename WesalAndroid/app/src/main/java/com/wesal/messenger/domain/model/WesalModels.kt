@@ -17,7 +17,13 @@ data class PendingOutboxMessage(
     val replyToPreview: String? = null,
     val forwardedFromName: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
-    val attempts: Int = 0
+    val attempts: Int = 0,
+    // Failover design §5.2 rule 5: the store a previous attempt targeted
+    // (MessagePlaneRouter wire name), stamped when that attempt's outcome
+    // became unknown (the ACK-window timeout / queued case). Replay checks
+    // existence on the hinted store before re-sending. Nullable +
+    // defaulted: entries persisted by older builds decode unchanged.
+    val attemptedStore: String? = null
 )
 
 @Serializable
@@ -31,6 +37,33 @@ data class SavedWesalAccount(
     val photoUrl: String = "",
     val provider: String = "email",
     val lastUsedAt: Long = System.currentTimeMillis()
+)
+
+/**
+ * Failover design §3.2: the on-device own-profile snapshot — the fields
+ * the entry decisions (profile completeness, phone-gate verdict, ban /
+ * deleted state) are made from when Firestore cannot be consulted
+ * (quota-dead). Persisted per uid in the DataStore account vault and
+ * refreshed on every successful own-doc read/write, so it is at most
+ * one session stale.
+ *
+ * [phoneVerifiedMirror] is NOT the doc's raw isPhoneVerified flag: it
+ * is the complete-mirror verdict (flag + number + phoneHash), computed
+ * at snapshot-write time by OwnProfileSnapshot.fromUser — the snapshot
+ * can only carry a verification that was genuinely earned.
+ */
+@Serializable
+data class CachedOwnProfile(
+    val uid: String = "",
+    val profileCompleted: Boolean = false,
+    val phoneHash: String = "",
+    val phoneVerifiedMirror: Boolean = false,
+    val isBanned: Boolean = false,
+    val banType: String = "",
+    val banExpiresAt: Long = 0L,
+    val deletedAt: Long = 0L,
+    val deletedPermanent: Boolean = false,
+    val savedAtMs: Long = 0L
 )
 
 enum class PrivacyVisibility(val key: String) {

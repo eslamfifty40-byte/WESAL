@@ -13,6 +13,8 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.google.firebase.auth.FirebaseAuth
+import com.wesal.messenger.core.util.BackendHealthStore
+import com.wesal.messenger.domain.model.CachedOwnProfile
 import com.wesal.messenger.domain.model.SavedWesalAccount
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -163,6 +165,10 @@ class UserPreferencesDataStore @Inject constructor(
     private object GlobalKeys {
         val DEVICE_SESSION_ID = stringPreferencesKey("device_session_id")
         val SAVED_ACCOUNTS_JSON = stringPreferencesKey("saved_accounts_json")
+        // Failover design §3.2: per-uid CachedOwnProfile snapshots (JSON map uid → snapshot).
+        val OWN_PROFILE_SNAPSHOTS_JSON = stringPreferencesKey("own_profile_snapshots_json")
+        // Failover design §5.1: persisted BackendHealthStore state (survives process death).
+        val BACKEND_HEALTH_JSON = stringPreferencesKey("backend_health_json")
         val PENDING_INVITE_ID = stringPreferencesKey("pending_invite_id")
         val PENDING_PROFILE_JSON = stringPreferencesKey("pending_profile_json")
         val MANUAL_INVITE_ID = stringPreferencesKey("manual_invite_id")
@@ -457,6 +463,57 @@ class UserPreferencesDataStore @Inject constructor(
             val updated = decodeSavedAccounts(prefs[GlobalKeys.SAVED_ACCOUNTS_JSON])
                 .filterNot { it.uid == uid }
             prefs[GlobalKeys.SAVED_ACCOUNTS_JSON] = json.encodeToString(updated)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Failover design §3.2: own-profile snapshots. Written on every
+    // successful own-doc read/write (UserRepositoryImpl / AuthRepositoryImpl);
+    // read by the sign-in fall-through and the entry routing when Firestore
+    // is quota-dead, so Auth success + snapshot is sufficient to enter.
+    // -----------------------------------------------------------------------
+
+    private fun decodeOwnProfileSnapshots(raw: String?): Map<String, CachedOwnProfile> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            json.decodeFromString<Map<String, CachedOwnProfile>>(raw)
+        }.getOrDefault(emptyMap())
+    }
+
+    suspend fun saveOwnProfileSnapshot(snapshot: CachedOwnProfile) {
+        if (snapshot.uid.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val current = decodeOwnProfileSnapshots(prefs[GlobalKeys.OWN_PROFILE_SNAPSHOTS_JSON])
+            prefs[GlobalKeys.OWN_PROFILE_SNAPSHOTS_JSON] =
+                json.encodeToString(current + (snapshot.uid to snapshot))
+        }
+    }
+
+    suspend fun ownProfileSnapshot(uid: String): CachedOwnProfile? {
+        if (uid.isBlank()) return null
+        val prefs = context.wesalDataStore.data.first()
+        return decodeOwnProfileSnapshots(prefs[GlobalKeys.OWN_PROFILE_SNAPSHOTS_JSON])[uid]
+    }
+
+    // -----------------------------------------------------------------------
+    // Failover design §5.1: BackendHealthStore persistence — the router's
+    // health state survives process death, so a killed app does not
+    // resurrect into hammering a dead backend. Hydrated + re-persisted by
+    // WesalApplication via BackendHealthStore.attachPersister.
+    // -----------------------------------------------------------------------
+
+    suspend fun loadBackendHealthState(): BackendHealthStore.State {
+        val prefs = context.wesalDataStore.data.first()
+        val raw = prefs[GlobalKeys.BACKEND_HEALTH_JSON]
+        if (raw.isNullOrBlank()) return BackendHealthStore.State()
+        return runCatching {
+            json.decodeFromString<BackendHealthStore.State>(raw)
+        }.getOrDefault(BackendHealthStore.State())
+    }
+
+    suspend fun persistBackendHealthState(state: BackendHealthStore.State) {
+        context.wesalDataStore.edit { prefs ->
+            prefs[GlobalKeys.BACKEND_HEALTH_JSON] = json.encodeToString(state)
         }
     }
 

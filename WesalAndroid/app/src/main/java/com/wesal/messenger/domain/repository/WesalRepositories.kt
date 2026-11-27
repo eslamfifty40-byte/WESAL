@@ -421,6 +421,19 @@ interface ChatRepository {
         forwardedFromName: String? = null,
         clientMessageId: String? = null
     ): Result<Unit>
+
+    /**
+     * Failover design §5.2 rule 5 (stage 1): the outbox-replay existence
+     * check. True when a message document with [messageId] already
+     * exists in the chat — either committed on the server or durably
+     * queued in the SDK's local mutation queue (a default-source read
+     * sees both) — in which case replay must NOT re-send: the original
+     * atomic batch already carried the chat summary, and re-running it
+     * would double-increment the peer's unread count for one message.
+     * Any read failure answers false (replay falls back to today's
+     * re-send) and is reported to the backend health store.
+     */
+    suspend fun isOutboxMessageLanded(chatId: String, messageId: String): Boolean
     fun sendMediaMessage(
         chatId: String,
         uri: Uri,

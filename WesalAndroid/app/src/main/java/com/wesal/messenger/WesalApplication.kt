@@ -28,9 +28,12 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
+import com.wesal.messenger.core.util.BackendHealthStore
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.MessagePlaneRouter
 import com.wesal.messenger.core.util.PresenceWriteGate
 import com.wesal.messenger.core.util.PerfTrace
+import com.wesal.messenger.core.util.SendFailureCopy
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import javax.inject.Provider
@@ -77,6 +80,17 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         FirebaseApp.initializeApp(this)
         configureFirestoreOfflinePersistence()
         configureAppCheck()
+        // Failover design §5.1: the backend health state survives process
+        // death — hydrate the store from DataStore and persist every
+        // transition, so a killed app does not resurrect into hammering a
+        // quota-dead backend (and the router's stickiness holds across
+        // restarts). Stage 1: the store observes and records only.
+        BackendHealthStore.attachPersister { state ->
+            appScope.launch { runCatching { userPrefs.persistBackendHealthState(state) } }
+        }
+        appScope.launch {
+            runCatching { BackendHealthStore.hydrate(userPrefs.loadBackendHealthState()) }
+        }
         rememberSignedInAccountLocally()
         // Deferred until the main thread first goes idle (i.e. after the first frame):
         // creating 6 channels is a series of binder calls that bought nothing on the
@@ -148,6 +162,31 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             runCatching {
                 val pending = userPrefs.pendingOutboxMessages()
                 for (entry in pending) {
+                    // Failover design §5.2 rule 5: replay re-runs the
+                    // router and checks existence on the target store
+                    // BEFORE re-sending. A message that already landed
+                    // (server-committed, or durably queued in the SDK's
+                    // mutation queue) is never re-sent — its original
+                    // atomic batch already carried the chat summary, so
+                    // a blind re-send would double-increment the peer's
+                    // unread count for a single message. Stage 1 acts on
+                    // the FIRESTORE arm only; any other router result
+                    // degrades to the plain re-send below.
+                    val target = MessagePlaneRouter.replayTarget(
+                        MessagePlaneRouter.storeFromWire(entry.attemptedStore),
+                        MessagePlaneRouter.PlaneConfig(),
+                        BackendHealthStore.currentState()
+                    )
+                    if (target == MessagePlaneRouter.Store.FIRESTORE) {
+                        val landed = runCatching {
+                            chatRepositoryProvider.get()
+                                .isOutboxMessageLanded(entry.chatId, entry.messageId)
+                        }.getOrDefault(false)
+                        if (landed) {
+                            userPrefs.removeOutboxMessage(entry.messageId)
+                            continue
+                        }
+                    }
                     val replyStub = if (!entry.replyToMessageId.isNullOrBlank()) {
                         com.wesal.messenger.domain.model.WesalMessage(
                             messageId = entry.replyToMessageId,
@@ -165,6 +204,21 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                     }
                     if (result.isSuccess) {
                         userPrefs.removeOutboxMessage(entry.messageId)
+                    } else if (SendFailureCopy.isQueued(result.exceptionOrNull())) {
+                        // The attempt's outcome is now unknown (the write
+                        // sits in the SDK queue): stamp the store it
+                        // targeted so the next replay checks existence
+                        // there first. Stage 1 sends target Firestore —
+                        // the only store with a client until stage 2.
+                        runCatching {
+                            userPrefs.enqueueOutboxMessage(
+                                entry.copy(
+                                    attemptedStore = MessagePlaneRouter.wireName(
+                                        MessagePlaneRouter.Store.FIRESTORE
+                                    )
+                                )
+                            )
+                        }
                     }
                 }
             }

@@ -14,6 +14,7 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.BackendHealthStore
 import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.DirectChatRequestLogic
 import com.wesal.messenger.core.util.MessageQueuedException
@@ -295,6 +296,11 @@ class ChatRepositoryImpl @Inject constructor(
                     // cache→server transition, so fromCache tracks reality.
                     registration = query.addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                         if (error != null || snapshot == null) {
+                            // Failover design §5.1 (stage 1, observing):
+                            // the router's health store learns of quota
+                            // death at the same choke points that already
+                            // route errors through ErrorCopy.
+                            if (error != null) BackendHealthStore.reportFirestoreError(error)
                             if (ordered &&
                                 error?.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION
                             ) {
@@ -717,6 +723,8 @@ class ChatRepositoryImpl @Inject constructor(
                     // (messageSyncState.fromCache) also never cleared.
                     .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                         if (error != null || snapshot == null) {
+                            // Failover design §5.1 (stage 1, observing).
+                            if (error != null) BackendHealthStore.reportFirestoreError(error)
                             // Spec §§1.2/13.4: surface the failure (the chat screen
                             // renders it with retry) instead of silently freezing.
                             _messageSyncState.value = ChatListSyncState(
@@ -1720,9 +1728,29 @@ class ChatRepositoryImpl @Inject constructor(
         } ?: false
         when {
             sdkCommitted -> Unit
-            sdkError != null -> throw sdkError!!
+            sdkError != null -> {
+                // Failover design §5.1 (stage 1, observing): a quota
+                // rejection flips the health store; the send itself is
+                // NOT rerouted in this stage.
+                BackendHealthStore.reportFirestoreError(sdkError)
+                throw sdkError!!
+            }
             else -> throw MessageQueuedException()
         }
+    }
+
+    override suspend fun isOutboxMessageLanded(chatId: String, messageId: String): Boolean {
+        if (chatId.isBlank() || messageId.isBlank()) return false
+        return runCatching {
+            firestore.collection(Constants.COLLECTION_CHATS)
+                .document(chatId)
+                .collection(Constants.COLLECTION_MESSAGES)
+                .document(messageId)
+                .get()
+                .await()
+                .exists()
+        }.onFailure { BackendHealthStore.reportFirestoreError(it) }
+            .getOrDefault(false)
     }
 
     override fun sendMediaMessage(
@@ -1896,6 +1924,8 @@ class ChatRepositoryImpl @Inject constructor(
                 trySend(Result.success(1.0f))
                 close()
             } catch (e: Exception) {
+                // Failover design §5.1 (stage 1, observing).
+                BackendHealthStore.reportFirestoreError(e)
                 trySend(Result.failure(e))
                 close()
             }
@@ -2088,7 +2118,11 @@ class ChatRepositoryImpl @Inject constructor(
         } ?: false
         when {
             locationCommitted -> Unit
-            locationSdkError != null -> throw locationSdkError!!
+            locationSdkError != null -> {
+                // Failover design §5.1 (stage 1, observing).
+                BackendHealthStore.reportFirestoreError(locationSdkError)
+                throw locationSdkError!!
+            }
             else -> throw MessageQueuedException()
         }
     }

@@ -23,7 +23,9 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.BackendHealthStore
 import com.wesal.messenger.core.util.ErrorCopy
+import com.wesal.messenger.core.util.OwnProfileSnapshot
 import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PendingProfileLogic
 import com.wesal.messenger.core.util.PhoneUtils
@@ -261,7 +263,7 @@ class AuthRepositoryImpl @Inject constructor(
             if (previousUid != null && previousUid != firebaseUser.uid) {
                 clearActiveSessionForSwitch(previousUid)
             }
-            val needsSetup = ensureUserSkeletonExists(
+            val needsSetup = ensureUserSkeletonForSignIn(
                 uid = firebaseUser.uid,
                 phone = firebaseUser.phoneNumber.orEmpty(),
                 email = firebaseUser.email.orEmpty(),
@@ -301,7 +303,7 @@ class AuthRepositoryImpl @Inject constructor(
             if (previousUid != null && previousUid != firebaseUser.uid) {
                 clearActiveSessionForSwitch(previousUid)
             }
-            val needsSetup = ensureUserSkeletonExists(
+            val needsSetup = ensureUserSkeletonForSignIn(
                 uid = firebaseUser.uid,
                 phone = firebaseUser.phoneNumber.orEmpty(),
                 email = firebaseUser.email ?: cleanEmail,
@@ -1057,6 +1059,75 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Failover design §3.2: the sign-in variant of [ensureUserSkeletonExists].
+     *
+     * Firebase Auth has ALREADY succeeded when this runs — an
+     * infrastructure failure of the post-Auth Firestore doc fetch/create
+     * (RESOURCE_EXHAUSTED / UNAVAILABLE) is not an authentication
+     * failure, and must never again be rendered as one (the 2026-11-27
+     * lockout: the quota copy sitting on the sign-in screen). On such a
+     * failure the failure is reported to [BackendHealthStore] and, when
+     * an own-profile snapshot exists for this uid on this device,
+     * sign-in returns success from the snapshot: entry (Home /
+     * ProfileSetup / VerifyPhone) is decided from the same snapshot by
+     * MainViewModel, with the live Supabase registry as the gate
+     * authority. The snapshot's ban/deleted fields are still enforced —
+     * a last-known banned or deleted account is refused and signed out
+     * here, exactly as the live path refuses it.
+     *
+     * With NO snapshot (cold login on a new device during an outage,
+     * design §3.4) the original failure is rethrown — the honest quota /
+     * connection copy — because no local data can answer who this
+     * account is. Registration (sign-up) does NOT use this helper: it
+     * stays Firestore-bound by design.
+     */
+    private suspend fun ensureUserSkeletonForSignIn(
+        uid: String,
+        phone: String,
+        email: String,
+        suggestedName: String,
+        suggestedPhoto: String,
+        phoneVerified: Boolean,
+        provider: String = "email"
+    ): Boolean {
+        return try {
+            ensureUserSkeletonExists(
+                uid = uid,
+                phone = phone,
+                email = email,
+                suggestedName = suggestedName,
+                suggestedPhoto = suggestedPhoto,
+                phoneVerified = phoneVerified,
+                provider = provider
+            )
+        } catch (e: Exception) {
+            BackendHealthStore.reportFirestoreError(e)
+            val codeName = (e as? FirebaseFirestoreException)?.code?.name
+            if (!BackendHealthStore.isFirestoreInfraCode(codeName)) throw e
+            val snapshot = runCatching { prefs.ownProfileSnapshot(uid) }.getOrNull()
+                ?: throw e
+            when (OwnProfileSnapshot.entryDecision(
+                snapshot,
+                registryVerified = false,
+                nowMs = System.currentTimeMillis()
+            )) {
+                OwnProfileSnapshot.EntryDecision.REFUSE_DELETED -> {
+                    auth.signOut()
+                    throw IllegalStateException("تم حذف هذا الحساب نهائياً")
+                }
+                OwnProfileSnapshot.EntryDecision.REFUSE_BANNED -> {
+                    auth.signOut()
+                    throw IllegalStateException("تم حظر هذا الحساب من استخدام WESAL")
+                }
+                else -> {
+                    prefs.setCachedStartupProfileState(uid, snapshot.profileCompleted)
+                    !snapshot.profileCompleted
+                }
+            }
+        }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private suspend fun ensureUserSkeletonExists(
         uid: String,
@@ -1646,6 +1717,29 @@ class AuthRepositoryImpl @Inject constructor(
                     lastUsedAt = System.currentTimeMillis()
                 )
             )
+            // Failover design §3.2: profile completion also refreshes the
+            // own-profile snapshot, from the post-write read-back ONLY
+            // (self doc, unredacted — the real phoneHash) with the
+            // just-saved fields overlaid. The pre-write snapshot is
+            // deliberately NOT a source: its verified flag/hash belong to
+            // the pre-completion number and must never be combined with
+            // the new one. When the read-back produced no doc, the write
+            // is skipped — the own-doc observer refreshes the snapshot
+            // on its next successful emission instead.
+            val snapshotSource = snap?.toWesalUser(includePrivateUnredacted = true)
+                ?.copy(
+                    profileCompleted = true,
+                    displayName = cleanName,
+                    phoneNumber = normalizedPhone,
+                    birthDate = validDob
+                )
+            if (snapshotSource != null) {
+                runCatching {
+                    prefs.saveOwnProfileSnapshot(
+                        OwnProfileSnapshot.fromUser(snapshotSource, System.currentTimeMillis())
+                    )
+                }
+            }
             Result.success(savedUser)
         } catch (e: Exception) {
             Result.failure(e)

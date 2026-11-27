@@ -564,7 +564,27 @@ class ChatDetailViewModel @Inject constructor(
                     // rejection marks FAILED. The toast is ALWAYS the
                     // mapped Arabic copy (SendFailureCopy) — raw
                     // exception text never reaches the user.
-                    if (!com.wesal.messenger.core.util.SendFailureCopy.isQueued(err)) {
+                    if (com.wesal.messenger.core.util.SendFailureCopy.isQueued(err)) {
+                        // Failover design §5.2 rule 5: this attempt's
+                        // outcome is now unknown (the SDK queue owns the
+                        // write) — stamp the store it targeted on the
+                        // outbox entry so replay checks existence there
+                        // before ever re-sending. Stage 1 sends target
+                        // Firestore, the only store with a client.
+                        prefs.enqueueOutboxMessage(
+                            com.wesal.messenger.domain.model.PendingOutboxMessage(
+                                messageId = messageId,
+                                chatId = chatId,
+                                text = trimmed,
+                                replyToMessageId = reply?.messageId,
+                                replyToPreview = reply?.text?.take(80),
+                                timestamp = echo.timestamp,
+                                attemptedStore = com.wesal.messenger.core.util.MessagePlaneRouter.wireName(
+                                    com.wesal.messenger.core.util.MessagePlaneRouter.Store.FIRESTORE
+                                )
+                            )
+                        )
+                    } else {
                         _failedMessages.update { list ->
                             list.map {
                                 if (it.messageId == messageId) {
@@ -593,18 +613,46 @@ class ChatDetailViewModel @Inject constructor(
             list.map { if (it.messageId == failed.messageId) sending else it }
         }
         viewModelScope.launch {
-            prefs.enqueueOutboxMessage(
-                com.wesal.messenger.domain.model.PendingOutboxMessage(
-                    messageId = effectiveId,
-                    chatId = chatId,
-                    text = failed.text,
-                    replyToMessageId = failed.replyToMessageId,
-                    replyToPreview = failed.replyToPreview,
-                    forwardedFromName = failed.forwardedFromName,
-                    timestamp = failed.timestamp,
-                    attempts = 1
-                )
+            // Failover design §5.2 rule 5: replay re-runs the router and
+            // checks existence on the target store BEFORE re-sending. A
+            // message that already landed (server-committed, or durably
+            // queued in the SDK's mutation queue) is dropped from the
+            // outbox and the list instead of being re-sent — its
+            // original atomic batch already carried the chat summary,
+            // so a blind re-send would double-increment the peer's
+            // unread count for one message. Stage 1 acts on the
+            // FIRESTORE arm only; any other router result re-sends as
+            // today. This also covers restoreOutboxForThisChat, which
+            // replays persisted entries through this same function.
+            val persistedEntry = runCatching { prefs.pendingOutboxMessages() }
+                .getOrDefault(emptyList())
+                .firstOrNull { it.messageId == effectiveId }
+            val replayTarget = com.wesal.messenger.core.util.MessagePlaneRouter.replayTarget(
+                com.wesal.messenger.core.util.MessagePlaneRouter.storeFromWire(
+                    persistedEntry?.attemptedStore
+                ),
+                com.wesal.messenger.core.util.MessagePlaneRouter.PlaneConfig(),
+                com.wesal.messenger.core.util.BackendHealthStore.currentState()
             )
+            if (replayTarget == com.wesal.messenger.core.util.MessagePlaneRouter.Store.FIRESTORE &&
+                runCatching { chatRepository.isOutboxMessageLanded(chatId, effectiveId) }
+                    .getOrDefault(false)
+            ) {
+                prefs.removeOutboxMessage(effectiveId)
+                _failedMessages.update { list -> list.filterNot { it.messageId == effectiveId } }
+                return@launch
+            }
+            val outboxEntry = com.wesal.messenger.domain.model.PendingOutboxMessage(
+                messageId = effectiveId,
+                chatId = chatId,
+                text = failed.text,
+                replyToMessageId = failed.replyToMessageId,
+                replyToPreview = failed.replyToPreview,
+                forwardedFromName = failed.forwardedFromName,
+                timestamp = failed.timestamp,
+                attempts = 1
+            )
+            prefs.enqueueOutboxMessage(outboxEntry)
             val replyStub = if (!failed.replyToMessageId.isNullOrBlank()) {
                 WesalMessage(
                     messageId = failed.replyToMessageId,
@@ -623,7 +671,19 @@ class ChatDetailViewModel @Inject constructor(
                     // Round 12 (addendum 12): same queued/permanent
                     // split as the first send — a queued retry returns
                     // the bubble to SENDING, never to a raw-error toast.
-                    if (!com.wesal.messenger.core.util.SendFailureCopy.isQueued(err)) {
+                    if (com.wesal.messenger.core.util.SendFailureCopy.isQueued(err)) {
+                        // Failover design §5.2 rule 5: stamp the store
+                        // this attempt targeted (Firestore — stage 1's
+                        // only send store) so the next replay checks
+                        // existence there first.
+                        prefs.enqueueOutboxMessage(
+                            outboxEntry.copy(
+                                attemptedStore = com.wesal.messenger.core.util.MessagePlaneRouter.wireName(
+                                    com.wesal.messenger.core.util.MessagePlaneRouter.Store.FIRESTORE
+                                )
+                            )
+                        )
+                    } else {
                         _failedMessages.update { list ->
                             list.map {
                                 if (it.messageId == effectiveId) {

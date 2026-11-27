@@ -26,6 +26,7 @@ import com.wesal.messenger.core.util.PhoneDiscoveryLogic
 import com.wesal.messenger.core.util.PresenceWriteGate
 import com.wesal.messenger.core.util.UserSearchLogic
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.OwnProfileSnapshot
 import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.SubscriptionGrantLogic
@@ -446,6 +447,7 @@ class UserRepositoryImpl @Inject constructor(
         var privateCoverUrl = ""
         var numericBackfillStarted = false
         var nameSearchKeyBackfillStarted = false
+        var lastSavedSnapshot: CachedOwnProfile? = null
 
         fun emitMerged() {
             val pub = latestPublic ?: return
@@ -454,15 +456,24 @@ class UserRepositoryImpl @Inject constructor(
             val mergedBirth = pub.birthDate.ifBlank { privateBirthDate }
             val mergedPhoto = pub.photoUrl.ifBlank { privatePhotoUrl }
             val mergedCover = pub.coverUrl.ifBlank { privateCoverUrl }
-            trySend(
-                pub.copy(
-                    phoneNumber = mergedPhone,
-                    isPhoneVerified = mergedVerified,
-                    birthDate = mergedBirth,
-                    photoUrl = mergedPhoto,
-                    coverUrl = mergedCover
-                )
+            val merged = pub.copy(
+                phoneNumber = mergedPhone,
+                isPhoneVerified = mergedVerified,
+                birthDate = mergedBirth,
+                photoUrl = mergedPhoto,
+                coverUrl = mergedCover
             )
+            trySend(merged)
+            // Failover design §3.2: every successful own-doc emission
+            // refreshes the on-device profile snapshot. Deduped on the
+            // decision fields (savedAtMs excluded) so presence-driven
+            // re-emissions of the same doc do not churn DataStore; the
+            // write itself is fire-and-forget and can never fail the flow.
+            val snapshot = OwnProfileSnapshot.fromUser(merged, System.currentTimeMillis())
+            if (snapshot.copy(savedAtMs = 0L) != lastSavedSnapshot?.copy(savedAtMs = 0L)) {
+                lastSavedSnapshot = snapshot
+                launch { runCatching { prefs.saveOwnProfileSnapshot(snapshot) } }
+            }
         }
 
         val pubReg = firestore.collection(Constants.COLLECTION_USERS)
@@ -573,6 +584,20 @@ class UserRepositoryImpl @Inject constructor(
         return runCatching { query.get().await() }.getOrNull()
     }
 
+    /**
+     * Failover design §3.2: every successful own-doc read/write refreshes
+     * the on-device profile snapshot, so a quota-dead Firestore can never
+     * lock a returning user out of entry. Best-effort and silent — the
+     * snapshot is a cache, never a gate on the read that produced it.
+     */
+    private suspend fun persistOwnProfileSnapshot(user: WesalUser) {
+        runCatching {
+            prefs.saveOwnProfileSnapshot(
+                OwnProfileSnapshot.fromUser(user, System.currentTimeMillis())
+            )
+        }
+    }
+
     override suspend fun getUserOnce(uid: String): WesalUser? {
         val isSelf = uid == auth.currentUser?.uid
         val snap = getDocCachedOrServer(uid)
@@ -586,15 +611,20 @@ class UserRepositoryImpl @Inject constructor(
                 .document("info")
                 .get()
                 .await()
-        }.getOrNull() ?: return user
-        if (!privSnap.exists()) return user
-        return user.copy(
-            phoneNumber = user.phoneNumber.ifBlank { privSnap.getString("phoneNumber").orEmpty() },
-            isPhoneVerified = user.isPhoneVerified || (privSnap.getBoolean("isPhoneVerified") ?: false),
-            birthDate = user.birthDate.ifBlank { privSnap.getString("birthDate").orEmpty() },
-            photoUrl = user.photoUrl.ifBlank { privSnap.getString("hiddenPhotoUrl").orEmpty() },
-            coverUrl = user.coverUrl.ifBlank { privSnap.getString("hiddenCoverUrl").orEmpty() }
-        )
+        }.getOrNull()
+        val merged = if (privSnap == null || !privSnap.exists()) {
+            user
+        } else {
+            user.copy(
+                phoneNumber = user.phoneNumber.ifBlank { privSnap.getString("phoneNumber").orEmpty() },
+                isPhoneVerified = user.isPhoneVerified || (privSnap.getBoolean("isPhoneVerified") ?: false),
+                birthDate = user.birthDate.ifBlank { privSnap.getString("birthDate").orEmpty() },
+                photoUrl = user.photoUrl.ifBlank { privSnap.getString("hiddenPhotoUrl").orEmpty() },
+                coverUrl = user.coverUrl.ifBlank { privSnap.getString("hiddenCoverUrl").orEmpty() }
+            )
+        }
+        persistOwnProfileSnapshot(merged)
+        return merged
     }
 
     override suspend fun ensureNumericIdAssigned(): String {

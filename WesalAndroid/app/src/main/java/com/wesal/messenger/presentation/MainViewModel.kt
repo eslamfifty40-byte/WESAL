@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.OwnProfileSnapshot
 import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -239,8 +240,58 @@ class MainViewModel @Inject constructor(
                             else -> StartDestination.Home
                         }
                     } else if (userResult.isSuccess) {
-                        prefs.setCachedStartupProfileState(uid, false)
-                        _startDestination.value = StartDestination.ProfileSetup
+                        // Failover design §3.2/§3.3: a null read is NOT
+                        // proof of "no profile" — under a quota-dead
+                        // Firestore the read fails soft to null, and
+                        // routing a returning user to ProfileSetup from
+                        // it would re-create the lockout inside the app.
+                        // Decide from the on-device snapshot instead;
+                        // its ban/deleted fields are enforced, and the
+                        // gate verdict is snapshot mirror OR live
+                        // registry (the registry recheck below also
+                        // covers the §3.4 cold case: no snapshot, but a
+                        // registry row proves this account verified
+                        // before → treat the profile as complete for
+                        // routing and refine when Firestore returns).
+                        val snapshot = runCatching { prefs.ownProfileSnapshot(uid) }.getOrNull()
+                        when (OwnProfileSnapshot.entryDecision(
+                            snapshot,
+                            registryVerified = false,
+                            nowMs = System.currentTimeMillis()
+                        )) {
+                            OwnProfileSnapshot.EntryDecision.REFUSE_DELETED,
+                            OwnProfileSnapshot.EntryDecision.REFUSE_BANNED -> {
+                                authRepository.signOut()
+                                _startDestination.value = StartDestination.PhoneLogin
+                            }
+                            OwnProfileSnapshot.EntryDecision.ENTER_PROFILE_SETUP -> {
+                                prefs.setCachedStartupProfileState(uid, false)
+                                _startDestination.value = StartDestination.ProfileSetup
+                            }
+                            OwnProfileSnapshot.EntryDecision.ENTER -> {
+                                prefs.setCachedStartupProfileState(uid, true)
+                                _startDestination.value = StartDestination.Home
+                            }
+                            OwnProfileSnapshot.EntryDecision.ENTER_VERIFY_PHONE -> {
+                                // §3.3 entry recheck: the snapshot mirror
+                                // is incomplete, but the live registry may
+                                // still prove verification (verified on
+                                // another device).
+                                if (isGateVerified(uid, docVerified = false)) {
+                                    _startDestination.value = StartDestination.Home
+                                } else {
+                                    _startDestination.value = StartDestination.VerifyPhone
+                                }
+                            }
+                            OwnProfileSnapshot.EntryDecision.NO_SNAPSHOT -> {
+                                if (isGateVerified(uid, docVerified = false)) {
+                                    _startDestination.value = StartDestination.Home
+                                } else {
+                                    prefs.setCachedStartupProfileState(uid, false)
+                                    _startDestination.value = StartDestination.ProfileSetup
+                                }
+                            }
+                        }
                     }
                 }
             } else {
