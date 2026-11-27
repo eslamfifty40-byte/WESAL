@@ -9,21 +9,24 @@
       background — which is exactly the "small icon on a dark screen" the owner reported.
 
       Here we set the real platform attributes:
-      - background = the app's own window background (@color/wesal_black, same as
-        Theme.Wesal's android:windowBackground), so the starting window is visually
-        identical to the first app frame;
-      - animated icon AND its background = fully transparent, so no icon is drawn at all.
+      - background = a brand teal tone (@color/wesal_splash_bg, sampled from the
+        branded window gradient in Theme.Wesal), so the starting window reads as the
+        app's own dark teal/navy surface instead of flat black #06090B — the owner
+        reported that flat black as a ~3 s "black screen" on open;
+      - animated icon AND its background = fully transparent, so no icon is drawn at all
+        (the owner explicitly rejected icon splash screens).
 
       Android always shows a system starting window; with a transparent icon and a
-      background that matches the app, that window becomes an invisible plain transition
+      brand-coloured background, that window becomes a plain branded transition
       straight into the home UI. MainActivity does not hold the splash
       (setKeepOnScreenCondition { false }), so nothing keeps it on screen.
     -->
     <style name="Theme.Wesal.Splash" parent="Theme.SplashScreen">
-        <item name="android:windowSplashScreenBackground">@color/wesal_black</item>
+        <item name="android:windowSplashScreenBackground">@color/wesal_splash_bg</item>
         <item name="android:windowSplashScreenAnimatedIcon">@android:color/transparent</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
         <item name="android:windowSplashScreenAnimationDuration">0</item>
+        <item name="android:windowBackground">@drawable/wesal_window_background</item>
         <item name="postSplashScreenTheme">@style/Theme.Wesal</item>
     </style>
 </resources>

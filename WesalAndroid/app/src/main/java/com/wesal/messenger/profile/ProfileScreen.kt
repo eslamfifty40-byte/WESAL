@@ -201,7 +201,14 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    fun saveImages(photoUri: Uri?, coverUri: Uri?, isEn: Boolean) {
+    // bgRemoved: the crop flow's own verdict (CropActivity EXTRA_BG_REMOVED), threaded
+    // through from the crop launcher instead of being dropped there. The repository
+    // writer re-derives photoRemovedBg from its alpha probe of the saved file; since
+    // CropActivity writes a transparent PNG exactly when this verdict is true (and its
+    // output is now alpha-trimmed, so the probe's samples always see the transparency),
+    // the two agree — the verdict is carried into the save call so the authoritative
+    // signal is owned end to end by the flow that produced it.
+    fun saveImages(photoUri: Uri?, coverUri: Uri?, isEn: Boolean, bgRemoved: Boolean = false) {
         if (!networkMonitor.isCurrentlyConnected()) {
             _uiStatus.value = ProfileUiStatus(
                 message = if (isEn) "No internet to upload photo" else "لا يوجد اتصال بالإنترنت لرفع الصورة",
@@ -436,6 +443,8 @@ fun ProfileScreen(
     var activeCropKind by remember { mutableStateOf(PendingCropKind.AVATAR) }
     var pendingRawUri by remember { mutableStateOf<Uri?>(null) }
     var pendingPreviewUri by remember { mutableStateOf<Uri?>(null) }
+    // The crop flow's background-removed verdict for the pending preview (EXTRA_BG_REMOVED).
+    var pendingCropBgRemoved by remember { mutableStateOf(false) }
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var showSourceSheetFor by remember { mutableStateOf<PendingCropKind?>(null) }
     var showDeleteAvatarConfirm by remember { mutableStateOf(false) }
@@ -460,6 +469,10 @@ fun ProfileScreen(
     val cropLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
             AvatarCropHelper.getCropOutput(result.data)?.let { croppedUri ->
+                // Pass the crop's own bg-removed verdict through to the save call
+                // (previously EXTRA_BG_REMOVED was dropped here and the flag had to be
+                // re-derived downstream from a file probe).
+                pendingCropBgRemoved = AvatarCropHelper.isBackgroundRemoved(result.data)
                 pendingPreviewUri = croppedUri
             }
         }
@@ -1353,14 +1366,24 @@ fun ProfileScreen(
                 } else {
                     selectedAvatarUri = previewUri
                     pendingPreviewUri = null
-                    viewModel.saveImages(photoUri = previewUri, coverUri = null, isEn = strings.isEnglish)
+                    viewModel.saveImages(
+                        photoUri = previewUri,
+                        coverUri = null,
+                        isEn = strings.isEnglish,
+                        bgRemoved = pendingCropBgRemoved
+                    )
+                    pendingCropBgRemoved = false
                 }
             },
             onRecrop = {
                 pendingPreviewUri = null
+                pendingCropBgRemoved = false
                 pendingRawUri?.let { raw -> launchCropFor(activeCropKind, raw) }
             },
-            onCancel = { pendingPreviewUri = null }
+            onCancel = {
+                pendingPreviewUri = null
+                pendingCropBgRemoved = false
+            }
         )
     }
 

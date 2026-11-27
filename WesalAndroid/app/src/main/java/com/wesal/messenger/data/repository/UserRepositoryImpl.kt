@@ -210,6 +210,10 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         fcmToken = getString("fcmToken").orEmpty(),
         publicKey = getString("publicKey").orEmpty(),
         blockedUsers = (get("blockedUsers") as? List<String>) ?: emptyList(),
+        referredByUid = getString("referredByUid").orEmpty(),
+        referredByNumericId = getLong("referredByNumericId")
+            ?: getString("referredByNumericId")?.toLongOrNull()
+            ?: 0L,
         privacySettings = PrivacySettings(
             lastSeenVisibility = PrivacyVisibility.fromKey(privacyMap["lastSeenVisibility"] as? String),
             onlineVisibility = PrivacyVisibility.fromKey(privacyMap["onlineVisibility"] as? String),
@@ -3362,6 +3366,38 @@ class UserRepositoryImpl @Inject constructor(
                                 trySend(enriched)
                             }
                         }
+                    }
+                awaitClose { reg.remove() }
+            }
+        }
+    }
+
+    /**
+     * Accounts that registered through MY invite link (round 3). Attribution is stamped
+     * once at account creation as referredByUid == my uid (see AuthRepositoryImpl), so a
+     * single-field equality query lists them — no phone-book or phoneHash involvement,
+     * which is exactly why Gmail-only invitees show up here when they can't appear in the
+     * device-contacts sections. Deleted accounts are filtered out; newest first.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeMyReferrals(): Flow<List<WesalUser>> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) {
+            flowOf(emptyList())
+        } else {
+            callbackFlow {
+                val reg = firestore.collection(Constants.COLLECTION_USERS)
+                    .whereEqualTo("referredByUid", uid)
+                    .addSnapshotListener { snap, error ->
+                        if (error != null) {
+                            trySend(emptyList())
+                            return@addSnapshotListener
+                        }
+                        val list = snap?.documents
+                            ?.map { it.toWesalUser() }
+                            .orEmpty()
+                            .filter { it.deletedAt == 0L && !it.deletedPermanent }
+                            .sortedByDescending { it.createdAt }
+                        trySend(list)
                     }
                 awaitClose { reg.remove() }
             }

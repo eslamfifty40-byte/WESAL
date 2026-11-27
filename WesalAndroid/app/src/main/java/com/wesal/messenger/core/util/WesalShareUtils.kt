@@ -55,6 +55,14 @@ object WesalShareUtils {
                 append("\n$cleanSenderName")
             }
             append("\n$directApkUrl")
+            if (cleanId.isNotBlank()) {
+                // Attribution link (round 3): the bare tinyurl above is identical for every
+                // user, so it can never credit the inviter. The parameterized /join?id= link
+                // carries the sender's publicId — opened with WESAL installed it is stored as
+                // the pending invite and stamped onto the new account at registration, which
+                // is what powers the inviter's «سجّلوا من خلالي» list.
+                append("\n${buildSingleInviteLink(cleanId)}")
+            }
         }
     }
 

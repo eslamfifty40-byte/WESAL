@@ -613,13 +613,24 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .clickable(onClick = onOpenProfile)
             ) {
-                Box(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     val coverUrl = user?.coverUrl.orEmpty()
+                    // Cover strip (round-3 layout): the cover photo gets its own 120dp
+                    // band at the TOP of the card and the avatar band moves BELOW it —
+                    // previously the framed avatar was drawn over the centre of the
+                    // cover (owner's screenshot: the crest sat on his face and the
+                    // cover was unreadable). QR/edit buttons live inside this strip.
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(120.dp)
+                            .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                    ) {
                     if (coverUrl.isNotBlank()) {
                         AsyncImage(
                             model = wesalImageModel(coverUrl),
                             contentDescription = null,
-                            modifier = Modifier.matchParentSize(),
+                            modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
                         )
                         Box(
@@ -640,25 +651,33 @@ fun SettingsScreen(
                                 )
                         )
                     }
-                    Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
-                        IconButton(
-                            onClick = onOpenAccountShare,
-                            modifier = Modifier.align(Alignment.TopStart).size(34.dp)
-                        ) {
-                            Icon(Icons.Default.QrCode2, contentDescription = strings.shareAccountQr, tint = palette.iconTint)
+                        Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
+                            IconButton(
+                                onClick = onOpenAccountShare,
+                                modifier = Modifier.align(Alignment.TopStart).size(34.dp)
+                            ) {
+                                Icon(Icons.Default.QrCode2, contentDescription = strings.shareAccountQr, tint = palette.iconTint)
+                            }
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = strings.edit,
+                                tint = palette.iconTint,
+                                modifier = Modifier.align(Alignment.TopEnd).size(20.dp)
+                            )
                         }
-                    Icon(
-                        imageVector = Icons.Default.Edit,
-                        contentDescription = strings.edit,
-                        tint = palette.iconTint,
-                        modifier = Modifier.align(Alignment.TopEnd).size(20.dp)
-                    )
+                    }
 
                     val isNeonOn = user?.neonEnabled != false
                     val activeNeonColor = if (isNeonOn) user?.neonColor.orEmpty() else ""
                     val activeGlow = user?.neonGlowIntensity ?: 0.7f
+                    // Avatar band BELOW the cover strip, pulled up 30dp for the slight
+                    // overlap ProfileScreen has — on the plain card surface, so no scrim
+                    // is needed behind the name/ID text any more.
                     Column(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .offset(y = (-30).dp)
+                            .padding(horizontal = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -752,7 +771,6 @@ fun SettingsScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                    }
                     }
                 }
             }

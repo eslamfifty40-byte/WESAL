@@ -23,7 +23,11 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 sealed interface StartDestination {
-    data object Loading : StartDestination
+    // No Loading state on purpose: the start destination is decided synchronously at
+    // MainViewModel construction from LOCAL auth state (FirebaseAuth's disk-restored
+    // user), so a signed-in user goes straight to Home and the UI is never gated on a
+    // loading screen or on the network. The old Loading state was never assigned
+    // anywhere — dead code that only invited a future gated/black startup screen.
     data object PhoneLogin : StartDestination
     data object ProfileSetup : StartDestination
     data object Home : StartDestination

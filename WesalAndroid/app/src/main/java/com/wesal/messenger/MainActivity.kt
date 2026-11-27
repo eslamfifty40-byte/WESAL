@@ -10,20 +10,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,15 +21,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalLayoutDirection
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -127,27 +109,26 @@ class MainActivity : AppCompatActivity() {
                 personalSurfacePreset = settings.personalSurfacePreset
             ) {
                 CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
-                    if (startDest is StartDestination.Loading) {
-                        // Real loading screen (brand + progress) instead of the previous
-                        // EMPTY composition, which showed a plain black window for as
-                        // long as the start destination stayed Loading.
-                        WesalLoadingScreen()
-                    } else {
-                        WesalNavHost(
-                            startDestination = startDest,
-                            authUid = authUid,
-                            isOnline = isOnline,
-                            initialChatId = deepLinkChatId,
-                            initialChannelId = deepLinkChannelId ?: resolvedChannelId,
-                            pendingInviteId = pendingInviteId,
-                            onConsumedDeepLinkChat = { deepLinkChatIdState.value = null },
-                            onConsumedDeepLinkChannel = {
-                                deepLinkChannelIdState.value = null
-                                mainViewModel.consumePendingChannelInvite()
-                            },
-                            onConsumePendingInvite = { mainViewModel.consumePendingInvite() }
-                        )
-                    }
+                    // No loading gate: startDest is resolved from local auth state at
+                    // MainViewModel construction (Home for a signed-in user), so the
+                    // NavHost composes immediately. The pre-first-frame moment is
+                    // covered by the branded gradient window background
+                    // (@drawable/wesal_window_background in Theme.Wesal), not by a
+                    // Compose loading screen.
+                    WesalNavHost(
+                        startDestination = startDest,
+                        authUid = authUid,
+                        isOnline = isOnline,
+                        initialChatId = deepLinkChatId,
+                        initialChannelId = deepLinkChannelId ?: resolvedChannelId,
+                        pendingInviteId = pendingInviteId,
+                        onConsumedDeepLinkChat = { deepLinkChatIdState.value = null },
+                        onConsumedDeepLinkChannel = {
+                            deepLinkChannelIdState.value = null
+                            mainViewModel.consumePendingChannelInvite()
+                        },
+                        onConsumePendingInvite = { mainViewModel.consumePendingInvite() }
+                    )
 
                     // Forced/soft app update (system_config/app_update), rendered ABOVE
                     // the NavHost so it covers every destination. Fail-open: the config
@@ -209,55 +190,6 @@ class MainActivity : AppCompatActivity() {
             deepLinkChannelIdState.value = newChannelId
         }
         mainViewModel.handleIncomingUri(intent.data)
-    }
-}
-
-/**
- * Lightweight branded loading screen shown while the start destination resolves.
- * Pure composition — no I/O, no heavy work — so the first frame is never a black void.
- */
-@Composable
-private fun WesalLoadingScreen() {
-    val palette = WesalColors.current
-    val strings = LocalWesalStrings.current
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(palette.background),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Image(
-                painter = painterResource(id = R.drawable.wesal_brand_logo),
-                contentDescription = "WESAL Messenger",
-                modifier = Modifier
-                    .size(84.dp)
-                    .clip(RoundedCornerShape(20.dp)),
-                contentScale = ContentScale.Fit
-            )
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "WESAL Messenger",
-                style = MaterialTheme.typography.titleLarge,
-                color = palette.textPrimary,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(24.dp))
-            CircularProgressIndicator(
-                modifier = Modifier.size(30.dp),
-                color = palette.emerald,
-                strokeWidth = 3.dp
-            )
-            Spacer(Modifier.height(12.dp))
-            Text(
-                text = if (strings.isEnglish) "Loading…" else "جاري التحميل",
-                style = MaterialTheme.typography.bodyMedium,
-                color = palette.textSecondary
-            )
-        }
     }
 }
 

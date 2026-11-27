@@ -2,6 +2,15 @@
 <resources>
     <color name="ic_launcher_background">#000000</color>
     <color name="wesal_black">#06090B</color>
+    <!-- Branded starting-window gradient (res/drawable/wesal_window_background.xml).
+         Deep dark teal/navy in the WESAL brand family, fading into the Compose dark
+         background (#05090B) so the first real frame lands seamlessly. -->
+    <color name="wesal_gradient_top">#0F2E3B</color>
+    <color name="wesal_gradient_center">#0A181F</color>
+    <color name="wesal_gradient_bottom">#05090B</color>
+    <!-- Solid splash-screen background: a brand teal tone sampled from the gradient
+         (the platform/compat splash attributes accept a colour only). -->
+    <color name="wesal_splash_bg">#0B212B</color>
     <color name="wesal_surface">#11181C</color>
     <color name="wesal_emerald">#00C853</color>
     <color name="wesal_turquoise">#00E5FF</color>

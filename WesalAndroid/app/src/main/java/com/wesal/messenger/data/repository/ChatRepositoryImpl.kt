@@ -366,9 +366,86 @@ class ChatRepositoryImpl @Inject constructor(
             if (forceServer) ref.get(Source.SERVER).await() else ref.get().await()
         }.getOrNull() ?: runCatching { ref.get().await() }.getOrNull() ?: return userCache[uid]?.user
         if (!snap.exists()) return null
-        val user = snap.toWesalUser()
+        // Defence in depth (round-3): the strict parse must never be able to fail
+        // every feature that reads users. One malformed field in an old document
+        // (legacy-typed ban fields are the known case) made toWesalUser() unusable
+        // for that doc, and because the send path reads the sender's own doc first,
+        // a single bad field failed EVERY send for that user. On any parse failure
+        // fall back to a minimal user built from type-tolerant raw reads.
+        val user = runCatching { snap.toWesalUser() }.getOrElse {
+            buildFallbackUser(snap)
+        }
         userCache[uid] = CachedUserEntry(user, now)
         return user
+    }
+
+    /**
+     * Minimal user built from type-tolerant raw reads, used only when the strict
+     * [toWesalUser] parse fails on a malformed field in an old document. Carries the
+     * fields the chat/call paths actually depend on (identity, display name, E2E
+     * public key, ban state, deletion state); everything else keeps model defaults.
+     */
+    private fun buildFallbackUser(snap: DocumentSnapshot): WesalUser {
+        val data = snap.data ?: emptyMap()
+        fun str(key: String): String = (data[key] as? String).orEmpty()
+        return WesalUser(
+            uid = str("uid").ifBlank { snap.id },
+            email = str("email"),
+            phoneNumber = str("phoneNumber"),
+            displayName = str("displayName"),
+            publicId = str("publicId"),
+            numericId = str("numericId"),
+            photoUrl = str("photoUrl"),
+            coverUrl = str("coverUrl"),
+            publicKey = str("publicKey"),
+            isBanned = isBanClearlyActive(data["isBanned"], data["banType"], data["banExpiresAt"]),
+            banType = str("banType"),
+            banReason = str("banReason"),
+            banExpiresAt = coerceEpochMillis(data["banExpiresAt"]) ?: 0L,
+            hiddenFromSearch = (data["hiddenFromSearch"] as? Boolean) ?: false,
+            deletedAt = (data["deletedAt"] as? Number)?.toLong() ?: 0L,
+            deletedPermanent = (data["deletedPermanent"] as? Boolean) ?: false,
+            isOnline = (data["isOnline"] as? Boolean) ?: false,
+            lastSeen = coerceEpochMillis(data["lastSeen"]) ?: 0L
+        )
+    }
+
+    /** Epoch millis from a raw Firestore value of any plausible stored type; null when unreadable. */
+    private fun coerceEpochMillis(raw: Any?): Long? = when (raw) {
+        is Number -> raw.toLong()
+        is com.google.firebase.Timestamp -> raw.toDate().time
+        is java.util.Date -> raw.time
+        is String -> raw.trim().toLongOrNull()
+        else -> null
+    }
+
+    /**
+     * Whether a ban described by raw doc values is CLEARLY active: the flag is set
+     * AND (the type says PERMANENT OR a readable expiry is still in the future).
+     * A missing/malformed expiry never blocks on its own — mirroring the hardened
+     * isCurrentlyBanned() in firestore.rules.
+     */
+    private fun isBanClearlyActive(isBannedRaw: Any?, banTypeRaw: Any?, banExpiresAtRaw: Any?): Boolean {
+        if (isBannedRaw as? Boolean != true) return false
+        if ((banTypeRaw as? String).orEmpty().equals("PERMANENT", ignoreCase = true)) return true
+        val expiry = coerceEpochMillis(banExpiresAtRaw) ?: return false
+        return expiry > System.currentTimeMillis()
+    }
+
+    /**
+     * Type-tolerant self-ban gate for the send paths. Reads the caller's own doc
+     * RAW rather than trusting the parsed model: the strict parse derives isBanned
+     * from a Long-typed expiry, so a legacy Timestamp/String expiry silently
+     * degraded to "permanent" and blocked every send. Any read failure also
+     * resolves to "not banned" here — this pre-check only exists to show a friendly
+     * message; the write itself (and firestore.rules) remains the enforcement point.
+     */
+    private suspend fun isSelfClearlyBanned(myUid: String): Boolean {
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS).document(myUid).get().await()
+        }.getOrNull() ?: return false
+        if (!snap.exists()) return false
+        return isBanClearlyActive(snap.get("isBanned"), snap.get("banType"), snap.get("banExpiresAt"))
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -596,7 +673,7 @@ class ChatRepositoryImpl @Inject constructor(
         require(peerUid.isNotBlank() && peerUid != myUid) { "Invalid peer user" }
         val me = fetchUserCached(myUid, forceServer = true)
         val peer = fetchUserCached(peerUid, forceServer = true)
-        require(me?.isBanned != true) { "الحساب محظور ولا يمكنه بدء محادثات جديدة" }
+        require(!isSelfClearlyBanned(myUid)) { "الحساب محظور ولا يمكنه بدء محادثات جديدة" }
         require(peer != null && peer.deletedAt == 0L && !peer.isBanned) { "هذا الحساب غير متاح حالياً" }
         require(!me?.blockedUsers.orEmpty().contains(peerUid) && !peer.blockedUsers.contains(myUid)) {
             "تعذر فتح المحادثة بسبب وجود حظر بين الطرفين"
@@ -888,7 +965,7 @@ class ChatRepositoryImpl @Inject constructor(
     ): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         val me = fetchUserCached(myUid)
-        require(me?.isBanned != true) { "حسابك محظور ولا يمكنك إرسال رسائل حالياً" }
+        require(!isSelfClearlyBanned(myUid)) { "حسابك محظور ولا يمكنك إرسال رسائل حالياً" }
 
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
         val chatSnap = chatRef.get().await()
@@ -956,10 +1033,16 @@ class ChatRepositoryImpl @Inject constructor(
         val batch = firestore.batch()
         batch.set(messageRef, messageData)
         batch.update(chatRef, chatUpdates)
+        var sdkError: Throwable? = null
         val sdkCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
             // A commit that THROWS (permission/network) must also reach the REST fallback
             // below — withTimeoutOrNull alone only converts timeouts, not exceptions.
-            runCatching { batch.commit().await() }.isSuccess
+            // The original error is KEPT (round-3): the fallback used to swallow it and
+            // report only a generic "could not verify" message, masking the real cause
+            // (e.g. a rules PERMISSION_DENIED) behind a misleading one.
+            runCatching { batch.commit().await() }
+                .onFailure { sdkError = it }
+                .isSuccess
         } ?: false
 
         if (!sdkCommitted) {
@@ -973,7 +1056,8 @@ class ChatRepositoryImpl @Inject constructor(
                 "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
             val alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
             check(alreadyLanded != null) {
-                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة من صندوق الصادر"
+                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة من صندوق الصادر" +
+                    (sdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
             }
             if (alreadyLanded == false) {
                 val chatScalarFields = hashMapOf<String, Any?>(
@@ -983,6 +1067,7 @@ class ChatRepositoryImpl @Inject constructor(
                     "lastMessageStatus" to MessageStatus.SENT.raw,
                     "deletedForUsers" to emptyList<String>()
                 )
+                var restError: Throwable? = null
                 val httpCode = runCatching {
                     FirestoreRest.commitTextMessage(
                         auth = auth,
@@ -992,9 +1077,11 @@ class ChatRepositoryImpl @Inject constructor(
                         chatScalarFields = chatScalarFields,
                         unreadIncrementUids = participants.filter { it != myUid }
                     )
-                }.getOrDefault(-1)
+                }.onFailure { restError = it }.getOrDefault(-1)
                 check(httpCode in 200..299) {
-                    "تعذر إرسال الرسالة (SDK timeout, REST fallback code=$httpCode)"
+                    "تعذر إرسال الرسالة (SDK timeout, REST fallback code=$httpCode)" +
+                        (restError?.let { " — REST: ${it.message ?: it.toString()}" } ?: "") +
+                        (sdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
                 }
             }
         }
@@ -1022,7 +1109,7 @@ class ChatRepositoryImpl @Inject constructor(
         launch {
             try {
                 val me = fetchUserCached(myUid)
-                require(me?.isBanned != true) { "حسابك محظور ولا يمكنك إرسال الوسائط" }
+                require(!isSelfClearlyBanned(myUid)) { "حسابك محظور ولا يمكنك إرسال الوسائط" }
                 val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
                 val chatSnap = chatRef.get().await()
                 val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
@@ -1284,17 +1371,23 @@ class ChatRepositoryImpl @Inject constructor(
         val locationBatch = firestore.batch()
         locationBatch.set(chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId), msg)
         locationBatch.update(chatRef, chatUpdates)
+        var locationSdkError: Throwable? = null
         val locationCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
-            runCatching { locationBatch.commit().await() }.isSuccess
+            // Same original-error preservation as sendTextMessage (round-3).
+            runCatching { locationBatch.commit().await() }
+                .onFailure { locationSdkError = it }
+                .isSuccess
         } ?: false
         if (!locationCommitted) {
             val messageDocPath =
                 "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
             val alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
             check(alreadyLanded != null) {
-                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة لاحقًا"
+                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة لاحقًا" +
+                    (locationSdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
             }
             if (alreadyLanded == false) {
+                var locationRestError: Throwable? = null
                 val httpCode = runCatching {
                     FirestoreRest.commitTextMessage(
                         auth = auth,
@@ -1310,9 +1403,11 @@ class ChatRepositoryImpl @Inject constructor(
                         ),
                         unreadIncrementUids = participants.filter { it != myUid }
                     )
-                }.getOrDefault(-1)
+                }.onFailure { locationRestError = it }.getOrDefault(-1)
                 check(httpCode in 200..299) {
-                    "تعذر إرسال الموقع (SDK timeout, REST fallback code=$httpCode)"
+                    "تعذر إرسال الموقع (SDK timeout, REST fallback code=$httpCode)" +
+                        (locationRestError?.let { " — REST: ${it.message ?: it.toString()}" } ?: "") +
+                        (locationSdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
                 }
             }
         }

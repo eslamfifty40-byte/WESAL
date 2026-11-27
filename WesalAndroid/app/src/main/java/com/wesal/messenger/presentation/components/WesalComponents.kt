@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -56,20 +57,28 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.drawable.Drawable
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.filled.ContentCopy
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import kotlin.math.roundToInt
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
+import com.wesal.messenger.core.util.FrameGlowDisc
+import com.wesal.messenger.core.util.FramedCutoutLayout
+import com.wesal.messenger.core.util.FramedCutoutTransform
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.isCutoutBounds
 import com.wesal.messenger.domain.model.MessageStatus
 
 @Composable
@@ -126,6 +135,14 @@ fun WesalAvatar(
     var detectedCutout by remember(imageUrl, isCutout, cachedCutout) {
         mutableStateOf(isCutout || cachedCutout == true)
     }
+    // Round-3: measured alpha bounds for this photo (published by AlphaBoundsTransformation
+    // into the bounds cache, or analysed in onSuccess as a fallback). A VERIFIED cutout
+    // verdict here — not the stored flag — is what unlocks the bounds-driven fit and the
+    // over-frame head strip, so a false positive can never paint a rectangle over a crest.
+    val cachedBounds = remember(imageCacheKey) { getCachedAlphaBounds(imageCacheKey) }
+    var detectedBounds by remember(imageUrl, cachedBounds) { mutableStateOf(cachedBounds) }
+    // Pixel size of the decoded photo bitmap; the cutout layout math needs its aspect.
+    var photoBitmapSize by remember(imageUrl) { mutableStateOf<IntSize?>(null) }
     val activeFrame = remember(frameId, frameExpiresAt, WesalFrameLibrary.docs) {
         WesalFrameLibrary.resolve(frameId, frameExpiresAt)
     }
@@ -146,9 +163,14 @@ fun WesalAvatar(
     val frameGlowIntensity = (activeFrame?.glowIntensity ?: 1.0f).coerceIn(0f, 1f)
     val frameGlowSpeed = (activeFrame?.glowSpeed ?: 1.0f).coerceIn(0.5f, 2f)
 
+    // Perf: small list avatars (chat/contacts rows) render STATICALLY — no infinite
+    // transitions are created for them at all, so a scrolling list never pays for frame
+    // pulse/rotation or icon pulse animations it cannot meaningfully show. Larger
+    // avatars (profile, settings, detail screens) keep the full motion.
+    val allowMotion = size >= 72.dp
     // Master switch (system_config/global_appearance.framesAnimationEnabled): when off,
     // every frame renders statically even if its own `animated` flag is on.
-    val isAnimatedFrame = activeFrame?.animated == true && WesalFrameLibrary.framesAnimationEnabled
+    val isAnimatedFrame = activeFrame?.animated == true && WesalFrameLibrary.framesAnimationEnabled && allowMotion
     val infiniteTransition = if (isAnimatedFrame) rememberInfiniteTransition(label = "wesal_frame_anim") else null
     val isRotateFanStyle = activeFrame?.animationStyle == "ROTATE_AURA" || activeFrame?.animationStyle == "ROTATE_FAN"
     val animPulse by (infiniteTransition?.animateFloat(
@@ -204,16 +226,58 @@ fun WesalAvatar(
     // composite — an opaque photo filling the circle — so cutout styling applies ONLY to
     // unframed avatars.
     val effectiveCutout = detectedCutout && activeFrame == null
+    // Verified alpha bounds for this photo (round-3): the ONLY evidence allowed to drive
+    // the bounds fit and the over-frame head strip.
+    val verifiedBounds = detectedBounds?.takeIf { isCutoutBounds(it) }
     // Owner's pop-out geometry (definitive spec): a framed CUTOUT photo is rendered in a
     // virtual box taller than the aperture by a strip of 10% of the container height, so
     // the head can rise above the aperture's top edge over the frame's upper ring.
-    val framedCutout = detectedCutout && activeFrame != null
+    // The aperture window opens for a verified cutout OR the legacy flag; the head strip
+    // (below) opens for verified bounds ONLY.
+    val framedCutout = activeFrame != null && (verifiedBounds != null || detectedCutout)
     // Corner-alpha probe for uncached, unflagged framed photos (drives cutout detection).
     val needSoftwareCheck = activeFrame != null && cachedCutout == null && !isCutout
     val popOutStrip = containerSize * 0.10f
     val popOutStripPx = with(density) { popOutStrip.roundToPx() }.coerceAtLeast(1)
     val apertureOffsetYPx = with(density) { apertureOffsetY.roundToPx() }
     val apertureRadiusPx = innerPx / 2f
+    // Bounds-driven placement of the PERSON (not the padded canvas) inside the aperture:
+    // person width == aperture diameter, head at the strip's top, tall cutouts height-capped.
+    // Null until verified bounds AND the decoded bitmap's aspect are both known; the legacy
+    // full-canvas rendering covers the first frame(s) until then (bounds cache makes later
+    // binds synchronous).
+    val cutoutTransform: FramedCutoutTransform? = if (verifiedBounds != null && activeFrame != null) {
+        photoBitmapSize?.let { bmpSize ->
+            FramedCutoutLayout.compute(
+                containerPx = containerPx.toFloat(),
+                apertureCenterYFraction = activeFrame.apertureCenterYFraction,
+                apertureDiameterFraction = effectiveAperture,
+                stripFraction = 0.10f,
+                bounds = verifiedBounds,
+                imageWidthPx = bmpSize.width,
+                imageHeightPx = bmpSize.height
+            )
+        }
+    } else null
+
+    // Shared success handling for every framed photo request: record the decoded bitmap's
+    // size (the layout math needs its aspect) and pick up the alpha bounds — published by
+    // AlphaBoundsTransformation during the load, or analysed here from the delivered
+    // bitmap when the cache has no entry yet (e.g. first load raced the transformation).
+    fun onPhotoLoaded(drawable: Drawable) {
+        if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
+            photoBitmapSize = IntSize(drawable.intrinsicWidth, drawable.intrinsicHeight)
+        }
+        val fromCache = getCachedAlphaBounds(imageCacheKey)
+        if (fromCache != null) {
+            if (detectedBounds != fromCache) detectedBounds = fromCache
+        } else if (activeFrame != null) {
+            val bmp = (drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+            if (bmp != null) {
+                analyzeAndPublishBitmapBounds(bmp, imageCacheKey)?.let { detectedBounds = it }
+            }
+        }
+    }
     val avatarGlowAlpha = (if (isRotateFanStyle) {
         baseGlowAlpha.coerceIn(0.25f, 0.92f)
     } else {
@@ -367,14 +431,18 @@ fun WesalAvatar(
                     model = ImageRequest.Builder(context)
                         .data(imageModel)
                         .size(innerPx, innerPx + popOutStripPx)
-                        .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
+                        // Suffixed key: the pop-out request must not collide with the
+                        // square request of the normal branch (cross-size resampling).
+                        .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey + "#popout") }
                         .crossfade(false)
+                        .transformations(AlphaBoundsTransformation(imageCacheKey))
                         .apply { if (withCallbacks && needSoftwareCheck && isAnimatedFrame) allowHardware(false) }
                         .build(),
                     contentDescription = name,
                     onError = if (withCallbacks) ({ loadFailed = true }) else null,
                     onSuccess = if (withCallbacks) {
                         { st ->
+                            onPhotoLoaded(st.result.drawable)
                             if (needSoftwareCheck) {
                                 val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
                                 val probed: Boolean? = if (bmp != null && bmp.width > 8 && bmp.height > 8) {
@@ -402,6 +470,46 @@ fun WesalAvatar(
                     alignment = Alignment.TopCenter
                 )
             }
+        }
+    }
+
+    // Bounds-driven photo layer (round-3): the SAME clip-window architecture as
+    // PopOutPhotoLayer, but the bitmap is placed by the measured alpha-bounds transform
+    // (person fills the aperture, head in the strip) instead of ContentScale.Crop over
+    // the padded canvas. ContentScale.FillBounds is exact here: drawW/drawH are computed
+    // from the bitmap's own aspect, so nothing is distorted.
+    @Composable
+    fun BoundsPhotoLayer(clipShape: Shape, transform: FramedCutoutTransform, withCallbacks: Boolean) {
+        Box(modifier = Modifier.fillMaxSize().clip(clipShape)) {
+            AsyncImage(
+                model = ImageRequest.Builder(context)
+                    .data(imageModel)
+                    .size(
+                        transform.drawWidthPx.roundToInt().coerceAtLeast(1),
+                        transform.drawHeightPx.roundToInt().coerceAtLeast(1)
+                    )
+                    .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey + "#popout") }
+                    .crossfade(false)
+                    .transformations(AlphaBoundsTransformation(imageCacheKey))
+                    .build(),
+                contentDescription = name,
+                onError = if (withCallbacks) ({ loadFailed = true }) else null,
+                onSuccess = if (withCallbacks) {
+                    { st -> onPhotoLoaded(st.result.drawable) }
+                } else null,
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            transform.offsetXPx.roundToInt(),
+                            transform.offsetYPx.roundToInt()
+                        )
+                    }
+                    .size(
+                        width = with(density) { transform.drawWidthPx.toDp() },
+                        height = with(density) { transform.drawHeightPx.toDp() }
+                    ),
+                contentScale = ContentScale.FillBounds
+            )
         }
     }
 
@@ -447,10 +555,11 @@ fun WesalAvatar(
                 includeBlades = true
             )
         }
-        val innerBackdropColor = when {
-            activeFrame?.id == "admin_39" -> Color(0xFFFF1744)
-            else -> avatarGlowColor ?: palette.turquoise
-        }
+        // The framed backing disc takes its colour from the FRAME (ResolvedFrame.glow via
+        // resolve()) — never a hardcoded per-frame special case — so changing the frame
+        // recolours the glow behind the photo automatically.
+        val innerBackdropColor = avatarGlowColor ?: palette.turquoise
+        val frameDiscGlowColor = activeFrame?.glow ?: innerBackdropColor
         Box(
             modifier = Modifier
                 .size(innerAvatarSize)
@@ -458,26 +567,38 @@ fun WesalAvatar(
                 .clip(CircleShape)
                 .then(
                     when {
-                        // Framed avatars sit on a FULLY OPAQUE backing disc (owner's
-                        // definitive spec): a dark radial gradient echoing the reference
-                        // artwork's interior — deep dark tint of the frame's glow colour
-                        // falling to near-black, every stop at alpha 1. Neither the
-                        // profile cover nor any background can ever show through the
-                        // frame's opening (the owner's screenshot bug — a cutout photo
-                        // floated over the cover inside the crest on a 0.04-alpha disc).
-                        activeFrame != null -> Modifier.background(
-                            Brush.radialGradient(
-                                colors = listOf(
-                                    Color(
-                                        red = innerBackdropColor.red * 0.30f,
-                                        green = innerBackdropColor.green * 0.30f,
-                                        blue = innerBackdropColor.blue * 0.30f,
-                                        alpha = 1f
-                                    ),
-                                    Color(0xFF080708)
-                                )
+                        // Framed avatars sit on a FULLY OPAQUE GLOW disc (owner's spec):
+                        // a luminous radial glow in the frame's own colour behind the
+                        // photo — bright core behind the head/torso deepening to a
+                        // near-black rim — exactly like the reference composite. Every
+                        // stop is alpha 1 (FrameGlowDisc invariant): neither the profile
+                        // cover nor any background can ever show through the frame's
+                        // opening. Per-frame glowIntensity (§5.8) drives the core's
+                        // brightness; at 0 the disc falls back to the old flat dark tint.
+                        activeFrame != null -> {
+                            val stops = FrameGlowDisc.discStops(
+                                glowArgb = frameDiscGlowColor.toArgb().toLong() and 0xFFFFFFFFL,
+                                intensity = frameGlowIntensity
                             )
-                        )
+                            Modifier.drawBehind {
+                                val discCenter = Offset(
+                                    x = size.width / 2f,
+                                    y = size.height * FrameGlowDisc.CENTER_Y_FRACTION
+                                )
+                                val discRadius = size.minDimension / 2f
+                                drawRect(
+                                    brush = Brush.radialGradient(
+                                        colorStops = arrayOf(
+                                            0f to Color(stops.coreArgb),
+                                            FrameGlowDisc.MID_STOP_FRACTION to Color(stops.midArgb),
+                                            1f to Color(stops.rimArgb)
+                                        ),
+                                        center = discCenter,
+                                        radius = discRadius
+                                    )
+                                )
+                            }
+                        }
                         effectiveCutout || neonPreset != NeonColorPreset.NONE -> Modifier.background(
                             Brush.radialGradient(
                                 colors = listOf(
@@ -505,15 +626,22 @@ fun WesalAvatar(
                         .size(innerPx)
                         .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
                         .crossfade(false)
-                        // Software decode is forced ONLY for animated framed avatars (rare,
-                        // admin-side) where the corner-alpha probe below reads pixels.
-                        // Static framed avatars — every customer, every list row — keep
-                        // hardware bitmaps; the probe then fails safe (see onSuccess).
+                        // Round-3: framed requests carry the alpha-bounds transformation,
+                        // which publishes the photo's measured bounds during the load
+                        // (Coil hands transformations a software bitmap, so this works
+                        // for static frames too — the old corner probe below is now just
+                        // a legacy fallback for the boolean flag).
+                        .apply { if (activeFrame != null) transformations(AlphaBoundsTransformation(imageCacheKey)) }
+                        // Note: with a transformation attached, Coil decodes to a software
+                        // bitmap anyway (that is what makes the bounds analysis reliable);
+                        // the explicit allowHardware(false) below remains only for the
+                        // legacy corner probe on animated framed avatars.
                         .apply { if (needSoftwareCheck && isAnimatedFrame) allowHardware(false) }
                         .build(),
                     contentDescription = name,
                     onError = { loadFailed = true },
                     onSuccess = { st ->
+                        if (activeFrame != null) onPhotoLoaded(st.result.drawable)
                         if (needSoftwareCheck) {
                             val bmp = (st.result.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
                             // getPixel() throws on hardware bitmaps; a failed probe must
@@ -584,9 +712,16 @@ fun WesalAvatar(
         }
 
         // Pop-out window 1 of 2: the framed cutout photo seen through the aperture circle,
-        // UNDER the frame artwork (same virtual rendering as the head strip below).
+        // UNDER the frame artwork (same rendering as the head strip below). With verified
+        // alpha bounds the PERSON is fitted into the aperture by the bounds transform;
+        // before bounds are known (first load) the legacy full-canvas rendering shows.
         if (framedCutout && imageUrl.isNotBlank() && !loadFailed) {
-            PopOutPhotoLayer(clipShape = apertureClipShape, withCallbacks = true)
+            val transform = cutoutTransform
+            if (transform != null) {
+                BoundsPhotoLayer(clipShape = apertureClipShape, transform = transform, withCallbacks = true)
+            } else {
+                PopOutPhotoLayer(clipShape = apertureClipShape, withCallbacks = true)
+            }
         }
 
         // Frame draws around/over the circular inner aperture so wings, crown, and bottom crest remain crisp
@@ -597,30 +732,42 @@ fun WesalAvatar(
         // Pop-out window 2 of 2: the SAME rendering clipped to the strip above the
         // aperture's top edge, drawn OVER the frame — the head/shoulders of the cutout
         // overlap the frame's upper ring, exactly like the owner's reference composite.
-        if (framedCutout && imageUrl.isNotBlank() && !loadFailed) {
-            PopOutPhotoLayer(clipShape = popOutStripClipShape, withCallbacks = false)
+        // VERIFIED BOUNDS ONLY: this window paints over the frame artwork, so it must
+        // never open on the stored flag alone — a false positive would leak a photo
+        // rectangle over the crest. Flag-only cutouts keep the in-aperture rendering.
+        val stripTransform = cutoutTransform
+        if (stripTransform != null && imageUrl.isNotBlank() && !loadFailed) {
+            BoundsPhotoLayer(clipShape = popOutStripClipShape, transform = stripTransform, withCallbacks = false)
         }
 
         if (iconUrl.isNotBlank()) {
-            val iconTransition = rememberInfiniteTransition(label = "wesal_icon_anim")
-            val iconPulse by iconTransition.animateFloat(
-                initialValue = 0.94f,
-                targetValue = 1.06f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 1500),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "icon_pulse"
-            )
-            val iconTilt by iconTransition.animateFloat(
-                initialValue = -3.5f,
-                targetValue = 3.5f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 1900),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "icon_tilt"
-            )
+            // Small list avatars render the icon statically (no infinite transition) —
+            // same allowMotion gate as the frame animation above.
+            var iconPulse = 1f
+            var iconTilt = 0f
+            if (allowMotion) {
+                val iconTransition = rememberInfiniteTransition(label = "wesal_icon_anim")
+                val pulseState by iconTransition.animateFloat(
+                    initialValue = 0.94f,
+                    targetValue = 1.06f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 1500),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "icon_pulse"
+                )
+                val tiltState by iconTransition.animateFloat(
+                    initialValue = -3.5f,
+                    targetValue = 3.5f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 1900),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "icon_tilt"
+                )
+                iconPulse = pulseState
+                iconTilt = tiltState
+            }
             AsyncImage(
                 model = ImageRequest.Builder(context)
                     .data(iconModel)

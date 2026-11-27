@@ -306,7 +306,12 @@ data class WesalUser(
     val fcmToken: String = "",
     val publicKey: String = "",
     val privacySettings: PrivacySettings = PrivacySettings(),
-    val blockedUsers: List<String> = emptyList()
+    val blockedUsers: List<String> = emptyList(),
+    // Referral attribution (round 3): stamped once, at account creation only, when the
+    // account was created after this device opened another user's /join?id= invite link.
+    // referredByNumericId mirrors the inviter's numericId (stored on the doc as a number).
+    val referredByUid: String = "",
+    val referredByNumericId: Long = 0L
 )
 
 enum class ContactRequestStatus(val raw: String) {

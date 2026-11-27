@@ -63,6 +63,7 @@ fun NewChatContactsScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
     val requests by viewModel.contactRequests.collectAsStateWithLifecycle()
+    val myReferrals by viewModel.myReferrals.collectAsStateWithLifecycle()
     val contactLists by viewModel.contactLists.collectAsStateWithLifecycle()
     val appEvents by viewModel.appEvents.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
@@ -118,6 +119,14 @@ fun NewChatContactsScreen(
             WesalIdUtils.normalizeSearchText(it.displayName).contains(normQuery) ||
                 it.rawPhone.contains(trimmedQuery) ||
                 (normQueryDigits.isNotBlank() && WesalIdUtils.normalizeDigits(it.rawPhone).contains(normQueryDigits))
+        }
+    }
+    val filteredReferrals = remember(myReferrals, trimmedQuery) {
+        if (normQuery.isBlank() && cleanQueryHandle.isBlank()) myReferrals
+        else myReferrals.filter {
+            WesalIdUtils.normalizeSearchText(it.displayName).contains(normQuery) ||
+                it.publicId.lowercase().contains(cleanQueryHandle) ||
+                (normQueryDigits.isNotBlank() && it.numericId.contains(normQueryDigits))
         }
     }
     val deviceMatchedUids = remember(state.wesalContacts) {
@@ -660,6 +669,33 @@ fun NewChatContactsScreen(
                                         ) { Text(strings.rejectContactRequest, color = palette.error, maxLines = 1) }
                                     }
                                 }
+                            }
+                        }
+
+                        if (filteredReferrals.isNotEmpty()) {
+                            item(key = "header_referrals") {
+                                Text(
+                                    text = if (strings.isEnglish) "Registered Through Me (${filteredReferrals.size})" else "سجّلوا من خلالي (${filteredReferrals.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.emerald,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(filteredReferrals, key = { "referral_${it.uid}" }) { user ->
+                                WesalContactDirectoryRow(
+                                    user = user,
+                                    displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
+                                    request = requestByPeer[user.uid],
+                                    myUid = myUid,
+                                    isSuperAdmin = isSuperAdmin,
+                                    onOpenProfile = { onOpenUserProfile(user.uid) },
+                                    onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
+                                    onSendRequest = { viewModel.sendContactRequest(user.uid) },
+                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                             }
                         }
 

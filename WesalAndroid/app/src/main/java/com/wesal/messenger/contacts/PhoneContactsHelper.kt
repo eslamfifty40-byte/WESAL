@@ -143,35 +143,69 @@ object PhoneContactsHelper {
         }
     }
 
-    suspend fun findContactIdByPhone(context: Context, rawPhone: String): String? = withContext(Dispatchers.IO) {
-        if (rawPhone.isBlank()) return@withContext null
-        val targetDigits = PhoneUtils.normalizeAsciiDigits(rawPhone).filter { it.isDigit() }
-        if (targetDigits.isBlank()) return@withContext null
-        val projection = arrayOf(
-            ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
-            ContactsContract.CommonDataKinds.Phone.NUMBER
-        )
-        runCatching {
-            context.contentResolver.query(
-                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                projection,
-                null,
-                null,
-                null
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
-                val phoneCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
-                while (cursor.moveToNext()) {
-                    val digits = PhoneUtils.normalizeAsciiDigits(cursor.getString(phoneCol).orEmpty())
-                        .filter { it.isDigit() }
-                    if (digits == targetDigits || (targetDigits.length >= 7 && digits.endsWith(targetDigits.takeLast(8)))) {
-                        return@withContext cursor.getString(idCol)
+    /**
+     * Outcome of a phone-book lookup by number. The outcomes are deliberately distinct:
+     * the old implementation returned a bare null for ALL of them, so a permission denial
+     * or a blank number was reported to the user as "this number is not saved in the
+     * phone book" even when the contact was right there (round 3).
+     */
+    sealed interface PhoneContactLookup {
+        data class Found(val contactId: String) : PhoneContactLookup
+        data object NotFound : PhoneContactLookup
+        data object PermissionDenied : PhoneContactLookup
+        data object NoPhone : PhoneContactLookup
+    }
+
+    /**
+     * Finds a phone-book contact by number using the SAME normalization as the rest of
+     * the app: both sides are expanded with [PhoneUtils.normalizePhoneCandidates] and
+     * intersected — the rule loadDeviceContacts / hash matching / the delete duplicate
+     * sweep already use. The old version compared raw digit strings (exact match or a
+     * last-8-digits suffix), which missed saved entries whose stored form differs from
+     * the WESAL doc's number format. The digit rule survives only as a fallback.
+     */
+    suspend fun findContactIdByPhone(context: Context, rawPhone: String): PhoneContactLookup =
+        withContext(Dispatchers.IO) {
+            if (rawPhone.isBlank()) return@withContext PhoneContactLookup.NoPhone
+            val dial = PhoneUtils.resolveDeviceDialCode(context)
+            val wanted = PhoneUtils.normalizePhoneCandidates(rawPhone, dial).toSet()
+            val targetDigits = PhoneUtils.normalizeAsciiDigits(rawPhone).filter { it.isDigit() }
+            if (wanted.isEmpty() && targetDigits.isBlank()) {
+                return@withContext PhoneContactLookup.NoPhone
+            }
+            val projection = arrayOf(
+                ContactsContract.CommonDataKinds.Phone.CONTACT_ID,
+                ContactsContract.CommonDataKinds.Phone.NUMBER
+            )
+            try {
+                context.contentResolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    projection,
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
+                    val phoneCol = cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    while (cursor.moveToNext()) {
+                        val stored = cursor.getString(phoneCol).orEmpty()
+                        if (stored.isBlank()) continue
+                        val candidateHit = wanted.isNotEmpty() &&
+                            PhoneUtils.normalizePhoneCandidates(stored, dial).any { it in wanted }
+                        val digits = PhoneUtils.normalizeAsciiDigits(stored).filter { it.isDigit() }
+                        val digitHit = digits == targetDigits ||
+                            (targetDigits.length >= 7 && digits.endsWith(targetDigits.takeLast(8)))
+                        if (candidateHit || digitHit) {
+                            return@withContext PhoneContactLookup.Found(cursor.getString(idCol).orEmpty())
+                        }
                     }
                 }
+                PhoneContactLookup.NotFound
+            } catch (e: SecurityException) {
+                // Never disguise a permission denial as "not saved in the phone book".
+                PhoneContactLookup.PermissionDenied
             }
         }
-        null
-    }
 
     /**
      * Deletes the contact and every other phone-book entry that has the same number. The list shows one row

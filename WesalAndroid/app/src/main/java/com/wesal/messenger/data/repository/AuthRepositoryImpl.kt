@@ -47,6 +47,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -468,6 +469,74 @@ class AuthRepositoryImpl @Inject constructor(
         return fallback
     }
 
+    /**
+     * Resolves an invite id from a /join?id= link (publicId handle, numeric WESAL ID, or a
+     * raw uid) to the inviter's account. Mirrors UserRepositoryImpl.findUserByPublicIdOrUid
+     * — duplicated here because AuthRepositoryImpl must not depend on UserRepository.
+     * Every lookup is fail-silent: attribution is best-effort and never blocks sign-up.
+     */
+    private suspend fun resolveInviterByInviteId(inviteId: String): WesalUser? {
+        val raw = inviteId.trim()
+        if (raw.isBlank()) return null
+        val usersCol = firestore.collection(Constants.COLLECTION_USERS)
+
+        val numericQuery = WesalIdUtils.extractNumericIdQuery(raw)
+        if (WesalIdUtils.isValidNumericId(numericQuery)) {
+            val snap = runCatching {
+                usersCol.whereEqualTo("numericId", numericQuery).limit(1).get().await()
+            }.getOrNull()
+            val matched = snap?.documents?.firstOrNull()
+            if (matched != null) return matched.toWesalUser()
+        }
+
+        val handle = WesalIdUtils.normalize(raw)
+        if (handle.isNotBlank()) {
+            val snap = runCatching {
+                usersCol.whereEqualTo("publicId", handle).limit(1).get().await()
+            }.getOrNull()
+            val matched = snap?.documents?.firstOrNull()
+            if (matched != null) return matched.toWesalUser()
+        }
+
+        val byUid = runCatching { usersCol.document(raw).get().await() }.getOrNull()
+        return byUid?.takeIf { it.exists() }?.toWesalUser()
+    }
+
+    /**
+     * Stamps referredByUid / referredByNumericId on a brand-new user doc (round 3).
+     * Fire-and-forget in appScope, fully bounded and fail-silent. Self-referral is
+     * rejected, and the write is skipped if the fields are already set — combined with
+     * the fact that the only caller sits in the doc-creation branch of
+     * ensureUserSkeletonExists, attribution is create-only and can never be re-pointed
+     * by later sign-ins. The pending invite is cleared once the stamp lands.
+     */
+    private fun stampReferralAttribution(newUid: String, inviteId: String) {
+        appScope.launch {
+            val inviter = runCatching {
+                withTimeoutOrNull(8_000L) { resolveInviterByInviteId(inviteId) }
+            }.getOrNull() ?: return@launch
+            if (inviter.uid.isBlank() || inviter.uid == newUid) return@launch
+            val stamped = runCatching {
+                val userRef = firestore.collection(Constants.COLLECTION_USERS).document(newUid)
+                val fresh = withTimeoutOrNull(6_000L) { userRef.get().await() } ?: return@runCatching false
+                val alreadyStamped = fresh.getString("referredByUid").orEmpty().isNotBlank() ||
+                    (fresh.getLong("referredByNumericId") ?: 0L) > 0L
+                if (alreadyStamped) return@runCatching false
+                userRef.set(
+                    mapOf(
+                        "referredByUid" to inviter.uid,
+                        "referredByNumericId" to (inviter.numericId.toLongOrNull() ?: 0L)
+                    ),
+                    SetOptions.merge()
+                ).awaitQueued()
+                true
+            }.getOrDefault(false)
+            if (stamped) {
+                runCatching { prefs.clearPendingInviteId() }
+            }
+        }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private suspend fun ensureUserSkeletonExists(
         uid: String,
@@ -546,6 +615,18 @@ class AuthRepositoryImpl @Inject constructor(
                     lastUsedAt = System.currentTimeMillis()
                 )
             )
+            // Referral attribution (round 3): this branch runs ONLY when the user doc is
+            // being created, so capturing the pending invite here makes the stamp
+            // create-only by construction. The id is read now (bounded, local DataStore)
+            // because the nav host may consume/clear the pref as soon as Home opens;
+            // resolving + writing runs fire-and-forget in appScope so registration never
+            // waits on — or fails because of — attribution.
+            val pendingInviteId = withTimeoutOrNull(2_000L) {
+                runCatching { prefs.settingsFlow.first().pendingInviteId }.getOrNull()
+            }?.trim().orEmpty()
+            if (pendingInviteId.isNotBlank()) {
+                stampReferralAttribution(uid, pendingInviteId)
+            }
             return true
         } else {
             val deletedAt = snapshot.getLong("deletedAt") ?: 0L

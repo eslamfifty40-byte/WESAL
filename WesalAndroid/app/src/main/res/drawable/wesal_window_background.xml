@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Branded window background for the system starting window and every activity window
+  before Compose draws its first frame.
+
+  Round 1/2 left the starting window as flat @color/wesal_black (#06090B) with a
+  transparent splash icon, so ALL startup latency rendered as a dead black screen
+  (~3 s on the owner's device). This drawable replaces the flat black with a rich
+  vertical gradient in the WESAL brand colours — deep dark teal/navy at the top
+  fading into the Compose dark background (#05090B, WesalDeepBlack) at the bottom —
+  so the starting window reads as the app's own surface and the first Compose frame
+  is seamless. Deliberately NO logo and NO icon: the owner explicitly rejected
+  icon/blank splash screens; a brand-coloured surface is the fix for the black frame.
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:type="linear"
+        android:angle="270"
+        android:startColor="@color/wesal_gradient_top"
+        android:centerColor="@color/wesal_gradient_center"
+        android:endColor="@color/wesal_gradient_bottom" />
+</shape>

@@ -240,7 +240,15 @@ class UserProfileDetailViewModel @Inject constructor(
 
     fun editPhonebookContact(rawPhone: String, newName: String) {
         viewModelScope.launch {
-            val contactId = PhoneContactsHelper.findContactIdByPhone(context, rawPhone)
+            val contactId = when (val lookup = PhoneContactsHelper.findContactIdByPhone(context, rawPhone)) {
+                is PhoneContactsHelper.PhoneContactLookup.Found -> lookup.contactId
+                PhoneContactsHelper.PhoneContactLookup.PermissionDenied -> {
+                    _statusMessage.value = "اسمح بالوصول إلى جهات الاتصال أولاً من إعدادات التطبيق"
+                    return@launch
+                }
+                // NotFound / NoPhone → insert branch; upsert validates the (now editable) phone.
+                else -> null
+            }
             PhoneContactsHelper.upsertDeviceContact(context, newName, rawPhone, contactId)
                 .onSuccess { _statusMessage.value = "تم تحديث الاسم في دفتر الهاتف ✓" }
                 .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر تحديث دفتر الهاتف" }
@@ -249,14 +257,23 @@ class UserProfileDetailViewModel @Inject constructor(
 
     fun deletePhonebookContact(rawPhone: String) {
         viewModelScope.launch {
-            val contactId = PhoneContactsHelper.findContactIdByPhone(context, rawPhone)
-            if (contactId.isNullOrBlank()) {
-                _statusMessage.value = "هذا الرقم غير محفوظ في دفتر الهاتف"
-                return@launch
+            when (val lookup = PhoneContactsHelper.findContactIdByPhone(context, rawPhone)) {
+                is PhoneContactsHelper.PhoneContactLookup.Found ->
+                    // rawPhone is passed through so duplicate phone-book copies of the same
+                    // number (Google / SIM / WhatsApp) are swept too — mirroring the
+                    // contacts-screen delete flow in ContactsViewModel.
+                    PhoneContactsHelper.deleteDeviceContact(context, lookup.contactId, rawPhone)
+                        .onSuccess { _statusMessage.value = "تم حذف جهة الاتصال من دفتر الهاتف ✓" }
+                        .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر حذف جهة الاتصال" }
+                PhoneContactsHelper.PhoneContactLookup.NoPhone ->
+                    // Honest message: the account exposes no number, so there is nothing to
+                    // look up — the old code falsely claimed the number "is not saved".
+                    _statusMessage.value = "رقم هاتف هذا الحساب غير ظاهر، فلا يوجد رقم لحذفه من دفتر الهاتف"
+                PhoneContactsHelper.PhoneContactLookup.PermissionDenied ->
+                    _statusMessage.value = "اسمح بالوصول إلى جهات الاتصال أولاً من إعدادات التطبيق"
+                PhoneContactsHelper.PhoneContactLookup.NotFound ->
+                    _statusMessage.value = "هذا الرقم غير محفوظ في دفتر الهاتف"
             }
-            PhoneContactsHelper.deleteDeviceContact(context, contactId)
-                .onSuccess { _statusMessage.value = "تم حذف جهة الاتصال من دفتر الهاتف ✓" }
-                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر حذف جهة الاتصال" }
         }
     }
 
@@ -1231,23 +1248,37 @@ fun UserProfileDetailScreen(
 
     if (showEditContactDialog && target != null) {
         var nameInput by remember { mutableStateOf(target.displayName) }
+        // Round 3: the phone is a real, editable field. It is prefilled from the account's
+        // doc number, but for Gmail-only / hidden-phone accounts that value is blank — the
+        // old dialog had NO phone field at all, so the insert path's «رقم الهاتف مطلوب»
+        // validation could never be satisfied from this screen.
+        var phoneInput by remember { mutableStateOf(target.phoneNumber) }
         AlertDialog(
             onDismissRequest = { showEditContactDialog = false },
             containerColor = palette.surface,
             title = { Text(if (strings.isEnglish) "Edit Phonebook Name" else "تعديل الاسم في دفتر الهاتف", color = palette.textPrimary) },
             text = {
-                OutlinedTextField(
-                    value = nameInput,
-                    onValueChange = { nameInput = it },
-                    label = { Text(if (strings.isEnglish) "Contact Name" else "اسم جهة الاتصال") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        label = { Text(if (strings.isEnglish) "Contact Name" else "اسم جهة الاتصال") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = phoneInput,
+                        onValueChange = { phoneInput = it },
+                        label = { Text(if (strings.isEnglish) "Phone Number" else "رقم الهاتف") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        viewModel.editPhonebookContact(target.phoneNumber, nameInput)
+                        viewModel.editPhonebookContact(phoneInput, nameInput)
                         showEditContactDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)

@@ -190,6 +190,7 @@ interface UserRepository {
 
     // Contact Requests, Friendship Gating, Custom Lists & Events
     fun observeContactRequests(): Flow<List<ContactRequest>>
+    fun observeMyReferrals(): Flow<List<WesalUser>>
     suspend fun sendContactRequest(targetUid: String): Result<ContactRequest>
     suspend fun acceptContactRequest(requestId: String): Result<Unit>
     suspend fun rejectContactRequest(requestId: String): Result<Unit>

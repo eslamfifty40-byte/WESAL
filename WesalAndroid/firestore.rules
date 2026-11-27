@@ -54,31 +54,53 @@ service cloud.firestore {
     // A ban used to be client-only: a banned user with a modified client (or raw API
     // access) could keep reading/writing everything. This helper makes the ban bite in
     // rules for the social surfaces (chats/messages/groups/stories/calls below).
-    // Safety properties:
+    // Safety properties (round-3 hardening — the gate may only bite on a ban that is
+    // POSITIVELY established, because a stale or mis-typed flag on an old doc
+    // otherwise locks a legitimate user out of every gated surface at once; that is
+    // exactly what locked the owner (10002) out of sending and calling):
     //  - Field or user doc absent  => NOT banned (legitimate users are never locked out
     //    by a missing field; older docs predate the ban fields).
-    //  - isBanned == true and banExpiresAt == 0/absent => permanent ban.
-    //  - Timed ban lifts automatically once banExpiresAt (epoch millis) has passed.
+    //  - isBanned == true alone is NOT enough. The ban counts as active only when
+    //    banType says PERMANENT, or banExpiresAt is actually stored as a number and
+    //    still lies in the future. A banExpiresAt stored as a Timestamp/String (old
+    //    AI-Studio-era docs) or a missing expiry therefore never denies on its own —
+    //    and the `is number` guard means the ordering comparison can never raise an
+    //    evaluation error (which Firestore would surface as a blanket deny).
     //  - Super admins are exempt (the client already forbids banning protected admins;
-    //    this keeps moderation working even if a doc were mis-flagged).
+    //    this keeps moderation working even if a doc were mis-flagged). The exemption
+    //    also covers the two owner accounts by their user doc's numericId
+    //    (10001/10002, matching the client's Constants.ADMIN_NUMERIC_IDS): the
+    //    rules-level super-admin definition above (super_admins doc / uid / email)
+    //    does not always cover them, and a stale flag on an owner doc must never be
+    //    able to lock the owners out of their own app.
+    //  - Active moderators are exempt too (round-2 fix): the staff system already
+    //    forbids banning them in the client, and without this exemption a stale
+    //    isBanned flag on a moderator doc silently killed every moderated surface
+    //    (chats/calls) while their admin panel kept working.
     //  - The users collection itself is NOT gated by this helper, so a banned user can
     //    still read their own doc and see their ban status/reason in the client.
     // Remaining limit (documented in FIXLOG_P2): rules cannot revoke an already-issued
     // Firebase Auth token or set custom claims — that needs a backend (Admin SDK /
     // Cloud Function), which this repo does not deploy for WESAL yet.
+    function isNumericIdSuperAdmin() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('numericId', 0) in [10001, 10002, '10001', '10002'];
+    }
+
     function isCurrentlyBanned() {
       return isSignedIn() &&
         !isSuperAdmin() &&
-        // Active moderators are exempt too (round-2 fix): the staff system already
-        // forbids banning them in the client, and without this exemption a stale
-        // isBanned flag on a moderator doc silently killed every moderated surface
-        // (chats/calls) while their admin panel kept working.
+        !isNumericIdSuperAdmin() &&
         !isActiveModerator() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isBanned', false) == true &&
         (
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) == 0 ||
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) > request.time.toMillis()
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banType', '') == 'PERMANENT' ||
+          (
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) is number &&
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) > request.time.toMillis()
+          )
         );
     }
 
@@ -225,14 +247,25 @@ service cloud.firestore {
         !('isVerified' in request.resource.data && request.resource.data.isVerified == true) &&
         !('verifiedByUid' in request.resource.data && request.resource.data.verifiedByUid != '') &&
         !('deletedPermanent' in request.resource.data && request.resource.data.deletedPermanent == true) &&
-        !('isBanned' in request.resource.data && request.resource.data.isBanned == true);
+        !('isBanned' in request.resource.data && request.resource.data.isBanned == true) &&
+        // Review fix (round-3 pass 1): a fresh doc may never claim an owner admin
+        // numericId (10001/10002). isCurrentlyBanned() exempts those ids via
+        // isNumericIdSuperAdmin(), so an unguarded create/update would let any
+        // user make themselves permanently ban-proof. Legit skeletons are
+        // created WITHOUT numericId (allocation is a follow-up merge write),
+        // and the genuine owners' repair writes go through isSuperAdmin().
+        !('numericId' in request.resource.data && request.resource.data.numericId in [10001, 10002, '10001', '10002']);
       allow update: if (
         isOwner(userId) &&
         (
           isSuperAdmin() ||
           (
             // The owner may not touch any admin-managed field. grantedFrameIds is
-            // protected outright: only admin/mod grant flows may extend it.
+            // protected outright: only admin/mod grant flows may extend it. The
+            // referral attribution fields (referredByUid/referredByNumericId) are
+            // handled by the dedicated carve-out below: the one-time registration
+            // stamp (an owner merge-update on the just-created doc) may set them
+            // ONLY while they are still empty; once set they are locked.
             !request.resource.data.diff(resource.data).affectedKeys().hasAny([
               'isVerified',
               'verifiedByUid',
@@ -291,6 +324,35 @@ service cloud.firestore {
                   request.resource.data.get('frameId', '') == get(/databases/$(database)/documents/system_config/global_appearance).data.get('defaultFrameId', '')
                 )
               )
+            ) &&
+            // Referral stamp carve-out (round-3 review fix): the client stamps
+            // referredByUid/referredByNumericId AFTER the skeleton create, as a
+            // fire-and-forget owner merge-update (AuthRepositoryImpl), so a blanket
+            // protected-keys ban on those fields denied the stamp itself and the
+            // whole referral feature silently failed once these rules deployed.
+            // This arm allows the owner to touch those keys ONLY while the stored
+            // values are still empty/zero — i.e. exactly the one-time stamp; once
+            // set, any further owner change to them is denied (attribution can
+            // never be re-pointed by the account owner).
+            (
+              !request.resource.data.diff(resource.data).affectedKeys().hasAny(['referredByUid', 'referredByNumericId']) ||
+              (resource.data.get('referredByUid', '') == '' && resource.data.get('referredByNumericId', 0) == 0)
+            ) &&
+            // Review fix (round-3 pass 1): numericId is deliberately NOT in the
+            // protected list above — the sign-in flow legitimately (re)assigns it
+            // on the owner's own doc (blank/invalid -> random candidate). But in
+            // this non-super-admin arm it may never be CHANGED TO an owner admin
+            // id (10001/10002): isNumericIdSuperAdmin() would then exempt the
+            // account from the isCurrentlyBanned() gate forever, letting any
+            // banned user make themselves ban-proof with a one-field self-write.
+            // The genuine owners are covered by the isSuperAdmin() arm above
+            // (the Constants admin emails are exactly the rules-level
+            // super-admin emails), so their numericId repair writes are
+            // unaffected. Unchanged values are not in affectedKeys and always
+            // pass; changes to any non-admin value always pass.
+            (
+              !request.resource.data.diff(resource.data).affectedKeys().hasAny(['numericId']) ||
+              !(request.resource.data.get('numericId', '') in [10001, 10002, '10001', '10002'])
             )
           )
         )

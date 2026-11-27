@@ -57,6 +57,8 @@ import androidx.compose.ui.unit.dp
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.segmentation.Segmentation
 import com.google.mlkit.vision.segmentation.selfie.SelfieSegmenterOptions
+import com.wesal.messenger.core.util.analyzeAlphaBounds
+import com.wesal.messenger.core.util.isCutoutBounds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -873,8 +875,39 @@ private fun CropScreen(
                         CropActivity.MODE_WALLPAPER -> 720 to 1280
                         else -> 640 to 640
                     }
-                    val scaled = Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
-                    val actualHasAlpha = bgRemoved || bitmapHasTransparentCorner(scaled)
+                    // Round-3 source fix: a background-removed avatar is trimmed to the
+                    // person's measured alpha bounds (+3% margin) BEFORE scaling, so the
+                    // stored asset itself is person-tight like the reference composite —
+                    // the transparent padding that made framed avatars render small is
+                    // removed at the source (the render-side bounds fit covers uploads
+                    // made by older versions). Covers/wallpapers are never trimmed.
+                    val preTrimHasAlpha = bgRemoved || bitmapHasTransparentCorner(cropped)
+                    val trimmed = if (
+                        preTrimHasAlpha &&
+                        mode != CropActivity.MODE_COVER_16_9 &&
+                        mode != CropActivity.MODE_WALLPAPER
+                    ) {
+                        trimBitmapToAlphaBounds(cropped)
+                    } else {
+                        null
+                    }
+                    val scaled = if (trimmed != null) {
+                        // Preserve the trimmed aspect inside the target box: a tall
+                        // full-body cutout must not be squashed into a square.
+                        val fit = minOf(
+                            targetW.toFloat() / trimmed.width,
+                            targetH.toFloat() / trimmed.height
+                        )
+                        Bitmap.createScaledBitmap(
+                            trimmed,
+                            (trimmed.width * fit).roundToInt().coerceAtLeast(1),
+                            (trimmed.height * fit).roundToInt().coerceAtLeast(1),
+                            true
+                        )
+                    } else {
+                        Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
+                    }
+                    val actualHasAlpha = preTrimHasAlpha || bitmapHasTransparentCorner(scaled)
                     onDone(scaled, actualHasAlpha)
                 },
                 modifier = Modifier.weight(1f).height(50.dp),
@@ -1088,6 +1121,44 @@ private fun bitmapHasTransparentCorner(bmp: Bitmap): Boolean {
     val h = bmp.height
     val samplePts = listOf(1 to 1, w - 2 to 1, 1 to h - 2, w - 2 to h - 2, w / 2 to 1)
     return samplePts.any { (x, y) -> (bmp.getPixel(x, y) ushr 24) < 240 }
+}
+
+/**
+ * Trims [src] to its measured opaque bounding box, expanded by a 3% safety margin so
+ * hair/shoulders survive (renderers add their own pad on top). Analysis runs on a
+ * <=128px downsample via the shared pure core ([analyzeAlphaBounds]). Returns null when
+ * the bitmap is not a verified cutout or the box already covers (nearly) the whole
+ * canvas — the caller then keeps the untrimmed bitmap.
+ */
+private fun trimBitmapToAlphaBounds(src: Bitmap): Bitmap? {
+    if (!src.hasAlpha()) return null
+    val maxSide = max(src.width, src.height)
+    if (maxSide <= 0) return null
+    val small = if (maxSide <= 128) {
+        src
+    } else {
+        Bitmap.createScaledBitmap(
+            src,
+            (src.width * 128f / maxSide).roundToInt().coerceAtLeast(1),
+            (src.height * 128f / maxSide).roundToInt().coerceAtLeast(1),
+            true
+        )
+    }
+    val bounds = try {
+        val pixels = IntArray(small.width * small.height)
+        small.getPixels(pixels, 0, small.width, 0, 0, small.width, small.height)
+        analyzeAlphaBounds(pixels, small.width, small.height)
+    } finally {
+        if (small !== src) small.recycle()
+    } ?: return null
+    if (!isCutoutBounds(bounds)) return null
+    val p = bounds.padded(0.03f)
+    val x = (p.left * src.width).toInt().coerceIn(0, src.width - 1)
+    val y = (p.top * src.height).toInt().coerceIn(0, src.height - 1)
+    val w = ((p.right - p.left) * src.width).roundToInt().coerceIn(1, src.width - x)
+    val h = ((p.bottom - p.top) * src.height).roundToInt().coerceIn(1, src.height - y)
+    if (w >= src.width && h >= src.height) return null
+    return Bitmap.createBitmap(src, x, y, w, h)
 }
 
 private suspend fun removeBackgroundPreservingPerson(source: Bitmap): Bitmap? = withContext(Dispatchers.Default) {

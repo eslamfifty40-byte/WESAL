@@ -112,26 +112,39 @@ class WebRtcCallManager @Inject constructor(
 
     private fun ensureFactory() {
         if (peerConnectionFactory != null) return
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(context)
-                .setEnableInternalTracer(false)
-                .createInitializationOptions()
-        )
-        val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
-        val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
-        // Explicit audio device module (previously the library default was used implicitly,
-        // with no control over echo cancellation / noise suppression). Hardware AEC/NS are
-        // requested where the device supports them; the module falls back to software
-        // processing otherwise.
-        val audioDeviceModule = JavaAudioDeviceModule.builder(context)
-            .setUseHardwareAcousticEchoCanceler(true)
-            .setUseHardwareNoiseSuppressor(true)
-            .createAudioDeviceModule()
-        peerConnectionFactory = PeerConnectionFactory.builder()
-            .setAudioDeviceModule(audioDeviceModule)
-            .setVideoEncoderFactory(encoderFactory)
-            .setVideoDecoderFactory(decoderFactory)
-            .createPeerConnectionFactory()
+        // The WHOLE construction — including the explicit JavaAudioDeviceModule — is
+        // guarded (round-3): on devices where any step throws, the exception used to
+        // escape into the call screen's LaunchedEffect and the call died silently on
+        // "connecting…". Now the failure lands in _sessionError, which CallActivity
+        // already collects and surfaces as a visible end-of-call message; the null
+        // factory check in startSession then ends the call instead of hanging.
+        val created = runCatching {
+            PeerConnectionFactory.initialize(
+                PeerConnectionFactory.InitializationOptions.builder(context)
+                    .setEnableInternalTracer(false)
+                    .createInitializationOptions()
+            )
+            val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
+            val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
+            // Explicit audio device module (previously the library default was used implicitly,
+            // with no control over echo cancellation / noise suppression). Hardware AEC/NS are
+            // requested where the device supports them; the module falls back to software
+            // processing otherwise.
+            val audioDeviceModule = JavaAudioDeviceModule.builder(context)
+                .setUseHardwareAcousticEchoCanceler(true)
+                .setUseHardwareNoiseSuppressor(true)
+                .createAudioDeviceModule()
+            PeerConnectionFactory.builder()
+                .setAudioDeviceModule(audioDeviceModule)
+                .setVideoEncoderFactory(encoderFactory)
+                .setVideoDecoderFactory(decoderFactory)
+                .createPeerConnectionFactory()
+        }.getOrElse { error ->
+            Log.e(TAG, "WebRTC factory initialisation failed; calls cannot start on this device.", error)
+            _sessionError.value = SESSION_ERROR_GENERIC
+            return
+        }
+        peerConnectionFactory = created
     }
 
     private fun buildIceServers(): List<PeerConnection.IceServer> {
@@ -139,7 +152,13 @@ class WebRtcCallManager @Inject constructor(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
         )
-        val turnUrls = parseTurnUrls(BuildConfig.TURN_URL)
+        val parsedUrls = parseTurnUrls(BuildConfig.TURN_URL)
+        // Only entries that survive normalisation as real TURN/TURNS URLs count
+        // (round-3). The flag used to be set from the raw parsed list, so a
+        // present-but-unusable secret (bare host, space-separated garbage) reported
+        // "TURN configured" — suppressing the in-call no-TURN warning — while
+        // libwebrtc silently discarded every entry and media never connected.
+        val turnUrls = parsedUrls.filter { TurnUrlParser.isTurnUrl(it) }
         // TURN credentials come only from BuildConfig (gradle properties / CI secrets) — never
         // hard-code them here. When TURN is absent the call still tries STUN-only, but degrade
         // loudly: media will fail behind symmetric NAT / many mobile carriers, and that must be
@@ -148,9 +167,16 @@ class WebRtcCallManager @Inject constructor(
         if (turnUrls.isEmpty()) {
             Log.w(
                 TAG,
-                "TURN is NOT configured for this build (WESAL_TURN_URL is empty): calls rely on " +
-                    "STUN only and audio/video may not connect on restrictive networks. " +
-                    "Supply TURN via CI secrets / gradle properties — do not commit credentials."
+                if (parsedUrls.isEmpty()) {
+                    "TURN is NOT configured for this build (WESAL_TURN_URL is empty): calls rely on " +
+                        "STUN only and audio/video may not connect on restrictive networks. " +
+                        "Supply TURN via CI secrets / gradle properties — do not commit credentials."
+                } else {
+                    "TURN is NOT usable for this build: ${parsedUrls.size} entr(ies) present in " +
+                        "WESAL_TURN_URL but none carried a turn:/turns: scheme after " +
+                        "normalisation, so calls rely on STUN only. Check the secret's format " +
+                        "(values are never logged)."
+                }
             )
         } else {
             Log.i(TAG, "TURN configured: ${turnUrls.size} server(s) in addition to STUN.")
@@ -847,10 +873,51 @@ class WebRtcCallManager @Inject constructor(
         private const val ICE_DISCONNECT_GRACE_MS = 3_000L
         private const val ICE_RENEGOTIATION_FALLBACK_MS = 1_200L
 
-        fun parseTurnUrls(raw: String): List<String> = raw
-            .split(',', ';', '\n')
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
+        fun parseTurnUrls(raw: String): List<String> = TurnUrlParser.parse(raw)
+    }
+}
+
+/**
+ * Pure normalisation of the raw TURN_URL build-config value into ICE-server URLs.
+ *
+ * Extracted from [WebRtcCallManager] as a standalone object so the parsing rules are
+ * unit-testable on the JVM (no Android/WebRTC types involved). The old inline parser
+ * split only on commas/semicolons/newlines and never validated the scheme, so a
+ * secret stored as a bare host or space-separated list silently produced zero
+ * usable TURN servers while every indicator claimed TURN was configured.
+ */
+object TurnUrlParser {
+
+    /**
+     * Splits [raw] on commas, semicolons and any whitespace (spaces, tabs,
+     * newlines), trims, drops empties, normalises each entry and dedupes — after
+     * normalisation, so "host:3478" and "turn:host:3478" collapse into one entry.
+     */
+    fun parse(raw: String): List<String> = raw
+        .split(Regex("[,;\\s]+"))
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { normalize(it) }
+        .distinct()
+
+    /**
+     * Entries that already carry a scheme (turn:/turns:/stun:/stuns:, or anything
+     * containing "://") are kept verbatim. A bare host[:port] entry has no scheme —
+     * libwebrtc requires one and silently discards schemeless servers — so "turn:"
+     * is prepended.
+     */
+    fun normalize(entry: String): String = when {
+        entry.contains("://") -> entry
+        entry.startsWith("turn:", ignoreCase = true) -> entry
+        entry.startsWith("turns:", ignoreCase = true) -> entry
+        entry.startsWith("stun:", ignoreCase = true) -> entry
+        entry.startsWith("stuns:", ignoreCase = true) -> entry
+        else -> "turn:$entry"
+    }
+
+    /** True when [url] (post-normalisation) is a TURN/TURNS server URL. */
+    fun isTurnUrl(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.startsWith("turn:") || lower.startsWith("turns:")
     }
 }

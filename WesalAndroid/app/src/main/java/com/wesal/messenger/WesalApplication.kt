@@ -31,6 +31,7 @@ import com.google.firebase.firestore.SetOptions
 import com.wesal.messenger.core.util.Constants
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
+import javax.inject.Provider
 
 @HiltAndroidApp
 class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFactory {
@@ -38,8 +39,13 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     @Inject lateinit var firebaseAuth: FirebaseAuth
     @Inject lateinit var firestore: FirebaseFirestore
     @Inject lateinit var userPrefs: com.wesal.messenger.data.local.UserPreferencesDataStore
-    @Inject lateinit var chatRepository: com.wesal.messenger.domain.repository.ChatRepository
-    @Inject lateinit var wesalDao: com.wesal.messenger.data.local.dao.WesalDao
+    // Lazy providers on purpose: ChatRepository (with its crypto manager + DAO graph)
+    // and the Room DAO used to be constructed by Hilt during Application.onCreate, on
+    // the main thread, before the first frame — pure cold-start cost, since both are
+    // only ever used inside appScope coroutines (outbox flush / cross-account cache
+    // clear). Provider.get() at first actual use keeps behaviour identical.
+    @Inject lateinit var chatRepositoryProvider: Provider<com.wesal.messenger.domain.repository.ChatRepository>
+    @Inject lateinit var wesalDaoProvider: Provider<com.wesal.messenger.data.local.dao.WesalDao>
     private val appScope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
     )
@@ -50,7 +56,14 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         configureFirestoreOfflinePersistence()
         configureAppCheck()
         rememberSignedInAccountLocally()
-        createNotificationChannels()
+        // Deferred until the main thread first goes idle (i.e. after the first frame):
+        // creating 6 channels is a series of binder calls that bought nothing on the
+        // cold-start path — channels only need to exist before a notification posts,
+        // and the idle handler runs long before that in practice.
+        android.os.Looper.myQueue().addIdleHandler {
+            createNotificationChannels()
+            false // one-shot
+        }
         com.wesal.messenger.core.util.WesalFrameLibrary.startWithAuth()
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
     }
@@ -78,7 +91,7 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                     .maxSizeBytes(100L * 1024L * 1024L)
                     .build()
             }
-            .crossfade(true)
+            .crossfade(false)
             .respectCacheHeaders(false)
             .build()
     }
@@ -119,7 +132,7 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                         )
                     } else null
                     val result = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
-                        chatRepository.sendTextMessage(
+                        chatRepositoryProvider.get().sendTextMessage(
                             chatId = entry.chatId,
                             text = entry.text,
                             replyTo = replyStub,
@@ -156,8 +169,8 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             if (previousUid != null && previousUid != u.uid) {
                 appScope.launch {
                     runCatching {
-                        wesalDao.clearAllChats()
-                        wesalDao.clearAllMessages()
+                        wesalDaoProvider.get().clearAllChats()
+                        wesalDaoProvider.get().clearAllMessages()
                     }
                     runCatching { coil.Coil.imageLoader(this@WesalApplication).memoryCache?.clear() }
                 }
@@ -188,9 +201,17 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     private fun configureAppCheck() {
         runCatching {
             val appCheck = FirebaseAppCheck.getInstance()
-            // Debug/CI builds have no registered App Check debug token, so a failing token request can stall
-            // Firestore. Skip App Check there; release builds keep Play Integrity.
-            if (BuildConfig.DEBUG) return@runCatching
+            // Round-3: DEBUG builds now install the App Check DEBUG provider
+            // (firebase-appcheck-debug is already a debugImplementation dependency).
+            // Previously DEBUG returned early and installed NO provider at all, so a
+            // debug build carried no App Check token: if App Check enforcement is
+            // ever enabled for Firestore in the console, every request from the
+            // shipped debug APK is denied (PERMISSION_DENIED) while offline cache
+            // makes reads look healthy — writes fail with no visible cause. The
+            // debug provider's token is printed to logcat on first launch and must
+            // be registered in the Firebase console (App Check → Apps → debug
+            // tokens) for enforcement-enabled projects. Release builds are
+            // unchanged: Play Integrity only.
             val factory = if (BuildConfig.DEBUG) {
                 DebugAppCheckProviderFactory.getInstance()
             } else {

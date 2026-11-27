@@ -57,6 +57,11 @@ class ContactsViewModel @Inject constructor(
     val contactRequests: StateFlow<List<ContactRequest>> = userRepository.observeContactRequests()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /** Accounts that registered through my invite link (round 3) — shown as their own
+     *  section in the contacts screen, independent of the device phone book. */
+    val myReferrals: StateFlow<List<WesalUser>> = userRepository.observeMyReferrals()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val contactLists: StateFlow<List<ContactLabelList>> = userRepository.observeContactLists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
