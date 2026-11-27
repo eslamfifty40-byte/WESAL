@@ -67,7 +67,7 @@ object Constants {
     const val OFFICIAL_WESAL_SENDER_NAME = "WESAL Messenger"
 
     // Official approved invite URL & web portal base URL
-    const val APK_DOWNLOAD_URL = "https://github.com/eslamfifty40-byte/WESAL/releases/latest/download/WESAL-Messenger.apk"
+    const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-Messenger"
     const val WEB_BASE_URL = "https://ais-pre-dcqe7rfl5fmp57d6kasklc-603239014289.europe-west3.run.app"
 
     // Supabase phone-verification backend (round 5): the Firebase project is a
