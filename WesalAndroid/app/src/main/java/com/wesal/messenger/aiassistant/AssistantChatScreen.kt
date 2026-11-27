@@ -215,15 +215,6 @@ fun AssistantChatScreen(
         runCatching { speechRecognizer?.stopListening() }
     }
 
-    fun scheduleDictationRestart() {
-        dictationHandler.removeCallbacksAndMessages(null)
-        dictationHandler.postDelayed({
-            if (dictationActiveState.value) {
-                beginDictationSession()
-            }
-        }, DictationLogic.RESTART_DELAY_MS)
-    }
-
     fun beginDictationSession() {
         val recognizer = speechRecognizer ?: return
         dictationSessionStartedAt = System.currentTimeMillis()
@@ -237,6 +228,15 @@ fun AssistantChatScreen(
                     )
                 }
             }
+    }
+
+    fun scheduleDictationRestart() {
+        dictationHandler.removeCallbacksAndMessages(null)
+        dictationHandler.postDelayed({
+            if (dictationActiveState.value) {
+                beginDictationSession()
+            }
+        }, DictationLogic.RESTART_DELAY_MS)
     }
 
     fun startDictation() {
