@@ -328,10 +328,20 @@ fun WesalAvatar(
     // With the footprint measure: profile/settings/detail are FULL, chat rows are
     // REDUCED (cheap glow breathing only — no sweep/sparkles/fan in lists), and
     // only genuinely tiny avatars (< 52dp on screen) stay NONE.
+    // Round 13 (Addendum K): on low-RAM devices (ActivityManager
+    // .isLowRamDevice — the Android Go / old-device class the owner
+    // reports heaviness on), framed avatars render their STATIC first
+    // frame: no infinite transitions are created at all, so scrolling
+    // lists never pay for motion the hardware can't afford. Normal
+    // devices are unaffected.
+    val lowRamDevice = remember(context) {
+        (context.getSystemService(android.content.Context.ACTIVITY_SERVICE)
+            as? android.app.ActivityManager)?.isLowRamDevice == true
+    }
     val effectiveFrameAnimated = FrameAnimationPolicy.effectiveAnimated(
         frameAnimated = activeFrame?.animated == true,
         masterEnabled = WesalFrameLibrary.framesAnimationEnabled
-    )
+    ) && !lowRamDevice
     val motionTier = FrameAnimationPolicy.motionTier(
         sizeDp = containerSize.value,
         effectiveAnimated = effectiveFrameAnimated
