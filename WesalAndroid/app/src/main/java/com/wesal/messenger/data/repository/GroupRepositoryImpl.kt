@@ -525,13 +525,28 @@ class GroupRepositoryImpl @Inject constructor(
         val groupRef = firestore.collection(Constants.COLLECTION_GROUPS).document(groupId)
         val snap = groupRef.get().await()
         val chatId = snap.getString("chatId").orEmpty()
-        // Caller authorization (mirrors updateGroupInfo/approveGroupJoinRequest):
-        // only a group admin may remove someone else; removing yourself is the
-        // leaveGroup path and stays allowed for any member.
-        if (targetUid != uid) {
-            @Suppress("UNCHECKED_CAST")
-            val admins = (snap.get("adminIds") as? List<String>).orEmpty()
-            require(admins.contains(uid)) { "فقط مشرف المجموعة يمكنه إزالة الأعضاء" }
+        // Caller authorization (round 11, item 9 — ModerationLogic): only a
+        // group admin may remove someone else; removing yourself is the
+        // leaveGroup path and stays allowed for any member; and the group
+        // CREATOR can never be removed by a moderator action (previously
+        // any admin could remove/demote the creator — the group could lose
+        // its owner to a moderator).
+        @Suppress("UNCHECKED_CAST")
+        val admins = (snap.get("adminIds") as? List<String>).orEmpty()
+        val creatorId = snap.getString("creatorId").orEmpty()
+        require(
+            com.wesal.messenger.core.util.ModerationLogic.canRemoveGroupMember(
+                callerUid = uid,
+                targetUid = targetUid,
+                creatorId = creatorId,
+                adminIds = admins
+            )
+        ) {
+            if (targetUid == creatorId && targetUid != uid) {
+                "لا يمكن إزالة منشئ المجموعة"
+            } else {
+                "فقط مشرف المجموعة يمكنه إزالة الأعضاء"
+            }
         }
         groupRef.update(
             mapOf(
@@ -552,7 +567,23 @@ class GroupRepositoryImpl @Inject constructor(
         val snap = groupRef.get().await()
         @Suppress("UNCHECKED_CAST")
         val admins = (snap.get("adminIds") as? List<String>).orEmpty()
-        require(admins.contains(uid)) { "فقط مشرف المجموعة يمكنه تعديل صلاحيات المشرفين" }
+        // Round 11 (item 9 — ModerationLogic): admins manage roles, but the
+        // CREATOR's admin role is inherent and cannot be granted/revoked.
+        val creatorId = snap.getString("creatorId").orEmpty()
+        require(
+            com.wesal.messenger.core.util.ModerationLogic.canSetGroupAdmin(
+                callerUid = uid,
+                targetUid = targetUid,
+                creatorId = creatorId,
+                adminIds = admins
+            )
+        ) {
+            if (targetUid == creatorId) {
+                "صلاحية منشئ المجموعة ثابتة ولا يمكن تعديلها"
+            } else {
+                "فقط مشرف المجموعة يمكنه تعديل صلاحيات المشرفين"
+            }
+        }
         val op = if (isAdmin) FieldValue.arrayUnion(targetUid) else FieldValue.arrayRemove(targetUid)
         groupRef.update("adminIds", op).await()
     }

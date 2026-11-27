@@ -153,6 +153,102 @@ object FramedCutoutLayout {
         return cropFill * OPAQUE_REFERENCE_ZOOM
     }
 
+    // ------------------------------------------------------------------
+    // Round 11 (item 7): SUBJECT-AWARE fit for opaque framed photos.
+    //
+    // Why the round-10 zoom was not enough (MEASURED on the owner's own
+    // screenshots, 2026-11-27): in his r10 profile screenshot the framed
+    // figure spans only ~0.84x the aperture height with ~0.11x aperture of
+    // head clearance, vs the reference composite's 1.22x / 0.03x. The 1.22x
+    // canvas zoom WAS applying — but zooming the whole canvas by 1.22 only
+    // scales the FIGURE by 1.22 too, and in his editor-style avatar output
+    // the figure occupies only ~0.70 of the canvas height (the rest is
+    // glow backdrop above/below), so the figure landed at 0.70 x 1.22 =
+    // 0.85x aperture. Closing the gap requires fitting the SUBJECT, not
+    // the canvas:
+    //
+    // Subject model for opaque editor-style avatar output (measured from
+    // the owner's saved avatar style — centred subject on a baked glow
+    // backdrop): the figure spans [OPAQUE_SUBJECT_HEIGHT_FRACTION] of the
+    // canvas height, its centre at [OPAQUE_SUBJECT_CENTER_Y_FRACTION] of
+    // the canvas height. The fit then solves for the uniform scale that
+    // renders the SUBJECT at the reference figure height
+    // (1 - clearance + overflow = 1.22 aperture diameters, the same total
+    // the cutout fit targets) and the vertical bias that places the
+    // subject's centre at the reference figure centre (clearance + 1.22/2
+    // = 0.64 of the aperture from its top). For the measured model case
+    // this reproduces the reference split EXACTLY: figure top at
+    // +0.03x aperture, figure bottom at aperture bottom + 0.25x aperture.
+    // ------------------------------------------------------------------
+
+    /** Subject height as a fraction of an opaque editor-output canvas height. */
+    const val OPAQUE_SUBJECT_HEIGHT_FRACTION = 0.70f
+
+    /** Subject centre height as a fraction of an opaque editor-output canvas height. */
+    const val OPAQUE_SUBJECT_CENTER_Y_FRACTION = 0.44f
+
+    /** Hard cap on the subject fit's zoom relative to the plain Crop fill. */
+    const val OPAQUE_MAX_ZOOM_VS_CROP = 2.6f
+
+    /** Reference figure height in aperture diameters (clearance/overflow split above). */
+    val TARGET_FIGURE_HEIGHT_FRACTION: Float =
+        1f - HEAD_CLEARANCE_APERTURE_FRACTION + BOTTOM_OVERFLOW_APERTURE_FRACTION
+
+    /** Reference figure centre, as a fraction of the aperture from its top edge. */
+    val TARGET_FIGURE_CENTER_Y_FRACTION: Float =
+        HEAD_CLEARANCE_APERTURE_FRACTION + TARGET_FIGURE_HEIGHT_FRACTION / 2f
+
+    /** Decode oversampling for the subject fit (the fit zooms past the r10 1.22x). */
+    const val OPAQUE_SUBJECT_DECODE_OVERSAMPLE = 2f
+
+    /** Result of [opaqueSubjectFit]: the uniform scale plus the vertical bias. */
+    data class OpaqueSubjectFit(
+        /** Bitmap px -> destination px uniform scale factor. */
+        val scale: Float,
+        /**
+         * Vertical alignment bias in [-1, 1] (-1 = top, +1 = bottom) that
+         * positions the scaled bitmap so the subject centre lands on the
+         * reference figure centre. Horizontal placement stays centred.
+         */
+        val biasY: Float,
+        /** [scale] relative to the plain Crop fill — drives decode sizing. */
+        val zoomVsCrop: Float
+    )
+
+    /**
+     * Subject-aware fit for an OPAQUE photo rendered into a frame's
+     * aperture (the destination box IS the aperture box in the avatar
+     * renderer). Never scales below the Crop fill (the disc must stay
+     * covered) and never past [OPAQUE_MAX_ZOOM_VS_CROP] times it.
+     */
+    fun opaqueSubjectFit(srcW: Float, srcH: Float, dstW: Float, dstH: Float): OpaqueSubjectFit {
+        val safeSrcW = srcW.coerceAtLeast(1f)
+        val safeSrcH = srcH.coerceAtLeast(1f)
+        val safeDstW = dstW.coerceAtLeast(1f)
+        val safeDstH = dstH.coerceAtLeast(1f)
+        val cropScale = maxOf(safeDstW / safeSrcW, safeDstH / safeSrcH)
+        val subjectSrcH = OPAQUE_SUBJECT_HEIGHT_FRACTION * safeSrcH
+        val targetScale = TARGET_FIGURE_HEIGHT_FRACTION * safeDstH / subjectSrcH
+        val scale = targetScale.coerceIn(cropScale, cropScale * OPAQUE_MAX_ZOOM_VS_CROP)
+        val renderedH = safeSrcH * scale
+        // Offset (dst px, relative to the dst top) that puts the subject
+        // centre on the reference figure centre.
+        val offsetY = TARGET_FIGURE_CENTER_Y_FRACTION * safeDstH -
+            OPAQUE_SUBJECT_CENTER_Y_FRACTION * renderedH
+        // Convert the offset to an Alignment bias: offset = (dstH - renderedH) * (bias + 1) / 2.
+        val slack = safeDstH - renderedH
+        val biasY = if (slack == 0f) {
+            0f
+        } else {
+            (2f * offsetY / slack - 1f).coerceIn(-1f, 1f)
+        }
+        return OpaqueSubjectFit(
+            scale = scale,
+            biasY = biasY,
+            zoomVsCrop = if (cropScale > 0f) scale / cropScale else 1f
+        )
+    }
+
     fun compute(
         containerPx: Float,
         apertureCenterYFraction: Float,

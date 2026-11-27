@@ -132,6 +132,12 @@ class MainViewModel @Inject constructor(
         if (registryRecheckUid == uid && now - registryRecheckAtMs < 20_000L) return
         registryRecheckUid = uid
         registryRecheckAtMs = now
+        // Round 11 (item 1): this recheck ticks on app start and on every
+        // own-doc emission (profile loads included) — the natural place to
+        // also run the registry-keyed mirror heal, so a verified account
+        // whose Firestore mirror was lost is repaired without waiting for
+        // the next sign-in. The heal self-throttles per uid.
+        runCatching { authRepository.healVerifiedPhoneMirror(uid) }
         viewModelScope.launch {
             val inRegistry = runCatching { authRepository.isPhoneVerifiedInRegistry(uid) }
                 .getOrDefault(false)

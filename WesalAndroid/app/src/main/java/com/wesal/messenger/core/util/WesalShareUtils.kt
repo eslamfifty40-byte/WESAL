@@ -99,47 +99,102 @@ object WesalShareUtils {
      */
     fun isInvitablePhone(targetPhoneE164: String?): Boolean = inviteTargetDigits(targetPhoneE164).length >= 9
 
+    /** The two WhatsApp apps, in display order for the chooser. */
+    val WHATSAPP_PACKAGES: List<String> = listOf("com.whatsapp", "com.whatsapp.w4b")
+
+    /** True when [pkg] is installed AND can handle a wa.me ACTION_VIEW link. */
+    private fun whatsAppPackageCanOpen(context: Context, pkg: String, url: String): Boolean =
+        runCatching {
+            context.packageManager.getPackageInfo(pkg, 0)
+            Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(pkg)
+                .resolveActivity(context.packageManager) != null
+        }.getOrDefault(false)
+
+    /**
+     * Round 11 (item 4 — owner's explicit ruling): opens a wa.me [url]
+     * letting the user CHOOSE between WhatsApp and WhatsApp Business when
+     * both are installed. His verification number lives in the Business
+     * app, so silently forcing one package (the round-10 behaviour) could
+     * send «ابدأ» from the WRONG number and the OTP window never opened.
+     * Exactly one installed → opens it directly (no pointless chooser);
+     * none → the plain generic intent (browser fallback). Returns true
+     * when something was launched.
+     */
+    fun openWhatsAppLink(context: Context, url: String): Boolean {
+        val installed = WHATSAPP_PACKAGES.filter { whatsAppPackageCanOpen(context, it, url) }
+        return when (installed.size) {
+            0 -> runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                true
+            }.getOrDefault(false)
+
+            1 -> runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(installed[0])
+                )
+                true
+            }.getOrDefault(false)
+
+            else -> runCatching {
+                val primary = Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(installed[0])
+                val extras = installed.drop(1).map { pkg ->
+                    Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(pkg)
+                }
+                val chooser = Intent.createChooser(primary, null).apply {
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, extras.toTypedArray())
+                }
+                context.startActivity(chooser)
+                true
+            }.getOrDefault(false)
+        }
+    }
+
     fun shareViaWhatsApp(context: Context, message: String, targetPhoneE164: String? = null) {
         // Targeted invite (owner-reported bug fix): a wa.me deep link is the ONLY way to
         // open a SPECIFIC person's chat with the message prefilled. The old order tried a
         // generic ACTION_SEND first — that intent carries no phone number, so WhatsApp /
         // WhatsApp Business simply opened its own share UI and the person's chat never
         // opened; the wa.me fallback was unreachable whenever WhatsApp was installed.
+        // Round 11 (item 4): the open now goes through the two-app chooser —
+        // the user picks WhatsApp or WhatsApp Business when both exist.
         val digitsPhone = inviteTargetDigits(targetPhoneE164)
         if (digitsPhone.length >= 9) {
             val waUrl = "https://wa.me/$digitsPhone?text=${Uri.encode(message)}"
-            val launched = listOf("com.whatsapp", "com.whatsapp.w4b", null).any { pkg ->
-                runCatching {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(waUrl))
-                    if (pkg != null) intent.setPackage(pkg)
-                    context.startActivity(intent)
-                    true
-                }.getOrDefault(false)
-            }
-            if (!launched) {
+            if (!openWhatsAppLink(context, waUrl)) {
                 // WhatsApp not installed and nothing handled the link: generic share sheet.
                 shareGeneral(context, message, "WESAL Invite")
             }
             return
         }
 
-        val whatsappIntent = Intent(Intent.ACTION_SEND).apply {
+        // Non-targeted share: same chooser rule over ACTION_SEND — both
+        // apps offered when both are installed, direct open when only one
+        // is, and the old wa.me/browser fallback when neither is.
+        fun sendIntent(pkg: String) = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            setPackage("com.whatsapp")
+            setPackage(pkg)
             putExtra(Intent.EXTRA_TEXT, message)
         }
-        val businessWhatsappIntent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            setPackage("com.whatsapp.w4b")
-            putExtra(Intent.EXTRA_TEXT, message)
-        }
-
-        val launchedDirect = runCatching {
-            context.startActivity(whatsappIntent)
-            true
-        }.getOrElse {
+        val installedSend = WHATSAPP_PACKAGES.filter { pkg ->
             runCatching {
-                context.startActivity(businessWhatsappIntent)
+                context.packageManager.getPackageInfo(pkg, 0)
+                sendIntent(pkg).resolveActivity(context.packageManager) != null
+            }.getOrDefault(false)
+        }
+        val launchedDirect = when (installedSend.size) {
+            0 -> false
+            1 -> runCatching {
+                context.startActivity(sendIntent(installedSend[0]))
+                true
+            }.getOrDefault(false)
+
+            else -> runCatching {
+                val primary = sendIntent(installedSend[0])
+                val extras = installedSend.drop(1).map { sendIntent(it) }
+                val chooser = Intent.createChooser(primary, null).apply {
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, extras.toTypedArray())
+                }
+                context.startActivity(chooser)
                 true
             }.getOrDefault(false)
         }

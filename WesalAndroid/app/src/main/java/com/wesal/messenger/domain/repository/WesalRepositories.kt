@@ -72,6 +72,17 @@ interface AuthRepository {
      */
     suspend fun isPhoneVerifiedInRegistry(uid: String): Boolean
     /**
+     * Round 11 (item 1): registry-keyed self-heal of the users-doc phone
+     * mirror. Fire-and-forget: when the Supabase registry holds a row for
+     * [uid], the Firestore doc is patched (diff-only) to carry exactly the
+     * registry's phoneNumber/phoneHash/phoneDigits with isPhoneVerified —
+     * the permanent fix for a verified account staying invisible to
+     * contacts discovery because its mirror was lost. When NO row exists,
+     * nothing is ever stamped from local fields. Idempotent and throttled
+     * per uid; safe to call on sign-in, app start and profile load.
+     */
+    fun healVerifiedPhoneMirror(uid: String)
+    /**
      * Abandons an in-flight phone login: when the current session is the
      * anonymous session [sendPhoneOtp] created for it, sign it out (the
      * account it replaced stays in the saved-accounts list for one-tap
@@ -117,6 +128,19 @@ interface UserRepository {
     suspend fun backfillNameSearchKeys(limit: Int = 500): Result<Int>
     suspend fun listDiscoverableUsers(limit: Int = 30): List<WesalUser>
     suspend fun findUsersByPhoneHashes(phoneHashes: List<String>): Map<String, WesalUser>
+
+    /**
+     * Round 11 (item 5): LIVE variant of [findUsersByPhoneHashes] — chunked
+     * (30) snapshot listeners over the users phoneHash queries, merged into
+     * one phoneHash → user map that re-emits whenever a matching doc
+     * appears or changes (a contact who registers while the contacts
+     * screen is open shows up without a reopen). Acceptance mirrors the
+     * one-shot path's Firestore arm: the doc's stored phoneHash must be
+     * one of the queried hashes (query-proven) and its isPhoneVerified
+     * flag must be set; the usual hidden/banned/deleted/self filters
+     * apply. Listeners live only while the flow is collected.
+     */
+    fun observeUsersByPhoneHashes(phoneHashes: List<String>): Flow<Map<String, WesalUser>>
     suspend fun updateProfile(
         displayName: String,
         bio: String,

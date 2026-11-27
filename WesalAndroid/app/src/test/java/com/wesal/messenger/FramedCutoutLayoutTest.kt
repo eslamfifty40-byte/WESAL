@@ -237,4 +237,53 @@ class FramedCutoutLayoutTest {
         val factor = FramedCutoutLayout.opaqueScaleFactor(0f, 0f, 200f, 200f)
         assertTrue(factor.isFinite() && factor > 0f)
     }
+
+    // ------------------------------------------------------------------
+    // Round 11 (item 7): subject-aware opaque fit. The r10 canvas zoom
+    // rendered the owner's figure at ~0.84x aperture (measured); the
+    // subject fit must land the FIGURE at the reference 1.22x aperture
+    // with 0.03 head clearance for the measured subject model.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun opaqueSubjectFit_measuredModel_reproducesReferenceSplit() {
+        // Square editor output (1000x1000) into a 200x200 aperture box.
+        val fit = FramedCutoutLayout.opaqueSubjectFit(1000f, 1000f, 200f, 200f)
+        val renderedH = 1000f * fit.scale
+        // Subject (figure) height = 0.70 of canvas -> must render at 1.22x the aperture.
+        val figureH = FramedCutoutLayout.OPAQUE_SUBJECT_HEIGHT_FRACTION * renderedH
+        assertEquals(1.22f * 200f, figureH, 0.5f)
+        // Reconstruct the drawn offset from the bias: offset = (dstH - renderedH) * (bias+1)/2.
+        val offsetY = (200f - renderedH) * (fit.biasY + 1f) / 2f
+        // Subject top in the source sits at (centre - height/2) = 0.44 - 0.35 = 0.09 of canvas.
+        val subjectTopSrcFrac = FramedCutoutLayout.OPAQUE_SUBJECT_CENTER_Y_FRACTION -
+            FramedCutoutLayout.OPAQUE_SUBJECT_HEIGHT_FRACTION / 2f
+        val figureTop = offsetY + subjectTopSrcFrac * renderedH
+        val figureBottom = figureTop + figureH
+        // Head clearance = 0.03x aperture below the aperture top; bottom
+        // overflows the aperture bottom by 0.25x aperture.
+        assertEquals(0.03f * 200f, figureTop, 0.5f)
+        assertEquals(200f + 0.25f * 200f, figureBottom, 0.5f)
+        // Zoom vs plain Crop fill (0.2): 1.22 / 0.70 = ~1.743.
+        assertEquals(1.22f / 0.70f, fit.zoomVsCrop, 0.01f)
+    }
+
+    @Test
+    fun opaqueSubjectFit_neverBelowCropFill_andBiasClamped() {
+        // A very tall thin source: Crop fill is height-driven; the subject
+        // fit must still cover the disc and keep the bias inside [-1, 1].
+        val fit = FramedCutoutLayout.opaqueSubjectFit(400f, 2000f, 200f, 200f)
+        val cropFill = maxOf(200f / 400f, 200f / 2000f)
+        assertTrue(fit.scale >= cropFill)
+        assertTrue(400f * fit.scale >= 200f && 2000f * fit.scale >= 200f)
+        assertTrue(fit.biasY in -1f..1f)
+        assertTrue(fit.zoomVsCrop <= FramedCutoutLayout.OPAQUE_MAX_ZOOM_VS_CROP + 0.001f)
+    }
+
+    @Test
+    fun opaqueSubjectFit_degenerateSource_staysFinite() {
+        val fit = FramedCutoutLayout.opaqueSubjectFit(0f, 0f, 200f, 200f)
+        assertTrue(fit.scale.isFinite() && fit.scale > 0f)
+        assertTrue(fit.biasY in -1f..1f)
+    }
 }

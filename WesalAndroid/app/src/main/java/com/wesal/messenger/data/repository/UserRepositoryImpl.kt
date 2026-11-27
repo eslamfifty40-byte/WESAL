@@ -1001,6 +1001,47 @@ class UserRepositoryImpl @Inject constructor(
         return matched
     }
 
+    override fun observeUsersByPhoneHashes(phoneHashes: List<String>): Flow<Map<String, WesalUser>> =
+        callbackFlow {
+            val distinct = phoneHashes.filter { it.isNotBlank() }.distinct()
+            if (distinct.isEmpty()) {
+                trySend(emptyMap())
+                awaitClose { }
+                return@callbackFlow
+            }
+            val currentUid = auth.currentUser?.uid
+            val lock = Any()
+            val perChunk = HashMap<Int, Map<String, WesalUser>>()
+            val registrations = distinct.chunked(30).mapIndexed { index, chunk ->
+                firestore.collection(Constants.COLLECTION_USERS)
+                    .whereIn("phoneHash", chunk)
+                    .addSnapshotListener { snap, err ->
+                        if (err != null || snap == null) return@addSnapshotListener
+                        val chunkMatches = HashMap<String, WesalUser>()
+                        for (doc in snap.documents) {
+                            val hash = doc.getString("phoneHash").orEmpty()
+                            if (hash.isBlank() || hash !in chunk) continue
+                            // Raw-field acceptance (round 11, item 1 audit):
+                            // the whereIn query proves the stored hash; the
+                            // doc must also carry the verified flag itself.
+                            if (doc.getBoolean("isPhoneVerified") != true) continue
+                            val user = doc.toWesalUser()
+                            if (user.uid == currentUid) continue
+                            if (user.hiddenFromSearch || user.isBanned || user.deletedAt != 0L) continue
+                            chunkMatches[hash] = user
+                        }
+                        val merged = synchronized(lock) {
+                            perChunk[index] = chunkMatches
+                            val all = HashMap<String, WesalUser>()
+                            perChunk.values.forEach { all.putAll(it) }
+                            all
+                        }
+                        trySend(merged)
+                    }
+            }
+            awaitClose { registrations.forEach { runCatching { it.remove() } } }
+        }
+
     override suspend fun updateProfile(
         displayName: String,
         bio: String,
@@ -1342,7 +1383,11 @@ class UserRepositoryImpl @Inject constructor(
         val updates = hashMapOf<String, Any>(
             "phoneNumber" to if (hidePhone) "" else normalized,
             "isPhoneVerified" to staysVerified,
-            "phoneHash" to if (!hidePhone && staysVerified) fullHash else ""
+            // Round 11 (addendum 2a): the hash is stamped for a verified
+            // number EVEN when the number is hidden — hidePhoneNumber hides
+            // the number's DISPLAY, never phonebook-hash discovery (the
+            // hash only ever matches people who already hold the number).
+            "phoneHash" to if (staysVerified) fullHash else ""
         )
         docRef.set(updates, SetOptions.merge()).await()
     }
@@ -1425,7 +1470,11 @@ class UserRepositoryImpl @Inject constructor(
                     privateBackup["isPhoneVerified"] = currentVerified
                 }
                 map["phoneNumber"] = ""
-                map["phoneHash"] = ""
+                // Round 11 (addendum 2a): phoneHash is deliberately NOT
+                // blanked here anymore. The old blanking made a hidden
+                // verified account undiscoverable by the very people who
+                // already have its number (the proven 10001 breakage).
+                // Hiding covers display only; the hash stays for discovery.
             } else if (currentPhone.isNotBlank()) {
                 val norm = PhoneUtils.normalizeToE164(currentPhone) ?: currentPhone
                 map["phoneNumber"] = norm

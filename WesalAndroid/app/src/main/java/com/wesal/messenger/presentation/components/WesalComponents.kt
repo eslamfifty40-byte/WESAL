@@ -59,12 +59,15 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.ScaleFactor
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.res.painterResource
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.core.util.ResolvedFrame
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import androidx.compose.ui.text.TextStyle
@@ -72,6 +75,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -130,6 +134,67 @@ fun wesalNeonTextStyle(
         )
     )
 }
+
+/**
+ * Round 11 (item 7): shared state between the opaque-fit [ContentScale]
+ * and [Alignment] in WesalAvatar. Coil measures the painter with the
+ * content scale first and aligns it afterwards within the same pass, so
+ * the scale computation publishes the fit's vertical bias here and the
+ * alignment consumes it. Defaults to a slightly-high bias before the
+ * first measure lands.
+ */
+private class OpaqueFitHolder {
+    @Volatile
+    var biasY: Float = -0.5f
+
+    fun compute(srcSize: Size, dstSize: Size): Float {
+        val fit = FramedCutoutLayout.opaqueSubjectFit(
+            srcSize.width, srcSize.height, dstSize.width, dstSize.height
+        )
+        biasY = fit.biasY
+        return fit.scale
+    }
+
+    fun align(size: IntSize, space: IntSize): IntOffset {
+        val x = (space.width - size.width) / 2
+        val y = ((space.height - size.height) * (biasY + 1f) / 2f).roundToInt()
+        return IntOffset(x, y)
+    }
+}
+
+/**
+ * Round 11 (item 6): lets a child of a horizontally padded column span the
+ * FULL screen width (the profile/detail cover bands): the element is
+ * measured wider by twice [horizontalPadding] and shifted left by it, so
+ * its visual edges land exactly on the screen edges while its siblings
+ * keep the page padding.
+ */
+fun Modifier.pageBleed(horizontalPadding: Dp): Modifier =
+    this.then(
+        Modifier.layout { measurable, constraints ->
+            val extra = (horizontalPadding * 2).roundToPx()
+            val widened = constraints.copy(
+                minWidth = (constraints.minWidth + extra).coerceAtLeast(0),
+                maxWidth = if (constraints.maxWidth == Constraints.Infinity) {
+                    Constraints.Infinity
+                } else {
+                    constraints.maxWidth + extra
+                }
+            )
+            val placeable = measurable.measure(widened)
+            // Report the ORIGINAL width to the parent (the column must not
+            // think the child grew); the wider placeable is placed shifted
+            // left so it visually spans the full screen width.
+            val reportedWidth = if (constraints.maxWidth == Constraints.Infinity) {
+                placeable.width
+            } else {
+                constraints.maxWidth
+            }
+            layout(reportedWidth, placeable.height) {
+                placeable.placeRelative(-horizontalPadding.roundToPx(), 0)
+            }
+        }
+    )
 
 @Composable
 fun WesalAvatar(
@@ -787,25 +852,35 @@ fun WesalAvatar(
                 includeBlades = true
             )
         }
-        // Round 10 (item 9): OPAQUE photos in a frame (alpha-bounds verdict
-        // NOT_A_CUTOUT — e.g. the crop editor's glow-background output) get
-        // the reference-composite treatment: Crop fill × 1.22 zoom, anchored
-        // TopCenter by the AsyncImage's alignment, so the figure lands at
-        // the same 1.22×-aperture proportions as a bounds-fitted cutout
-        // instead of shrinking to the plain disc fill. User-framed photos
-        // (photoUserFramed) are EXCLUDED — their saved square already IS
-        // the owner's composition (round-9 WYSIWYG) and must render as-is;
-        // unframed avatars keep plain Crop.
+        // OPAQUE photos in a frame (alpha-bounds verdict NOT_A_CUTOUT —
+        // e.g. the crop editor's glow-background output) get the
+        // reference-composite treatment so the figure lands at the same
+        // 1.22×-aperture proportions as a bounds-fitted cutout instead of
+        // shrinking to the plain disc fill. Round 10 zoomed the whole
+        // CANVAS ×1.22 (TopCenter); round 11 (item 7) fits the SUBJECT
+        // instead — see FramedCutoutLayout.opaqueSubjectFit. User-framed
+        // photos (photoUserFramed) are EXCLUDED — their saved square
+        // already IS the owner's composition (round-9 WYSIWYG) and must
+        // render as-is; unframed avatars keep plain Crop.
         val framedOpaqueZoom = activeFrame != null && !isUserFramed && !framedCutout
-        val framedOpaqueContentScale = remember {
+        // Round 11 (item 7): the SUBJECT-aware fit (FramedCutoutLayout
+        // .opaqueSubjectFit) supersedes the round-10 canvas zoom — measured
+        // on the owner's r10 screenshot, the canvas zoom left the figure at
+        // ~0.84x aperture vs the reference 1.22x, because the figure only
+        // occupies ~0.70 of the editor canvas. The fit scales/positions by
+        // the subject model and reproduces the reference split (figure
+        // 1.22x aperture, head clearance 0.03, bottom overflow 0.25).
+        val opaqueFitHolder = remember { OpaqueFitHolder() }
+        val framedOpaqueContentScale = remember(opaqueFitHolder) {
             object : ContentScale {
                 override fun computeScaleFactor(srcSize: Size, dstSize: Size): ScaleFactor {
-                    val factor = FramedCutoutLayout.opaqueScaleFactor(
-                        srcSize.width, srcSize.height, dstSize.width, dstSize.height
-                    )
+                    val factor = opaqueFitHolder.compute(srcSize, dstSize)
                     return ScaleFactor(factor, factor)
                 }
             }
+        }
+        val framedOpaqueAlignment = remember(opaqueFitHolder) {
+            Alignment { size, space, _ -> opaqueFitHolder.align(size, space) }
         }
         // The framed backing disc takes its colour from the FRAME (ResolvedFrame.glow via
         // resolve()) — never a hardcoded per-frame special case — so changing the frame
@@ -883,7 +958,11 @@ fun WesalAvatar(
                         // magnification does not soften large avatars.
                         .size(
                             if (framedOpaqueZoom) {
-                                (innerPx * FramedCutoutLayout.OPAQUE_REFERENCE_ZOOM).roundToInt().coerceAtLeast(1)
+                                // Round 11 (item 7): the subject fit zooms
+                                // ~1.74x past Crop for editor-style photos
+                                // (vs the r10 1.22x) — decode larger so the
+                                // magnification does not soften big avatars.
+                                (innerPx * FramedCutoutLayout.OPAQUE_SUBJECT_DECODE_OVERSAMPLE).roundToInt().coerceAtLeast(1)
                             } else {
                                 innerPx
                             }
@@ -943,7 +1022,10 @@ fun WesalAvatar(
                             } else Modifier
                         ),
                     contentScale = if (framedOpaqueZoom) framedOpaqueContentScale else ContentScale.Crop,
-                    alignment = Alignment.TopCenter
+                    // Round 11 (item 7): framed opaque photos align by the
+                    // subject fit's bias (figure centre on the reference
+                    // centre); everything else keeps TopCenter.
+                    alignment = if (framedOpaqueZoom) framedOpaqueAlignment else Alignment.TopCenter
                 )
             } else if (fallbackResId != null) {
                 Image(
@@ -1432,10 +1514,13 @@ fun PhoneNumberText(
  *     timestamp and survives process death; it expires after 10 minutes so a
  *     stale arm can never fire a surprise send much later.
  *  2. The intent used to be a bare ACTION_VIEW on wa.me, which can land in a
- *     browser or a chooser where the «ابدأ» deep-link often stalls. It now
- *     targets WhatsApp explicitly (com.whatsapp, then com.whatsapp.w4b —
- *     the owner himself runs the Business app), falling back to the generic
- *     intent only when neither is installed.
+ *     browser or a chooser where the «ابدأ» deep-link often stalls. Round
+ *     10 targeted WhatsApp explicitly (first installed package) — round 11
+ *     (item 4) supersedes that with the owner's CHOOSER: both WhatsApp and
+ *     WhatsApp Business are offered when both are installed, because his
+ *     gate number lives in the Business app and a forced package can send
+ *     «ابدأ» from the wrong number; the generic intent (browser) remains
+ *     the fallback when neither is installed.
  *  3. Failures were swallowed by runCatching. Every fallback now shows a
  *     visible Arabic toast, and when WhatsApp cannot be opened at all the
  *     code is sent directly instead of stranding the user.
@@ -1473,25 +1558,17 @@ fun rememberWhatsAppOtpHandoff(onSendCode: () -> Unit): () -> Unit {
         {
             // Arm BEFORE leaving, persisted — survives process death in WhatsApp.
             prefs.edit().putLong(OTP_HANDOFF_KEY_ARMED_AT, System.currentTimeMillis()).apply()
-            val baseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(Constants.WHATSAPP_OTP_WINDOW_URL))
-            val pm = context.packageManager
-            val targetPackage = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { pkg ->
-                runCatching {
-                    pm.getPackageInfo(pkg, 0)
-                    Intent(Intent.ACTION_VIEW, Uri.parse(Constants.WHATSAPP_OTP_WINDOW_URL))
-                        .setPackage(pkg)
-                        .resolveActivity(pm) != null
-                }.getOrDefault(false)
-            }
-            val launched = runCatching {
-                val intent = if (targetPackage != null) {
-                    Intent(Intent.ACTION_VIEW, Uri.parse(Constants.WHATSAPP_OTP_WINDOW_URL))
-                        .setPackage(targetPackage)
-                } else {
-                    baseIntent
-                }
-                context.startActivity(intent)
-            }.isSuccess
+            // Round 11 (item 4): the open goes through the two-app chooser —
+            // when both WhatsApp and WhatsApp Business are installed the
+            // OWNER picks which one sends «ابدأ» (his gate number lives in
+            // the Business app; the round-10 forced first-installed package
+            // could open the wrong account). The armed flag is package-
+            // agnostic, so the on-resume auto-send fires whichever app he
+            // picked.
+            val launched = WesalShareUtils.openWhatsAppLink(
+                context,
+                Constants.WHATSAPP_OTP_WINDOW_URL
+            )
             if (!launched) {
                 // Nothing could open WhatsApp: say so out loud and send directly.
                 prefs.edit().remove(OTP_HANDOFF_KEY_ARMED_AT).apply()

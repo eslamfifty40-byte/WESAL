@@ -69,11 +69,54 @@ class CallActivity : AppCompatActivity() {
     private var isFinishingCall: Boolean = false
     private val pendingLocalCandidates = mutableListOf<IceCandidate>()
 
+    /**
+     * Round 11 (addendum 1b): proximity wake lock for the in-call UI. While
+     * held, the system turns the screen OFF when the phone is at the user's
+     * ear/face and back ON when it moves away — and keeps it on while the
+     * sensor reports "far", which is why it replaces FLAG_KEEP_SCREEN_ON
+     * whenever the device supports it. Acquired in onCreate — i.e. once
+     * this call UI is actually up (outgoing dialing screen, or the answered
+     * incoming call) — never while an incoming call is still ringing
+     * visibly in hand (that surface is IncomingCallActivity, which does not
+     * take the lock). Released in onDestroy.
+     */
+    private var proximityWakeLock: android.os.PowerManager.WakeLock? = null
+
+    private fun acquireProximityLock() {
+        if (proximityWakeLock?.isHeld == true) return
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isWakeLockLevelSupported(android.os.PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+                return
+            }
+            val lock = pm.newWakeLock(
+                android.os.PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                "wesal:call-proximity"
+            )
+            // Bounded as a safety net; onDestroy releases it on every exit path.
+            lock.acquire(4 * 60 * 60 * 1000L)
+            proximityWakeLock = lock
+        }
+    }
+
+    private fun releaseProximityLock() {
+        runCatching {
+            if (proximityWakeLock?.isHeld == true) proximityWakeLock?.release()
+        }
+        proximityWakeLock = null
+    }
+
     @OptIn(ExperimentalPermissionsApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Strict screenshot & screen-recording protection during active calls
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        // Proximity governs the screen during the call (see above); only
+        // devices without proximity support keep the old keep-screen-on.
+        acquireProximityLock()
+        if (proximityWakeLock == null) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
 
         val isIncoming = intent.getBooleanExtra(EXTRA_IS_INCOMING, false)
         val initialCallId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
@@ -138,17 +181,30 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                // Outgoing ringback tone ONLY after callee genuinely acknowledges ringing
-                LaunchedEffect(isIncoming, callStatusLabel, connState, coreMediaGranted) {
-                    if (
-                        !isIncoming &&
-                        coreMediaGranted &&
-                        callStatusLabel == strings.ringingCall &&
-                        connState != PeerConnection.PeerConnectionState.CONNECTED
-                    ) {
-                        val toneGen = runCatching { ToneGenerator(AudioManager.STREAM_MUSIC, 100) }.getOrNull()
+                // Round 11 (item 3e + addendum 2b): the ringback starts the
+                // moment the outgoing call is placed and keeps playing
+                // through BOTH honest states («جاري الاتصال» and «يرن») until
+                // the call connects or this screen goes away — WhatsApp-style.
+                // Only the state LABEL waits for the callee ack; the sound
+                // does not. The old effect keyed on the ringing LABEL, so a
+                // caller whose callee never acked (the proven stuck-CONNECTING
+                // case) heard complete silence. STREAM_VOICE_CALL routes the
+                // tone to the earpiece/current call route like a real
+                // ringback. Once the call has connected, the ringback never
+                // restarts (a mid-call network blip is not a new ring).
+                var hasConnected by remember { mutableStateOf(false) }
+                LaunchedEffect(isIncoming, coreMediaGranted, hasConnected) {
+                    if (!isIncoming && coreMediaGranted && !hasConnected) {
+                        val toneGen = runCatching {
+                            ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+                        }.getOrNull()
                         try {
                             while (isActive) {
+                                if (webRtcManager.connectionState.value ==
+                                    PeerConnection.PeerConnectionState.CONNECTED
+                                ) {
+                                    break
+                                }
                                 runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_RINGTONE, 1000) }
                                 delay(3500L)
                             }
@@ -290,6 +346,7 @@ class CallActivity : AppCompatActivity() {
 
                 LaunchedEffect(connState) {
                     if (connState == PeerConnection.PeerConnectionState.CONNECTED) {
+                        hasConnected = true
                         while (true) {
                             delay(1000L)
                             durationSeconds++
@@ -688,6 +745,7 @@ class CallActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        releaseProximityLock()
         webRtcManager.endSession()
         stopService(Intent(this, CallForegroundService::class.java))
         super.onDestroy()

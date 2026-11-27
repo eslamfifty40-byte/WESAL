@@ -74,6 +74,7 @@ import com.wesal.messenger.media.AvatarCropHelper
 import com.wesal.messenger.media.AvatarPreviewConfirmDialog
 import com.wesal.messenger.media.AvatarSourceBottomSheet
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.pageBleed
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WhatsAppOtpHandoffHint
 import com.wesal.messenger.presentation.components.WhatsAppOtpManualFallback
@@ -816,7 +817,15 @@ fun ProfileScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .aspectRatio(16f / 9f)
+                            // Round 11 (item 6): the cover gets a much
+                            // larger presence — full-bleed width (pageBleed
+                            // breaks out of the 20dp page padding) and a
+                            // taller 4:3 band instead of 16:9. The round-9
+                            // rule is unchanged: the photo shows COMPLETE
+                            // via ContentScale.Fit over the solid backdrop,
+                            // never cropped, no ghost, no scrim.
+                            .pageBleed(20.dp)
+                            .aspectRatio(4f / 3f)
                             .clip(RoundedCornerShape(16.dp))
                             .background(palette.surfaceElevated)
                             .clickable(enabled = !uiStatus.isSaving) {

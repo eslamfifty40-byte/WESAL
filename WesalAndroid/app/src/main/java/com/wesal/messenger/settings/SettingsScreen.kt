@@ -686,15 +686,19 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     val coverUrl = user?.coverUrl.orEmpty()
-                    // Cover strip (round-3 layout): the cover photo gets its own 120dp
-                    // band at the TOP of the card and the avatar band moves BELOW it —
+                    // Cover strip (round-3 layout): the cover photo gets its own band
+                    // at the TOP of the card and the avatar band moves BELOW it —
                     // previously the framed avatar was drawn over the centre of the
                     // cover (owner's screenshot: the crest sat on his face and the
                     // cover was unreadable). QR/edit buttons live inside this strip.
+                    // Round 11 (item 6): the strip grows 120dp -> 190dp so the
+                    // cover reads as a real header, not a sliver (the card is
+                    // already full-width; the round-9 Fit/solid-backdrop rule
+                    // is unchanged).
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(120.dp)
+                            .height(190.dp)
                             .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                             // Round 9 (item 9): solid backdrop for the Fit
                             // cover's leftover band space (no blur ghost).

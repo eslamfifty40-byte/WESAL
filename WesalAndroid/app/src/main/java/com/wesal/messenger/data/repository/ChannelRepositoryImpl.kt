@@ -597,10 +597,26 @@ class ChannelRepositoryImpl @Inject constructor(
         requestId: String,
         requesterUid: String
     ): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
         val reqRef = channelRef.collection(Constants.SUBCOLLECTION_JOIN_REQUESTS).document(requestId)
         firestore.runTransaction { tx ->
             val snap = tx.get(channelRef)
+            // Round 11 (item 9): this entry point previously had NO caller
+            // role check at all — any signed-in user who knew the ids could
+            // attempt an approval, and only the join_requests update rule
+            // (isChannelManager) failed the transaction closed with an
+            // opaque error. The client now enforces the same role model
+            // (owner or moderator — ModerationLogic) with an honest message.
+            @Suppress("UNCHECKED_CAST")
+            val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
+            require(
+                com.wesal.messenger.core.util.ModerationLogic.isChannelManager(
+                    uid = uid,
+                    ownerUid = snap.getString("ownerUid").orEmpty(),
+                    moderatorIds = mods
+                )
+            ) { "فقط مالك القناة أو المشرفون يمكنهم قبول طلبات الانضمام" }
             @Suppress("UNCHECKED_CAST")
             val subs = (snap.get("subscriberIds") as? List<String>).orEmpty()
             val updated = if (subs.contains(requesterUid)) subs else subs + requesterUid
@@ -616,9 +632,21 @@ class ChannelRepositoryImpl @Inject constructor(
     }
 
     override suspend fun rejectJoinRequest(channelId: String, requestId: String): Result<Unit> = runCatching {
-        firestore.collection(Constants.COLLECTION_CHANNELS)
-            .document(channelId)
-            .collection(Constants.SUBCOLLECTION_JOIN_REQUESTS)
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val channelRef = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
+        // Round 11 (item 9): same missing role check as approve — enforce
+        // channel-manager before touching the request.
+        val snap = channelRef.get().await()
+        @Suppress("UNCHECKED_CAST")
+        val mods = (snap.get("moderatorIds") as? List<String>).orEmpty()
+        require(
+            com.wesal.messenger.core.util.ModerationLogic.isChannelManager(
+                uid = uid,
+                ownerUid = snap.getString("ownerUid").orEmpty(),
+                moderatorIds = mods
+            )
+        ) { "فقط مالك القناة أو المشرفون يمكنهم رفض طلبات الانضمام" }
+        channelRef.collection(Constants.SUBCOLLECTION_JOIN_REQUESTS)
             .document(requestId)
             .update("status", "REJECTED")
             .await()
@@ -632,7 +660,14 @@ class ChannelRepositoryImpl @Inject constructor(
         val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val ref = firestore.collection(Constants.COLLECTION_CHANNELS).document(channelId)
         val snap = ref.get().await()
-        require(snap.getString("ownerUid") == uid) { "فقط مالك القناة يمكنه تعيين المشرفين" }
+        // Owner-only assignment (ModerationLogic) — moderators manage the
+        // channel day-to-day but cannot appoint other moderators.
+        require(
+            com.wesal.messenger.core.util.ModerationLogic.canSetChannelModerator(
+                callerUid = uid,
+                ownerUid = snap.getString("ownerUid").orEmpty()
+            )
+        ) { "فقط مالك القناة يمكنه تعيين المشرفين" }
         val op = if (makeModerator) FieldValue.arrayUnion(targetUid) else FieldValue.arrayRemove(targetUid)
         ref.update("moderatorIds", op).await()
     }

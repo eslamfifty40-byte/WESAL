@@ -114,20 +114,89 @@ class ContactsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     private var searchJob: Job? = null
+    private var syncJob: Job? = null
+    private var liveUpdatesJob: Job? = null
+
+    /** The device phone book as of the last sync — the live listeners re-derive matches against it. */
+    @Volatile
+    private var lastDeviceList: List<DeviceContact> = emptyList()
+
+    /** Hash → user matches from the last full sync, unioned with live emissions. */
+    @Volatile
+    private var lastMatchedByHash: Map<String, WesalUser> = emptyMap()
+
+    /** Uid the current uiState belongs to; the auth collector resets ONLY on a real change. */
+    @Volatile
+    private var lastAuthUid: String? = null
+
+    private val cacheStore by lazy { ContactsCacheStore(context) }
+
+    private fun hasContactsPermission(): Boolean =
+        androidx.core.content.ContextCompat.checkSelfPermission(
+            context,
+            android.Manifest.permission.READ_CONTACTS
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     init {
         viewModelScope.launch {
             authRepository.observeAuthState()
                 .distinctUntilChanged()
-                .collect {
+                .collect { uid ->
+                    // Round 11 (addendum 3) — PROVEN trigger gap: this
+                    // collector used to reset the state on EVERY emission,
+                    // and observeAuthState re-emits the SAME uid whenever
+                    // the stream restarts (ViewModel recreation on
+                    // navigation, token refresh). The ViewModel is
+                    // destination-scoped, so each entry created a fresh
+                    // empty state AND the reset could land after the sync's
+                    // results, wiping them — the screen then sat empty
+                    // until a manual refresh re-ran the sync. Now: reset
+                    // only on an actual account change; on first sight of a
+                    // uid, render the persisted cache immediately and
+                    // auto-sync (no manual step).
+                    if (uid == lastAuthUid) return@collect
+                    val previousUid = lastAuthUid
+                    lastAuthUid = uid
                     searchJob?.cancel()
+                    liveUpdatesJob?.cancel()
+                    liveUpdatesJob = null
+                    lastDeviceList = emptyList()
+                    lastMatchedByHash = emptyMap()
                     _uiState.value = ContactsUiState()
+                    if (uid.isNullOrBlank()) return@collect
+                    if (previousUid != null) {
+                        // Account switch: nothing from the old account may linger.
+                        syncJob?.cancel()
+                    }
+                    val cached = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        cacheStore.load(uid)
+                    }
+                    if (cached != null && (cached.matched.isNotEmpty() || cached.unmatched.isNotEmpty())) {
+                        // The unmatched rows are real device records (they
+                        // carry the candidate hashes the live listeners and
+                        // re-derivation need); matched rows render from the
+                        // cached user subset directly.
+                        lastDeviceList = cached.unmatched
+                        _uiState.update {
+                            it.copy(
+                                wesalContacts = cached.matched,
+                                nonWesalContacts = cached.unmatched,
+                                // Honest staleness: the status line shows the
+                                // CACHE's time until the fresh sync lands.
+                                lastSyncAtMs = cached.savedAtMs
+                            )
+                        }
+                    }
+                    if (hasContactsPermission()) {
+                        syncDeviceContacts()
+                    }
                 }
         }
     }
 
     fun syncDeviceContacts() {
-        viewModelScope.launch {
+        if (syncJob?.isActive == true) return
+        syncJob = viewModelScope.launch {
             val showLoader = _uiState.value.wesalContacts.isEmpty() && _uiState.value.nonWesalContacts.isEmpty()
             _uiState.update { it.copy(isLoadingContacts = showLoader, error = null) }
             // Device contacts load independently of the WESAL lookup: if the lookup fails, the
@@ -145,43 +214,32 @@ class ContactsViewModel @Inject constructor(
             val hashes = deviceList
                 .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
                 .distinct()
+            lastDeviceList = deviceList
             val matchedByHash = runCatching { userRepository.findUsersByPhoneHashes(hashes) }
                 .getOrElse { err ->
                     _uiState.update {
-                        it.copy(
-                            isLoadingContacts = false,
-                            wesalContacts = emptyList(),
-                            nonWesalContacts = deviceList.sortedBy { c -> c.displayName.trim().lowercase() },
-                            error = err.localizedMessage
-                                ?: "تعذر التحقق من جهات الاتصال المسجلة على WESAL"
-                        )
+                        // Round 11 (addendum 3): a failed lookup must not
+                        // wipe lists the cache/state already rendered — keep
+                        // what is on screen and surface the error instead.
+                        if (it.wesalContacts.isEmpty() && it.nonWesalContacts.isEmpty()) {
+                            it.copy(
+                                isLoadingContacts = false,
+                                nonWesalContacts = deviceList.sortedBy { c -> c.displayName.trim().lowercase() },
+                                error = err.localizedMessage
+                                    ?: "تعذر التحقق من جهات الاتصال المسجلة على WESAL"
+                            )
+                        } else {
+                            it.copy(
+                                isLoadingContacts = false,
+                                error = err.localizedMessage
+                                    ?: "تعذر التحقق من جهات الاتصال المسجلة على WESAL"
+                            )
+                        }
                     }
                     return@launch
                 }
-            runCatching {
-
-                val matched = mutableListOf<MatchedWesalContact>()
-                val unmatched = mutableListOf<DeviceContact>()
-                val seenUids = mutableSetOf<String>()
-
-                deviceList.forEach { contact ->
-                    val contactHashes = contact.candidateHashes.ifEmpty { listOfNotNull(contact.phoneHash) }
-                    val user = contactHashes.firstNotNullOfOrNull { matchedByHash[it] }
-                    // Round 9 (item 8): the secondary-admin carve-out that
-                    // used to drop the matched user here (sending account
-                    // 10002 to NEITHER list) is removed — the repository map
-                    // already excludes only the current user themself, and a
-                    // verified match belongs in the «على وصال» list, admins
-                    // included, exactly as the owner expects for his own
-                    // 10001/10002 pair.
-                    if (user != null) {
-                        if (seenUids.add(user.uid)) {
-                            matched.add(MatchedWesalContact(deviceName = contact.displayName, user = user))
-                        }
-                    } else {
-                        unmatched.add(contact)
-                    }
-                }
+            try {
+                val (matched, unmatched) = deriveMatches(deviceList, matchedByHash)
                 if (com.wesal.messenger.BuildConfig.DEBUG) {
                     android.util.Log.d(
                         "ContactsSync",
@@ -190,27 +248,37 @@ class ContactsViewModel @Inject constructor(
                             "onWesal=${matched.size} unmatched=${unmatched.size}"
                     )
                 }
-                val sortedMatched = matched.sortedBy {
-                    it.deviceName.ifBlank { it.user.displayName }.trim().lowercase()
-                }
-                val sortedUnmatched = unmatched.sortedBy {
-                    it.displayName.trim().lowercase()
-                }
-                Pair(sortedMatched, sortedUnmatched)
-            }.onSuccess { (matched, unmatched) ->
+                lastMatchedByHash = matchedByHash
+                val syncAt = System.currentTimeMillis()
                 _uiState.update {
                     it.copy(
                         isLoadingContacts = false,
                         wesalContacts = matched,
                         nonWesalContacts = unmatched,
-                        lastSyncAtMs = System.currentTimeMillis(),
+                        lastSyncAtMs = syncAt,
                         // Keep the bulk-invite selection honest across refreshes: drop
                         // keys whose contact no longer exists in the unregistered list.
                         selectedContactKeys = it.selectedContactKeys
                             .intersect(unmatched.map { c -> deviceContactKey(c) }.toSet())
                     )
                 }
-            }.onFailure { err ->
+                // Round 11 (addendum 3): persist the result so the next
+                // entry renders instantly instead of opening empty.
+                val uid = lastAuthUid
+                if (!uid.isNullOrBlank()) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        cacheStore.save(
+                            uid,
+                            ContactsCacheSnapshot(
+                                matched = matched,
+                                unmatched = unmatched,
+                                savedAtMs = syncAt
+                            )
+                        )
+                    }
+                }
+            } catch (err: Exception) {
+                if (err is kotlinx.coroutines.CancellationException) throw err
                 _uiState.update {
                     it.copy(
                         isLoadingContacts = false,
@@ -219,6 +287,111 @@ class ContactsViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Shared derivation: phone book + hash→user matches → (on-WESAL,
+     * unregistered), both sorted for display. Used by the one-shot sync
+     * and by the live listeners so the two paths can never disagree.
+     * Round 9 (item 8): no secondary-admin carve-out — the repository map
+     * already excludes only the current user themself, and a verified
+     * match belongs in the «على وصال» list, admins included.
+     */
+    private fun deriveMatches(
+        deviceList: List<DeviceContact>,
+        matchedByHash: Map<String, WesalUser>
+    ): Pair<List<MatchedWesalContact>, List<DeviceContact>> {
+        val matched = mutableListOf<MatchedWesalContact>()
+        val unmatched = mutableListOf<DeviceContact>()
+        val seenUids = mutableSetOf<String>()
+        deviceList.forEach { contact ->
+            val contactHashes = contact.candidateHashes.ifEmpty { listOfNotNull(contact.phoneHash) }
+            val user = contactHashes.firstNotNullOfOrNull { matchedByHash[it] }
+            if (user != null) {
+                if (seenUids.add(user.uid)) {
+                    matched.add(MatchedWesalContact(deviceName = contact.displayName, user = user))
+                }
+            } else {
+                unmatched.add(contact)
+            }
+        }
+        val sortedMatched = matched.sortedBy {
+            it.deviceName.ifBlank { it.user.displayName }.trim().lowercase()
+        }
+        val sortedUnmatched = unmatched.sortedBy {
+            it.displayName.trim().lowercase()
+        }
+        return Pair(sortedMatched, sortedUnmatched)
+    }
+
+    /**
+     * Round 11 (item 5): LIVE contacts updates while the screen is
+     * visible. Chunked snapshot listeners over the users phoneHash
+     * queries (repository-side) re-derive the lists the moment a matching
+     * user doc appears/changes — a contact who registers NOW appears in
+     * «على وصال» without closing/reopening the screen. Bounded: the
+     * screen starts this on ON_RESUME and stops it on ON_PAUSE, and the
+     * listeners die with the flow collection.
+     */
+    fun startLiveContactUpdates() {
+        if (liveUpdatesJob?.isActive == true) return
+        if (!hasContactsPermission()) return
+        liveUpdatesJob = viewModelScope.launch {
+            // Fresh phone-book read: the candidate hashes must cover the
+            // MATCHED contacts too (their hashes aren't in the cache), so
+            // a matched contact whose doc changes re-derives correctly.
+            val deviceList = runCatching { PhoneContactsHelper.loadDeviceContacts(context) }
+                .getOrNull()
+                ?.takeIf { it.isNotEmpty() }
+                ?: lastDeviceList
+            if (deviceList.isEmpty()) return@launch
+            lastDeviceList = deviceList
+            val hashes = deviceList
+                .flatMap { it.candidateHashes.ifEmpty { listOfNotNull(it.phoneHash) } }
+                .distinct()
+            if (hashes.isEmpty()) return@launch
+            userRepository.observeUsersByPhoneHashes(hashes).collect { matchedByHash ->
+                // Union with the last full sync's matches (which include
+                // the registry-primary source): live Firestore emissions
+                // add to / refresh the picture, never shrink it below the
+                // last sync. The next ON_RESUME sync re-derives from
+                // scratch and corrects any drift.
+                lastMatchedByHash = lastMatchedByHash + matchedByHash
+                val (matched, unmatched) = deriveMatches(deviceList, lastMatchedByHash)
+                val state = _uiState.value
+                if (matched == state.wesalContacts && unmatched == state.nonWesalContacts) {
+                    return@collect
+                }
+                _uiState.update {
+                    it.copy(
+                        wesalContacts = matched,
+                        nonWesalContacts = unmatched,
+                        selectedContactKeys = it.selectedContactKeys
+                            .intersect(unmatched.map { c -> deviceContactKey(c) }.toSet())
+                    )
+                }
+                // Persist the fresher picture (keeping the last real SYNC
+                // timestamp — a live update is not a phone-book sync).
+                val uid = lastAuthUid
+                if (!uid.isNullOrBlank()) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        cacheStore.save(
+                            uid,
+                            ContactsCacheSnapshot(
+                                matched = matched,
+                                unmatched = unmatched,
+                                savedAtMs = state.lastSyncAtMs
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun stopLiveContactUpdates() {
+        liveUpdatesJob?.cancel()
+        liveUpdatesJob = null
     }
 
     fun saveDeviceContact(name: String, phone: String, existingContactId: String? = null) {

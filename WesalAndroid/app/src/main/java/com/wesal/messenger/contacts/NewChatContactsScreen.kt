@@ -124,6 +124,33 @@ fun NewChatContactsScreen(
         }
     }
 
+    // Round 11 (items 5 + addendum 3): every entry/resume re-syncs
+    // automatically (no manual refresh step) and the live listeners run
+    // exactly while the screen is started — a contact who registers while
+    // this screen is open appears in place; leaving stops the listeners.
+    val contactsLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(contactsLifecycleOwner, contactsPermission.status.isGranted) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            when (event) {
+                androidx.lifecycle.Lifecycle.Event.ON_RESUME -> {
+                    if (contactsPermission.status.isGranted) {
+                        viewModel.syncDeviceContacts()
+                        viewModel.startLiveContactUpdates()
+                    }
+                }
+                androidx.lifecycle.Lifecycle.Event.ON_PAUSE -> {
+                    viewModel.stopLiveContactUpdates()
+                }
+                else -> Unit
+            }
+        }
+        contactsLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            contactsLifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.stopLiveContactUpdates()
+        }
+    }
+
     val myUid = viewModel.myUid
     val requestByPeer = remember(requests, myUid) {
         requests.associateBy { req ->

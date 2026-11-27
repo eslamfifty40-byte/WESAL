@@ -25,6 +25,7 @@ import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
+import com.wesal.messenger.core.util.PhoneVerificationMirror
 import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -76,6 +77,8 @@ class AuthRepositoryImpl @Inject constructor(
         const val TAG = "AuthRepository"
         const val SESSION_HEARTBEAT_MS = 5 * 60_000L
         const val LEGACY_SESSION_STALE_MS = 7 * 24 * 60 * 60_000L
+        /** Round 11: minimum spacing between phone-mirror heal attempts per uid. */
+        const val PHONE_MIRROR_HEAL_RETRY_MS = 120_000L
     }
 
     /**
@@ -595,7 +598,7 @@ class AuthRepositoryImpl @Inject constructor(
      * (phoneNumber + isPhoneVerified + phoneHash), users/{uid}/private/info
      * (the same phone fields — the old callable kept the private backup in
      * sync) and the phone_uniqueness lock under the same no-steal rule as
-     * healMissingPhoneHash. Rules check (deployed firestore.rules): the
+     * healVerifiedPhoneMirror. Rules check (deployed firestore.rules): the
      * owner update arm for users/{userId} protects verification/admin/frame
      * fields but NOT phoneNumber / isPhoneVerified / phoneHash, the private
      * subcollection is owner-writable, and phone_uniqueness allows
@@ -944,56 +947,94 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 
-    /** Uid whose blank phoneHash this process has already tried to self-heal. */
-    @Volatile
-    private var phoneHashHealAttemptedUid: String? = null
+    /** Last heal attempt time per uid (round 11: retry-throttled, not once-ever). */
+    private val phoneMirrorHealAttemptAtMs = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
-     * Round 4 phoneHash self-heal (contacts M1 — the dominant cause of registered
-     * friends not appearing in contacts). Accounts that registered via Google/email
-     * were created with phoneHash = "" and only ever got a hash at profile
-     * completion; grandfathered accounts skipped completion, and the sign-in
-     * re-stamp was gated on phone verification they never had (see the note in the
-     * existing-doc branch below), so their stored hash stayed blank and the
-     * contacts whereIn("phoneHash", …) query could never match them. When a
-     * sign-in finds the user's own doc with a BLANK phoneHash but a stored phone
-     * number, repair it with a dedicated merge update containing phoneHash ONLY —
-     * standing alone it cannot be dragged down by an unrelated denied field in
-     * the batched sign-in update. The hash uses the same canonical path as the
-     * profile-completion stamp (normalizeToE164 → sha256Hash of the E.164 string),
-     * so the value is identical to what completion would have written; if the
-     * stored number cannot be normalized there is no canonical hash and the heal
-     * skips rather than writing a hash no lookup candidate can equal. The
-     * phone_uniqueness lock doc is mirrored from reserveUniquePhone so the
-     * contacts fallback lookup can find the account too — but a lock already
-     * owned by a different uid is never stolen. Fire-and-forget in appScope, at
-     * most once per session per user, never overwriting a non-blank hash.
+     * Round 11 (item 1) — registry-keyed self-heal of the FULL phone mirror,
+     * superseding the round-4/5 phoneHash-only heal.
      *
-     * Phone phase (owner rule, 2026-11-27): the heal is GATED on the number
-     * being VERIFIED. Contacts discoverability requires a verified phone —
-     * an unverified number stays on the profile with NO phoneHash, which
-     * also stops number spoofing in contacts. Round 5: the gate is now the
-     * Supabase verified_phones registry — the heal runs only when the
-     * registry binds a number to this uid, and the stamped hash is the
-     * registry's own canonical phoneHash (sha256 of the E.164 number, the
-     * same value contacts lookups compute), so a user whose verification
-     * mirror was lost is repaired from the authority itself. Unverified
-     * accounts get their registry row from the mandatory verification gate
-     * (verifyPhoneOtpForCurrentUser) the moment the OTP checks out.
+     * PROVEN root cause (live data, 2026-11-27): account 10001 held a
+     * verified_phones registry row while its users doc carried
+     * phoneNumber=""/phoneHash="" (and garbled phoneDigits) — contacts
+     * discovery matches on the doc's phoneHash, so the account was
+     * invisible until a manual console repair stamped the doc from the
+     * registry values. The old heal only ran when the doc's hash was blank
+     * AND a local phone number was present AND the number wasn't hidden —
+     * three conditions the broken state itself could fail.
+     *
+     * The new heal is unconditional and diff-only: whenever the registry
+     * holds a row for this uid, the doc is patched to carry EXACTLY the
+     * registry's phoneNumber + phoneHash + phoneDigits (digits of the
+     * E.164) + isPhoneVerified=true, writing only the fields that differ
+     * ([PhoneVerificationMirror.mirrorUpdates] — no full-doc rewrite, no
+     * refreshAll). The private/info backup is kept in sync when the number
+     * changed, and the phone_uniqueness lock is mirrored under the same
+     * no-steal rule as before. Hide-phone state does NOT block the heal
+     * (owner ruling, round 11 addendum 2a: the hash powers phonebook
+     * discovery only; display privacy is enforced at parse/render time).
+     *
+     * When NO registry row exists, NOTHING is stamped from local fields —
+     * the registry is the only verification authority, and a bare
+     * isPhoneVerified=true with an incomplete mirror is treated as
+     * unverified everywhere it matters (the gate keys on the complete
+     * mirror; discovery requires the stored hash).
+     *
+     * Fire-and-forget in appScope, off the critical UI path, idempotent,
+     * throttled to one attempt per uid per [PHONE_MIRROR_HEAL_RETRY_MS]
+     * (a failed/offline attempt may retry; a successful diff-empty attempt
+     * costs one registry read). DEBUG-logged.
      */
-    private fun healMissingPhoneHash(uid: String) {
-        if (uid.isBlank() || phoneHashHealAttemptedUid == uid) return
-        phoneHashHealAttemptedUid = uid
+    override fun healVerifiedPhoneMirror(uid: String) {
+        if (uid.isBlank()) return
+        val now = System.currentTimeMillis()
+        val last = phoneMirrorHealAttemptAtMs[uid] ?: 0L
+        if (now - last < PHONE_MIRROR_HEAL_RETRY_MS) return
+        phoneMirrorHealAttemptAtMs[uid] = now
         appScope.launch {
             runCatching {
                 val row = supabasePhone.fetchVerifiedPhoneForUid(uid) ?: return@runCatching
-                val hash = row.phoneHash
-                if (hash.isBlank()) return@runCatching
-                firestore.collection(Constants.COLLECTION_USERS).document(uid)
-                    .set(mapOf("phoneHash" to hash), SetOptions.merge())
-                    .awaitQueued(8_000L)
+                if (row.phoneHash.isBlank() || row.phoneE164.isBlank()) return@runCatching
+                val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+                val snap = withTimeoutOrNull(10_000L) { userRef.get().await() }
+                    ?: return@runCatching
+                if (!snap.exists()) return@runCatching
+                @Suppress("UNCHECKED_CAST")
+                val hidePhone = (snap.get("privacySettings") as? Map<String, Any>)
+                    ?.get("hidePhoneNumber") as? Boolean ?: false
+                val updates = PhoneVerificationMirror.mirrorUpdates(
+                    registryPhoneE164 = row.phoneE164,
+                    registryPhoneHash = row.phoneHash,
+                    currentPhoneNumber = snap.getString("phoneNumber"),
+                    currentPhoneHash = snap.getString("phoneHash"),
+                    currentPhoneDigits = snap.getString("phoneDigits"),
+                    currentIsPhoneVerified = snap.getBoolean("isPhoneVerified") ?: false,
+                    // Addendum 2a: hidden accounts keep the public number
+                    // blanked (private backup carries it) but MUST get the
+                    // hash — discovery must not depend on the display flag.
+                    stampsPhoneNumber = !hidePhone
+                )
+                if (updates.isNotEmpty()) {
+                    userRef.set(updates, SetOptions.merge()).awaitQueued(8_000L)
+                    if (com.wesal.messenger.BuildConfig.DEBUG) {
+                        Log.d(TAG, "phone mirror heal patched ${updates.keys} for uid=$uid")
+                    }
+                    if (updates.containsKey(PhoneVerificationMirror.FIELD_PHONE_NUMBER)) {
+                        runCatching {
+                            userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                                .set(
+                                    mapOf(
+                                        "phoneNumber" to row.phoneE164,
+                                        "isPhoneVerified" to true,
+                                        "updatedAt" to System.currentTimeMillis()
+                                    ),
+                                    SetOptions.merge()
+                                ).await()
+                        }
+                    }
+                }
                 val lockRef = firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
-                    .document(hash)
+                    .document(row.phoneHash)
                 runCatching {
                     firestore.runTransaction { tx ->
                         val lockSnap = tx.get(lockRef)
@@ -1009,7 +1050,7 @@ class AuthRepositoryImpl @Inject constructor(
                         }
                     }.await()
                 }
-            }.onFailure { Log.w(TAG, "phoneHash self-heal failed: ${it.message}") }
+            }.onFailure { Log.w(TAG, "phone mirror self-heal failed: ${it.message}") }
         }
     }
 
@@ -1150,7 +1191,6 @@ class AuthRepositoryImpl @Inject constructor(
             val existingPublicId = snapshot.getString("publicId").orEmpty()
             val existingNumericId = snapshot.getString("numericId").orEmpty()
             val existingPhone = snapshot.getString("phoneNumber").orEmpty()
-            val existingPhoneHash = snapshot.getString("phoneHash").orEmpty()
             val existingEmail = snapshot.getString("email").orEmpty()
             val existingBirthDate = snapshot.getString("birthDate").orEmpty()
             val existingCompleted = snapshot.getBoolean("profileCompleted")
@@ -1198,35 +1238,18 @@ class AuthRepositoryImpl @Inject constructor(
             } else if (snapshot.getBoolean("isPhoneVerified") == null) {
                 updateMap["isPhoneVerified"] = false
             }
-            // Round 4 (contacts M1) originally UNGATED this re-stamp (any stored
-            // phone + blank hash) so Google/email accounts became discoverable.
-            // Phone phase (owner rule, 2026-11-27) supersedes that: contacts
-            // discoverability now REQUIRES the number to be verified — only a
-            // verified account may carry a phoneHash, and an unverified number
-            // stays on the profile with NO hash (this also prevents number
-            // spoofing in contacts). The re-stamp is therefore gated again on
-            // verification provenance (this sign-in's verified Auth phone, or
-            // the doc's stored isPhoneVerified). Unverified accounts are routed
-            // through the mandatory verification gate, whose Supabase verify
-            // binds the number in the registry at OTP success (and mirrors
-            // the stamp); verified accounts whose hash was lost are still
-            // repaired by healMissingPhoneHash below, which reads the
-            // registry itself.
-            if (!hidePhone && effectivePhone.isNotBlank() &&
-                (phoneVerified || existingVerified)
-            ) {
-                // Review MINOR-8: stamp ONLY the canonical hash space —
-                // sha256 of the normalized E.164 number, the exact value the
-                // contacts lookup hashes device numbers into. The old fallback
-                // hashed the RAW string when normalization failed, a value no
-                // lookup can ever reproduce (and inconsistent with
-                // healMissingPhoneHash, which skips such numbers). An
-                // un-normalizable number simply gets no stamp here; the heal
-                // applies the same rule.
-                PhoneUtils.normalizeToE164(effectivePhone)?.let { norm ->
-                    updateMap["phoneHash"] = PhoneUtils.sha256Hash(norm)
-                }
-            }
+            // Round 11 (item 1): the sign-in update NO LONGER stamps phoneHash
+            // from local fields at all. The old arm trusted the doc's stored
+            // isPhoneVerified flag (`existingVerified`) as provenance — but a
+            // legacy fabricated state (flag true, NO registry row, empty
+            // fields — the Esraa case) would then mint a hash from an
+            // unverified local number, forging the anti-spoofing authority.
+            // The registry is the ONLY authority: healVerifiedPhoneMirror
+            // (called unconditionally below) stamps exactly the registry's
+            // values when a row exists, and nothing when none does. Fresh
+            // phone-login sign-ups keep their create-path stamp in
+            // ensureUserSkeletonExists — that path runs immediately after a
+            // successful OTP verify, i.e. after the registry row exists.
 
             val resolvedEmail = existingEmail.ifBlank { email.trim() }
             if (Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true)) {
@@ -1245,17 +1268,15 @@ class AuthRepositoryImpl @Inject constructor(
             if (existingFrameId.isBlank()) {
                 healMissingFrameStamp(uid)
             }
-            // Round 4 (contacts M1): a blank phoneHash with a stored phone number
-            // means this account is invisible to contacts discovery (see
-            // healMissingPhoneHash) — heal it fire-and-forget. Skipped when the
-            // user hides their number: the completion/update paths deliberately
-            // blank the hash in that state and that privacy choice wins. Round
-            // 5: the heal no longer trusts the doc/Auth verification flags —
-            // it self-gates on the Supabase registry (owner rule preserved:
-            // only a registry-verified number ever receives the stamp).
-            if (existingPhoneHash.isBlank() && effectivePhone.isNotBlank() && !hidePhone) {
-                healMissingPhoneHash(uid)
-            }
+            // Round 11 (item 1): the registry-keyed mirror heal runs
+            // UNCONDITIONALLY on every sign-in (fire-and-forget, throttled):
+            // the round-4/5 conditions (blank hash + stored number + not
+            // hidden) each described a state the proven 10001 breakage did
+            // not reliably satisfy — its number was blank in the doc and
+            // hidden by privacy, yet the registry row existed. The heal
+            // self-gates on the registry alone; hide-phone no longer blocks
+            // it (addendum 2a: the hash powers discovery, not display).
+            healVerifiedPhoneMirror(uid)
             val finalNumericId = when {
                 Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.SECONDARY_ADMIN_NUMERIC_ID
                 Constants.SUPER_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.OWNER_ADMIN_NUMERIC_ID

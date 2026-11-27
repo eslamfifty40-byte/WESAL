@@ -617,6 +617,16 @@ service cloud.firestore {
       allow create: if isSignedIn() && !isCurrentlyBanned() &&
         request.resource.data.ownerUid == request.auth.uid &&
         request.auth.uid in request.resource.data.subscriberIds;
+      // Round-11 (item 9) SECURITY FIX: the two self-service arms below
+      // previously restricted only WHICH FIELDS changed, not WHOSE entries
+      // changed — any signed-in user could rewrite a public channel's whole
+      // subscriberIds list (arm 2), and any subscriber could rewrite
+      // moderatorIds and thereby appoint THEMSELF moderator (arm 3), then
+      // use the manager arm for full channel control. Both arms are now
+      // SELF-ONLY (mirrors ModerationLogic.isSelfOnlyMembershipChange in
+      // the client): subscriber additions/removals may name only the
+      // caller, and moderatorIds may only ever LOSE the caller themself
+      // (leaving gives up the seat) — appointments stay owner-only (arm 1).
       allow update: if !isCurrentlyBanned() && (isAdminOrMod() || (
         isSignedIn() && (
           (
@@ -624,11 +634,17 @@ service cloud.firestore {
             request.resource.data.ownerUid == resource.data.ownerUid
           ) || (
             resource.data.isPublic == true &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'subscribersCount'])
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'subscribersCount']) &&
+            request.resource.data.subscriberIds.removeAll(resource.data.subscriberIds).hasOnly([request.auth.uid]) &&
+            resource.data.subscriberIds.removeAll(request.resource.data.subscriberIds).hasOnly([request.auth.uid])
           ) || (
             request.auth.uid in resource.data.subscriberIds &&
             request.auth.uid != resource.data.ownerUid &&
-            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'moderatorIds', 'subscribersCount'])
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'moderatorIds', 'subscribersCount']) &&
+            request.resource.data.subscriberIds.removeAll(resource.data.subscriberIds).hasOnly([request.auth.uid]) &&
+            resource.data.subscriberIds.removeAll(request.resource.data.subscriberIds).hasOnly([request.auth.uid]) &&
+            request.resource.data.moderatorIds.removeAll(resource.data.moderatorIds).size() == 0 &&
+            resource.data.moderatorIds.removeAll(request.resource.data.moderatorIds).hasOnly([request.auth.uid])
           )
         )
       ));

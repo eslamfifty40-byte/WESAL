@@ -69,6 +69,7 @@ class WesalListenerService : Service() {
     @Inject lateinit var auth: FirebaseAuth
     @Inject lateinit var firestore: FirebaseFirestore
     @Inject lateinit var prefs: UserPreferencesDataStore
+    @Inject lateinit var callRepository: com.wesal.messenger.domain.repository.CallRepository
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -82,6 +83,20 @@ class WesalListenerService : Service() {
 
     /** Call ids that already produced (or deliberately skipped) a notification. Main-thread confined. */
     private val seenCallIds = mutableSetOf<String>()
+
+    /**
+     * Round 11 (item 3): call ids whose ringing acknowledgement this service
+     * has already stamped. Until now ONLY IncomingCallActivity acked — so
+     * when the full-screen intent could not fire (Android 14+ background
+     * restrictions) and the call was presented by THIS service's
+     * notification alone, the call doc stayed CONNECTING forever and the
+     * caller's honest state never advanced to «يرن». The service IS a
+     * callee-side presentation surface, so it acks on first sight of an
+     * actionable call — before the foreground/settings checks below,
+     * because the ack means "the callee side received the call", not
+     * "a notification was posted".
+     */
+    private val ringAckedCallIds = mutableSetOf<String>()
 
     /** Last observed (lastMessageTime, lastMessageSenderId) per chat. Main-thread confined. */
     private val chatBaseline = mutableMapOf<String, Pair<Long, String>>()
@@ -138,6 +153,7 @@ class WesalListenerService : Service() {
         removeListeners()
         boundUid = uid
         seenCallIds.clear()
+        ringAckedCallIds.clear()
         chatBaseline.clear()
         chatsBaselineReady = false
         userNameCache.clear()
@@ -210,6 +226,21 @@ class WesalListenerService : Service() {
             )
         }
         val currentIds = ringing.map { it.callId }.toSet()
+
+        // Round 11 (item 3): stamp the callee-side ringing ack for every
+        // actionable call the moment this service first sees it — the
+        // caller's «جاري الاتصال» → «يرن» transition depends on it, and the
+        // repository transaction is idempotent (CONNECTING → RINGING only,
+        // callee-only), so a duplicate ack from IncomingCallActivity is a
+        // no-op.
+        for (call in ringing) {
+            if (ringAckedCallIds.add(call.callId)) {
+                serviceScope.launch {
+                    runCatching { callRepository.acknowledgeIncomingRing(call.callId) }
+                }
+            }
+        }
+        ringAckedCallIds.retainAll(currentIds)
 
         // Calls that stopped ringing (answered, rejected, timed out, caller hung up):
         // their notification must go away.

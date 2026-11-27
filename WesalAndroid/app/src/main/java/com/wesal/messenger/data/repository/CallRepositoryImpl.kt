@@ -75,10 +75,28 @@ internal fun isActionableIncomingCall(
     return startedAt >= nowMs - INCOMING_CALL_WINDOW_MS
 }
 
+/**
+ * Round 11 (item 2): the callerName stamp can NEVER be blank. Live call
+ * docs proved the round-9 chain still shipped "" in production: the chain
+ * itself was correct, but it read a raw Firestore snapshot that — at call
+ * time, straight after an account switch or a cold start — could be a
+ * not-yet-populated cache skeleton whose displayName/publicId were both
+ * absent, and the snapshot read had no second source. The stamp now comes
+ * from the caller's parsed user doc (cache-first `getUserOnce`, which
+ * merges the private backup) with the raw snapshot only as a per-field
+ * fallback, and this pure chain guarantees a non-blank result:
+ * displayName → @publicId → "WESAL User".
+ */
+internal fun resolveCallerStampName(displayName: String?, publicId: String?): String =
+    displayName?.takeIf { it.isNotBlank() }
+        ?: publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }
+        ?: "WESAL User"
+
 @Singleton
 class CallRepositoryImpl @Inject constructor(
     private val auth: FirebaseAuth,
-    private val firestore: FirebaseFirestore
+    private val firestore: FirebaseFirestore,
+    private val userRepository: com.wesal.messenger.domain.repository.UserRepository
 ) : CallRepository {
 
     /**
@@ -251,25 +269,38 @@ class CallRepositoryImpl @Inject constructor(
 
     override suspend fun initiateCall(callee: WesalUser, isVideo: Boolean, offerSdp: String): Result<String> = runCatching {
         val callerUid = auth.currentUser?.uid ?: error("Not authenticated")
-        val callerSnap = firestore.collection(Constants.COLLECTION_USERS).document(callerUid).get().await()
-        val callerHandle = callerSnap.getString("publicId")?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+        // Round 11 (item 2): stamp the caller identity from the parsed user
+        // doc (cache-first getUserOnce — the same read every profile
+        // surface uses, private backup merged), NOT from a bare snapshot:
+        // live docs proved the snapshot could be an unpopulated cache
+        // skeleton at call time and the shipped callerName was "". The raw
+        // snapshot remains as a per-field fallback only, and
+        // resolveCallerStampName guarantees the stamp is never blank.
+        val callerUser = runCatching { userRepository.getUserOnce(callerUid) }.getOrNull()
+        val callerSnap = if (callerUser == null) {
+            runCatching {
+                firestore.collection(Constants.COLLECTION_USERS).document(callerUid).get().await()
+            }.getOrNull()
+        } else {
+            null
+        }
+        val stampedCallerName = resolveCallerStampName(
+            displayName = callerUser?.displayName?.takeIf { it.isNotBlank() }
+                ?: callerSnap?.getString("displayName"),
+            publicId = callerUser?.publicId?.takeIf { it.isNotBlank() }
+                ?: callerSnap?.getString("publicId")
+        )
         val calleeHandle = callee.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
-        // Round 9 (item 5): the stamped callerName must never be blank — the old
-        // chain (displayName?.ifBlank { callerHandle } ?: "WESAL User") produced ""
-        // when displayName was blank AND publicId was blank, and every callee
-        // surface then rendered an empty caller identity. Fall back stepwise:
-        // displayName → @publicId → "WESAL User".
-        val stampedCallerName = callerSnap.getString("displayName")?.takeIf { it.isNotBlank() }
-            ?: callerHandle.takeIf { it.isNotBlank() }
-            ?: "WESAL User"
         val callId = UUID.randomUUID().toString()
         val data = mapOf(
             "callId" to callId,
             "participants" to listOf(callerUid, callee.uid),
             "callerId" to callerUid,
             "callerName" to stampedCallerName,
-            "callerAvatarUrl" to (callerSnap.getString("photoUrl") ?: ""),
-            "callerVerified" to (callerSnap.getBoolean("isVerified") ?: false),
+            "callerAvatarUrl" to (callerUser?.photoUrl?.takeIf { it.isNotBlank() }
+                ?: callerSnap?.getString("photoUrl") ?: ""),
+            "callerVerified" to (callerUser?.isVerified
+                ?: (callerSnap?.getBoolean("isVerified") ?: false)),
             "calleeId" to callee.uid,
             "calleeName" to callee.displayName.ifBlank { calleeHandle.ifBlank { "WESAL User" } },
             "calleeAvatarUrl" to callee.photoUrl,

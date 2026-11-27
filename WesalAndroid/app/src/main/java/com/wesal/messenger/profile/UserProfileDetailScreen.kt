@@ -24,7 +24,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -66,6 +65,7 @@ import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.media.FullscreenImageViewer
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.pageBleed
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
 import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
@@ -658,24 +658,26 @@ fun UserProfileDetailScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .aspectRatio(16f / 9f)
+                                // Round 11 (item 6): larger cover presence —
+                                // full-bleed width (pageBleed breaks out of
+                                // the 20dp page padding) and a taller 4:3
+                                // band instead of 16:9. Round-9 rule kept:
+                                // COMPLETE photo via ContentScale.Fit, and
+                                // the backdrop is now the SOLID
+                                // surfaceElevated (the old palette gradient
+                                // is gone — solid backdrop per the rule),
+                                // no crop, no blurred ghost, no scrim.
+                                .pageBleed(20.dp)
+                                .aspectRatio(4f / 3f)
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(
-                                    Brush.linearGradient(
-                                        colors = listOf(
-                                            palette.surfaceElevated,
-                                            palette.emerald.copy(alpha = 0.22f),
-                                            palette.turquoise.copy(alpha = 0.20f)
-                                        )
-                                    )
-                                )
+                                .background(palette.surfaceElevated)
                         ) {
                             if (showCover) {
                                 // Round 9 (item 9 — SUPERSEDES the round-7
                                 // Crop instruction): the COMPLETE cover photo
                                 // shows via ContentScale.Fit, uncropped and
-                                // undistorted; the band's palette gradient
-                                // (on the Box above) fills any leftover space.
+                                // undistorted; the band's solid backdrop (on
+                                // the Box above) fills any leftover space.
                                 // No blurred ghost copy, no scrim (round-7
                                 // rejection stands). The fullscreen tap rides
                                 // this single image.
