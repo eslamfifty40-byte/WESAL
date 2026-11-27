@@ -8,7 +8,7 @@ import java.io.File
 
 /**
  * «إضافة من ملفاتي» — imports an audio file picked through the system file
- * picker (SAF `OpenDocument`, audio/*) as a message/call tone choice (§2.5).
+ * picker (SAF `OpenDocument`, audio MIME types) as a message/call tone choice (§2.5).
  *
  * Two things happen for every pick:
  *  1. a persistable read grant is taken on the picked content URI, and that URI

@@ -20,7 +20,7 @@ fun resolveBulkWhatsAppInvitesEnabled(stored: Boolean?): Boolean = stored ?: tru
  * Admin-controlled feature switches, stored in `system_config/features` and observed
  * LIVE by every client — the same propagation pattern as the master frame-animation
  * switch (`system_config/global_appearance.framesAnimationEnabled` in [WesalFrameLibrary]).
- * Firestore rules already cover the doc: any signed-in user may read `system_config/*`,
+ * Firestore rules already cover the doc: any signed-in user may read system_config docs,
  * only super admins / authorized moderators may write it.
  */
 object WesalFeatureFlags {
