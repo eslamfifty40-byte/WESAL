@@ -160,8 +160,16 @@ fun analyzeAndPublishBitmapBounds(bitmap: Bitmap, cacheKey: String?): CachedAlph
 
 /**
  * Coil transformation that measures the decoded avatar's alpha bounds and publishes
- * them into [alphaBoundsCache], returning the bitmap UNMODIFIED — layout (WesalAvatar)
- * does the visual work with the published numbers.
+ * them into [alphaBoundsCache] — layout (WesalAvatar) does the placement work with
+ * the published numbers.
+ *
+ * Round 6 (item 10c): for a VERIFIED cutout the returned bitmap is additionally
+ * edge-decontaminated (see [bleedCutoutEdgeColors]). ML Kit-style mattes leave
+ * semi-transparent edge pixels whose RGB still holds the ORIGINAL (often dark)
+ * background colour; composited over the bright frame glow disc — and resampled
+ * by Coil — those pixels read as a harsh dark halo around the person. Bleeding
+ * the nearest opaque colours outward into the matte (alpha untouched) removes
+ * the fringe. Opaque photos are returned UNMODIFIED, exactly as before.
  *
  * Coil always hands transformations a SOFTWARE bitmap, which removes the old corner
  * probe's failure mode (getPixel() throwing on hardware bitmaps for static frames).
@@ -173,16 +181,116 @@ class AlphaBoundsTransformation(private val boundsCacheKey: String?) : Transform
     // v2 (round-4): the published record now also carries the input bitmap's pixel
     // dimensions (source aspect for the layout), and the analysis/verdict changed
     // (unfiltered downsample, per-axis margin gate).
-    override val cacheKey: String = "wesal_alpha_bounds:v2"
+    // v3 (round-6): verified cutouts are returned edge-decontaminated (halo fix) —
+    // the version bump invalidates bitmaps cached by earlier rounds.
+    override val cacheKey: String = "wesal_alpha_bounds:v3"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
-        if (!boundsCacheKey.isNullOrBlank() && getCachedAlphaBounds(boundsCacheKey) == null) {
+        if (boundsCacheKey.isNullOrBlank()) return input
+        if (getCachedAlphaBounds(boundsCacheKey) == null) {
             // `input` is the decoded source bitmap: its dimensions ARE the source
             // aspect the layout must use (round-4 aspect fix — see alphaBoundsCache).
             analyzeAndPublishBitmapBounds(input, boundsCacheKey)
         }
-        return input
+        val verdict = getCachedAlphaBounds(boundsCacheKey)?.bounds
+        return if (isCutoutBounds(verdict)) {
+            runCatching { bleedCutoutEdgeColors(input) }.getOrNull() ?: input
+        } else {
+            input
+        }
     }
+}
+
+/** Largest bitmap side the edge-bleed runs on (avatar requests are far smaller). */
+private const val EDGE_BLEED_MAX_SIDE = 1024
+
+/** Propagation passes: how many pixels deep opaque colour bleeds into the matte. */
+private const val EDGE_BLEED_PASSES = 6
+
+/**
+ * Round 6 (item 10c): colour-decontaminates a cutout's matte edge.
+ *
+ * For every pixel with alpha < 255 that touches a MORE opaque neighbour, the
+ * pixel's RGB is replaced by the alpha-weighted average of its more-opaque
+ * neighbours' RGB (alpha itself is never changed, so the silhouette and the
+ * measured bounds are identical). Repeated for [EDGE_BLEED_PASSES] passes so
+ * colour propagates a few pixels into the feathered edge — including into
+ * fully transparent pixels next to the body, whose (usually black) RGB would
+ * otherwise bleed INTO the edge during Coil's resampling and re-create the
+ * dark fringe one pixel further in.
+ *
+ * Returns a NEW bitmap; the input is left untouched. Bitmaps without an alpha
+ * channel, fully opaque bitmaps, and oversize bitmaps are returned as-is.
+ */
+private fun bleedCutoutEdgeColors(input: Bitmap): Bitmap {
+    if (!input.hasAlpha()) return input
+    val w = input.width
+    val h = input.height
+    if (w <= 0 || h <= 0 || max(w, h) > EDGE_BLEED_MAX_SIDE) return input
+    val total = w * h
+    val px = IntArray(total)
+    input.getPixels(px, 0, w, 0, 0, w, h)
+    var hasMatte = false
+    for (p in px) {
+        if ((p ushr 24) < 255) {
+            hasMatte = true
+            break
+        }
+    }
+    if (!hasMatte) return input
+
+    fun alphaAt(a: IntArray, i: Int): Int = (a[i] ushr 24) and 0xFF
+
+    var current = px
+    for (pass in 0 until EDGE_BLEED_PASSES) {
+        val next = current.copyOf()
+        var changed = false
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                val i = row + x
+                val a = alphaAt(current, i)
+                if (a >= 255) continue
+                // Alpha-weighted RGB average of the neighbours that are MORE
+                // opaque than this pixel (colour flows from body into matte,
+                // never the other way).
+                var rSum = 0L
+                var gSum = 0L
+                var bSum = 0L
+                var wSum = 0L
+                fun neighbour(j: Int) {
+                    val na = alphaAt(current, j)
+                    if (na > a) {
+                        val c = current[j]
+                        rSum += ((c shr 16) and 0xFF).toLong() * na
+                        gSum += ((c shr 8) and 0xFF).toLong() * na
+                        bSum += (c and 0xFF).toLong() * na
+                        wSum += na
+                    }
+                }
+                if (x > 0) neighbour(i - 1)
+                if (x < w - 1) neighbour(i + 1)
+                if (y > 0) neighbour(i - w)
+                if (y < h - 1) neighbour(i + w)
+                if (wSum > 0L) {
+                    val r = (rSum / wSum).toInt()
+                    val g = (gSum / wSum).toInt()
+                    val b = (bSum / wSum).toInt()
+                    val blended = (a shl 24) or (r shl 16) or (g shl 8) or b
+                    if (blended != next[i]) {
+                        next[i] = blended
+                        changed = true
+                    }
+                }
+            }
+        }
+        current = next
+        if (!changed) break
+    }
+
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    out.setPixels(current, 0, w, 0, 0, w, h)
+    return out
 }
 
 /**

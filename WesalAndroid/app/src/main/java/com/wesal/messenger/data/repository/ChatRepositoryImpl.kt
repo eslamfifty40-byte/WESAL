@@ -1418,17 +1418,29 @@ class ChatRepositoryImpl @Inject constructor(
             // REST fallback (this path existed in FirestoreRest but was never wired in).
             // First check whether the timed-out batch actually landed: both write paths are
             // atomic, so an existing message document means the summary was applied too, and
-            // repeating the commit would double-increment unread counts. If the check itself
-            // is inconclusive (null), do NOT risk a double commit: fail the send instead —
-            // the outbox keeps the message and a retry reuses the same message id.
+            // repeating the commit would double-increment unread counts.
+            //
+            // R6 FIX (messages sent twice — one copy stuck in error state, one delivered):
+            // the old code FAILED the send whenever this probe was inconclusive (null).
+            // That verdict was unsound: withTimeoutOrNull cannot cancel the Firestore SDK
+            // batch — once queued (persistent cache) it stays in the SDK's mutation queue
+            // and commits asynchronously — so the message document DID land moments later
+            // while the ViewModel had already marked the optimistic echo FAILED and kept
+            // it in the outbox: the user saw the delivered server copy AND an error copy
+            // of the same message. The probe is therefore re-run once, and if it is STILL
+            // inconclusive we proceed to the REST commit exactly like the `false` case:
+            // the REST write targets the SAME fixed document id with a full set(), so it
+            // can never create a second message document (worst case, shared with the
+            // pre-existing `false` branch, is a double unread increment if the queued
+            // SDK batch also lands). If the REST commit itself fails, the send honestly
+            // fails and the single FAILED echo + outbox retry (same id) remain.
             val messageDocPath =
                 "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
-            val alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
-            check(alreadyLanded != null) {
-                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة من صندوق الصادر" +
-                    (sdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
+            var alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
+            if (alreadyLanded == null) {
+                alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
             }
-            if (alreadyLanded == false) {
+            if (alreadyLanded == false || alreadyLanded == null) {
                 val chatScalarFields = hashMapOf<String, Any?>(
                     "lastMessagePreview" to preview,
                     "lastMessageTime" to now,
@@ -1596,7 +1608,11 @@ class ChatRepositoryImpl @Inject constructor(
                     "clientTimestamp" to now
                 )
                 chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(msgData).await()
-
+                // R6 FIX (duplicate: delivered copy + error copy): from here on the message
+                // document is durably written. The chat-summary update below is derived
+                // display data — if IT fails, the send must NOT be reported as failed,
+                // or the UI keeps an error-state upload bubble next to the delivered
+                // message (two copies of one send). See the guarded update below.
                 val previewLabel = when {
                     isViewOnce && type == MessageType.IMAGE -> "صورة للعرض مرة واحدة"
                     isViewOnce && type == MessageType.VIDEO -> "فيديو للعرض مرة واحدة"
@@ -1617,7 +1633,9 @@ class ChatRepositoryImpl @Inject constructor(
                 participants.filter { it != myUid }.forEach { otherUid ->
                     chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
                 }
-                chatRef.update(chatUpdates).await()
+                // R6 FIX (see the note at the message set() above): best-effort once the
+                // message document exists — a summary failure must not fail the whole send.
+                runCatching { chatRef.update(chatUpdates).await() }
                 trySend(Result.success(1.0f))
                 close()
             } catch (e: Exception) {
@@ -1809,12 +1827,15 @@ class ChatRepositoryImpl @Inject constructor(
         if (!locationCommitted) {
             val messageDocPath =
                 "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
-            val alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
-            check(alreadyLanded != null) {
-                "تعذر التأكد من حالة إرسال الرسالة؛ ستتم إعادة المحاولة لاحقًا" +
-                    (locationSdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
+            // R6 FIX: same unsound inconclusive-probe verdict as sendTextMessage (see
+            // there) — re-probe once, then fall through to the idempotent REST commit
+            // (same fixed document id) instead of failing a send whose queued SDK batch
+            // is about to land, which produced a delivered copy + an error copy.
+            var alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
+            if (alreadyLanded == null) {
+                alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
             }
-            if (alreadyLanded == false) {
+            if (alreadyLanded == false || alreadyLanded == null) {
                 var locationRestError: Throwable? = null
                 val httpCode = runCatching {
                     FirestoreRest.commitTextMessage(

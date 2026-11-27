@@ -1,8 +1,11 @@
 package com.wesal.messenger.contacts
 
+import android.Manifest
 import android.content.ContentProviderOperation
 import android.content.Context
+import android.content.pm.PackageManager
 import android.provider.ContactsContract
+import androidx.core.content.ContextCompat
 import com.wesal.messenger.core.util.PhoneUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -79,6 +82,18 @@ object PhoneContactsHelper {
             val cleanName = displayName.trim()
             val cleanPhone = phone.trim()
             require(cleanName.isNotBlank()) { "الاسم مطلوب" }
+            // Round 6 (item 9): check the WRITE permission HERE, at insert
+            // time. The add dialog's only gate was a permission-state
+            // snapshot taken when the top-bar button was tapped; when the
+            // grant was not actually in effect the provider threw
+            // SecurityException into a fire-and-forget Result whose error
+            // landed in a transient list header while the dialog had already
+            // closed — a silent no-save that looked exactly like success.
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CONTACTS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                throw SecurityException("لازم تسمح بصلاحية تعديل جهات الاتصال عشان نقدر نحفظ الرقم على الجهاز")
+            }
 
             val resolver = context.contentResolver
             if (!existingContactId.isNullOrBlank()) {
@@ -121,6 +136,12 @@ object PhoneContactsHelper {
                             ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
                         )
                         .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, cleanName)
+                        // GIVEN_NAME as well as DISPLAY_NAME: several OEM
+                        // contacts providers only aggregate/surface a raw
+                        // contact in the Phone query when the structured
+                        // name carries a given name — a DISPLAY_NAME-only
+                        // row could be written yet never appear in the list.
+                        .withValue(ContactsContract.CommonDataKinds.StructuredName.GIVEN_NAME, cleanName)
                         .build()
                 )
                 ops.add(
@@ -137,7 +158,37 @@ object PhoneContactsHelper {
                         )
                         .build()
                 )
-                resolver.applyBatch(ContactsContract.AUTHORITY, ops)
+                val results = resolver.applyBatch(ContactsContract.AUTHORITY, ops)
+                // Round 6 (item 9): VERIFY the insert landed — applyBatch
+                // returning without an exception was previously taken as
+                // success without ever looking at the result Uris or
+                // re-reading the provider. Extract the new raw-contact id
+                // and confirm the phone row is actually queryable; anything
+                // else is a failure the caller must surface, not a save.
+                val rawContactId = results.getOrNull(0)?.uri?.lastPathSegment?.toLongOrNull()
+                    ?: error("تعذر حفظ جهة الاتصال على الجهاز")
+                val landed = resolver.query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                    "${ContactsContract.Data.RAW_CONTACT_ID} = ?",
+                    arrayOf(rawContactId.toString()),
+                    null
+                )?.use { cursor ->
+                    var found = false
+                    val wantedDigits = PhoneUtils.normalizeAsciiDigits(cleanPhone).filter { it.isDigit() }
+                    while (cursor.moveToNext()) {
+                        val storedDigits = PhoneUtils.normalizeAsciiDigits(cursor.getString(0).orEmpty())
+                            .filter { it.isDigit() }
+                        if (storedDigits == wantedDigits || storedDigits.endsWith(wantedDigits.takeLast(9))) {
+                            found = true
+                            break
+                        }
+                    }
+                    found
+                } ?: false
+                if (!landed) {
+                    error("تعذر حفظ جهة الاتصال على الجهاز")
+                }
             }
             Unit
         }

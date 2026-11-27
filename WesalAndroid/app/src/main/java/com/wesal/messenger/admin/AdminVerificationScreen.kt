@@ -323,6 +323,24 @@ class AdminVerificationViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Round 6 (item 8, SPEED — owner's top priority): grant operations used to
+     * call refreshAll() on success, which re-walked the ENTIRE users collection
+     * for stats (500-doc pages), re-fetched the 250-user list, the welcome
+     * config, the global-frame flag, the official team channel and 150 channels
+     * — hundreds of document reads after a grant that itself is ONE merge write.
+     * That reload was the "saving a frame spins forever" the owner reported.
+     * A grant now patches the already-loaded lists in memory instead: zero
+     * extra Firestore reads, and the busy state clears as soon as the grant
+     * write (+ its audit log) lands. refreshAll() remains for structural ops
+     * (delete / warn / subscription review) where counts genuinely change.
+     */
+    private fun patchUserLocally(uid: String, transform: (WesalUser) -> WesalUser) {
+        _users.value = _users.value.map { if (it.uid == uid) transform(it) else it }
+        _searchResults.value = _searchResults.value.map { if (it.uid == uid) transform(it) else it }
+        _inspectedUser.value?.takeIf { it.uid == uid }?.let { _inspectedUser.value = transform(it) }
+    }
+
     // §9.6: last official-chat/channel photo set from the identity editor card.
     private val _officialChatPhotoUrl = MutableStateFlow("")
     val officialChatPhotoUrl: StateFlow<String> = _officialChatPhotoUrl.asStateFlow()
@@ -462,7 +480,15 @@ class AdminVerificationViewModel @Inject constructor(
                 } else {
                     "تم إلغاء توثيق ${target.displayName.ifBlank { target.numericId }}"
                 }
-                refreshAll()
+                // Item 8: local patch instead of refreshAll() (see patchUserLocally).
+                patchUserLocally(target.uid) {
+                    it.copy(
+                        isVerified = verified,
+                        verificationType = sealType.key,
+                        verificationGlowColor = if (verified) verificationGlowColor.key else "",
+                        verificationExpiresAt = if (verified) expiresAt else 0L
+                    )
+                }
             }.onFailure { _statusMessage.value = it.message ?: "فشل تحديث التوثيق" }
             _busy.value = false
         }
@@ -483,7 +509,18 @@ class AdminVerificationViewModel @Inject constructor(
                     } else {
                         "تم تعيين الإطار ($durationLabel) بنجاح"
                     }
-                    refreshAll()
+                    // Item 8: local patch instead of refreshAll() (see patchUserLocally).
+                    patchUserLocally(target.uid) {
+                        it.copy(
+                            frameId = frameId.trim(),
+                            frameExpiresAt = if (frameId.isBlank()) 0L else expiresAt,
+                            grantedFrameIds = if (frameId.isBlank()) {
+                                it.grantedFrameIds
+                            } else {
+                                (it.grantedFrameIds + frameId.trim()).distinct()
+                            }
+                        )
+                    }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الإطار" }
             _busy.value = false
@@ -557,7 +594,15 @@ class AdminVerificationViewModel @Inject constructor(
                     } else {
                         "تم تحديث لون النيون (${preset.labelAr}) بنسبة ${(glowIntensity * 100).toInt()}%"
                     }
-                    refreshAll()
+                    // Item 8: local patch instead of refreshAll() (see patchUserLocally).
+                    // Mirrors setAccountNeonStyle's stored values exactly.
+                    patchUserLocally(target.uid) {
+                        it.copy(
+                            neonEnabled = enabled && preset.key.isNotBlank(),
+                            neonColor = if (enabled) preset.key else "",
+                            neonGlowIntensity = glowIntensity.coerceIn(0.15f, 1.0f)
+                        )
+                    }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تحديث النيون" }
             _busy.value = false
@@ -570,7 +615,19 @@ class AdminVerificationViewModel @Inject constructor(
             userRepository.setAccountIcon(target.uid, iconId, iconUrl)
                 .onSuccess {
                     _statusMessage.value = if (iconId.isBlank()) "تمت إزالة الأيقونة" else "تم تعيين الأيقونة بنجاح"
-                    refreshAll()
+                    // Item 8: local patch instead of refreshAll() (see patchUserLocally).
+                    // Mirrors setAccountIcon's stored values (blank id clears both;
+                    // a blank URL is resolved from the library by the repository).
+                    patchUserLocally(target.uid) {
+                        it.copy(
+                            iconId = iconId.trim(),
+                            iconUrl = if (iconId.isBlank()) {
+                                ""
+                            } else {
+                                iconUrl.trim().ifBlank { WesalFrameLibrary.resolveIconUrl(iconId.trim()) }
+                            }
+                        )
+                    }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الأيقونة" }
             _busy.value = false
@@ -587,7 +644,11 @@ class AdminVerificationViewModel @Inject constructor(
                     } else {
                         "تم تعيين لون لوحة الاسم بنجاح"
                     }
-                    refreshAll()
+                    // Item 8: local patch instead of refreshAll() (see patchUserLocally).
+                    // Mirrors setAccountNameplateColor's stored value (trimmed, upper-cased).
+                    patchUserLocally(target.uid) {
+                        it.copy(nameplateColor = colorKey.trim().uppercase())
+                    }
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تحديث لون لوحة الاسم" }
             _busy.value = false
@@ -1049,6 +1110,11 @@ fun AdminVerificationScreen(
     // Modal action targets
     var verifyTarget by remember { mutableStateOf<WesalUser?>(null) }
     var frameNeonTarget by remember { mutableStateOf<WesalUser?>(null) }
+    // Round 6 (item 7a): the tab AdminFrameAndNeonDialog must OPEN on, set by
+    // whichever action opened it (frames actions -> 0 Customer frames; the
+    // dialog's own modeTab used to be an unkeyed remember, so a previous
+    // session's tab — e.g. Icons — could greet the next «إطار» tap).
+    var frameNeonInitialTab by remember { mutableStateOf(0) }
     var warnTarget by remember { mutableStateOf<WesalUser?>(null) }
     var banTarget by remember { mutableStateOf<WesalUser?>(null) }
     var hideTarget by remember { mutableStateOf<WesalUser?>(null) }
@@ -1222,7 +1288,7 @@ fun AdminVerificationScreen(
                     myNumericId = myNumericLabel,
                     currentAdminUser = currentUser,
                     canCustomizeAppearance = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon,
-                    onCustomizeSelf = { u -> frameNeonTarget = u },
+                    onCustomizeSelf = { u -> frameNeonInitialTab = 0; frameNeonTarget = u },
                     onJumpTo = { currentSection = it }
                 )
 
@@ -1270,7 +1336,7 @@ fun AdminVerificationScreen(
                             canDeleteUsers = adminPermissions.isFullSuperAdmin,
                             onInspect = { viewModel.inspectUser(it.uid) },
                             onVerify = { verifyTarget = it },
-                            onFrameNeon = { frameNeonTarget = it },
+                            onFrameNeon = { frameNeonInitialTab = 0; frameNeonTarget = it },
                             onWarn = { warnTarget = it },
                             onBanToggle = { u -> if (u.isBanned) viewModel.unbanUser(u) else banTarget = u },
                             onHideToggle = { hideTarget = it },
@@ -1309,7 +1375,7 @@ fun AdminVerificationScreen(
                         canDeleteUsers = adminPermissions.isFullSuperAdmin,
                         onInspect = { viewModel.inspectUser(it.uid) },
                         onVerify = { verifyTarget = it },
-                        onFrameNeon = { frameNeonTarget = it },
+                        onFrameNeon = { frameNeonInitialTab = 0; frameNeonTarget = it },
                         onWarn = { warnTarget = it },
                         onBanToggle = { u -> if (u.isBanned) viewModel.unbanUser(u) else banTarget = u },
                         onHideToggle = { hideTarget = it },
@@ -1377,7 +1443,7 @@ fun AdminVerificationScreen(
                     onToggleGlobalFrame = viewModel::toggleGlobalCustomerFrame,
                     onSaveGlobalCustomerDefaults = viewModel::saveGlobalCustomerDefaults,
                     onOpenVerifyDialog = { verifyTarget = it },
-                    onOpenFrameNeonDialog = { frameNeonTarget = it },
+                    onOpenFrameNeonDialog = { frameNeonInitialTab = 0; frameNeonTarget = it },
                     onInspect = { viewModel.inspectUser(it.uid) },
                     onDeleteAuditLog = { logId -> viewModel.deleteAuditLog(Constants.COLLECTION_VERIFICATION_LOGS, logId) },
                     onClearAuditLogs = { viewModel.clearAuditLogs(Constants.COLLECTION_VERIFICATION_LOGS) }
@@ -1403,7 +1469,7 @@ fun AdminVerificationScreen(
                     canEditOfficialAccount = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
                     canVerifyOfficialAccount = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
                     onOpenOfficialVerify = { verifyTarget = it },
-                    onOpenOfficialFrameNeon = { frameNeonTarget = it }
+                    onOpenOfficialFrameNeon = { frameNeonInitialTab = 0; frameNeonTarget = it }
                 )
 
                 AdminSection.WELCOME_MSG -> AdminWelcomeConfigSection(
@@ -1459,7 +1525,7 @@ fun AdminVerificationScreen(
                             canDeleteUsers = adminPermissions.isFullSuperAdmin,
                             onInspect = { viewModel.inspectUser(it.uid) },
                             onVerify = { verifyTarget = it },
-                            onFrameNeon = { frameNeonTarget = it },
+                            onFrameNeon = { frameNeonInitialTab = 0; frameNeonTarget = it },
                             onWarn = { warnTarget = it },
                             onBanToggle = { u -> if (u.isBanned) viewModel.unbanUser(u) else banTarget = u },
                             onHideToggle = { hideTarget = it },
@@ -1601,7 +1667,7 @@ fun AdminVerificationScreen(
                             }
                             if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary) {
                                 FilledTonalButton(
-                                    onClick = { viewModel.dismissInspectedUser(); frameNeonTarget = u },
+                                    onClick = { viewModel.dismissInspectedUser(); frameNeonInitialTab = 0; frameNeonTarget = u },
                                     modifier = Modifier.weight(1f)
                                 ) { Text("إطار/أيقونة/نيون", maxLines = 1) }
                             }
@@ -1683,6 +1749,7 @@ fun AdminVerificationScreen(
         AdminFrameAndNeonDialog(
             user = target,
             busyOps = busyOps,
+            initialTab = frameNeonInitialTab,
             onDismiss = { frameNeonTarget = null },
             onApplyFrame = { frameId, expiresAt, durationLabel ->
                 viewModel.applyFrame(target, frameId, expiresAt, durationLabel)
@@ -3935,6 +4002,12 @@ private fun AdminVerificationDialog(
 private fun AdminFrameAndNeonDialog(
     user: WesalUser,
     busyOps: Set<String> = emptySet(),
+    // Round 6 (item 7a): explicit opening tab, threaded from the tapped action
+    // (frames actions pass 0). Previously there was NO initial-tab parameter and
+    // modeTab was a bare remember — the one selection state in this dialog not
+    // keyed by user — so the tab from a previous dialog session could be the
+    // one shown when the admin tapped «إطار» (owner: dialog opened on Icons).
+    initialTab: Int = 0,
     onDismiss: () -> Unit,
     onApplyFrame: (String, Long, String) -> Unit,
     onApplyIcon: (String, String) -> Unit,
@@ -3942,7 +4015,9 @@ private fun AdminFrameAndNeonDialog(
     onApplyNameplateColor: (String) -> Unit
 ) {
     val palette = WesalColors.current
-    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon, 4 = Nameplate colour, 5 = Official frames, 6 = Animated frames
+    // Keyed by BOTH the target user and the requested opening tab: a new
+    // invocation always starts on the tab matching the tapped action.
+    var modeTab by remember(user.uid, initialTab) { mutableStateOf(initialTab) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon, 4 = Nameplate colour, 5 = Official frames, 6 = Animated frames
     var selectedFrameId by remember(user.uid) { mutableStateOf(user.frameId) }
     var selectedNameplateKey by remember(user.uid) { mutableStateOf(user.nameplateColor) }
     var selectedIconId by remember(user.uid) { mutableStateOf(user.iconId) }
@@ -4267,8 +4342,14 @@ private fun AdminFrameAndNeonDialog(
                     )
                 }
 
+                // Round 6 (item 7a): ScrollableTabRow's selectedTabIndex is a
+                // POSITION in the row, but modeTab is a mode value and the row
+                // order is 0,1,6,5,2,3,4 — passing modeTab directly pointed
+                // the selection indicator at the wrong tab (e.g. Icons mode
+                // highlighted the Animated tab). Map mode -> row position.
+                val tabOrder = listOf(0, 1, 6, 5, 2, 3, 4)
                 ScrollableTabRow(
-                    selectedTabIndex = modeTab,
+                    selectedTabIndex = tabOrder.indexOf(modeTab).coerceAtLeast(0),
                     containerColor = palette.surfaceElevated,
                     edgePadding = 4.dp
                 ) {

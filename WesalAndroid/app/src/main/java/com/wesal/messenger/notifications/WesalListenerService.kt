@@ -142,11 +142,22 @@ class WesalListenerService : Service() {
         chatsBaselineReady = false
         userNameCache.clear()
 
+        // R6 FIX: same rules-provability bug as CallRepositoryImpl.observeIncomingCalls —
+        // the calls read rule is `uid in resource.data.participants`, which a
+        // `calleeId == uid` LIST query cannot prove, so this listener was rejected with
+        // PERMISSION_DENIED and silently swallowed (err -> return), meaning NO
+        // background incoming-call notification/ring ever fired. Query on the
+        // array-contains constraint the rule can prove and filter callee/status
+        // client-side in handleCallsSnapshot instead.
         callsRegistration = firestore.collection(Constants.COLLECTION_CALLS)
-            .whereEqualTo("calleeId", uid)
-            .whereIn("status", listOf(CallStatus.CONNECTING.raw, CallStatus.RINGING.raw))
+            .whereArrayContains("participants", uid)
             .addSnapshotListener { snap, err ->
-                if (err != null || snap == null) return@addSnapshotListener
+                if (err != null || snap == null) {
+                    if (err != null) {
+                        android.util.Log.e("WesalListener", "calls listener error: ${err.message}", err)
+                    }
+                    return@addSnapshotListener
+                }
                 handleCallsSnapshot(uid, snap.documents)
             }
 
@@ -181,6 +192,13 @@ class WesalListenerService : Service() {
         val ringing = docs.mapNotNull { doc ->
             val startedAt = doc.getLong("startedAt") ?: 0L
             val callerId = doc.getString("callerId").orEmpty()
+            // R6: the query now returns every call I participate in (see bindListeners);
+            // only calls actually addressed to me and still ringing are actionable here.
+            if (doc.getString("calleeId").orEmpty() != uid) return@mapNotNull null
+            val statusRaw = doc.getString("status").orEmpty()
+            if (statusRaw != CallStatus.CONNECTING.raw && statusRaw != CallStatus.RINGING.raw) {
+                return@mapNotNull null
+            }
             if (startedAt < cutoff || callerId.isBlank() || callerId == uid) return@mapNotNull null
             RingingCall(
                 callId = doc.id,

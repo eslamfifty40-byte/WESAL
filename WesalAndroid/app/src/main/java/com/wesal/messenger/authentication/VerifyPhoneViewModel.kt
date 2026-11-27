@@ -65,22 +65,37 @@ class VerifyPhoneViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.observeCurrentUser().collect { user ->
                 if (user == null) return@collect
-                if (user.isPhoneVerified) {
-                    // The Firestore mirror stamp landed (or the account was
-                    // already verified): MainViewModel's gate observer routes
-                    // home (it also accepts the registry directly).
+                if (PhoneOtpLogic.isCompleteVerificationMirror(
+                        user.isPhoneVerified, user.phoneNumber, user.phoneHash
+                    )
+                ) {
+                    // The Firestore mirror stamp landed complete (or the
+                    // account was already verified): MainViewModel's gate
+                    // observer routes home (it also accepts the registry
+                    // directly). A flag-only mirror (verified=true with a
+                    // blank number/hash — the production owner doc) must NOT
+                    // mark this screen verified: the gate would hold the
+                    // account here while this VM claimed success.
                     _uiState.update { it.copy(verified = true) }
-                } else if (!prefilled && user.phoneNumber.isNotBlank()) {
+                } else if (!prefilled) {
                     // Pre-fill the number already on the account so the user
                     // just confirms it with the code; they may change it.
-                    prefilled = true
-                    val (country, local) = CountryCatalog.detectFromE164(user.phoneNumber)
-                    _uiState.update {
-                        it.copy(
-                            selectedCountry = country,
-                            phoneNumberInput = local.filter { c -> c.isDigit() },
-                            prefilledFromAccount = true
-                        )
+                    // Falls back to the legacy phoneDigits field when
+                    // phoneNumber was left blank by older writers
+                    // ("201122072195" → +201122072195).
+                    val prefillE164 = PhoneOtpLogic.verificationPrefillE164(
+                        user.phoneNumber, user.phoneDigits
+                    )
+                    if (prefillE164 != null) {
+                        prefilled = true
+                        val (country, local) = CountryCatalog.detectFromE164(prefillE164)
+                        _uiState.update {
+                            it.copy(
+                                selectedCountry = country,
+                                phoneNumberInput = local.filter { c -> c.isDigit() },
+                                prefilledFromAccount = true
+                            )
+                        }
                     }
                 }
             }

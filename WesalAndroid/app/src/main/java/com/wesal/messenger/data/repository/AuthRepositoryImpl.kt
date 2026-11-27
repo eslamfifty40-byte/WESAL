@@ -1154,8 +1154,12 @@ class AuthRepositoryImpl @Inject constructor(
             val existingEmail = snapshot.getString("email").orEmpty()
             val existingBirthDate = snapshot.getString("birthDate").orEmpty()
             val existingCompleted = snapshot.getBoolean("profileCompleted")
-            val existingVerified = snapshot.getBoolean("isPhoneVerified")
-                ?: (existingPhone.isNotBlank() && existingEmail.isBlank())
+            // Round 6 fix: the old fallback treated "doc has a phone number
+            // and no email" as verified and the branch below then WROTE
+            // isPhoneVerified=true into the doc — a verified stamp with no
+            // OTP ever checked (one of the writers behind production docs
+            // carrying the flag with no registry row). Absent field = false.
+            val existingVerified = snapshot.getBoolean("isPhoneVerified") ?: false
 
             val privSnap = runCatching {
                 withTimeoutOrNull(5_000L) {

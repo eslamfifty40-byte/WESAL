@@ -1262,11 +1262,28 @@ fun NewChatContactsScreen(
         )
     }
 
+    // Round 6 (item 9): the dialog closes ONLY when the ViewModel reports
+    // the save actually succeeded. A failure keeps it open with the error
+    // shown inside, so a no-save can never again look like a saved contact.
+    LaunchedEffect(state.deviceContactSaveSucceeded) {
+        if (state.deviceContactSaveSucceeded && showAddEditContactDialog) {
+            showAddEditContactDialog = false
+            viewModel.clearDeviceContactSaveOutcome()
+        }
+    }
+
     if (showAddEditContactDialog) {
         var nameInput by remember { mutableStateOf(editingDeviceContact?.displayName.orEmpty()) }
         var phoneInput by remember { mutableStateOf(editingDeviceContact?.rawPhone.orEmpty()) }
+        var dialogError by remember { mutableStateOf<String?>(null) }
+        val shownError = state.deviceContactSaveError ?: dialogError
         AlertDialog(
-            onDismissRequest = { showAddEditContactDialog = false },
+            onDismissRequest = {
+                if (!state.isSavingDeviceContact) {
+                    showAddEditContactDialog = false
+                    viewModel.clearDeviceContactSaveOutcome()
+                }
+            },
             containerColor = palette.surface,
             title = {
                 Text(
@@ -1295,19 +1312,51 @@ fun NewChatContactsScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    shownError?.let { err ->
+                        Text(err, color = palette.error, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             },
             confirmButton = {
                 Button(
+                    enabled = !state.isSavingDeviceContact,
                     onClick = {
-                        viewModel.saveDeviceContact(nameInput, phoneInput, editingDeviceContact?.contactId)
-                        showAddEditContactDialog = false
+                        if (!writeContactsPermission.allPermissionsGranted) {
+                            // Ask for the grant and KEEP the dialog open —
+                            // the user taps حفظ again once it is granted,
+                            // instead of the save silently going nowhere.
+                            dialogError = if (strings.isEnglish) {
+                                "Contacts permission is needed to save — grant it, then tap Save again"
+                            } else {
+                                "لازم تسمح بصلاحية جهات الاتصال عشان الحفظ — اسمح بيها وبعدين دوس حفظ تاني"
+                            }
+                            writeContactsPermission.launchMultiplePermissionRequest()
+                        } else {
+                            dialogError = null
+                            viewModel.saveDeviceContact(nameInput, phoneInput, editingDeviceContact?.contactId)
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
-                ) { Text(strings.save) }
+                ) {
+                    if (state.isSavingDeviceContact) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = palette.onPrimary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(strings.save)
+                    }
+                }
             },
             dismissButton = {
-                TextButton(onClick = { showAddEditContactDialog = false }) { Text(strings.cancel) }
+                TextButton(
+                    enabled = !state.isSavingDeviceContact,
+                    onClick = {
+                        showAddEditContactDialog = false
+                        viewModel.clearDeviceContactSaveOutcome()
+                    }
+                ) { Text(strings.cancel) }
             }
         )
     }

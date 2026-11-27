@@ -339,10 +339,14 @@ object WesalFrameLibrary {
             return out
         }
 
-        if (category == "ADMIN") {
+        if (category == "ADMIN" || category == "OFFICIAL") {
             // The royal ADMIN crest is not in the bundled catalog, but it MUST be listed here
             // so the admin dialog can manage it (animation on/off, glow, image replace) —
             // resolve() reads the same override doc this item's actions write.
+            // Round 6 (item 7b): it is ALSO the official frame, so it belongs in the
+            // OFFICIAL picker — previously NO catalogue spec carried category OFFICIAL
+            // and pickerItems("OFFICIAL") returned only uploaded OFFICIAL docs, so the
+            // «الرسمية» tab badge showed 0 and the tab was empty on a fresh install.
             val doc = docs[ADMIN_FRAME_ID]
             val hidden = doc?.hidden == true
             val deleted = doc?.deleted == true
@@ -365,7 +369,9 @@ object WesalFrameLibrary {
                 )
             }
         }
-        // OFFICIAL (§5.7): no bundled artwork — WESAL-team frames live only as library uploads.
+        // OFFICIAL (§5.7): no OFFICIAL-category catalogue specs — the tab lists the
+        // royal crest (added above, same item as ADMIN) plus library uploads whose
+        // doc category is OFFICIAL (appended by the docs sweep below).
         val builtinList = when (category) {
             // Tier-4 «ملكي» animated frames (crowns/lions/dragons — the most ornate)
             // are admin-flavoured: they surface in the ADMIN picker as well as in
@@ -555,6 +561,14 @@ object WesalFrameLibrary {
             data["kind"] = "FRAME"
         }
         col().document(frameId).set(data, SetOptions.merge()).await()
+        patchLocalDoc(frameId) {
+            it.copy(
+                animated = animated,
+                animationStyle = style,
+                hasAnimatedOverride = true,
+                hasAnimationStyleOverride = true
+            )
+        }
     }
 
     /** §5.8: per-frame glow intensity (0..1) and animation/glow speed (0.5..2) overrides. */
@@ -579,6 +593,14 @@ object WesalFrameLibrary {
             data["kind"] = "FRAME"
         }
         col().document(frameId).set(data, SetOptions.merge()).await()
+        patchLocalDoc(frameId) {
+            it.copy(
+                glowIntensity = intensity.coerceIn(0f, 1f),
+                glowSpeed = speed.coerceIn(0.5f, 2f),
+                hasGlowIntensityOverride = true,
+                hasGlowSpeedOverride = true
+            )
+        }
     }
 
     /** Drops an image replacement on a built-in frame, restoring the original bundled image. */
@@ -599,6 +621,28 @@ object WesalFrameLibrary {
             data["category"] = existingDoc.category
         }
         col().document(frameId).set(data, SetOptions.merge()).await()
+        patchLocalDoc(frameId) { doc ->
+            when (key) {
+                "hidden" -> doc.copy(hidden = value as Boolean)
+                "deleted" -> doc.copy(deleted = value as Boolean)
+                "titleAr" -> doc.copy(titleAr = value as String)
+                else -> doc
+            }
+        }
+    }
+
+    /**
+     * Round 6 (item 8, speed): optimistic local mirror of a just-acked write.
+     * The snapshot listener delivers the same change a round-trip later; patching
+     * the Compose snapshot state here makes pickers/dialogs reflect a toggle the
+     * moment its single write is acked instead of waiting on the listener.
+     * Only patches a doc that already exists locally — a first-time override doc
+     * is left for the listener, which is authoritative and overwrites this state
+     * with the server copy on the next snapshot either way.
+     */
+    private fun patchLocalDoc(frameId: String, update: (FrameDoc) -> FrameDoc) {
+        val existing = docs[frameId] ?: return
+        docs = docs + (frameId to update(existing))
     }
 
     /** Reads the document back from the SERVER so a silent failure can never look like success. */

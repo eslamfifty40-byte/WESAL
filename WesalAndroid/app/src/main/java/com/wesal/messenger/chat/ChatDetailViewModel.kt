@@ -71,6 +71,37 @@ data class MediaDraftPreview(
     val isViewOnce: Boolean = false
 )
 
+/**
+ * Merges the live message window, fetched older pages and the local SENDING/FAILED
+ * echoes into the single list the chat renders.
+ *
+ * R6 FIX (messages sent twice — one copy stuck in error state, one delivered): echoes
+ * used to be deduped ONLY against the live window's ids. A delivered copy that was
+ * present in an older page but (transiently) absent from the live window — e.g. while
+ * the snapshot listener was re-subscribing after an error, or at the page seam — left
+ * its FAILED echo visible next to it: two bubbles for one send. Echoes and older pages
+ * are now deduped against the UNION of every server-side id known to this merge.
+ * A genuinely failed send (its id exists nowhere server-side) still yields exactly
+ * one FAILED echo, so retry/dismiss keep working.
+ */
+internal fun mergeChatMessages(
+    remote: List<WesalMessage>,
+    older: List<WesalMessage>,
+    localEchoes: List<WesalMessage>
+): List<WesalMessage> {
+    val remoteIds = remote.mapTo(HashSet()) { it.messageId }
+    val olderOnly = older.filterNot { it.messageId in remoteIds }
+    val withOlder = if (olderOnly.isEmpty()) remote else (olderOnly + remote)
+    val serverIds = withOlder.mapTo(HashSet()) { it.messageId }
+    val localOnly = localEchoes.filterNot { it.messageId in serverIds }
+    // Review MINOR-7: do not rely on the concatenation seam being ordered —
+    // an older page fetched against a skewed client clock can straddle the
+    // live window. A stable sort by timestamp guarantees the ascending
+    // order the message list renders (ties keep their input order).
+    return (if (localOnly.isEmpty()) withOlder else (withOlder + localOnly))
+        .sortedBy { it.timestamp }
+}
+
 @HiltViewModel
 class ChatDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -247,18 +278,7 @@ class ChatDetailViewModel @Inject constructor(
         _failedMessages,
         _searchQuery
     ) { remote, older, failed, query ->
-        // Local echoes (SENDING / FAILED, backed by the persistent outbox) are shown until the
-        // real message arrives from the server; once it does, the echo with the same id is dropped.
-        val remoteIds = remote.mapTo(HashSet()) { it.messageId }
-        val olderOnly = older.filterNot { it.messageId in remoteIds }
-        val withOlder = if (olderOnly.isEmpty()) remote else (olderOnly + remote)
-        val localOnly = failed.filterNot { it.messageId in remoteIds }
-        // Review MINOR-7: do not rely on the concatenation seam being ordered —
-        // an older page fetched against a skewed client clock can straddle the
-        // live window. A stable sort by timestamp guarantees the ascending
-        // order the message list renders (ties keep their input order).
-        val merged = (if (localOnly.isEmpty()) withOlder else (withOlder + localOnly))
-            .sortedBy { it.timestamp }
+        val merged = mergeChatMessages(remote, older, failed)
         val normQuery = WesalIdUtils.normalizeSearchText(query)
         if (normQuery.isBlank()) merged
         else merged.filter { WesalIdUtils.normalizeSearchText(it.text).contains(normQuery) }

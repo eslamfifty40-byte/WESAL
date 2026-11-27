@@ -48,7 +48,15 @@ data class ContactsUiState(
     val broadcastResults: Map<String, Boolean>? = null,
     val isSendingBroadcast: Boolean = false,
     val error: String? = null,
-    val feedback: String? = null
+    val feedback: String? = null,
+    // Round 6 (item 9): dedicated add/edit device-contact save outcome. The
+    // dialog observes these to stay OPEN on failure (with the error shown
+    // inside it) and close only on success — previously it closed
+    // unconditionally the moment حفظ was tapped, so a failed insert was
+    // indistinguishable from a saved contact that never appeared.
+    val isSavingDeviceContact: Boolean = false,
+    val deviceContactSaveError: String? = null,
+    val deviceContactSaveSucceeded: Boolean = false
 )
 
 @HiltViewModel
@@ -197,11 +205,21 @@ class ContactsViewModel @Inject constructor(
     }
 
     fun saveDeviceContact(name: String, phone: String, existingContactId: String? = null) {
+        if (_uiState.value.isSavingDeviceContact) return
         viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isSavingDeviceContact = true,
+                    deviceContactSaveError = null,
+                    deviceContactSaveSucceeded = false
+                )
+            }
             PhoneContactsHelper.upsertDeviceContact(context, name, phone, existingContactId)
                 .onSuccess {
                     _uiState.update {
                         it.copy(
+                            isSavingDeviceContact = false,
+                            deviceContactSaveSucceeded = true,
                             feedback = if (existingContactId.isNullOrBlank()) {
                                 "تمت إضافة جهة الاتصال إلى الجهاز ✓"
                             } else {
@@ -212,8 +230,26 @@ class ContactsViewModel @Inject constructor(
                     syncDeviceContacts()
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر حفظ جهة الاتصال") }
+                    _uiState.update {
+                        it.copy(
+                            isSavingDeviceContact = false,
+                            deviceContactSaveError = err.localizedMessage ?: "تعذر حفظ جهة الاتصال",
+                            error = err.localizedMessage ?: "تعذر حفظ جهة الاتصال"
+                        )
+                    }
                 }
+        }
+    }
+
+    /** The dialog calls this once it has consumed the save outcome (closed
+     *  on success, or the user dismissed after an error). */
+    fun clearDeviceContactSaveOutcome() {
+        _uiState.update {
+            it.copy(
+                isSavingDeviceContact = false,
+                deviceContactSaveError = null,
+                deviceContactSaveSucceeded = false
+            )
         }
     }
 

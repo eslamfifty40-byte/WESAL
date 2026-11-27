@@ -247,6 +247,13 @@ data class WesalUser(
     val email: String = "",
     val phoneNumber: String = "",
     val isPhoneVerified: Boolean = false,
+    // Round 6: the doc's canonical phoneHash (sha256 of the E.164 number) and
+    // the legacy digits-only phoneDigits field, parsed for the OWNER's own
+    // doc only (see toWesalUser). The gate needs the hash to judge whether a
+    // verification mirror is complete; the verify flow needs the digits to
+    // pre-fill a number whose phoneNumber was left blank by older writers.
+    val phoneHash: String = "",
+    val phoneDigits: String = "",
     val isVerified: Boolean = false,
     val verificationType: String = "BLUE", // 30 seal presets in VerificationSealType
     val verificationGlowColor: String = "", // Optional independent halo from 30 NeonColorPreset colors

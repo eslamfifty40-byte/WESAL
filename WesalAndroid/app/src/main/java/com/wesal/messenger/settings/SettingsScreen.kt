@@ -716,33 +716,27 @@ fun SettingsScreen(
                             modifier = Modifier.fillMaxSize().scale(1.15f).blur(24.dp),
                             contentScale = ContentScale.Crop
                         )
+                        // Round 6 (item 6): IDENTICAL three-layer treatment to
+                        // ProfileScreen's cover (round-5 FIX 2) — blurred 1.15x
+                        // Crop backdrop + 0.35 scrim + full image with
+                        // ContentScale.Fit, NOTHING else on top. The extra
+                        // vertical surface gradient this card used to draw over
+                        // the Fit image (0.18 -> 0.45 -> 0.72) washed the cover
+                        // out and was why the owner said the Settings cover is
+                        // "not shown as agreed" even after FIX 2; it is removed.
+                        // The name/ID text no longer sits on the cover at all
+                        // (avatar band is fully below it), so no legibility
+                        // scrim is needed here.
                         Box(
                             modifier = Modifier
                                 .matchParentSize()
-                                .background(palette.background.copy(alpha = 0.45f))
+                                .background(palette.background.copy(alpha = 0.35f))
                         )
                         AsyncImage(
                             model = wesalImageModel(coverUrl),
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Fit
-                        )
-                        Box(
-                            modifier = Modifier
-                                .matchParentSize()
-                                .background(
-                                    Brush.verticalGradient(
-                                        colors = listOf(
-                                            // Lightened (was 0.42 → 0.84 → 0.96): the cover
-                                            // photo must read clearly behind the account
-                                            // card; only the bottom keeps enough scrim for
-                                            // the name/ID text to stay legible.
-                                            palette.surface.copy(alpha = 0.18f),
-                                            palette.surface.copy(alpha = 0.45f),
-                                            palette.surface.copy(alpha = 0.72f)
-                                        )
-                                    )
-                                )
                         )
                     }
                         Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
@@ -860,9 +854,20 @@ fun SettingsScreen(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
-                        if (!user?.bio.isNullOrBlank()) {
+                        // Round 6 (item 5): the bio line renders the account's
+                        // bio verbatim directly under the "ID: … • @…" line.
+                        // When the account's bio IS its own handle (e.g. bio
+                        // "eslamahmed" with publicId "eslamahmed") that line is
+                        // a pure duplicate of the @handle already shown in the
+                        // ID line — suppress ONLY that exact duplicate; any
+                        // real bio text still shows unchanged.
+                        val bioLine = user?.bio?.takeIf { bio ->
+                            bio.isNotBlank() &&
+                                bio.trim().removePrefix("@") != user?.publicId?.trim().orEmpty()
+                        }
+                        if (!bioLine.isNullOrBlank()) {
                             Text(
-                                text = user?.bio.orEmpty(),
+                                text = bioLine,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = palette.textSecondary,
                                 maxLines = 1,

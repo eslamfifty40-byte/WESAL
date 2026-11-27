@@ -11,11 +11,15 @@ import org.junit.Test
  * Pure-JVM tests for the framed-cutout layout math, on the royal ADMIN frame geometry
  * (aperture centre Y 0.396, diameter 0.496 of the container).
  *
- * Round-4 geometry: the pop-out strip is DERIVED from the bounds — strip = 30% of the
- * rendered person height (head + neck), so the aperture's top edge (where the frame's
- * ring sits) lands behind the neck and the whole head renders over the frame. The
- * height guard is re-derived with the dynamic strip; the strip window additionally
- * carries a 2%-of-container crown margin.
+ * Round-6 geometry (item 10 — replaces the round-4 pop-out spec the owner rejected
+ * on device): HEIGHT-FIRST, BOTTOM-ANCHORED, head INSIDE the ring.
+ * - person height = aperture x (1 - 0.04 clearance + 0.25 overflow) = 1.21 x aperture;
+ * - box bottom anchored at apertureBottom + 0.25 x aperture (torso continues behind
+ *   the frame's bottom artwork — no void inside the ring);
+ * - box top lands at apertureTop + 0.04 x aperture (head near the top INSIDE the
+ *   ring, clear of the crown ornament zone);
+ * - rendered width capped at 1.35 x aperture (bottom anchor kept when it binds);
+ * - the over-frame strip is just the 2%-of-container crown-margin sliver.
  */
 class FramedCutoutLayoutTest {
 
@@ -24,8 +28,11 @@ class FramedCutoutLayoutTest {
     private val dF = 0.496f
     private val apertureD = s * dF // 496
     private val apertureTop = s * cyF - apertureD / 2f // 148
+    private val apertureBottom = apertureTop + apertureD // 644
     private val crown = FramedCutoutLayout.CROWN_MARGIN_CONTAINER_FRACTION * s // 20
-    private val headF = FramedCutoutLayout.HEAD_FRACTION // 0.30
+    private val clearance = FramedCutoutLayout.HEAD_CLEARANCE_APERTURE_FRACTION * apertureD // 19.84
+    private val overflow = FramedCutoutLayout.BOTTOM_OVERFLOW_APERTURE_FRACTION * apertureD // 124
+    private val targetPersonH = apertureD - clearance + overflow // 600.16
 
     private fun compute(bounds: AlphaBounds, imgW: Int, imgH: Int, pad: Float = 0f): FramedCutoutTransform =
         FramedCutoutLayout.compute(
@@ -41,24 +48,33 @@ class FramedCutoutLayoutTest {
     private fun personTop(t: FramedCutoutTransform, box: AlphaBounds): Float =
         t.offsetYPx + box.top * t.drawHeightPx
 
+    private fun personBottom(t: FramedCutoutTransform, box: AlphaBounds): Float =
+        t.offsetYPx + box.bottom * t.drawHeightPx
+
     private fun personHeight(t: FramedCutoutTransform, box: AlphaBounds): Float =
         box.height * t.drawHeightPx
 
-    /**
-     * The core round-4 invariant: the strip places at least the top
-     * [FramedCutoutLayout.HEAD_FRACTION] (30%) of the person above the aperture's top
-     * edge — head + neck over the frame, ring behind the neck — and the strip window
-     * matches that strip plus the crown margin.
-     */
-    private fun assertRingBehindNeck(t: FramedCutoutTransform, box: AlphaBounds) {
-        val aboveAperture = apertureTop - personTop(t, box)
-        val personH = personHeight(t, box)
+    private fun personWidth(t: FramedCutoutTransform, box: AlphaBounds): Float =
+        box.width * t.drawWidthPx
+
+    /** The core round-6 invariants: fill-from-bottom, head inside, no void. */
+    private fun assertFillFromBottomHeadInside(t: FramedCutoutTransform, box: AlphaBounds) {
+        // Bottom anchored at the overflow point below the aperture's bottom edge:
+        // the torso continues behind the bottom artwork, so the ring's bottom is
+        // never a bare glow void.
+        assertEquals(apertureBottom + overflow, personBottom(t, box), 1f)
+        // Head INSIDE the ring: the box top never rises above the aperture's top
+        // edge (no frame ornament can cover face/hair), and with the height-first
+        // scale it sits at or below the clearance point.
         assertTrue(
-            "top 30% of the person must be above the aperture top (above=$aboveAperture, personH=$personH)",
-            aboveAperture >= headF * personH - 1f
+            "person top must stay inside the aperture (top=${personTop(t, box)}, apertureTop=$apertureTop)",
+            personTop(t, box) >= apertureTop + clearance - 1f
         )
-        assertEquals(headF * personH, aboveAperture, 1.5f)
-        assertEquals(headF * personH + crown, t.stripPx, 1.5f)
+        // No void: the person spans the aperture's full height.
+        assertTrue(personTop(t, box) <= apertureTop + clearance + 1f || personHeight(t, box) < targetPersonH)
+        assertTrue(personBottom(t, box) > apertureBottom)
+        // The over-frame strip is only the crown-margin sliver now.
+        assertEquals(crown, t.stripPx, 0.5f)
     }
 
     private fun assertCentredAndAspect(t: FramedCutoutTransform, box: AlphaBounds, imgW: Int, imgH: Int) {
@@ -70,83 +86,91 @@ class FramedCutoutLayoutTest {
     }
 
     @Test
-    fun compositeLikePerson_fillsApertureRingBehindNeck() {
+    fun compositeLikePerson_fillsApertureFromBottom_headInsideRing() {
         // Person occupies 90% of the canvas width, like the owner's reference composite.
         val bounds = AlphaBounds(0.05f, 0.02f, 0.95f, 0.98f, 0.15f)
         val t = compute(bounds, 640, 640)
-        // Width-first fit: person width == aperture diameter.
-        assertEquals(apertureD, bounds.width * t.drawWidthPx, 1f)
-        assertEquals(apertureD / (0.90f * 640f), t.scale, 0.001f)
-        assertRingBehindNeck(t, bounds)
+        // Height-first: person height is exactly the round-6 target (1.21 x aperture).
+        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertEquals(targetPersonH / (bounds.height * 640f), t.scale, 0.001f)
+        // Head top lands exactly at the clearance point inside the ring.
+        assertEquals(apertureTop + clearance, personTop(t, bounds), 1f)
+        // Person spans ~1.13 x aperture wide (the circle clips the sides, so the
+        // shoulders meet the ring like the reference composite's ~0.92 visible span).
+        assertTrue(personWidth(t, bounds) > 0.85f * apertureD)
+        assertTrue(personWidth(t, bounds) <= FramedCutoutLayout.MAX_WIDTH_APERTURE_FRACTION * apertureD)
+        assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 640, 640)
     }
 
     @Test
-    fun ownerTightCutout_wholeHeadAboveAperture() {
-        // Owner-like tight cutout (80% wide x 95% tall). The head alone is ~22% of the
-        // person height; the 30% strip must clear it entirely.
+    fun ownerTightCutout_noBottomVoid_headClearOfCrownZone() {
+        // Owner-like tight cutout (80% wide x 95% tall) — the shape that rendered
+        // small/raised with a 0.45xD void under the old pop-out math.
         val bounds = AlphaBounds(0.10f, 0.025f, 0.90f, 0.975f, 0.24f)
         val t = compute(bounds, 640, 640)
-        assertEquals(apertureD, bounds.width * t.drawWidthPx, 1f)
-        val aboveAperture = apertureTop - personTop(t, bounds)
-        assertTrue(aboveAperture >= 0.22f * personHeight(t, bounds))
-        assertRingBehindNeck(t, bounds)
+        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertEquals(apertureTop + clearance, personTop(t, bounds), 1f)
+        assertEquals(apertureBottom + overflow, personBottom(t, bounds), 1f)
+        assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 640, 640)
     }
 
     @Test
-    fun tallFullBody_heightGuardClampsScale() {
-        // Narrow, full-height person: width-first fit would make him 1240px tall with
-        // a 372px strip; the guard (aperture + strip + 0.35 aperture = 1041.6) clamps.
+    fun tallFullBody_heightFirstKeepsHeadInsideAndBottomFilled() {
+        // Narrow full-body person: height-first fit makes him 1.21 x aperture tall
+        // and narrower than the aperture (glow at the sides, like the reference's
+        // side glow) — the old width-first/guard math exploded him to 2.1 x aperture.
         val bounds = AlphaBounds(0.30f, 0f, 0.70f, 1f, 0.6f)
         val t = compute(bounds, 640, 640)
-        val expectedMaxPersonH = apertureD + headF * 1240f +
-            FramedCutoutLayout.HEIGHT_GUARD_EXTRA_APERTURE_FRACTION * apertureD // 1041.6
-        assertEquals(expectedMaxPersonH, personHeight(t, bounds), 1f)
-        assertEquals(expectedMaxPersonH / (bounds.height * 640f), t.scale, 0.001f)
-        // After clamping, the strip follows the final person height: ring at the neck.
-        assertRingBehindNeck(t, bounds)
+        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertTrue(personWidth(t, bounds) < apertureD)
+        assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 640, 640)
     }
 
     @Test
-    fun extremeFullBody_stripCapFallsBackToChinForGuard() {
-        // Very narrow full-body: width-first person height 1653px -> head strip would
-        // be 496px, above the 40%-of-container cap, so the guard is derived with the
-        // CHIN strip (0.22 x 1653.3 = 363.7): max person height = 496+363.7+173.6.
-        val bounds = AlphaBounds(0.35f, 0f, 0.65f, 1f, 0.7f)
+    fun wideShortCutout_widthCapBinds_bottomAnchorKept() {
+        // Very wide/short box (1.6 x wider than tall): height-first scale would
+        // render him 1.94 x aperture wide; the 1.35 cap binds instead. Height
+        // shrinks, the bottom anchor is kept, and the top sits LOWER inside the
+        // ring (never above the clearance point, never a bottom void).
+        val bounds = AlphaBounds(0.02f, 0.30f, 0.98f, 0.90f, 0.35f)
         val t = compute(bounds, 640, 640)
-        val expectedMaxPersonH = apertureD + FramedCutoutLayout.CHIN_FRACTION * (640f * apertureD / (0.30f * 640f)) +
-            FramedCutoutLayout.HEIGHT_GUARD_EXTRA_APERTURE_FRACTION * apertureD // 1033.3
-        assertEquals(expectedMaxPersonH, personHeight(t, bounds), 1f)
-        // The rendered strip window never exceeds the cap (+ crown margin).
-        assertTrue(t.stripPx <= FramedCutoutLayout.MAX_STRIP_CONTAINER_FRACTION * s + crown + 0.5f)
-        assertRingBehindNeck(t, bounds)
+        assertEquals(
+            FramedCutoutLayout.MAX_WIDTH_APERTURE_FRACTION * apertureD,
+            personWidth(t, bounds),
+            1f
+        )
+        assertTrue(personHeight(t, bounds) < targetPersonH)
+        assertEquals(apertureBottom + overflow, personBottom(t, bounds), 1f)
+        assertTrue(personTop(t, bounds) > apertureTop + clearance)
+        assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 640, 640)
     }
 
     @Test
-    fun fullCanvasBounds_placedByDynamicStrip() {
-        // Degenerate case: bounds == whole canvas. Width-first scale is unchanged; the
-        // canvas top lands at the dynamic strip top (apertureTop - 0.30 x personH).
+    fun fullCanvasBounds_fillsFromBottom() {
+        // Degenerate case: bounds == whole canvas.
         val bounds = AlphaBounds(0f, 0f, 1f, 1f, 0f)
         val t = compute(bounds, 640, 640)
-        assertEquals(apertureD / 640f, t.scale, 0.001f)
-        assertEquals(apertureTop - headF * apertureD, t.offsetYPx, 1f)
+        assertEquals(targetPersonH / 640f, t.scale, 0.001f)
+        assertEquals(apertureBottom + overflow - targetPersonH, t.offsetYPx, 1f)
+        assertEquals(apertureTop + clearance, personTop(t, bounds), 1f)
         assertEquals(s / 2f, t.offsetXPx + t.drawWidthPx / 2f, 1f)
+        assertFillFromBottomHeadInside(t, bounds)
     }
 
     @Test
-    fun smallPerson_scaleUpCappedByHeightGuardAndStaysCentred() {
-        // Person is only 20% of the canvas wide / 40% tall (deep padding). Width-first
-        // person height 992px, strip 297.6px; guard caps height at 496+297.6+173.6.
+    fun smallPerson_scaledUpToFillFromBottom() {
+        // Person is only 20% of the canvas wide / 40% tall (deep transparent
+        // padding): the bounds fit scales the PERSON up to the full target height
+        // instead of rendering the padded canvas small inside the ring.
         val bounds = AlphaBounds(0.40f, 0.30f, 0.60f, 0.70f, 0.92f)
         val t = compute(bounds, 640, 640)
         assertTrue(t.drawWidthPx.isFinite() && t.drawHeightPx.isFinite())
-        val expectedMaxPersonH = apertureD + headF * 992f +
-            FramedCutoutLayout.HEIGHT_GUARD_EXTRA_APERTURE_FRACTION * apertureD // 967.2
-        assertEquals(expectedMaxPersonH, personHeight(t, bounds), 1f)
-        assertRingBehindNeck(t, bounds)
+        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 640, 640)
     }
 
@@ -155,8 +179,8 @@ class FramedCutoutLayoutTest {
         val bounds = AlphaBounds(0.05f, 0.02f, 0.95f, 0.98f, 0.15f)
         val padded = bounds.padded(FramedCutoutLayout.DEFAULT_PAD_FRACTION)
         val t = compute(bounds, 640, 640, pad = FramedCutoutLayout.DEFAULT_PAD_FRACTION)
-        assertEquals(apertureD, padded.width * t.drawWidthPx, 1f)
-        assertRingBehindNeck(t, padded)
+        assertEquals(targetPersonH, personHeight(t, padded), 1f)
+        assertFillFromBottomHeadInside(t, padded)
         assertCentredAndAspect(t, padded, 640, 640)
     }
 
@@ -165,8 +189,18 @@ class FramedCutoutLayoutTest {
         // Portrait source 480x640, person centred.
         val bounds = AlphaBounds(0.10f, 0.05f, 0.90f, 0.95f, 0.28f)
         val t = compute(bounds, 480, 640)
-        assertEquals(apertureD, bounds.width * t.drawWidthPx, 1f)
-        assertRingBehindNeck(t, bounds)
+        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 480, 640)
+    }
+
+    @Test
+    fun stripIsOnlyTheCrownMarginSliver() {
+        // Round 6: the head no longer pops out, so the over-frame strip window is
+        // exactly the crown margin — independent of the person or the frame.
+        val bounds = AlphaBounds(0.10f, 0.025f, 0.90f, 0.975f, 0.24f)
+        val t = compute(bounds, 640, 640)
+        assertEquals(crown, t.stripPx, 0.5f)
+        assertTrue(t.stripPx < 0.05f * s)
     }
 }

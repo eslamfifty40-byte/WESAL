@@ -177,6 +177,14 @@ fun WesalAvatar(
     val frameGlowIntensity = (activeFrame?.glowIntensity ?: 1.0f).coerceIn(0f, 1f)
     val frameGlowSpeed = (activeFrame?.glowSpeed ?: 1.0f).coerceIn(0.5f, 2f)
 
+    // §5.9 (round-4 P2-8) footprint, computed BEFORE the motion tier (round 6):
+    // a framed avatar's container is 1.38x the nominal size. Callers in fixed slots
+    // pass fitInsideBounds = true: the base size is pre-shrunk by the same factor so
+    // the whole framed container fits exactly inside the nominal `size` footprint.
+    // Unframed avatars are unaffected either way (footprintBaseSize == size).
+    val footprintBaseSize = if (fitInsideBounds && activeFrame != null) size / 1.38f else size
+    val containerSize = if (activeFrame != null) footprintBaseSize * 1.38f else footprintBaseSize
+
     // Motion tiers (round 5, FrameAnimationPolicy — the pure rules are unit-tested):
     // effective animation = the frame's resolved `animated` flag AND the admin master
     // switch (system_config/global_appearance.framesAnimationEnabled). Both inputs are
@@ -187,12 +195,21 @@ fun WesalAvatar(
     //   REDUCED (52..<96dp): glow pulse only — halo + glow-disc breathing.
     //   FULL    (>= 96dp: profile, detail, settings): glow pulse + shine sweep around
     //           the ring + sparkle accents (FrameShineSparkles below).
+    // Round 6 (item 10d): the tier is sized by the REAL on-screen footprint
+    // (containerSize), not the nominal `size`. A framed avatar's nominal size
+    // understates what is actually drawn by 1.38x, so the Settings card avatar
+    // (nominal 76dp, drawn at ~105dp) was stuck in the glow-only REDUCED tier and
+    // the owner saw "no animation at all" on a large avatar; chat-row framed
+    // avatars (nominal ~52dp, drawn ~72dp) sat in NONE and were fully frozen.
+    // With the footprint measure: profile/settings/detail are FULL, chat rows are
+    // REDUCED (cheap glow breathing only — no sweep/sparkles/fan in lists), and
+    // only genuinely tiny avatars (< 52dp on screen) stay NONE.
     val effectiveFrameAnimated = FrameAnimationPolicy.effectiveAnimated(
         frameAnimated = activeFrame?.animated == true,
         masterEnabled = WesalFrameLibrary.framesAnimationEnabled
     )
     val motionTier = FrameAnimationPolicy.motionTier(
-        sizeDp = size.value,
+        sizeDp = containerSize.value,
         effectiveAnimated = effectiveFrameAnimated
     )
     val isAnimatedFrame = motionTier != FrameMotionTier.NONE
@@ -246,15 +263,8 @@ fun WesalAvatar(
         null
     } ?: remember { mutableStateOf(0f) })
 
-    // §5.9 (round-4 P2-8): a framed avatar's container is 1.38x the nominal size, so
-    // in list rows a framed avatar used to occupy more layout space than an unframed
-    // one (taller rows, crowding). Callers in fixed slots pass fitInsideBounds = true:
-    // the base size is pre-shrunk by the same factor so the whole framed container —
-    // frame, aperture photo, glow, pop-out geometry (all derived from containerSize /
-    // innerAvatarSize below) — fits exactly inside the nominal `size` footprint.
-    // Unframed avatars are unaffected either way (footprintBaseSize == size).
-    val footprintBaseSize = if (fitInsideBounds && activeFrame != null) size / 1.38f else size
-    val containerSize = if (activeFrame != null) footprintBaseSize * 1.38f else footprintBaseSize
+    // (footprintBaseSize / containerSize are computed above the motion tier —
+    // see the round-6 note there.)
     // Measured aperture used verbatim (spec §5.5): the old x1.07 inflation is gone — the frame
     // artwork is drawn OVER the photo, so a photo disc of exactly the aperture size meets the
     // artwork's ring cleanly, matching the measured reference geometry.
@@ -282,14 +292,16 @@ fun WesalAvatar(
     // Verified alpha bounds for this photo (round-3): the ONLY evidence allowed to drive
     // the bounds fit and the over-frame head strip.
     val verifiedBounds = detectedBoundsRecord?.bounds?.takeIf { isCutoutBounds(it) }
-    // Owner's pop-out geometry (definitive spec): a framed CUTOUT photo is rendered in a
-    // virtual box taller than the aperture by a head strip, so the head can rise above
-    // the aperture's top edge over the frame's upper ring. Round-4: the strip height is
-    // derived from the measured bounds inside FramedCutoutLayout (head + neck = 30% of
-    // the rendered person height) — the round-3 fixed 10%-of-container strip was only
-    // 56-71% of a head, so the ring still crossed the face.
-    // The aperture window opens for a verified cutout OR the legacy flag; the head strip
-    // (below) opens for verified bounds ONLY.
+    // Owner's framed-cutout geometry (round-6 spec, item 10 — supersedes the
+    // round-3/4 head pop-out, which the owner rejected on device: figure lifted,
+    // body shrunk, dark void inside the ring): FramedCutoutLayout now places the
+    // person HEIGHT-FIRST and BOTTOM-ANCHORED inside the aperture — torso fills
+    // the ring from its bottom up and continues behind the frame's bottom
+    // artwork, head near the top INSIDE the ring (0.04 x aperture clearance), so
+    // no frame ornament ever covers face/hair. The over-frame strip survives
+    // only as a crown-margin sliver (see FramedCutoutLayout).
+    // The aperture window opens for a verified cutout OR the legacy flag; the
+    // strip window (below) opens for verified bounds ONLY.
     val framedCutout = activeFrame != null && (verifiedBounds != null || detectedCutout)
     // Corner-alpha probe for uncached, unflagged framed photos (drives cutout detection).
     val needSoftwareCheck = activeFrame != null && cachedCutout == null && !isCutout
@@ -298,7 +310,9 @@ fun WesalAvatar(
     val apertureOffsetYPx = with(density) { apertureOffsetY.roundToPx() }
     val apertureRadiusPx = innerPx / 2f
     // Bounds-driven placement of the PERSON (not the padded canvas) inside the aperture:
-    // person width == aperture diameter, head at the strip's top, tall cutouts height-capped.
+    // round-6 height-first, bottom-anchored fit (see FramedCutoutLayout) — the person
+    // spans 1.21 x the aperture height, bottom anchored below the aperture's bottom
+    // edge, head just inside its top edge.
     // The aspect comes from the bounds record's SOURCE dimensions (published by
     // AlphaBoundsTransformation from its input bitmap), never from a delivered drawable.
     // Null until verified bounds are known; the legacy full-canvas rendering covers the
@@ -580,22 +594,25 @@ fun WesalAvatar(
         }
     }
 
-    // Head pop-out (owner's definitive spec) for framed CUTOUT photos: the photo is rendered
+    // LEGACY pre-bounds rendering for framed CUTOUT photos (used only until the
+    // alpha-bounds record exists, or for flag-only cutouts): the photo is rendered
     // ONCE virtually — a box of aperture width and (aperture height + strip) height, bottom
     // aligned with the aperture, Crop/TopCenter — and shown through two clip windows of that
     // same rendering: the aperture circle (under the frame) and the strip above the
     // aperture's top edge (over the frame). Same scale/offset in both windows, so the person
-    // is one coherent figure whose head rises out of the frame's upper ring; the cutout's
-    // transparency guarantees no rectangular artifacts in the strip.
+    // is one coherent figure; the cutout's transparency guarantees no rectangular
+    // artifacts in the strip. The bounds-driven layer below is the round-6 path.
     val apertureClipShape = GenericShape { size, _ ->
         val cx = size.width / 2f
         val cy = size.height / 2f + apertureOffsetYPx
         addOval(Rect(cx - apertureRadiusPx, cy - apertureRadiusPx, cx + apertureRadiusPx, cy + apertureRadiusPx))
     }
-    // Round-4: the strip window's height comes from the bounds transform itself
-    // (person-derived strip + crown margin), so the window matches the placement —
-    // the round-3 fixed 10% window was shorter than a head. This shape is only used
-    // when a transform exists; the fixed-strip fallback is never actually rendered.
+    // Round-6: the strip window's height comes from the bounds transform itself,
+    // which now returns only the crown-margin sliver — the head renders INSIDE
+    // the aperture, so this window normally shows nothing; it exists so a
+    // feather of hair at the box top is never shaved by the aperture edge. This
+    // shape is only used when a transform exists; the fixed-strip fallback is
+    // never actually rendered.
     val stripWindowPx = cutoutTransform?.stripPx ?: popOutStripPx.toFloat()
     val popOutStripClipShape = GenericShape { size, _ ->
         val left = (size.width - innerPx) / 2f
@@ -667,10 +684,11 @@ fun WesalAvatar(
         }
     }
 
-    // Bounds-driven photo layer (round-3): the SAME clip-window architecture as
-    // PopOutPhotoLayer, but the bitmap is placed by the measured alpha-bounds transform
-    // (person fills the aperture, head in the strip) instead of ContentScale.Crop over
-    // the padded canvas. ContentScale.FillBounds is exact here: drawW/drawH are computed
+    // Bounds-driven photo layer (round-3, round-6 placement): the SAME clip-window
+    // architecture as PopOutPhotoLayer, but the bitmap is placed by the measured
+    // alpha-bounds transform (round 6: person fills the aperture from its bottom,
+    // head inside the ring) instead of ContentScale.Crop over the padded canvas.
+    // ContentScale.FillBounds is exact here: drawW/drawH are computed
     // from the bitmap's own aspect, so nothing is distorted.
     @Composable
     fun BoundsPhotoLayer(clipShape: Shape, transform: FramedCutoutTransform, withCallbacks: Boolean) {
@@ -933,9 +951,12 @@ fun WesalAvatar(
             FrameShineSparkles(activeFrame)
         }
 
-        // Pop-out window 2 of 2: the SAME rendering clipped to the strip above the
-        // aperture's top edge, drawn OVER the frame — the head/shoulders of the cutout
-        // overlap the frame's upper ring, exactly like the owner's reference composite.
+        // Window 2 of 2: the SAME rendering clipped to the sliver above the
+        // aperture's top edge, drawn OVER the frame. Round 6: the transform's
+        // strip is only the crown margin and the head sits INSIDE the ring, so
+        // this window normally renders nothing — it is a safety sliver, not a
+        // pop-out (the round-3/4 head-over-ring rendering is gone: it lifted the
+        // figure and left the void the owner complained about).
         // VERIFIED BOUNDS ONLY: this window paints over the frame artwork, so it must
         // never open on the stored flag alone — a false positive would leak a photo
         // rectangle over the crest. Flag-only cutouts keep the in-aperture rendering.

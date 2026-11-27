@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.AppUpdateConfig
@@ -100,8 +101,10 @@ class MainViewModel @Inject constructor(
 
     /**
      * True when the account's phone counts as verified for the mandatory
-     * gate: the user doc says so (its mirror), this session already proved
-     * it against the registry, or the registry holds a row for [uid]
+     * gate: the user doc's mirror is COMPLETE (flag + number + phoneHash —
+     * see [PhoneOtpLogic.isCompleteVerificationMirror]; a flag-only mirror
+     * is production reality and is NOT evidence), this session already
+     * proved it against the registry, or the registry holds a row for [uid]
      * (checked now, bounded at 6s, fail-closed).
      */
     private suspend fun isGateVerified(uid: String, docVerified: Boolean): Boolean {
@@ -193,7 +196,12 @@ class MainViewModel @Inject constructor(
                             // The Supabase registry is the authority — the
                             // doc's isPhoneVerified is only its mirror, so a
                             // lost mirror must not gate a proven-verified user.
-                            !isGateVerified(uid, user.isPhoneVerified) -> StartDestination.VerifyPhone
+                            !isGateVerified(
+                                uid,
+                                PhoneOtpLogic.isCompleteVerificationMirror(
+                                    user.isPhoneVerified, user.phoneNumber, user.phoneHash
+                                )
+                            ) -> StartDestination.VerifyPhone
                             else -> StartDestination.Home
                         }
                     } else if (userResult.isSuccess) {
@@ -229,7 +237,9 @@ class MainViewModel @Inject constructor(
                     (user.displayName.isNotBlank() && user.phoneNumber.isNotBlank() && user.birthDate.isNotBlank()))
                 when {
                     !complete -> _startDestination.value = StartDestination.ProfileSetup
-                    user.isPhoneVerified || registryVerifiedUid == user.uid -> {
+                    PhoneOtpLogic.isCompleteVerificationMirror(
+                        user.isPhoneVerified, user.phoneNumber, user.phoneHash
+                    ) || registryVerifiedUid == user.uid -> {
                         registryVerifiedUid = user.uid
                         _startDestination.value = StartDestination.Home
                     }

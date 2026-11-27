@@ -52,6 +52,29 @@ object CallSignalingErrors {
     }
 }
 
+/** Freshness window for an incoming call to count as still ringing (matches the pre-R6 query behaviour). */
+internal const val INCOMING_CALL_WINDOW_MS = 90_000L
+
+/**
+ * Pure eligibility test for an incoming call, applied client-side after the
+ * rules-provable `participants array-contains uid` query (see observeIncomingCalls):
+ * the call must be addressed to me, still be CONNECTING or RINGING, come from a
+ * real peer (not myself, not blank), and have started inside the freshness window.
+ */
+internal fun isActionableIncomingCall(
+    calleeId: String,
+    callerId: String,
+    status: CallStatus,
+    startedAt: Long,
+    uid: String,
+    nowMs: Long
+): Boolean {
+    if (calleeId != uid) return false
+    if (callerId.isBlank() || callerId == uid) return false
+    if (status != CallStatus.CONNECTING && status != CallStatus.RINGING) return false
+    return startedAt >= nowMs - INCOMING_CALL_WINDOW_MS
+}
+
 @Singleton
 class CallRepositoryImpl @Inject constructor(
     private val auth: FirebaseAuth,
@@ -123,20 +146,41 @@ class CallRepositoryImpl @Inject constructor(
             flowOf(null)
         } else {
             callbackFlow {
+                // R6 FIX (calls broken / spurious «حدثت مشكلة في الاتصال بالخادم…»): the query
+                // must NOT filter on calleeId alone. The calls read rule is
+                // `request.auth.uid in resource.data.participants`, and Firestore evaluates
+                // LIST rules against the query's constraints: a `calleeId == uid` query does
+                // not PROVE `uid in participants`, so the whole listener was rejected with
+                // PERMISSION_DENIED. That single dead listener (collected app-wide via
+                // MainViewModel.incomingCall) (a) meant no incoming call was ever detected
+                // in-app — no IncomingCallActivity, no ringtone, no ringing ack, so the
+                // caller never reached RINGING and never heard ringback — and (b) its error
+                // was posted to the global CallSignalingErrors flow, painting the server
+                // error message over CallActivity even for outgoing calls whose own writes
+                // had succeeded. An array-contains constraint on `participants` IS provable
+                // under the rule (same pattern as observeCallHistory / observeChats), so the
+                // listener now runs; callee/status are filtered client-side instead.
                 val reg = firestore.collection(Constants.COLLECTION_CALLS)
-                    .whereEqualTo("calleeId", uid)
-                    .whereIn("status", listOf(CallStatus.CONNECTING.raw, CallStatus.RINGING.raw))
+                    .whereArrayContains("participants", uid)
                     .addSnapshotListener { snap, err ->
                         if (err != null) {
                             onListenerError("observeIncomingCalls", err)
                             return@addSnapshotListener
                         }
-                        val cutoff = System.currentTimeMillis() - 90_000L
+                        val nowMs = System.currentTimeMillis()
                         val activeRing = snap?.documents
                             ?.mapNotNull { doc ->
                                 val startedAt = doc.getLong("startedAt") ?: 0L
                                 val callerId = doc.getString("callerId").orEmpty()
-                                if (startedAt < cutoff || callerId.isBlank() || callerId == uid) {
+                                if (!isActionableIncomingCall(
+                                        calleeId = doc.getString("calleeId").orEmpty(),
+                                        callerId = callerId,
+                                        status = CallStatus.fromRaw(doc.getString("status")),
+                                        startedAt = startedAt,
+                                        uid = uid,
+                                        nowMs = nowMs
+                                    )
+                                ) {
                                     return@mapNotNull null
                                 }
                                 CallRecord(

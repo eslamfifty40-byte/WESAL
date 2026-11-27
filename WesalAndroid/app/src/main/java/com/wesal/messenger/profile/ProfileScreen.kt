@@ -54,6 +54,7 @@ import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalFrameLibrary
@@ -69,6 +70,7 @@ import com.wesal.messenger.domain.model.CountryCode
 import com.wesal.messenger.domain.model.PrivacySettings
 import com.wesal.messenger.domain.model.ProfileVisitor
 import com.wesal.messenger.domain.model.WesalUser
+import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.media.AvatarCropHelper
 import com.wesal.messenger.media.AvatarPreviewConfirmDialog
@@ -83,6 +85,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.util.Calendar
 import java.util.Locale
@@ -95,11 +98,31 @@ data class ProfileUiStatus(
     val navigateBackOnSuccess: Boolean = false
 )
 
+/**
+ * Round 6: the profile phone section's verification sub-flow. Saving an
+ * UNVERIFIED number now starts a real OTP verification (the old save only
+ * wrote the number to Firestore and never sent a code, so no code-entry UI
+ * could ever appear — and its unbounded Firestore awaits could spin
+ * forever). [step] 1 means a code was sent to [sentE164] and the section
+ * shows the code-entry row; errors ride [ProfileUiStatus.message] like the
+ * rest of this screen (already Arabic via the repository's error mapping).
+ */
+data class ProfilePhoneOtpState(
+    val step: Int = 0,
+    val sentE164: String = "",
+    val isBusy: Boolean = false,
+    val infoMessage: String? = null
+)
+
 @HiltViewModel
 class ProfileViewModel @Inject constructor(
     private val userRepository: UserRepository,
+    private val authRepository: AuthRepository,
     private val networkMonitor: NetworkMonitor
 ) : ViewModel() {
+
+    private val _phoneOtpState = MutableStateFlow(ProfilePhoneOtpState())
+    val phoneOtpState: StateFlow<ProfilePhoneOtpState> = _phoneOtpState.asStateFlow()
 
     val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
@@ -252,22 +275,172 @@ class ProfileViewModel @Inject constructor(
             )
             return
         }
+        val e164 = check.e164
+        // Already-verified same number (complete mirror): a plain re-save is
+        // all that is needed — no new code. Anything else must go through
+        // OTP verification below (owner rule: an unverified number is stored
+        // unverified and only the code proves it).
+        val user = currentUser.value
+        val alreadyVerified = user != null &&
+            PhoneOtpLogic.isCompleteVerificationMirror(user.isPhoneVerified, user.phoneNumber, user.phoneHash) &&
+            PhoneUtils.normalizeToE164(user.phoneNumber) == e164
         viewModelScope.launch {
             _uiStatus.value = ProfileUiStatus(isSaving = true)
-            userRepository.updatePhoneValidated(check.e164)
-                .onSuccess {
-                    _uiStatus.value = ProfileUiStatus(
-                        message = if (isEn) "Phone number saved" else "تم حفظ رقم الهاتف بنجاح",
-                        isError = false
+            // Bounded (20s): updatePhoneValidated awaits Firestore directly,
+            // and a wedged stream used to leave this spinner running forever
+            // with no error and no code ever sent.
+            val saveResult = withTimeoutOrNull(20_000L) { userRepository.updatePhoneValidated(e164) }
+                ?: Result.failure(
+                    IllegalStateException(
+                        if (isEn) "Saving the number timed out — check your connection and try again"
+                        else "انتهت مهلة حفظ الرقم — تحقق من الإنترنت وحاول مرة أخرى"
                     )
+                )
+            if (saveResult.isFailure) {
+                _uiStatus.value = ProfileUiStatus(
+                    message = saveResult.exceptionOrNull()?.localizedMessage
+                        ?: if (isEn) "Phone number unavailable" else "تعذر حفظ رقم الهاتف",
+                    isError = true
+                )
+                return@launch
+            }
+            if (alreadyVerified) {
+                _uiStatus.value = ProfileUiStatus(
+                    message = if (isEn) "Phone number saved" else "تم حفظ رقم الهاتف بنجاح",
+                    isError = false
+                )
+                return@launch
+            }
+            // Start verification for the current signed-in account (the
+            // for-current-user send — NEVER the login send, which would swap
+            // the session to a new anonymous account).
+            _phoneOtpState.update { it.copy(isBusy = true, infoMessage = null) }
+            val sendResult = withTimeoutOrNull(60_000L) { authRepository.sendPhoneOtpForCurrentUser(e164) }
+                ?: Result.failure(
+                    IllegalStateException(
+                        if (isEn) "Sending the code timed out — try again"
+                        else "انتهت مهلة إرسال الكود — حاول مرة أخرى"
+                    )
+                )
+            sendResult
+                .onSuccess { channel ->
+                    _phoneOtpState.value = ProfilePhoneOtpState(
+                        step = 1,
+                        sentE164 = e164,
+                        infoMessage = if (isEn) {
+                            "We sent a verification code to ${PhoneOtpLogic.maskPhoneForDisplay(e164)}"
+                        } else {
+                            "بعتنا كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
+                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — اكتبه هنا عشان توثّق الرقم"
+                        }
+                    )
+                    _uiStatus.value = ProfileUiStatus(message = null)
                 }
                 .onFailure { err ->
+                    _phoneOtpState.update { it.copy(isBusy = false) }
                     _uiStatus.value = ProfileUiStatus(
-                        message = err.localizedMessage ?: if (isEn) "Phone number unavailable" else "تعذر حفظ رقم الهاتف",
+                        // The repository already maps backend codes to the
+                        // phone screens' Arabic via
+                        // PhoneOtpLogic.arabicMessageForErrorCode.
+                        message = err.localizedMessage
+                            ?: if (isEn) "Could not send the verification code" else "تعذر إرسال كود التحقق",
                         isError = true
                     )
                 }
         }
+    }
+
+    /** Confirms the code sent by [updateCountryPhone]'s verification step. */
+    fun verifyProfilePhoneOtp(codeRaw: String, isEn: Boolean) {
+        val state = _phoneOtpState.value
+        if (state.isBusy || state.sentE164.isBlank()) return
+        val code = PhoneOtpLogic.sanitizeOtpInput(codeRaw)
+        if (!PhoneOtpLogic.isCompleteOtp(code)) {
+            _uiStatus.value = ProfileUiStatus(
+                message = if (isEn) "Enter the full 6-digit code" else "اكتب كود التحقق كامل (٦ أرقام)",
+                isError = true
+            )
+            return
+        }
+        if (!networkMonitor.isCurrentlyConnected()) {
+            _uiStatus.value = ProfileUiStatus(
+                message = if (isEn) "No internet connection" else "لا يوجد اتصال بالإنترنت",
+                isError = true
+            )
+            return
+        }
+        viewModelScope.launch {
+            _phoneOtpState.update { it.copy(isBusy = true) }
+            val result = withTimeoutOrNull(60_000L) {
+                authRepository.verifyPhoneOtpForCurrentUser(state.sentE164, code)
+            } ?: Result.failure(
+                IllegalStateException(
+                    if (isEn) "Verifying the code timed out — try again"
+                    else "انتهت مهلة التحقق من الكود — حاول مرة أخرى"
+                )
+            )
+            result
+                .onSuccess {
+                    // The backend bound the number in the registry and the
+                    // repository mirrored phoneNumber + isPhoneVerified +
+                    // phoneHash into Firestore in one merge write.
+                    _phoneOtpState.value = ProfilePhoneOtpState()
+                    _uiStatus.value = ProfileUiStatus(
+                        message = if (isEn) "Your number is verified ✓" else "تمام! رقمك اتوثّق بنجاح ✓",
+                        isError = false
+                    )
+                }
+                .onFailure { err ->
+                    _phoneOtpState.update { it.copy(isBusy = false) }
+                    _uiStatus.value = ProfileUiStatus(
+                        message = err.localizedMessage
+                            ?: if (isEn) "Could not verify the code" else "تعذر التحقق من الكود",
+                        isError = true
+                    )
+                }
+        }
+    }
+
+    fun resendProfilePhoneOtp(isEn: Boolean) {
+        val state = _phoneOtpState.value
+        if (state.isBusy || state.sentE164.isBlank()) return
+        viewModelScope.launch {
+            _phoneOtpState.update { it.copy(isBusy = true) }
+            val result = withTimeoutOrNull(60_000L) {
+                authRepository.sendPhoneOtpForCurrentUser(state.sentE164)
+            } ?: Result.failure(
+                IllegalStateException(
+                    if (isEn) "Resending the code timed out — try again"
+                    else "انتهت مهلة إرسال الكود — حاول مرة أخرى"
+                )
+            )
+            result
+                .onSuccess { channel ->
+                    _phoneOtpState.update {
+                        it.copy(
+                            isBusy = false,
+                            infoMessage = if (isEn) {
+                                "A new code was sent to ${PhoneOtpLogic.maskPhoneForDisplay(state.sentE164)}"
+                            } else {
+                                "بعتنا كود جديد على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
+                                    "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(state.sentE164)}"
+                            }
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _phoneOtpState.update { it.copy(isBusy = false) }
+                    _uiStatus.value = ProfileUiStatus(
+                        message = err.localizedMessage
+                            ?: if (isEn) "Could not resend the code" else "تعذر إعادة إرسال الكود",
+                        isError = true
+                    )
+                }
+        }
+    }
+
+    fun cancelProfilePhoneOtp() {
+        _phoneOtpState.value = ProfilePhoneOtpState()
     }
 
     fun removeOptionalPhone(isEn: Boolean) {
@@ -397,6 +570,8 @@ fun ProfileScreen(
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val visitors by viewModel.profileVisitors.collectAsStateWithLifecycle()
     val uiStatus by viewModel.uiStatus.collectAsStateWithLifecycle()
+    val phoneOtpState by viewModel.phoneOtpState.collectAsStateWithLifecycle()
+    var profileOtpInput by remember { mutableStateOf("") }
 
     BackHandler(onBack = onBack)
 
@@ -420,7 +595,11 @@ fun ProfileScreen(
             name = loaded.displayName
             bio = loaded.bio
             publicId = loaded.publicId
-            val (country, local) = CountryCatalog.detectFromE164(loaded.phoneNumber)
+            // Round 6: fall back to the legacy phoneDigits field when
+            // phoneNumber is blank (older writers) so the owner's number
+            // still pre-fills here.
+            val prefillE164 = PhoneOtpLogic.verificationPrefillE164(loaded.phoneNumber, loaded.phoneDigits)
+            val (country, local) = CountryCatalog.detectFromE164(prefillE164 ?: loaded.phoneNumber)
             selectedCountry = country
             localPhone = local
             birthDateIso = loaded.birthDate
@@ -1288,7 +1467,10 @@ fun ProfileScreen(
 
             // Email intentionally omitted from ProfileScreen per privacy requirement
 
-            // International Phone Section (Sec 9: Country + Local Box, NO "رقم موثوق" icon/badge, NO OTP)
+            // International Phone Section (Sec 9: Country + Local Box, NO "رقم موثوق" icon/badge).
+            // Round 6: saving an UNVERIFIED number now starts OTP verification inline
+            // (ProfileViewModel.updateCountryPhone → sendPhoneOtpForCurrentUser) and the
+            // code-entry row below appears; a verified number just re-saves.
             Surface(
                 color = palette.surface,
                 shape = RoundedCornerShape(14.dp),
@@ -1332,13 +1514,21 @@ fun ProfileScreen(
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            enabled = !uiStatus.isSaving && localPhone.isNotBlank(),
+                            enabled = !uiStatus.isSaving && !phoneOtpState.isBusy && localPhone.isNotBlank(),
                             onClick = { viewModel.updateCountryPhone(selectedCountry, localPhone, strings.isEnglish) },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = palette.turquoise, contentColor = palette.onAccent)
                         ) {
-                            Text(strings.verifyPhoneNow, fontWeight = FontWeight.Bold)
+                            if (uiStatus.isSaving || phoneOtpState.isBusy) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = palette.onAccent,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text(strings.verifyPhoneNow, fontWeight = FontWeight.Bold)
+                            }
                         }
                         if (!user?.phoneNumber.isNullOrBlank()) {
                             OutlinedButton(
@@ -1351,6 +1541,55 @@ fun ProfileScreen(
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Text(strings.delete, color = palette.error)
+                            }
+                        }
+                    }
+
+                    // Round 6: OTP code entry for the verification started by
+                    // «حفظ الرقم» above. Errors surface via the screen's
+                    // uiStatus toast/text path (Arabic, backend-mapped).
+                    if (phoneOtpState.step == 1) {
+                        phoneOtpState.infoMessage?.let { info ->
+                            Text(info, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+                        }
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            OutlinedTextField(
+                                colors = inputColors,
+                                value = profileOtpInput,
+                                onValueChange = { raw -> profileOtpInput = PhoneOtpLogic.sanitizeOtpInput(raw) },
+                                label = { Text(if (strings.isEnglish) "Verification code" else "كود التحقق") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                enabled = !phoneOtpState.isBusy && profileOtpInput.length == PhoneOtpLogic.OTP_LENGTH,
+                                onClick = { viewModel.verifyProfilePhoneOtp(profileOtpInput, strings.isEnglish) },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.turquoise, contentColor = palette.onAccent)
+                            ) {
+                                Text(if (strings.isEnglish) "Verify" else "تأكيد الكود", fontWeight = FontWeight.Bold)
+                            }
+                            OutlinedButton(
+                                enabled = !phoneOtpState.isBusy,
+                                onClick = { viewModel.resendProfilePhoneOtp(strings.isEnglish) },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(if (strings.isEnglish) "Resend" else "إعادة إرسال")
+                            }
+                            OutlinedButton(
+                                enabled = !phoneOtpState.isBusy,
+                                onClick = {
+                                    profileOtpInput = ""
+                                    viewModel.cancelProfilePhoneOtp()
+                                },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text(if (strings.isEnglish) "Change number" else "تغيير الرقم")
                             }
                         }
                     }

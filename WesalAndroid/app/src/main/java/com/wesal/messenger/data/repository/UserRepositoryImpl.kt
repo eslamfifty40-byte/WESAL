@@ -198,7 +198,17 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
     val effectiveOnline = rawOnline && (lastHeartbeatAt == 0L || (now - lastHeartbeatAt) <= Constants.PRESENCE_ONLINE_TTL_MS)
 
     val email = getString("email").orEmpty()
-    val isPhoneVerified = getBoolean("isPhoneVerified") ?: (phone.isNotBlank() && email.isBlank())
+    // Round 6 fix: the old fallback `?: (phone.isNotBlank() && email.isBlank())`
+    // FABRICATED verification — any doc holding a number but no isPhoneVerified
+    // field and no email read as OTP-verified with no code ever checked, which
+    // (a) let the mandatory gate pass on the mirror path and (b) made the
+    // legacy contacts fallback treat unverified numbers as verified. Absent
+    // field now means exactly what it says: not verified.
+    val isPhoneVerified = getBoolean("isPhoneVerified") ?: false
+    // Owner-only extras (round 6): the canonical hash + legacy digits field,
+    // exposed only on the unredacted self parse the gate / verify prefill use.
+    val phoneHash = if (includePrivateUnredacted) getString("phoneHash").orEmpty() else ""
+    val phoneDigits = if (includePrivateUnredacted) getString("phoneDigits").orEmpty() else ""
 
     val rawIconId = getString("iconId").orEmpty()
     val rawIconUrl = getString("iconUrl").orEmpty()
@@ -211,6 +221,8 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         email = email,
         phoneNumber = phone,
         isPhoneVerified = isPhoneVerified,
+        phoneHash = phoneHash,
+        phoneDigits = phoneDigits,
         isVerified = isCurrentlyVerified,
         verificationType = getString("verificationType") ?: "BLUE",
         verificationGlowColor = getString("verificationGlowColor").orEmpty(),

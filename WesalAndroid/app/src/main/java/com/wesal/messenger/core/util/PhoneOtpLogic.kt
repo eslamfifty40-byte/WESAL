@@ -39,6 +39,41 @@ object PhoneOtpLogic {
         return "${clean.take(3)} ••• ••• ${clean.takeLast(3)}"
     }
 
+    /**
+     * Gate evidence rule (round 6, owner-doc finding): a Firestore user-doc
+     * mirror counts as proof of phone verification ONLY when it is COMPLETE —
+     * the verified flag is set AND the doc carries the verified number AND
+     * its canonical phoneHash. A mirror with isPhoneVerified=true but a blank
+     * phoneNumber and/or blank phoneHash exists in production (privacy-hide
+     * writers blank the public number+hash while the flag/private backup keep
+     * the verified state, and legacy writers stamped the flag from mere
+     * number presence): trusting the flag alone let such an account sail
+     * through the mandatory gate with no registry row and no discoverable
+     * hash. An incomplete mirror is NOT evidence — the caller must fall back
+     * to the Supabase registry (the authority) or hold the account at the
+     * gate.
+     */
+    fun isCompleteVerificationMirror(
+        isPhoneVerified: Boolean,
+        phoneNumber: String?,
+        phoneHash: String?
+    ): Boolean =
+        isPhoneVerified && !phoneNumber.isNullOrBlank() && !phoneHash.isNullOrBlank()
+
+    /**
+     * The number the verify flow pre-fills for an account: the stored
+     * phoneNumber when present, otherwise the legacy digits-only field
+     * (phoneDigits, e.g. "201122072195") some older writers left on the doc
+     * while phoneNumber stayed blank. Returns the canonical E.164 form, or
+     * null when neither field yields a valid number.
+     */
+    fun verificationPrefillE164(phoneNumber: String?, phoneDigits: String?): String? {
+        val raw = phoneNumber?.takeIf { it.isNotBlank() }
+            ?: phoneDigits?.takeIf { it.isNotBlank() }
+            ?: return null
+        return PhoneUtils.normalizeToE164(raw)
+    }
+
     /** Arabic display name for the channel the server reports back. */
     fun channelDisplayNameAr(channel: String): String = when (channel.trim().lowercase()) {
         "whatsapp" -> "واتساب"
