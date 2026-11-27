@@ -51,6 +51,7 @@ import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.GiftGrantLogic
 import com.wesal.messenger.core.util.FrameAnimationPolicy
 import com.wesal.messenger.core.util.FramePickerItem
 import com.wesal.messenger.core.util.LocalWesalStrings
@@ -481,6 +482,19 @@ class AdminVerificationViewModel @Inject constructor(
                 } else {
                     "تم إلغاء توثيق ${target.displayName.ifBlank { target.numericId }}"
                 }
+                // Round 12 (addendum 6): the recipient is TOLD about a
+                // grant — one gift message in his chat with the acting
+                // admin account (created if none exists).
+                if (verified) {
+                    notifyGiftRecipient(
+                        target = target,
+                        badgeLabel = "توثيق (${sealType.labelAr})",
+                        frameName = null,
+                        durationLabel = durationLabel,
+                        permanent = expiresAt == 0L,
+                        note = note
+                    )
+                }
                 // Item 8: local patch instead of refreshAll() (see patchUserLocally).
                 patchUserLocally(target.uid) {
                     it.copy(
@@ -505,6 +519,19 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.setAccountFrame(target.uid, frameId, expiresAt, durationLabel)
                 .onSuccess {
+                    // Round 12 (addendum 6): gift notification, as in
+                    // applyVerification — one message per grant.
+                    if (frameId.isNotBlank()) {
+                        notifyGiftRecipient(
+                            target = target,
+                            badgeLabel = null,
+                            frameName = WesalFrameLibrary.docs[frameId.trim()]?.titleAr
+                                ?.takeIf { it.isNotBlank() } ?: "هدية",
+                            durationLabel = durationLabel,
+                            permanent = expiresAt == 0L,
+                            note = ""
+                        )
+                    }
                     _statusMessage.value = if (frameId.isBlank()) {
                         "تمت إزالة الإطار الشخصي"
                     } else {
@@ -525,6 +552,38 @@ class AdminVerificationViewModel @Inject constructor(
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الإطار" }
             _busy.value = false
+        }
+    }
+
+    /**
+     * Round 12 (addendum 6): sends the gift notification through the
+     * normal chat path, authored by the acting admin account (the chat
+     * is created when none exists). Best-effort by design: a chat failure
+     * must never mark the grant itself failed. Note: for a recipient the
+     * admin has never chatted with, the direct chat follows the standard
+     * message-request path on the recipient's side — the model has no
+     * admin bypass for user inboxes, and none is faked here.
+     */
+    private fun notifyGiftRecipient(
+        target: WesalUser,
+        badgeLabel: String?,
+        frameName: String?,
+        durationLabel: String,
+        permanent: Boolean,
+        note: String
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                val chatId = chatRepository.getOrCreateDirectChat(target.uid).getOrThrow()
+                val text = GiftGrantLogic.giftMessageText(
+                    badgeLabel = badgeLabel,
+                    frameName = frameName,
+                    durationLabel = durationLabel,
+                    permanent = permanent,
+                    note = note
+                )
+                chatRepository.sendTextMessage(chatId, text).getOrThrow()
+            }
         }
     }
 

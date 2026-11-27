@@ -188,14 +188,23 @@ class ContactsViewModel @Inject constructor(
                         }
                     }
                     if (hasContactsPermission()) {
-                        syncDeviceContacts()
+                        // Round 12 (addendum 3c): a cached ZERO-registered
+                        // snapshot over a non-empty phone book must never
+                        // mask reality — force a fresh live sync (cancelling
+                        // any in-flight one) and update in place.
+                        val cachedZeroRegistered = cached != null &&
+                            cached.matched.isEmpty() && cached.unmatched.isNotEmpty()
+                        syncDeviceContacts(force = cachedZeroRegistered)
                     }
                 }
         }
     }
 
-    fun syncDeviceContacts() {
-        if (syncJob?.isActive == true) return
+    fun syncDeviceContacts(force: Boolean = false) {
+        if (syncJob?.isActive == true) {
+            if (!force) return
+            syncJob?.cancel()
+        }
         syncJob = viewModelScope.launch {
             val showLoader = _uiState.value.wesalContacts.isEmpty() && _uiState.value.nonWesalContacts.isEmpty()
             _uiState.update { it.copy(isLoadingContacts = showLoader, error = null) }

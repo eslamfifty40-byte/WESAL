@@ -282,6 +282,24 @@ data class WesalUser(
     // Frames an admin has granted this account over time. The owner may re-apply any of
     // these (or no frame) from the profile picker; firestore.rules enforces the same list.
     val grantedFrameIds: List<String> = emptyList(),
+    // Round 12 (addendum 6): gift-grant snapshots. While a TIMED admin gift
+    // is in force, the marker is true and the preGift* fields hold the state
+    // the user had BEFORE the gift; at expiry the effective state reverts
+    // to the snapshot (see GiftGrantLogic + toWesalUser). Defaults keep
+    // every pre-r12 doc and constructor call-site unchanged.
+    val giftBadgeActive: Boolean = false,
+    val preGiftIsVerified: Boolean = false,
+    val preGiftVerificationType: String = "BLUE",
+    val preGiftVerificationGlowColor: String = "",
+    val preGiftVerificationGlowEnabled: Boolean = true,
+    val preGiftVerificationGlowIntensity: Float = 0.7f,
+    val preGiftVerificationExpiresAt: Long = 0L,
+    val giftFrameActive: Boolean = false,
+    val preGiftFrameId: String = "",
+    val preGiftFrameExpiresAt: Long = 0L,
+    // Round 12 (addendum 11): once-ever stamp of the automatic welcome
+    // gift (0 = never granted). See WelcomeGiftLogic.
+    val welcomeGiftGrantedAt: Long = 0L,
     val iconId: String = "",
     val iconUrl: String = "",
     val photoRemovedBg: Boolean = false,
@@ -582,6 +600,19 @@ data class ChatListSyncState(
      * (review MINOR-6). Blank for list-level states (chats / sessions / contact lists).
      */
     val chatId: String = ""
+)
+
+/**
+ * Round 12 (addendum 10b): the RAW message-request state of a chat doc,
+ * exactly as stored — unlike [ChatPreview], whose request fields are
+ * viewer-relative (the requester sees ACCEPTED so his thread stays in the
+ * main list). The chat screen uses this to show the SENDER his pending
+ * state («طلب مراسلة — بانتظار قبول الطرف الآخر»).
+ */
+data class ChatRequestState(
+    val requestStatus: String = "",
+    val requestFromUid: String = "",
+    val isMessageRequest: Boolean = false
 )
 
 data class ChatPreview(

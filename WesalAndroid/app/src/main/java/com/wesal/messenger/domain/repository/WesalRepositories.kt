@@ -232,6 +232,26 @@ interface UserRepository {
         expiresAt: Long = 0L,
         durationLabel: String = ""
     ): Result<Unit>
+    /**
+     * Round 12 (addendum 6): write-back half of gift auto-revert. When the
+     * signed-in user's own doc carries a TIMED gift whose expiry passed,
+     * restore the pre-gift snapshot fields onto the doc and clear the gift
+     * marker. Rendering already reverts read-side in toWesalUser; this
+     * makes the stored doc converge. No-op when nothing expired.
+     */
+    suspend fun revertExpiredGiftGrants(uid: String)
+    /**
+     * Round 12 (addendum 11): the one-time automatic welcome gift. When
+     * the signed-in user's own doc shows the fully-registered state
+     * (completed profile + verified phone) and the gift was never
+     * granted, equip the welcome frame for one hour through the
+     * addendum-6 snapshot machinery and stamp `welcomeGiftGrantedAt`.
+     * Returns true ONLY when a gift was actually granted (the caller
+     * announces it); false for already-granted / not-yet-eligible /
+     * superseded-by-an-admin-gift. A denied write (rules arm not yet
+     * deployed) leaves the stamp unset so a later entry retries.
+     */
+    suspend fun grantWelcomeGiftIfEligible(uid: String): Boolean
     // Self-service frame choice: succeeds only for a blank frameId, a frameId in the
     // caller's grantedFrameIds, or an admin caller (mirrored by firestore.rules).
     suspend fun setOwnFrame(frameId: String): Result<Unit>
@@ -334,6 +354,11 @@ interface ChatRepository {
     fun observeChatsHasMore(): Flow<Boolean>
     /** Loading/error state for the chats list, driven by the same snapshot listener. */
     fun observeChatListState(): Flow<com.wesal.messenger.domain.model.ChatListSyncState>
+    /**
+     * Round 12 (addendum 10b): the RAW message-request state of one chat
+     * doc (no viewer-relative rewriting — see [ChatRequestState]).
+     */
+    fun observeChatRequestState(chatId: String): Flow<com.wesal.messenger.domain.model.ChatRequestState>
     /** Loading/error/cached state for the open chat's messages listener (spec §§1.2/13.4). */
     fun observeMessageSyncState(): Flow<com.wesal.messenger.domain.model.ChatListSyncState>
     /** Spec §13.3: grow the chats listener page (starts at 100, +100 per call, capped at 1000). */

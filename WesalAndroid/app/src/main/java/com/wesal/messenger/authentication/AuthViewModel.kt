@@ -486,8 +486,15 @@ class AuthViewModel @Inject constructor(
                             phoneOtpE164 = e164,
                             phoneOtpChannel = channel,
                             phoneOtpInput = "",
-                            infoMessage = "بعتنا كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
-                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — الكود صالح ١٠ دقايق"
+                            // Round 12 (addendum 9): honest copy, as in
+                            // VerifyPhoneViewModel — no guaranteed delivery.
+                            infoMessage = "تم إرسال كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
+                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — الكود صالح ١٠ دقايق" +
+                                if (channel.equals("whatsapp", ignoreCase = true)) {
+                                    " — لو الكود موصلش، شوف التعليمات اللي تحت"
+                                } else {
+                                    ""
+                                }
                         )
                     }
                     startPhoneResendCountdown()

@@ -77,6 +77,8 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.pageBleed
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WhatsAppOtpHandoffHint
+import com.wesal.messenger.presentation.components.WhatsAppOtpNotArrivedHint
+import com.wesal.messenger.presentation.components.WhatsAppOtpSameNumberHint
 import com.wesal.messenger.presentation.components.WhatsAppOtpManualFallback
 import com.wesal.messenger.presentation.components.rememberWhatsAppOtpHandoff
 import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
@@ -112,6 +114,10 @@ data class ProfileUiStatus(
 data class ProfilePhoneOtpState(
     val step: Int = 0,
     val sentE164: String = "",
+    // Round 12 (addendum 9): delivery channel of the current OTP, so the
+    // code-entry state can show the WhatsApp not-arrived hint only when
+    // the code actually went out on WhatsApp.
+    val sentChannel: String = "",
     val isBusy: Boolean = false,
     val infoMessage: String? = null
 )
@@ -329,11 +335,23 @@ class ProfileViewModel @Inject constructor(
                     _phoneOtpState.value = ProfilePhoneOtpState(
                         step = 1,
                         sentE164 = e164,
+                        sentChannel = channel,
                         infoMessage = if (isEn) {
-                            "We sent a verification code to ${PhoneOtpLogic.maskPhoneForDisplay(e164)}"
+                            "A verification code was sent to ${PhoneOtpLogic.maskPhoneForDisplay(e164)}" +
+                                if (channel.equals("whatsapp", ignoreCase = true)) {
+                                    " — if it doesn't arrive, see the note below"
+                                } else {
+                                    ""
+                                }
                         } else {
-                            "بعتنا كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
-                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — اكتبه هنا عشان توثّق الرقم"
+                            // Round 12 (addendum 9): no guaranteed-delivery claim.
+                            "تم إرسال كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
+                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — اكتبه هنا عشان توثّق الرقم" +
+                                if (channel.equals("whatsapp", ignoreCase = true)) {
+                                    " — لو الكود موصلش، شوف التعليمات اللي تحت"
+                                } else {
+                                    ""
+                                }
                         }
                     )
                     _uiStatus.value = ProfileUiStatus(message = null)
@@ -421,11 +439,17 @@ class ProfileViewModel @Inject constructor(
                     _phoneOtpState.update {
                         it.copy(
                             isBusy = false,
+                            sentChannel = channel,
                             infoMessage = if (isEn) {
                                 "A new code was sent to ${PhoneOtpLogic.maskPhoneForDisplay(state.sentE164)}"
                             } else {
-                                "بعتنا كود جديد على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
-                                    "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(state.sentE164)}"
+                                "تم إرسال كود جديد على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
+                                    "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(state.sentE164)}" +
+                                    if (channel.equals("whatsapp", ignoreCase = true)) {
+                                        " — لو الكود موصلش، شوف التعليمات اللي تحت"
+                                    } else {
+                                        ""
+                                    }
                             }
                         )
                     }
@@ -1568,6 +1592,7 @@ fun ProfileScreen(
 
                     if (phoneOtpState.step == 0) {
                         WhatsAppOtpHandoffHint()
+                        WhatsAppOtpSameNumberHint()
                         WhatsAppOtpManualFallback(
                             enabled = !uiStatus.isSaving && !phoneOtpState.isBusy && localPhone.isNotBlank()
                         ) { viewModel.updateCountryPhone(selectedCountry, localPhone, strings.isEnglish) }
@@ -1598,6 +1623,11 @@ fun ProfileScreen(
                         // label stacked letter-by-letter. Stacked now: the primary
                         // action full-width, the two secondary actions on their own
                         // row — every label on one full line (maxLines = 1).
+                        // Round 12 (addendum 9): not-arrived hint with the
+                        // handoff button on the code-entry state itself.
+                        if (phoneOtpState.sentChannel.equals("whatsapp", ignoreCase = true)) {
+                            WhatsAppOtpNotArrivedHint { whatsAppHandoff() }
+                        }
                         Button(
                             enabled = !phoneOtpState.isBusy && profileOtpInput.length == PhoneOtpLogic.OTP_LENGTH,
                             onClick = { viewModel.verifyProfilePhoneOtp(profileOtpInput, strings.isEnglish) },

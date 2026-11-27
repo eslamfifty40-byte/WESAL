@@ -14,6 +14,8 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.DirectChatRequestLogic
+import com.wesal.messenger.core.util.OfficialChatWelcome
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.data.local.dao.WesalDao
 import com.wesal.messenger.data.local.entity.CachedChatEntity
@@ -39,6 +41,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
@@ -101,6 +104,31 @@ class ChatRepositoryImpl @Inject constructor(
     private val messageSyncStateFlow: StateFlow<ChatListSyncState> = _messageSyncState.asStateFlow()
 
     override fun observeMessageSyncState(): Flow<ChatListSyncState> = messageSyncStateFlow
+
+    // Round 12 (addendum 10b): raw request state of a single chat doc.
+    override fun observeChatRequestState(chatId: String): Flow<ChatRequestState> = callbackFlow {
+        if (chatId.isBlank()) {
+            trySend(ChatRequestState())
+            close()
+            return@callbackFlow
+        }
+        val registration = firestore.collection(Constants.COLLECTION_CHATS)
+            .document(chatId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null || snapshot == null || !snapshot.exists()) {
+                    trySend(ChatRequestState())
+                    return@addSnapshotListener
+                }
+                trySend(
+                    ChatRequestState(
+                        requestStatus = snapshot.getString("requestStatus").orEmpty(),
+                        requestFromUid = snapshot.getString("requestFromUid").orEmpty(),
+                        isMessageRequest = snapshot.getBoolean("isMessageRequest") ?: false
+                    )
+                )
+            }
+        awaitClose { registration.remove() }
+    }.distinctUntilChanged()
 
     // Chats pagination (spec §13.3): the live listener pages at this size; the list UI
     // asks for more via requestMoreChats() instead of the whole collection streaming.
@@ -1023,21 +1051,45 @@ class ChatRepositoryImpl @Inject constructor(
         if (!snap.exists()) {
             val isOwnerSupportTarget = peer.numericId == Constants.OWNER_ADMIN_NUMERIC_ID
             val callerIsSuperAdmin = verifyIsOwnerSuperAdmin(myUid)
-            if (!isOwnerSupportTarget && !callerIsSuperAdmin) {
+            // Round 12 (addenda 10/10b/10d): the old code hard-threw here
+            // for any fresh pair without an ACCEPTED contact request, so
+            // مراسلة on a new contact died silently and the WhatsApp-style
+            // request chat could never be born (the live rules likewise
+            // only accepted already-accepted pairs). The birth state is
+            // now decided by DirectChatRequestLogic: a fresh pair's chat
+            // is created directly in the PENDING message-request state
+            // (narrowly-scoped rules arm added to firestore.rules —
+            // REQUIRES CONSOLE DEPLOY, see FIXLOG_R12.md), and the
+            // matching contact_requests doc is kept in PENDING alongside.
+            val contactRequestStatus = if (!isOwnerSupportTarget && !callerIsSuperAdmin) {
                 val reqId = "${sortedIds[0]}_${sortedIds[1]}"
-                val reqSnap = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
-                    .document(reqId)
-                    .get()
-                    .await()
-                val isAccepted = reqSnap.exists() && reqSnap.getString("status") == "ACCEPTED"
-                require(isAccepted) {
-                    "لا يمكنك مراسلة هذا المستخدم قبل إرسال طلب تعارف وموافقته"
-                }
+                runCatching {
+                    firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
+                        .document(reqId)
+                        .get()
+                        .await()
+                        .getString("status")
+                }.getOrNull()
+            } else {
+                null
             }
+            val initialState = DirectChatRequestLogic.initialState(
+                isSupportTarget = isOwnerSupportTarget,
+                callerIsSuperAdmin = callerIsSuperAdmin,
+                contactRequestStatus = contactRequestStatus
+            )
+            require(initialState != DirectChatRequestLogic.InitialState.REJECTED) {
+                "تم رفض طلب التعارف من قبل، ولا يمكن بدء محادثة جديدة"
+            }
+            val isPendingRequest =
+                initialState == DirectChatRequestLogic.InitialState.PENDING
             val data = mapOf(
                 "chatId" to deterministicChatId,
                 "isGroup" to false,
                 "isSupportChat" to isOwnerSupportTarget,
+                // Stamped explicitly: the round-12 PENDING-request rules
+                // arm reads this field, and a missing field fails the arm.
+                "isOfficialWesalChat" to false,
                 "participantIds" to sortedIds,
                 "lastMessagePreview" to "",
                 "lastMessageTime" to System.currentTimeMillis(),
@@ -1047,13 +1099,104 @@ class ChatRepositoryImpl @Inject constructor(
                 "pinnedBy" to emptyMap<String, Boolean>(),
                 "mutedBy" to emptyMap<String, Boolean>(),
                 "deletedForUsers" to emptyList<String>(),
-                "typingUsers" to emptyMap<String, Boolean>()
+                "typingUsers" to emptyMap<String, Boolean>(),
+                "isMessageRequest" to isPendingRequest,
+                "requestStatus" to if (isPendingRequest) "PENDING" else "ACCEPTED",
+                "requestFromUid" to if (isPendingRequest) myUid else ""
             )
-            chatRef.set(data, SetOptions.merge()).await()
+            if (isPendingRequest) {
+                try {
+                    chatRef.set(data, SetOptions.merge()).await()
+                } catch (denied: FirebaseFirestoreException) {
+                    if (denied.code != FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                        throw denied
+                    }
+                    // The PENDING-request create arm is not live yet
+                    // (console deploy pending): fall back to the classic
+                    // contact request — which the live rules DO allow —
+                    // and tell the user the truth instead of failing
+                    // silently or faking a chat that exists only locally.
+                    ensurePendingContactRequestDoc(
+                        sortedIds = sortedIds,
+                        myUid = myUid,
+                        me = me,
+                        peerUid = peerUid,
+                        peer = peer
+                    )
+                    throw IllegalStateException(
+                        "تم إرسال طلب تعارف إلى ${peer.displayName.ifBlank { "@${peer.publicId}" }} — هتقدر تراسله أول ما يقبل الطلب"
+                    )
+                }
+                ensurePendingContactRequestDoc(
+                    sortedIds = sortedIds,
+                    myUid = myUid,
+                    me = me,
+                    peerUid = peerUid,
+                    peer = peer
+                )
+            } else {
+                chatRef.set(data, SetOptions.merge()).await()
+            }
         } else {
             chatRef.update("deletedForUsers", FieldValue.arrayRemove(myUid)).await()
         }
         deterministicChatId
+    }
+
+    /**
+     * Round 12 (addendum 10): writes the PENDING `contact_requests` doc
+     * that accompanies a fresh message-request chat, in exactly the shape
+     * `UserRepositoryImpl.sendContactRequest` writes (same deterministic
+     * sorted id), so the recipient's contact-request surfaces light up
+     * alongside the chats-list requests inbox. An existing doc is left
+     * untouched (its status is owned by the request decision flows).
+     * Best-effort: a failure here never aborts opening the chat.
+     */
+    private suspend fun ensurePendingContactRequestDoc(
+        sortedIds: List<String>,
+        myUid: String,
+        me: WesalUser?,
+        peerUid: String,
+        peer: WesalUser
+    ) {
+        runCatching {
+            val reqId = "${sortedIds[0]}_${sortedIds[1]}"
+            val reqRef = firestore.collection(Constants.COLLECTION_CONTACT_REQUESTS)
+                .document(reqId)
+            if (reqRef.get().await().exists()) return
+            val now = System.currentTimeMillis()
+            val sender = me ?: WesalUser(uid = myUid)
+            val map = mapOf(
+                "requestId" to reqId,
+                "participants" to sortedIds,
+                "senderUid" to myUid,
+                "senderName" to sender.displayName.ifBlank { "@${sender.publicId}" },
+                "senderPublicId" to sender.publicId,
+                "senderAvatarUrl" to sender.photoUrl,
+                "senderVerified" to sender.isVerified,
+                "senderVerificationType" to sender.verificationType,
+                "senderIconId" to sender.iconId,
+                "senderIconUrl" to sender.iconUrl,
+                "senderNeonColor" to sender.neonColor,
+                "senderNeonEnabled" to sender.neonEnabled,
+                "senderNeonGlowIntensity" to sender.neonGlowIntensity,
+                "receiverUid" to peerUid,
+                "receiverName" to peer.displayName.ifBlank { "@${peer.publicId}" },
+                "receiverPublicId" to peer.publicId,
+                "receiverAvatarUrl" to peer.photoUrl,
+                "receiverVerified" to peer.isVerified,
+                "receiverVerificationType" to peer.verificationType,
+                "receiverIconId" to peer.iconId,
+                "receiverIconUrl" to peer.iconUrl,
+                "receiverNeonColor" to peer.neonColor,
+                "receiverNeonEnabled" to peer.neonEnabled,
+                "receiverNeonGlowIntensity" to peer.neonGlowIntensity,
+                "status" to "PENDING",
+                "createdAt" to now,
+                "updatedAt" to now
+            )
+            reqRef.set(map, SetOptions.merge()).await()
+        }
     }
 
     override suspend fun openSupportChatByNumericId(targetNumericId: String): Result<String> = runCatching {
@@ -1081,7 +1224,19 @@ class ChatRepositoryImpl @Inject constructor(
             ?: runCatching { chatRef.get().await() }.getOrNull()
 
         val now = System.currentTimeMillis()
-        val introText = "مرحباً بك في الدعم المباشر لإدارة WESAL ($cleanTarget). اكتب استفسارك أو رسالتك وسنرد عليك في أقرب وقت."
+        // Round 12 (addendum 4): the automatic welcome is PERSONALIZED with
+        // the opening user's own display name. It is persisted below as a
+        // SYSTEM message in this chat only, exactly once (deterministic
+        // doc id + the hasAnyMessages gate). Rules note: the message doc
+        // is authored from the USER's session, so senderId must be the
+        // user's own uid (a doc claiming the admin's uid would be
+        // impersonation and is rejected); it is presented under the
+        // official sender name, as this support-intro has always been.
+        val myDisplayName = runCatching {
+            firestore.collection(Constants.COLLECTION_USERS).document(myUid).get().await()
+                .getString("displayName").orEmpty()
+        }.getOrDefault("")
+        val introText = OfficialChatWelcome.textFor(myDisplayName)
         val welcomeSupportMsgId = "support_intro_${deterministicChatId}"
 
         if (existingChat == null || !existingChat.exists()) {
@@ -1337,6 +1492,12 @@ class ChatRepositoryImpl @Inject constructor(
 
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
         val chatSnap = chatRef.get().await()
+        // Round 12 (addendum 10d): never write into the void. A chat doc
+        // that does not exist (e.g. a legacy locally-cached row whose
+        // create the server denied) makes the batch below fail opaquely
+        // and the message hang at SENDING, visible to nobody else — fail
+        // honestly instead so the echo flips to FAILED with a real reason.
+        require(chatSnap.exists()) { "المحادثة غير موجودة — أعد فتحها وحاول تاني" }
         val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
             chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
         if (isOfficial) {
@@ -1771,6 +1932,8 @@ class ChatRepositoryImpl @Inject constructor(
         val me = fetchUserCached(myUid)
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
         val chatSnap = chatRef.get().await()
+        // Round 12 (addendum 10d): same existence guard as sendTextMessage.
+        require(chatSnap.exists()) { "المحادثة غير موجودة — أعد فتحها وحاول تاني" }
         val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
             chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
         if (isOfficial) {

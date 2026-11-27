@@ -1626,3 +1626,74 @@ fun WhatsAppOtpManualFallback(
         )
     }
 }
+
+/**
+ * Round 12 (addendum 9b): the same-number rule, stated once near every
+ * WhatsApp OTP send action. The 24-hour window opens on the number that
+ * MESSAGES the business — if the user's WhatsApp runs on a different
+ * number than the one being verified, the window opens for the wrong
+ * number and the code still never arrives.
+ */
+@Composable
+fun WhatsAppOtpSameNumberHint(modifier: Modifier = Modifier) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    Text(
+        text = if (strings.isEnglish) {
+            "You must send «ابدأ» from the SAME number you are verifying — if your WhatsApp runs on a different number, the code will not arrive."
+        } else {
+            "لازم تبعت «ابدأ» من نفس الرقم اللي بتوثّقه — لو واتساب شغال برقم تاني، الكود مش هيوصل."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = palette.textSecondary,
+        modifier = modifier.fillMaxWidth()
+    )
+}
+
+/**
+ * Round 12 (addendum 9): the persistent not-arrived hint on the
+ * code-entry state of every WhatsApp OTP flow. A free-form WhatsApp code
+ * dies silently on Meta error 131047 when the 24-hour window is closed,
+ * and the send API still reports success — so a user whose code never
+ * arrived needs the window step spelled out HERE, with a button that
+ * performs the handoff (opens the WhatsApp chooser with «ابدأ»
+ * prefilled; the code request re-fires automatically on return, which
+ * is the resend the text describes). Full lines only — no mid-word wrap.
+ */
+@Composable
+fun WhatsAppOtpNotArrivedHint(
+    modifier: Modifier = Modifier,
+    onOpenWhatsApp: () -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    Column(
+        modifier = modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = if (strings.isEnglish) {
+                "If the code doesn't arrive on WhatsApp: first send the word «ابدأ» to WESAL's number 01013545227 on WhatsApp, then tap Resend code."
+            } else {
+                "لو الكود موصلش على واتساب: ابعت كلمة «ابدأ» لرقم وِصال 01013545227 على واتساب الأول، وبعدين دوس إعادة إرسال الكود."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = palette.textSecondary,
+            modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedButton(
+            onClick = onOpenWhatsApp,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.55f))
+        ) {
+            Text(
+                text = if (strings.isEnglish) "Open WhatsApp and send «ابدأ»" else "افتح واتساب وابعت «ابدأ»",
+                color = palette.turquoise,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}

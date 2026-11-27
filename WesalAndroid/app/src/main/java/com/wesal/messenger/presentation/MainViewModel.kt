@@ -73,6 +73,14 @@ class MainViewModel @Inject constructor(
         .map { it.pendingInviteId.trim().ifBlank { null } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
+    // Round 12 (addendum 11): one-shot event — a welcome gift was just
+    // granted to the signed-in user; MainActivity announces it (dialog +
+    // system notification). Fires at most once per account, ever.
+    private val _welcomeGiftEvent =
+        kotlinx.coroutines.flow.MutableSharedFlow<Long>(extraBufferCapacity = 1)
+    val welcomeGiftEvent: kotlinx.coroutines.flow.SharedFlow<Long> =
+        _welcomeGiftEvent
+
     private val _resolvedChannelId = MutableStateFlow<String?>(null)
     val resolvedChannelId: StateFlow<String?> = _resolvedChannelId.asStateFlow()
 
@@ -139,6 +147,22 @@ class MainViewModel @Inject constructor(
         // the next sign-in. The heal self-throttles per uid.
         runCatching { authRepository.healVerifiedPhoneMirror(uid) }
         viewModelScope.launch {
+            // Round 12 (addendum 6): gift auto-revert write-back rides the
+            // same throttled recheck — an expired timed badge/frame gift on
+            // the user's own doc is restored to its pre-gift snapshot.
+            runCatching { userRepository.revertExpiredGiftGrants(uid) }
+            // Round 12 (addendum 11): the one-time welcome gift rides the
+            // same tick (after the revert, so an expired gift frees the
+            // slot first). The repository re-reads the doc fresh and the
+            // once-ever stamp lives on it, so account switches and
+            // restarts can never re-fire it; the event is emitted only
+            // when a gift was actually granted in this call.
+            val welcomeGranted = runCatching {
+                userRepository.grantWelcomeGiftIfEligible(uid)
+            }.getOrDefault(false)
+            if (welcomeGranted && authRepository.currentUserId == uid) {
+                _welcomeGiftEvent.tryEmit(System.currentTimeMillis())
+            }
             val inRegistry = runCatching { authRepository.isPhoneVerifiedInRegistry(uid) }
                 .getOrDefault(false)
             if (inRegistry && authRepository.currentUserId == uid) {

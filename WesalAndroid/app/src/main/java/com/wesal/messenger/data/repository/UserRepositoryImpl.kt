@@ -19,7 +19,12 @@ import com.google.firebase.firestore.Source
 import com.google.firebase.functions.FirebaseFunctions
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.GiftGrantLogic
+import com.wesal.messenger.core.util.WelcomeGiftLogic
+import com.wesal.messenger.core.util.PhoneDiscoveryLogic
+import com.wesal.messenger.core.util.UserSearchLogic
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import com.wesal.messenger.core.util.VerificationSealType
@@ -159,11 +164,49 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
 
     val verificationExpiresAt = getLong("verificationExpiresAt") ?: 0L
     val rawVerified = getBoolean("isVerified") ?: false
-    val isCurrentlyVerified = rawVerified && (verificationExpiresAt == 0L || now <= verificationExpiresAt)
+    // Round 12 (addendum 6): an expired TIMED BADGE GIFT reverts to the
+    // pre-gift snapshot for every reader, immediately at expiry (the
+    // recipient's own client additionally writes the restore back onto
+    // the doc — see revertExpiredGiftGrants). The snapshot may itself be
+    // "no badge", in which case the revert clears to none as before.
+    val giftBadgeActive = getBoolean("giftBadgeActive") ?: false
+    val preGiftVerificationExpiresAt = getLong("preGiftVerificationExpiresAt") ?: 0L
+    val badgeGiftExpired = GiftGrantLogic.badgeGiftExpired(giftBadgeActive, verificationExpiresAt, now)
+    val effVerified = if (badgeGiftExpired) (getBoolean("preGiftIsVerified") ?: false) else rawVerified
+    val effVerificationExpiresAt = if (badgeGiftExpired) preGiftVerificationExpiresAt else verificationExpiresAt
+    val effVerificationType = if (badgeGiftExpired) {
+        getString("preGiftVerificationType") ?: "BLUE"
+    } else {
+        getString("verificationType") ?: "BLUE"
+    }
+    val effVerificationGlowColor = if (badgeGiftExpired) {
+        getString("preGiftVerificationGlowColor").orEmpty()
+    } else {
+        getString("verificationGlowColor").orEmpty()
+    }
+    val effVerificationGlowEnabled = if (badgeGiftExpired) {
+        getBoolean("preGiftVerificationGlowEnabled") ?: true
+    } else {
+        getBoolean("verificationGlowEnabled") ?: true
+    }
+    val effVerificationGlowIntensity = if (badgeGiftExpired) {
+        (getDouble("preGiftVerificationGlowIntensity")?.toFloat()) ?: 0.7f
+    } else {
+        (getDouble("verificationGlowIntensity")?.toFloat()) ?: 0.7f
+    }
+    val isCurrentlyVerified = effVerified && (effVerificationExpiresAt == 0L || now <= effVerificationExpiresAt)
 
     val frameExpiresAt = getLong("frameExpiresAt") ?: 0L
     val rawFrameId = getString("frameId").orEmpty()
-    val numericIdRaw = getString("numericId").orEmpty()
+    // Round 12 (addendum 6): same revert for an expired TIMED FRAME GIFT —
+    // the effective frame becomes the pre-gift frame (or none).
+    val giftFrameActive = getBoolean("giftFrameActive") ?: false
+    val preGiftFrameId = getString("preGiftFrameId").orEmpty()
+    val preGiftFrameExpiresAt = getLong("preGiftFrameExpiresAt") ?: 0L
+    val frameGiftExpired = GiftGrantLogic.frameGiftExpired(giftFrameActive, frameExpiresAt, now)
+    val effRawFrameId = if (frameGiftExpired) preGiftFrameId else rawFrameId
+    val effFrameExpiresAt = if (frameGiftExpired) preGiftFrameExpiresAt else frameExpiresAt
+    val numericIdRaw = (getString("numericId") ?: (getLong("numericId")?.toString())).orEmpty()
     val isAdminAccount = numericIdRaw in Constants.ADMIN_NUMERIC_IDS
     // Round 5 (owner requirement): the OFFICIAL account (10001) is a natural
     // account like any other — a frame granted/set on it is honoured, and the
@@ -171,17 +214,17 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
     // set frame expired), so the official presence never renders unframed.
     // The secondary admin account (10002) keeps the historical always-crest rule.
     val isOfficialAccount = numericIdRaw == Constants.OWNER_ADMIN_NUMERIC_ID
-    val officialFrameLive = rawFrameId.isNotBlank() && !(frameExpiresAt > 0L && now > frameExpiresAt)
+    val officialFrameLive = effRawFrameId.isNotBlank() && !(effFrameExpiresAt > 0L && now > effFrameExpiresAt)
     val activeFrameId = when {
-        isOfficialAccount -> if (officialFrameLive) rawFrameId else WesalFrameLibrary.ADMIN_FRAME_ID
+        isOfficialAccount -> if (officialFrameLive) effRawFrameId else WesalFrameLibrary.ADMIN_FRAME_ID
         isAdminAccount -> WesalFrameLibrary.ADMIN_FRAME_ID
-        frameExpiresAt > 0L && now > frameExpiresAt -> ""
-        else -> rawFrameId
+        effFrameExpiresAt > 0L && now > effFrameExpiresAt -> ""
+        else -> effRawFrameId
     }
     val activeFrameExpiresAt = when {
-        isOfficialAccount -> if (officialFrameLive) frameExpiresAt else 0L
+        isOfficialAccount -> if (officialFrameLive) effFrameExpiresAt else 0L
         isAdminAccount -> 0L
-        else -> frameExpiresAt
+        else -> effFrameExpiresAt
     }
 
     // Round 4 (contacts M2): positive-ban-only, type-tolerant parse — see
@@ -226,17 +269,17 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         phoneHash = phoneHash,
         phoneDigits = phoneDigits,
         isVerified = isCurrentlyVerified,
-        verificationType = getString("verificationType") ?: "BLUE",
-        verificationGlowColor = getString("verificationGlowColor").orEmpty(),
-        verificationGlowEnabled = getBoolean("verificationGlowEnabled") ?: true,
-        verificationGlowIntensity = (getDouble("verificationGlowIntensity")?.toFloat()) ?: 0.7f,
-        verificationExpiresAt = verificationExpiresAt,
+        verificationType = effVerificationType,
+        verificationGlowColor = effVerificationGlowColor,
+        verificationGlowEnabled = effVerificationGlowEnabled,
+        verificationGlowIntensity = effVerificationGlowIntensity,
+        verificationExpiresAt = effVerificationExpiresAt,
         verifiedByUid = getString("verifiedByUid").orEmpty(),
         verifiedAt = getLong("verifiedAt") ?: 0L,
         verificationNote = getString("verificationNote").orEmpty(),
         displayName = getString("displayName").orEmpty(),
         publicId = getString("publicId").orEmpty(),
-        numericId = getString("numericId").orEmpty(),
+        numericId = numericIdRaw,
         bio = getString("bio") ?: "أستخدم تطبيق WESAL",
         photoUrl = photoUrl,
         coverUrl = coverUrl,
@@ -244,6 +287,17 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         frameId = activeFrameId,
         frameExpiresAt = activeFrameExpiresAt,
         grantedFrameIds = (get("grantedFrameIds") as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
+        giftBadgeActive = giftBadgeActive,
+        preGiftIsVerified = getBoolean("preGiftIsVerified") ?: false,
+        preGiftVerificationType = getString("preGiftVerificationType") ?: "BLUE",
+        preGiftVerificationGlowColor = getString("preGiftVerificationGlowColor").orEmpty(),
+        preGiftVerificationGlowEnabled = getBoolean("preGiftVerificationGlowEnabled") ?: true,
+        preGiftVerificationGlowIntensity = (getDouble("preGiftVerificationGlowIntensity")?.toFloat()) ?: 0.7f,
+        preGiftVerificationExpiresAt = preGiftVerificationExpiresAt,
+        giftFrameActive = giftFrameActive,
+        preGiftFrameId = preGiftFrameId,
+        preGiftFrameExpiresAt = preGiftFrameExpiresAt,
+        welcomeGiftGrantedAt = getLong("welcomeGiftGrantedAt") ?: 0L,
         iconId = rawIconId,
         iconUrl = resolvedIconUrl,
         photoRemovedBg = getBoolean("photoRemovedBg") ?: false,
@@ -742,22 +796,41 @@ class UserRepositoryImpl @Inject constructor(
             .removePrefix("ID:")
             .removePrefix("id:")
             .trim()
-        // Spec §4.5: numeric-ID SEARCH is exact-only and limited to the spec range
-        // 10000..100000. Prefix/contains matching (and the old "1001" special case) are gone:
-        // a partial ID must never return other people's accounts. Exact resolvers used by
-        // invite links/QR (findExactUserByNumericId) are untouched and keep their wider range.
-        val searchNumericId = normalizedDigits.takeIf { WesalIdUtils.isSpecSearchNumericId(it) }.orEmpty()
+        // Round 12 (addendum 8): numeric-ID SEARCH is exact-only, but the
+        // plannable range is the FULL allocated range (10000..1000000) —
+        // the same extraction the admin search uses. The old gate
+        // (isSpecSearchNumericId, spec §4.5's 10000..100000) silently
+        // rejected every real ID above 100000 (e.g. 789671): the numeric
+        // branch never ran and the user was reported "not found" while
+        // the account existed. Prefix/contains matching stays forbidden:
+        // a partial ID must never return other people's accounts.
+        val searchNumericId = UserSearchLogic.planNumericIdQuery(trimmed).orEmpty()
         val cleanHandle = WesalIdUtils.normalize(trimmed)
         val anyLookupSucceeded = java.util.concurrent.atomic.AtomicBoolean(false)
 
         coroutineScope {
             val exactNumDef = if (searchNumericId.isNotBlank()) {
                 async {
-                    getQueryCachedOrServer(
+                    // Representation-tolerant (addendum 8a): every current
+                    // writer stores numericId as a String, but a doc
+                    // stamped as a NUMBER by any legacy/other path must
+                    // still match — query both representations and union.
+                    val asString = getQueryCachedOrServer(
                         usersCollection
                             .whereEqualTo("numericId", searchNumericId)
                             .limit(5)
-                    )?.also { anyLookupSucceeded.set(true) }
+                    )
+                    val asNumber = searchNumericId.toLongOrNull()?.let { num ->
+                        getQueryCachedOrServer(
+                            usersCollection
+                                .whereEqualTo("numericId", num)
+                                .limit(5)
+                        )
+                    }
+                    if (asString != null || asNumber != null) {
+                        anyLookupSucceeded.set(true)
+                    }
+                    listOfNotNull(asString, asNumber)
                 }
             } else null
             val exactHandleDef = if (cleanHandle.length >= 2) {
@@ -770,7 +843,9 @@ class UserRepositoryImpl @Inject constructor(
                 }
             } else null
 
-            exactNumDef?.await()?.documents?.forEach { consider(it.toWesalUser()) }
+            exactNumDef?.await()?.forEach { snap ->
+                snap.documents.forEach { consider(it.toWesalUser()) }
+            }
             exactHandleDef?.await()?.documents?.forEach { consider(it.toWesalUser()) }
         }
 
@@ -885,8 +960,13 @@ class UserRepositoryImpl @Inject constructor(
             if (!doc.exists() || hash.isBlank()) return
             val user = doc.toWesalUser()
             if (
-                user.uid != currentUid &&
-                (!requireVerified || user.isPhoneVerified) &&
+                PhoneDiscoveryLogic.acceptsTarget(
+                    isSelf = user.uid == currentUid,
+                    requireVerified = requireVerified,
+                    isPhoneVerified = user.isPhoneVerified,
+                    isBanned = user.isBanned,
+                    deletedAt = user.deletedAt
+                ) &&
                 // Round 10 (item 4): hidePhoneNumber no longer excludes a user
                 // from phone-hash discovery. The toggle is DISPLAY privacy —
                 // round 9 removed the digits from every surface — but this
@@ -897,19 +977,20 @@ class UserRepositoryImpl @Inject constructor(
                 // his repeated "سجلت الأرقام وما ظهرتش" report). Hash matching
                 // reveals nothing but "this contact is on WESAL", exactly
                 // like WhatsApp; the number itself is never rendered.
-                // hiddenFromSearch below stays: that toggle is explicitly
-                // about discoverability.
-                !user.hiddenFromSearch &&
+                // Round 12 (addendum 3): hiddenFromSearch is NO LONGER
+                // consulted here at all — see PhoneDiscoveryLogic. The flag
+                // hides an account from PUBLIC search; stamping it onto the
+                // secondary admin (ensureNumericIdAssigned) silently made
+                // 10002 undiscoverable by hash for every other account.
                 // Round 9 (item 8): the secondary-admin exclusion that used to
                 // sit here made account 10002 (the owner's own second account)
                 // undiscoverable by phone matching for EVERYONE — including
                 // his 10001 account, whose phone book holds the number. The
                 // owner's rule is discovery by verified number for all
                 // accounts; only SELF is excluded (uid check above), plus the
-                // privacy/ban/hidden filters. (The number itself is never
+                // privacy/ban filters. (The number itself is never
                 // displayed — round-9 item 1.)
-                !user.isBanned &&
-                user.deletedAt == 0L
+                true
             ) {
                 matched[hash] = user
             }
@@ -1018,7 +1099,20 @@ class UserRepositoryImpl @Inject constructor(
                 firestore.collection(Constants.COLLECTION_USERS)
                     .whereIn("phoneHash", chunk)
                     .addSnapshotListener { snap, err ->
-                        if (err != null || snap == null) return@addSnapshotListener
+                        if (err != null || snap == null) {
+                            // Round 12 (addendum 3b): a failing chunk
+                            // degrades ALONE — this chunk keeps its last
+                            // known matches (perChunk is untouched) and the
+                            // other chunks keep emitting; the failure is
+                            // logged instead of silently zeroing anything.
+                            if (com.wesal.messenger.BuildConfig.DEBUG) {
+                                android.util.Log.d(
+                                    "PhoneHashLookup",
+                                    "live chunk $index failed: ${err?.code} ${err?.message}"
+                                )
+                            }
+                            return@addSnapshotListener
+                        }
                         val chunkMatches = HashMap<String, WesalUser>()
                         for (doc in snap.documents) {
                             val hash = doc.getString("phoneHash").orEmpty()
@@ -1029,7 +1123,10 @@ class UserRepositoryImpl @Inject constructor(
                             if (doc.getBoolean("isPhoneVerified") != true) continue
                             val user = doc.toWesalUser()
                             if (user.uid == currentUid) continue
-                            if (user.hiddenFromSearch || user.isBanned || user.deletedAt != 0L) continue
+                            // Round 12 (addendum 3): hiddenFromSearch no
+                            // longer excludes from hash discovery (see
+                            // PhoneDiscoveryLogic) — ban/deleted still do.
+                            if (user.isBanned || user.deletedAt != 0L) continue
                             chunkMatches[hash] = user
                         }
                         val merged = synchronized(lock) {
@@ -2592,6 +2689,23 @@ class UserRepositoryImpl @Inject constructor(
             "verifiedAt" to now,
             "verificationNote" to note.trim()
         )
+        // Round 12 (addendum 6): gift snapshot maintenance — a TIMED grant
+        // first captures the recipient's CURRENT badge state so expiry can
+        // restore it (GiftGrantLogic decides; a permanent grant or a
+        // revoke clears the marker so nothing stale is ever restored).
+        val timedBadgeGrant = verified && expiresAt > 0L
+        if (GiftGrantLogic.shouldSnapshot(targetUser.giftBadgeActive, timedBadgeGrant, verified)) {
+            updates["giftBadgeActive"] = true
+            updates["preGiftIsVerified"] = targetUser.isVerified
+            updates["preGiftVerificationType"] = targetUser.verificationType
+            updates["preGiftVerificationGlowColor"] = targetUser.verificationGlowColor
+            updates["preGiftVerificationGlowEnabled"] = targetUser.verificationGlowEnabled
+            updates["preGiftVerificationGlowIntensity"] = targetUser.verificationGlowIntensity.toDouble()
+            updates["preGiftVerificationExpiresAt"] = targetUser.verificationExpiresAt
+        } else if (GiftGrantLogic.shouldClearSnapshot(timedBadgeGrant, verified)) {
+            updates["giftBadgeActive"] = false
+        }
+
         targetRef.set(updates, SetOptions.merge()).await()
 
         val targetNum = targetUser.numericId
@@ -2647,6 +2761,16 @@ class UserRepositoryImpl @Inject constructor(
             "frameId" to frameId.trim(),
             "frameExpiresAt" to if (frameId.isBlank()) 0L else expiresAt
         )
+        // Round 12 (addendum 6): gift snapshot maintenance for frames —
+        // same contract as the badge gift (see setAccountVerification).
+        val timedFrameGrant = frameId.isNotBlank() && expiresAt > 0L
+        if (GiftGrantLogic.shouldSnapshot(targetUser.giftFrameActive, timedFrameGrant, frameId.isNotBlank())) {
+            framePatch["giftFrameActive"] = true
+            framePatch["preGiftFrameId"] = targetUser.frameId
+            framePatch["preGiftFrameExpiresAt"] = targetUser.frameExpiresAt
+        } else if (GiftGrantLogic.shouldClearSnapshot(timedFrameGrant, frameId.isNotBlank())) {
+            framePatch["giftFrameActive"] = false
+        }
         // Remember every granted frame on the user doc: the profile picker may later
         // re-apply any of them via setOwnFrame, and firestore.rules checks the same list.
         if (frameId.isNotBlank()) {
@@ -2667,6 +2791,113 @@ class UserRepositoryImpl @Inject constructor(
             operationId = opId,
             collectionName = Constants.COLLECTION_VERIFICATION_LOGS
         )
+    }
+
+    /**
+     * Round 12 (addendum 6): write-back half of gift auto-revert, run for
+     * the signed-in user's OWN doc (the only doc this client may write).
+     * Read-side rendering in toWesalUser already reverts at expiry; this
+     * converges the stored fields and clears the markers so the snapshot
+     * is consumed exactly once. Diff-only: nothing is written when no
+     * gift has expired.
+     */
+    override suspend fun revertExpiredGiftGrants(uid: String) {
+        runCatching {
+            if (uid.isBlank() || auth.currentUser?.uid != uid) return
+            val ref = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+            val snap = ref.get().await()
+            if (!snap.exists()) return
+            val now = System.currentTimeMillis()
+            val updates = hashMapOf<String, Any>()
+            if (
+                GiftGrantLogic.badgeGiftExpired(
+                    snap.getBoolean("giftBadgeActive") ?: false,
+                    snap.getLong("verificationExpiresAt") ?: 0L,
+                    now
+                )
+            ) {
+                updates["isVerified"] = snap.getBoolean("preGiftIsVerified") ?: false
+                updates["verificationType"] = snap.getString("preGiftVerificationType") ?: "BLUE"
+                updates["verificationGlowColor"] = snap.getString("preGiftVerificationGlowColor").orEmpty()
+                updates["verificationGlowEnabled"] = snap.getBoolean("preGiftVerificationGlowEnabled") ?: true
+                updates["verificationGlowIntensity"] = snap.getDouble("preGiftVerificationGlowIntensity") ?: 0.7
+                updates["verificationExpiresAt"] = snap.getLong("preGiftVerificationExpiresAt") ?: 0L
+                updates["giftBadgeActive"] = false
+            }
+            if (
+                GiftGrantLogic.frameGiftExpired(
+                    snap.getBoolean("giftFrameActive") ?: false,
+                    snap.getLong("frameExpiresAt") ?: 0L,
+                    now
+                )
+            ) {
+                updates["frameId"] = snap.getString("preGiftFrameId").orEmpty()
+                updates["frameExpiresAt"] = snap.getLong("preGiftFrameExpiresAt") ?: 0L
+                updates["giftFrameActive"] = false
+            }
+            if (updates.isNotEmpty()) {
+                ref.set(updates, SetOptions.merge()).await()
+            }
+        }
+    }
+
+    /**
+     * Round 12 (addendum 11): see the interface doc. The grant reuses the
+     * addendum-6 gift slot verbatim (preGiftFrameId/preGiftFrameExpiresAt
+     * snapshot + giftFrameActive), so the existing read-side revert in
+     * toWesalUser and the write-back in [revertExpiredGiftGrants] retire
+     * the welcome frame at expiry with no extra machinery. The write is
+     * shaped to the narrow welcome arm in firestore.rules (fixed frame,
+     * once-ever stamp, only the six gift keys touched).
+     */
+    override suspend fun grantWelcomeGiftIfEligible(uid: String): Boolean {
+        if (uid.isBlank() || auth.currentUser?.uid != uid) return false
+        return runCatching {
+            val ref = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+            val snap = ref.get().await()
+            if (!snap.exists()) return false
+            val user = runCatching { snap.toWesalUser() }.getOrNull() ?: return false
+            val profileComplete = user.displayName.isNotBlank() &&
+                user.publicId.isNotBlank() && user.numericId.isNotBlank()
+            val phoneVerified = PhoneOtpLogic.isCompleteVerificationMirror(
+                isPhoneVerified = snap.getBoolean("isPhoneVerified") ?: false,
+                phoneNumber = snap.getString("phoneNumber"),
+                phoneHash = snap.getString("phoneHash")
+            )
+            val now = System.currentTimeMillis()
+            when (
+                WelcomeGiftLogic.decide(
+                    welcomeGiftGrantedAt = user.welcomeGiftGrantedAt,
+                    profileComplete = profileComplete,
+                    phoneVerified = phoneVerified,
+                    giftFrameActive = user.giftFrameActive
+                )
+            ) {
+                WelcomeGiftLogic.Decision.SKIP -> false
+                WelcomeGiftLogic.Decision.MARK_ONLY -> {
+                    // An admin gift is live: never stomp its snapshot.
+                    // The welcome gift is superseded — stamp it granted
+                    // so it never fires later, and announce nothing.
+                    ref.set(
+                        mapOf("welcomeGiftGrantedAt" to now),
+                        SetOptions.merge()
+                    ).await()
+                    false
+                }
+                WelcomeGiftLogic.Decision.GRANT -> {
+                    val updates = mapOf<String, Any>(
+                        "preGiftFrameId" to (snap.getString("frameId").orEmpty()),
+                        "preGiftFrameExpiresAt" to (snap.getLong("frameExpiresAt") ?: 0L),
+                        "giftFrameActive" to true,
+                        "frameId" to WelcomeGiftLogic.WELCOME_FRAME_ID,
+                        "frameExpiresAt" to now + WelcomeGiftLogic.DURATION_MS,
+                        "welcomeGiftGrantedAt" to now
+                    )
+                    ref.set(updates, SetOptions.merge()).await()
+                    true
+                }
+            }
+        }.getOrDefault(false)
     }
 
     override suspend fun setOwnFrame(frameId: String): Result<Unit> = runCatching {

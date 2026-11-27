@@ -198,6 +198,31 @@ object FramedCutoutLayout {
     val TARGET_FIGURE_CENTER_Y_FRACTION: Float =
         HEAD_CLEARANCE_APERTURE_FRACTION + TARGET_FIGURE_HEIGHT_FRACTION / 2f
 
+    /**
+     * Round 12 (addendum 5): minimum rendered person WIDTH (fraction of
+     * the aperture diameter) the fit targets when the figure is narrow.
+     * The reference figure fills the ring in BOTH dimensions — height
+     * 1.22x and shoulders ~0.92x with the torso clipped by the ring's
+     * sides at the bottom — while the height-first fit alone left a
+     * narrow bust (the owner's own avatar: box ~0.62 wide x 0.94 tall)
+     * at only ~0.81x wide with glow gaps at the sides (measured on his
+     * r11 screenshot: figure ~1.00x tall / 0.81x wide / clearance ~0.07,
+     * vs the reference 1.22x / ~0.92+ / 0.03). When the width fill binds,
+     * the scale grows and the anchor switches from the bottom edge to
+     * the HEAD CLEARANCE (the invariant the owner actually sees): the
+     * top stays at +0.03x and the extra height overflows further below
+     * the aperture, behind the plaque — exactly like the reference.
+     */
+    const val TARGET_MIN_WIDTH_FRACTION = 1.02f
+
+    /**
+     * Round 12 (addendum 5): cap on the width-fill boost relative to the
+     * height-fit scale, so a genuinely narrow subject (a head-only
+     * cutout) is enlarged toward the reference width without blowing the
+     * face up without bound.
+     */
+    const val MAX_WIDTH_FILL_BOOST = 1.45f
+
     /** Decode oversampling for the subject fit (the fit zooms past the r10 1.22x). */
     const val OPAQUE_SUBJECT_DECODE_OVERSAMPLE = 2f
 
@@ -277,6 +302,26 @@ object FramedCutoutLayout {
             (1f - HEAD_CLEARANCE_APERTURE_FRACTION + BOTTOM_OVERFLOW_APERTURE_FRACTION)
         var scale = targetPersonH / boxH
 
+        // Round 12 (addendum 5): WIDTH FILL for narrow figures. The
+        // height-first scale alone renders a narrow bust at its natural
+        // aspect — the owner's own avatar measured ~0.81x aperture wide
+        // with glow gaps at the sides, vs the reference whose torso fills
+        // the ring's width (shoulders ~0.92x, sides clipped at the
+        // bottom). Raise the scale toward TARGET_MIN_WIDTH_FRACTION,
+        // capped at MAX_WIDTH_FILL_BOOST x the height-fit scale; when the
+        // boost binds, the anchor below switches to the head clearance so
+        // the top stays at +0.03x and the extra height overflows behind
+        // the plaque instead of pushing the head into the crown zone.
+        var widthBoosted = false
+        val widthFillScale = TARGET_MIN_WIDTH_FRACTION * apertureD / boxW
+        if (widthFillScale > scale) {
+            val boosted = minOf(widthFillScale, scale * MAX_WIDTH_FILL_BOOST)
+            if (boosted > scale) {
+                scale = boosted
+                widthBoosted = true
+            }
+        }
+
         // Width cap: a wide/short cutout must not be zoomed past the ring's
         // sides. When the cap binds, the height shrinks and the bottom anchor
         // (below) is kept, so the top sits lower inside the ring — still no
@@ -284,6 +329,7 @@ object FramedCutoutLayout {
         val maxPersonW = MAX_WIDTH_APERTURE_FRACTION * apertureD
         if (boxW * scale > maxPersonW) {
             scale = maxPersonW / boxW
+            widthBoosted = false
         }
 
         val drawW = imgW * scale
@@ -291,10 +337,18 @@ object FramedCutoutLayout {
 
         // Bounding box horizontally centred on the aperture centre (container centre).
         val offsetX = containerPx / 2f - (b.left * drawW + (b.width * drawW) / 2f)
-        // BOTTOM-ANCHORED: the bounding-box bottom lands at the overflow point
-        // below the aperture's bottom edge. With the height-first scale the box
-        // top then lands exactly at apertureTop + HEAD_CLEARANCE x aperture.
-        val offsetY = (apertureBottom + BOTTOM_OVERFLOW_APERTURE_FRACTION * apertureD) - b.bottom * drawH
+        // Anchor: normally BOTTOM-ANCHORED — the bounding-box bottom lands at
+        // the overflow point below the aperture's bottom edge, and with the
+        // height-first scale the box top then lands exactly at apertureTop +
+        // HEAD_CLEARANCE x aperture. When the round-12 width fill raised the
+        // scale, the CLEARANCE becomes the anchor instead (box top pinned at
+        // apertureTop + HEAD_CLEARANCE x aperture) and the bottom overflows
+        // further behind the plaque — the reference composite's own split.
+        val offsetY = if (widthBoosted) {
+            (apertureTop + HEAD_CLEARANCE_APERTURE_FRACTION * apertureD) - b.top * drawH
+        } else {
+            (apertureBottom + BOTTOM_OVERFLOW_APERTURE_FRACTION * apertureD) - b.bottom * drawH
+        }
 
         return FramedCutoutTransform(
             scale = scale,

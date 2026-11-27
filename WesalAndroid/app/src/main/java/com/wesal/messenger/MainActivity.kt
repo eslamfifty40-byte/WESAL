@@ -68,6 +68,18 @@ class MainActivity : AppCompatActivity() {
             val globalAppearance by mainViewModel.globalAppearance.collectAsStateWithLifecycle()
             val appUpdateConfig by mainViewModel.appUpdateConfig.collectAsStateWithLifecycle()
             var softUpdateDismissed by remember { mutableStateOf(false) }
+            // Round 12 (addendum 11): welcome-gift announcement — the event
+            // fires at most once per account (the grant is stamped on the
+            // user doc), so this dialog + notification can never repeat.
+            var showWelcomeGift by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                mainViewModel.welcomeGiftEvent.collect {
+                    showWelcomeGift = true
+                    postWelcomeGiftNotification(
+                        isArabic = LocaleManager.isRtlLanguage(settings.languageTag)
+                    )
+                }
+            }
             val startDest by mainViewModel.startDestination.collectAsStateWithLifecycle()
             val authUid by mainViewModel.authUid.collectAsStateWithLifecycle()
             val incomingCall by mainViewModel.incomingCall.collectAsStateWithLifecycle()
@@ -160,8 +172,48 @@ class MainActivity : AppCompatActivity() {
                             onLaterClick = { softUpdateDismissed = true }
                         )
                     }
+
+                    // Round 12 (addendum 11): the welcome-gift dialog,
+                    // rendered above the NavHost like the update dialog so
+                    // the new registrant cannot miss it on first entry.
+                    if (showWelcomeGift) {
+                        WesalWelcomeGiftDialog(
+                            onDismiss = { showWelcomeGift = false }
+                        )
+                    }
                 }
             }
+        }
+    }
+
+    /**
+     * Round 12 (addendum 11): posts the persistent shade copy of the
+     * welcome-gift announcement on the system channel (created at app
+     * startup). Best-effort — the in-app dialog is the primary surface.
+     */
+    private fun postWelcomeGiftNotification(isArabic: Boolean) {
+        runCatching {
+            val text = com.wesal.messenger.core.util.WelcomeGiftLogic.announcement(isArabic)
+            val intent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val pendingIntent = android.app.PendingIntent.getActivity(
+                this,
+                WELCOME_GIFT_NOTIFICATION_ID,
+                intent,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    android.app.PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = androidx.core.app.NotificationCompat.Builder(this, Constants.CHANNEL_SYSTEM)
+                .setSmallIcon(R.drawable.ic_wesal_notification)
+                .setContentTitle(if (isArabic) "هدية ترحيب 🎁" else "Welcome gift 🎁")
+                .setContentText(text)
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(text))
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+            androidx.core.app.NotificationManagerCompat.from(this)
+                .notify(WELCOME_GIFT_NOTIFICATION_ID, notification)
         }
     }
 
@@ -216,6 +268,54 @@ class MainActivity : AppCompatActivity() {
  * version) the dialog cannot be dismissed — no close button, no back press, no
  * outside tap. In soft mode the user may postpone it once per session.
  */
+private const val WELCOME_GIFT_NOTIFICATION_ID = 12011
+
+/**
+ * Round 12 (addendum 11): the welcome-gift announcement dialog. The text
+ * is the owner's wording (WelcomeGiftLogic.announcement); the frame name
+ * line names the actual granted frame so the user can recognise it.
+ */
+@Composable
+private fun WesalWelcomeGiftDialog(onDismiss: () -> Unit) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    val isEn = strings.isEnglish
+    val frameName = com.wesal.messenger.core.util.WesalFrameLibrary
+        .docs[com.wesal.messenger.core.util.WelcomeGiftLogic.WELCOME_FRAME_ID]
+        ?.titleAr
+        ?: com.wesal.messenger.core.util.WesalFrameCatalog.allFrames
+            .firstOrNull { it.id == com.wesal.messenger.core.util.WelcomeGiftLogic.WELCOME_FRAME_ID }
+            ?.titleAr
+            .orEmpty()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = palette.surface,
+        title = {
+            Text(
+                text = if (isEn) "Welcome gift 🎁" else "هدية ترحيب 🎁",
+                color = palette.textPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Text(
+                text = com.wesal.messenger.core.util.WelcomeGiftLogic.announcement(!isEn) +
+                    if (frameName.isNotBlank()) {
+                        if (isEn) "\n\nYour gift frame: $frameName" else "\n\nإطار الهدية: $frameName"
+                    } else {
+                        ""
+                    },
+                color = palette.textSecondary
+            )
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text(if (isEn) "Great" else "تمام")
+            }
+        }
+    )
+}
+
 @Composable
 private fun WesalUpdateDialog(
     config: AppUpdateConfig,

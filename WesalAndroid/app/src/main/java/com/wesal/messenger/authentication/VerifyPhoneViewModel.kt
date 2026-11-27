@@ -154,8 +154,16 @@ class VerifyPhoneViewModel @Inject constructor(
                             sentPhoneE164 = e164,
                             sentChannel = channel,
                             otpInput = "",
-                            infoMessage = "بعتنا كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
-                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — الكود صالح ١٠ دقايق"
+                            // Round 12 (addendum 9): never claim guaranteed
+                            // delivery — the send API accepts even when Meta
+                            // later refuses a closed-window WhatsApp message.
+                            infoMessage = "تم إرسال كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
+                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — الكود صالح ١٠ دقايق" +
+                                if (channel.equals("whatsapp", ignoreCase = true)) {
+                                    " — لو الكود موصلش، شوف التعليمات اللي تحت"
+                                } else {
+                                    ""
+                                }
                         )
                     }
                     startResendCountdown()

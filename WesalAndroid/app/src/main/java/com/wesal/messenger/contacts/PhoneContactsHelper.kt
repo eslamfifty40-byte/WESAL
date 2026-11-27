@@ -69,6 +69,60 @@ object PhoneContactsHelper {
             }
         }
 
+        // Round 12 (addendum 3d): the device-owner ("Me") profile lives in
+        // the separate Profile database and is NOT returned by the Phone
+        // query above on many devices — a number saved only there (very
+        // common for the owner's own second line / a family member entered
+        // as the profile contact) was invisible to discovery. Merge its
+        // phone rows best-effort; dedup by number (same key rule) makes
+        // overlap with the main query harmless.
+        runCatching {
+            val profileDataUri = android.net.Uri.withAppendedPath(
+                ContactsContract.Profile.CONTENT_URI,
+                "data"
+            )
+            context.contentResolver.query(
+                profileDataUri,
+                arrayOf(
+                    ContactsContract.Data.CONTACT_ID,
+                    ContactsContract.Data.DISPLAY_NAME,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    ContactsContract.Data.MIMETYPE
+                ),
+                "${ContactsContract.Data.MIMETYPE} = ?",
+                arrayOf(ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE),
+                null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndex(ContactsContract.Data.CONTACT_ID)
+                val nameCol = cursor.getColumnIndex(ContactsContract.Data.DISPLAY_NAME)
+                val phoneCol = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                if (idCol >= 0 && phoneCol >= 0) {
+                    while (cursor.moveToNext()) {
+                        val rawPhone = cursor.getString(phoneCol).orEmpty().trim()
+                        if (rawPhone.isBlank()) continue
+                        val candidates = PhoneUtils.normalizePhoneCandidates(rawPhone, defaultCountryDialCode)
+                        val e164 = PhoneUtils.normalizeToE164(rawPhone, defaultCountryDialCode)
+                            ?: candidates.firstOrNull()
+                        val dedupKey = e164
+                            ?: PhoneUtils.normalizeAsciiDigits(rawPhone).filter { it.isDigit() }
+                        if (dedupKey.isBlank() || resultMap.containsKey(dedupKey)) continue
+                        val hashes = candidates.map { PhoneUtils.sha256Hash(it) }
+                        val hash = e164?.let { PhoneUtils.sha256Hash(it) } ?: hashes.firstOrNull()
+                        resultMap[dedupKey] = DeviceContact(
+                            contactId = if (idCol >= 0) cursor.getString(idCol).orEmpty() else "",
+                            displayName = (if (nameCol >= 0) {
+                                cursor.getString(nameCol).orEmpty().trim()
+                            } else "").ifBlank { rawPhone },
+                            rawPhone = rawPhone,
+                            e164Phone = e164,
+                            phoneHash = hash,
+                            candidateHashes = if (hashes.isNotEmpty()) hashes else listOfNotNull(hash)
+                        )
+                    }
+                }
+            }
+        }
+
         resultMap.values.sortedBy { it.displayName.lowercase() }
     }
 

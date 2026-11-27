@@ -220,6 +220,18 @@ class ChatDetailViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    // Round 12 (addendum 10b): the RAW request state of this chat doc —
+    // chatPreview above is viewer-relative (the requester sees ACCEPTED so
+    // his thread stays in the main list), so the sender's «طلب مراسلة —
+    // بانتظار قبول الطرف الآخر» label reads this raw flow instead.
+    val chatRequestState: StateFlow<com.wesal.messenger.domain.model.ChatRequestState> =
+        chatRepository.observeChatRequestState(chatId)
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5000),
+                com.wesal.messenger.domain.model.ChatRequestState()
+            )
+
     // Spec §§1.2/13.4: messages sync state (loading/error/cached) for the banner in
     // the chat screen; the retry key re-subscribes the listener after an error
     // (Firestore drops a listener once it errors).
@@ -430,6 +442,29 @@ class ChatDetailViewModel @Inject constructor(
                     .onSuccess { _editingMessage.value = null }
                     .onFailure { _toastMessage.value = it.message ?: "تعذر تعديل الرسالة" }
             }
+            return
+        }
+
+        // Round 12 (addendum 10c): one composed message can only be
+        // submitted once. A re-tap while the identical echo is still
+        // SENDING is the same message, not a new one — every unguarded
+        // submission minted a fresh id and eventually landed as a
+        // separate copy (the reported 3–4× duplicates).
+        if (com.wesal.messenger.core.util.SendInFlightGuard.isDuplicateInFlight(
+                candidates = _failedMessages.value.map {
+                    com.wesal.messenger.core.util.SendInFlightGuard.Candidate(
+                        statusRaw = it.status.raw,
+                        text = it.text,
+                        replyToMessageId = it.replyToMessageId,
+                        timestampMs = it.timestamp
+                    )
+                },
+                text = trimmed,
+                replyToMessageId = _replyingTo.value?.messageId,
+                nowMs = System.currentTimeMillis()
+            )
+        ) {
+            _replyingTo.value = null
             return
         }
 

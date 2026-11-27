@@ -64,6 +64,8 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WhatsAppOtpHandoffHint
 import com.wesal.messenger.presentation.components.WhatsAppOtpManualFallback
 import com.wesal.messenger.presentation.components.rememberWhatsAppOtpHandoff
+import com.wesal.messenger.presentation.components.WhatsAppOtpNotArrivedHint
+import com.wesal.messenger.presentation.components.WhatsAppOtpSameNumberHint
 import com.wesal.messenger.settings.SessionRevokeNotice
 import com.wesal.messenger.settings.WesalCredentialVault
 import kotlinx.coroutines.launch
@@ -771,6 +773,7 @@ fun PhoneLoginScreen(
                     }
                 }
                 WhatsAppOtpHandoffHint()
+                WhatsAppOtpSameNumberHint()
                 WhatsAppOtpManualFallback(
                     enabled = !state.isLoading && !state.isPhoneBusy && !googleLaunching
                 ) { viewModel.sendPhoneOtp() }
@@ -817,6 +820,12 @@ fun PhoneLoginScreen(
                             fontWeight = FontWeight.Bold
                         )
                     }
+                }
+                // Round 12 (addendum 9): persistent not-arrived hint, as
+                // on the gate — recoverable window step on the code-entry
+                // state itself.
+                if (state.phoneOtpChannel.equals("whatsapp", ignoreCase = true)) {
+                    WhatsAppOtpNotArrivedHint { whatsAppHandoff() }
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),

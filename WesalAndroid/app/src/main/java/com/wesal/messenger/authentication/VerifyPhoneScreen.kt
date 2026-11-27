@@ -31,6 +31,8 @@ import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.presentation.components.WhatsAppOtpHandoffHint
 import com.wesal.messenger.presentation.components.WhatsAppOtpManualFallback
 import com.wesal.messenger.presentation.components.rememberWhatsAppOtpHandoff
+import com.wesal.messenger.presentation.components.WhatsAppOtpNotArrivedHint
+import com.wesal.messenger.presentation.components.WhatsAppOtpSameNumberHint
 
 /**
  * Mandatory phone-verification gate screen (phone phase). Shown after any
@@ -246,13 +248,22 @@ fun VerifyPhoneScreen(
             }
 
             if (state.step == 0) {
-                // One short hint under the handoff button + a manual direct
-                // send for anyone who skips the WhatsApp trip.
+                // One short hint under the handoff button + the same-number
+                // rule (addendum 9b) + a manual direct send for anyone who
+                // skips the WhatsApp trip.
                 WhatsAppOtpHandoffHint()
+                WhatsAppOtpSameNumberHint()
                 WhatsAppOtpManualFallback(enabled = !state.isBusy) { viewModel.sendCode() }
             }
 
             if (state.step == 1) {
+                // Round 12 (addendum 9): persistent not-arrived hint with
+                // the handoff button — a WhatsApp code that died on the
+                // closed 24h window (131047) must be recoverable from
+                // HERE, not only from the number step.
+                if (state.sentChannel.equals("whatsapp", ignoreCase = true)) {
+                    WhatsAppOtpNotArrivedHint { whatsAppHandoff() }
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,

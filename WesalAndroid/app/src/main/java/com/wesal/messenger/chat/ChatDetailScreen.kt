@@ -107,6 +107,9 @@ fun ChatDetailScreen(
     val composerFocusRequester = remember { FocusRequester() }
 
     val chat by viewModel.chatPreview.collectAsStateWithLifecycle()
+    // Round 12 (addendum 10b): raw request state for the SENDER's pending
+    // label (chatPreview rewrites the requester's state to ACCEPTED).
+    val rawRequestState by viewModel.chatRequestState.collectAsStateWithLifecycle()
     val peerUser by viewModel.peerUser.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val personalWallpaper by viewModel.personalWallpaper.collectAsStateWithLifecycle()
@@ -763,6 +766,38 @@ fun ChatDetailScreen(
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                             ) { Text(if (strings.isEnglish) "Reject" else "رفض", color = palette.error) }
                         }
+                    }
+                }
+
+                // Round 12 (addendum 10b): the SENDER of a pending request
+                // sees his state too — his message sits in the thread above
+                // this label, which says plainly why there is no reply yet.
+                // (The recipient's accept/hold/reject banner above is driven
+                // by the viewer-relative preview and never shows for him.)
+                if (com.wesal.messenger.core.util.DirectChatRequestLogic.senderPendingLabelVisible(
+                        rawRequestStatus = rawRequestState.requestStatus,
+                        requestFromUid = rawRequestState.requestFromUid,
+                        myUid = viewModel.myUid
+                    )
+                ) {
+                    Surface(
+                        color = palette.surfaceElevated,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (strings.isEnglish) {
+                                "Message request — waiting for the other side to accept"
+                            } else {
+                                "طلب مراسلة — بانتظار قبول الطرف الآخر"
+                            },
+                            color = palette.textSecondary,
+                            style = MaterialTheme.typography.labelLarge,
+                            softWrap = false,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
                     }
                 }
 

@@ -113,6 +113,15 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+        // Round 12 (addendum 7): download size — the native libraries
+        // (WebRTC + ML Kit, ~31.6MB) were stored UNCOMPRESSED in the APK.
+        // Legacy packaging deflates them inside the file (the installer
+        // extracts them instead of memory-mapping from the APK): the same
+        // single universal APK with the same signing, ~14MB smaller to
+        // download on slow networks.
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 
