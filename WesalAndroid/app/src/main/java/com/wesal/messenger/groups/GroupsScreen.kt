@@ -306,7 +306,7 @@ class GroupsViewModel @Inject constructor(
                     val okCount = report.values.count { it }
                     postStatus("تم إرسال الرسالة الفردية لـ $okCount من أصل ${list.recipientUids.size} مستلم ✓")
                 }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر إرسال الرسالة") }
+                .onFailure { postStatus("تعذر إرسال الرسالة") }
             isSendingBroadcast.value = false
         }
     }

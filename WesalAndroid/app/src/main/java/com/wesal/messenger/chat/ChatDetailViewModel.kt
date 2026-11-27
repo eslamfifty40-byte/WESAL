@@ -440,7 +440,7 @@ class ChatDetailViewModel @Inject constructor(
             viewModelScope.launch {
                 chatRepository.editMessage(chatId, editing.messageId, trimmed)
                     .onSuccess { _editingMessage.value = null }
-                    .onFailure { _toastMessage.value = it.message ?: "تعذر تعديل الرسالة" }
+                    .onFailure { _toastMessage.value = "تعذر تعديل الرسالة" }
             }
             return
         }
@@ -508,14 +508,24 @@ class ChatDetailViewModel @Inject constructor(
                     _failedMessages.update { list -> list.filterNot { it.messageId == messageId } }
                 }
                 .onFailure { err ->
-                    _failedMessages.update { list ->
-                        list.map {
-                            if (it.messageId == messageId) {
-                                it.copy(status = MessageStatus.FAILED, timestamp = System.currentTimeMillis())
-                            } else it
+                    // Round 12 (addendum 12): a QUEUED write (slow
+                    // network, SDK mutation queue owns delivery) is not
+                    // a failure — the echo stays SENDING and the outbox
+                    // entry stays as the backstop. Only a permanent
+                    // rejection marks FAILED. The toast is ALWAYS the
+                    // mapped Arabic copy (SendFailureCopy) — raw
+                    // exception text never reaches the user.
+                    if (!com.wesal.messenger.core.util.SendFailureCopy.isQueued(err)) {
+                        _failedMessages.update { list ->
+                            list.map {
+                                if (it.messageId == messageId) {
+                                    it.copy(status = MessageStatus.FAILED, timestamp = System.currentTimeMillis())
+                                } else it
+                            }
                         }
                     }
-                    _toastMessage.value = err.localizedMessage ?: "فشل إرسال الرسالة"
+                    _toastMessage.value =
+                        com.wesal.messenger.core.util.SendFailureCopy.toastFor(err)
                 }
         }
     }
@@ -561,14 +571,20 @@ class ChatDetailViewModel @Inject constructor(
                     _failedMessages.update { list -> list.filterNot { it.messageId == effectiveId } }
                 }
                 .onFailure { err ->
-                    _failedMessages.update { list ->
-                        list.map {
-                            if (it.messageId == effectiveId) {
-                                it.copy(status = MessageStatus.FAILED, timestamp = System.currentTimeMillis())
-                            } else it
+                    // Round 12 (addendum 12): same queued/permanent
+                    // split as the first send — a queued retry returns
+                    // the bubble to SENDING, never to a raw-error toast.
+                    if (!com.wesal.messenger.core.util.SendFailureCopy.isQueued(err)) {
+                        _failedMessages.update { list ->
+                            list.map {
+                                if (it.messageId == effectiveId) {
+                                    it.copy(status = MessageStatus.FAILED, timestamp = System.currentTimeMillis())
+                                } else it
+                            }
                         }
                     }
-                    _toastMessage.value = err.localizedMessage ?: "فشل إعادة إرسال الرسالة"
+                    _toastMessage.value =
+                        com.wesal.messenger.core.util.SendFailureCopy.toastFor(err)
                 }
         }
     }
@@ -725,7 +741,10 @@ class ChatDetailViewModel @Inject constructor(
                 clientMessageId = upload.id
             )
                 .catch { err ->
-                    val errText = err.localizedMessage ?: "فشل الإرسال"
+                    // Round 12 (addendum 12): mapped Arabic only — the
+                    // raw exception text (Storage/Firestore English) is
+                    // never rendered.
+                    val errText = com.wesal.messenger.core.util.SendFailureCopy.MEDIA_FAILED_AR
                     _toastMessage.value = errText
                     _pendingUploads.update { list -> list.filterNot { it.id == upload.id } }
                 }
@@ -742,7 +761,8 @@ class ChatDetailViewModel @Inject constructor(
                             }
                         }
                     }.onFailure { err ->
-                        val errText = err.localizedMessage ?: "فشل الإرسال"
+                        // Round 12 (addendum 12): mapped Arabic only.
+                        val errText = com.wesal.messenger.core.util.SendFailureCopy.MEDIA_FAILED_AR
                         _toastMessage.value = errText
                         _pendingUploads.update { list ->
                             list.map {
@@ -774,7 +794,7 @@ class ChatDetailViewModel @Inject constructor(
                     if (lat != null && lng != null) {
                         chatRepository.sendLocationMessage(targetChatId, lat, lng, message.locationAddress)
                             .onSuccess { _toastMessage.value = "تمت إعادة توجيه الموقع" }
-                            .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر إعادة توجيه الموقع" }
+                            .onFailure { _toastMessage.value = "تعذر إعادة توجيه الموقع" }
                     }
                 }
                 MessageType.IMAGE, MessageType.VIDEO, MessageType.VOICE, MessageType.AUDIO, MessageType.DOCUMENT -> {
@@ -795,7 +815,7 @@ class ChatDetailViewModel @Inject constructor(
                                     res.onSuccess { p ->
                                         if (p >= 1f) _toastMessage.value = "تمت إعادة توجيه الوسائط"
                                     }.onFailure { err ->
-                                        _toastMessage.value = err.localizedMessage ?: "تعذر إعادة توجيه الوسائط"
+                                        _toastMessage.value = "تعذر إعادة توجيه الوسائط"
                                     }
                                 }
                             }
@@ -832,14 +852,14 @@ class ChatDetailViewModel @Inject constructor(
         // indistinguishable from success (message stayed, no feedback).
         viewModelScope.launch {
             chatRepository.deleteMessageForMe(chatId, messageId)
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر حذف الرسالة" }
+                .onFailure { _toastMessage.value = "تعذر حذف الرسالة" }
         }
     }
 
     fun deleteForEveryone(messageId: String) {
         viewModelScope.launch {
             chatRepository.deleteMessageForEveryone(chatId, messageId)
-                .onFailure { _toastMessage.value = it.localizedMessage }
+                .onFailure { _toastMessage.value = "تعذر حذف الرسالة" }
         }
     }
 
@@ -851,7 +871,7 @@ class ChatDetailViewModel @Inject constructor(
                     onSuccess()
                 }
                 .onFailure { err ->
-                    _toastMessage.value = err.localizedMessage ?: "تعذر حذف المحادثة"
+                    _toastMessage.value = "تعذر حذف المحادثة"
                 }
         }
     }
@@ -895,7 +915,7 @@ class ChatDetailViewModel @Inject constructor(
                     }
                 }
                 .onFailure { err ->
-                    _toastMessage.value = err.localizedMessage ?: "تعذر تحديث الخلفية الرسمية"
+                    _toastMessage.value = "تعذر تحديث الخلفية الرسمية"
                 }
         }
     }
@@ -913,7 +933,7 @@ class ChatDetailViewModel @Inject constructor(
                     onReady(file)
                 }
                 .onFailure {
-                    _toastMessage.value = it.localizedMessage ?: "تعذر تحميل أو فتح الملف"
+                    _toastMessage.value = "تعذر تحميل أو فتح الملف"
                 }
         }
     }
@@ -992,7 +1012,7 @@ class ChatDetailViewModel @Inject constructor(
                 saved.onSuccess {
                     _toastMessage.value = if (isEn) "Saved to Music/WESAL" else "تم حفظ الملف الصوتي في مجلد الموسيقى/WESAL"
                 }.onFailure { err ->
-                    _toastMessage.value = err.localizedMessage ?: if (isEn) "Unable to save audio" else "تعذر حفظ الملف على الجهاز"
+                    _toastMessage.value = if (isEn) "Unable to save audio" else "تعذر حفظ الملف على الجهاز"
                 }
             }
         }
@@ -1017,7 +1037,9 @@ class ChatDetailViewModel @Inject constructor(
                 ).onSuccess {
                     _toastMessage.value = if (isEn) "Saved to Downloads/WESAL" else "تم حفظ الملف في التنزيلات/WESAL"
                 }.onFailure { err ->
-                    _toastMessage.value = err.localizedMessage ?: if (isEn) "Unable to save file" else "تعذر حفظ الملف على الجهاز"
+                    // Round 12 (addendum 12): no exception text on any
+                    // chat surface, including file saving.
+                    _toastMessage.value = if (isEn) "Unable to save file" else "تعذر حفظ الملف على الجهاز"
                 }
             }
         }
@@ -1031,8 +1053,16 @@ class ChatDetailViewModel @Inject constructor(
                         _toastMessage.value = "تمت مشاركة الموقع المباشر لمدة $liveDurationMinutes دقيقة"
                     }
                 }
-                .onFailure {
-                    _toastMessage.value = it.localizedMessage ?: "تعذر إرسال الموقع"
+                .onFailure { err ->
+                    // Round 12 (addendum 12): queued writes get the
+                    // queued copy; permanent failures the plain Arabic
+                    // one — never raw exception text.
+                    _toastMessage.value =
+                        if (com.wesal.messenger.core.util.SendFailureCopy.isQueued(err)) {
+                            com.wesal.messenger.core.util.SendFailureCopy.QUEUED_AR
+                        } else {
+                            "تعذر إرسال الموقع"
+                        }
                 }
         }
     }
@@ -1047,7 +1077,7 @@ class ChatDetailViewModel @Inject constructor(
                         "الرسائل الجديدة ستختفي بعد ${timer.labelAr}"
                     }
                 }
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث المؤقت" }
+                .onFailure { _toastMessage.value = "تعذر تحديث المؤقت" }
         }
     }
 
@@ -1070,7 +1100,7 @@ class ChatDetailViewModel @Inject constructor(
                         else -> onRejectedDone()
                     }
                 }
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الطلب" }
+                .onFailure { _toastMessage.value = "تعذر تحديث الطلب" }
         }
     }
 
@@ -1088,7 +1118,7 @@ class ChatDetailViewModel @Inject constructor(
                 }
                 // AUDIT SEC-A fix: failures were swallowed — the menu closed and
                 // the user believed the block had applied when it had not.
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر حظر المستخدم" }
+                .onFailure { _toastMessage.value = "تعذر حظر المستخدم" }
         }
     }
 
@@ -1111,7 +1141,7 @@ class ChatDetailViewModel @Inject constructor(
             ).onSuccess {
                 _toastMessage.value = "تم إرسال البلاغ مع حفظ الأدلة بنجاح"
             }.onFailure { err ->
-                _toastMessage.value = err.localizedMessage ?: "تعذر إرسال البلاغ"
+                _toastMessage.value = "تعذر إرسال البلاغ"
             }
         }
     }

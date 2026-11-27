@@ -2,6 +2,8 @@ package com.wesal.messenger
 
 import com.wesal.messenger.core.util.AlphaBounds
 import com.wesal.messenger.core.util.DirectChatRequestLogic
+import com.wesal.messenger.core.util.MessageQueuedException
+import com.wesal.messenger.core.util.SendFailureCopy
 import com.wesal.messenger.core.util.FramedCutoutLayout
 import com.wesal.messenger.core.util.GiftGrantLogic
 import com.wesal.messenger.core.util.OfficialChatWelcome
@@ -461,6 +463,34 @@ class R12AddendaLogicTest {
                 nowMs = 5_000L
             )
         )
+    }
+
+    // ---------------------------------------------------------------
+    // Addendum 12: send ACK window — queued is not a failure, and no
+    // failure surface ever carries raw exception text
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `send failure - queued maps to the queued copy and is classified queued`() {
+        val queued = MessageQueuedException()
+        assertTrue(SendFailureCopy.isQueued(queued))
+        assertEquals(SendFailureCopy.QUEUED_AR, SendFailureCopy.toastFor(queued))
+        assertTrue(SendFailureCopy.QUEUED_AR.contains("سيتم إرسالها تلقائياً"))
+    }
+
+    @Test
+    fun `send failure - any other error maps to the permanent-failure Arabic copy only`() {
+        val raw = RuntimeException("timeout: 15000ms exceeded waiting for commit")
+        assertFalse(SendFailureCopy.isQueued(raw))
+        assertFalse(SendFailureCopy.isQueued(null))
+        val toast = SendFailureCopy.toastFor(raw)
+        assertEquals(SendFailureCopy.FAILED_AR, toast)
+        // The whole point of the addendum: no fragment of the raw
+        // exception (English words, the 15000 constant) can leak.
+        assertFalse(toast.contains("timeout"))
+        assertFalse(toast.contains("15000"))
+        assertFalse(SendFailureCopy.QUEUED_AR.contains("15000"))
+        assertFalse(SendFailureCopy.MEDIA_FAILED_AR.contains("timeout"))
     }
 
     @Test

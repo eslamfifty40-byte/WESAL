@@ -371,7 +371,7 @@ fun ChatDetailScreen(
                                         .onFailure { err ->
                                             Toast.makeText(
                                                 context,
-                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر حفظ الفيديو",
+                                                if (strings.isEnglish) "Save failed" else "تعذر حفظ الفيديو",
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }

@@ -316,7 +316,7 @@ class StoryRepositoryImpl @Inject constructor(
                 trySend(StoryPublishEvent.Success)
                 close()
             } catch (e: Exception) {
-                trySend(StoryPublishEvent.Failure(e.localizedMessage ?: "تعذر رفع الحالة، حاول مرة أخرى"))
+                trySend(StoryPublishEvent.Failure("تعذر رفع الحالة، حاول مرة أخرى"))
                 close()
             }
         }
@@ -397,7 +397,7 @@ class StoryRepositoryImpl @Inject constructor(
                 trySend(StoryPublishEvent.Success)
                 close()
             } catch (e: Exception) {
-                trySend(StoryPublishEvent.Failure(e.localizedMessage ?: "تعذر رفع الحالة الصوتية"))
+                trySend(StoryPublishEvent.Failure("تعذر رفع الحالة الصوتية"))
                 close()
             }
         }

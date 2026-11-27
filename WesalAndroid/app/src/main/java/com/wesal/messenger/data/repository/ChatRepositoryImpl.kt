@@ -15,6 +15,7 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DirectChatRequestLogic
+import com.wesal.messenger.core.util.MessageQueuedException
 import com.wesal.messenger.core.util.OfficialChatWelcome
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.data.local.dao.WesalDao
@@ -58,7 +59,13 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Max time a message write may wait for the Firestore SDK before the REST fallback takes over. */
+/**
+ * Round 12 (addendum 12): the ACK window for a message write — how long
+ * the send waits for the Firestore SDK to acknowledge the commit before
+ * the write is treated as QUEUED in the SDK's persistent mutation queue
+ * (see MessageQueuedException). It is NOT a send deadline: a normal
+ * send can no longer die on it.
+ */
 private const val SEND_WRITE_TIMEOUT_MS = 15_000L
 
 /** Spec §13.3 pagination: live listeners page instead of streaming whole collections. */
@@ -1564,8 +1571,10 @@ class ChatRepositoryImpl @Inject constructor(
 
         // Atomic write: message + chat summary commit together (previously two separate
         // awaits — if the second failed, the peer's chat list never bumped, and a retry created
-        // a duplicate message with a fresh id). Bounded by a timeout: the Firestore gRPC write
-        // stream can stall silently, and an unbounded await left the send hanging forever.
+        // a duplicate message with a fresh id). The commit is awaited only for the ACK
+        // window (SEND_WRITE_TIMEOUT_MS): the Firestore gRPC write stream can stall
+        // silently, and an unbounded await would leave the send hanging forever — but
+        // the queued write itself is durable (addendum 12, below).
         val messageRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId)
         // Spec §1.2: the SDK batch writes the authoritative server timestamp (the
         // REST fallback below cannot encode FieldValue, so it keeps the client value;
@@ -1576,69 +1585,38 @@ class ChatRepositoryImpl @Inject constructor(
         val batch = firestore.batch()
         batch.set(messageRef, sdkMessageData)
         batch.update(chatRef, chatUpdates)
+        // Round 12 (addendum 12): the timeout is an ACK WINDOW, not a
+        // deadline. PROVEN defect: on a very slow connection (~1 KB/s)
+        // the batch rarely ACKs within SEND_WRITE_TIMEOUT_MS, the old
+        // code then crawled through an HTTP REST fallback that failed
+        // too, and its check() threw a message embedding raw exception
+        // text ("timeout", "15000") straight into the user's error
+        // dialog. But the SDK batch is DURABLE: with persistence on,
+        // the write sits in the SDK's mutation queue and syncs when
+        // the network allows (the r6 comment below already knew
+        // withTimeoutOrNull cannot cancel it). So:
+        // - ACK inside the window → committed.
+        // - The commit THREW (a real rejection, e.g. PERMISSION_DENIED)
+        //   → rethrow: a permanent failure the UI maps to Arabic.
+        // - Window elapsed with no error → the write is QUEUED in the
+        //   SDK queue: throw MessageQueuedException, which the UI
+        //   treats as "still sending" (echo + outbox entry stay, same
+        //   client id — the outbox replay backstops a queue entry the
+        //   server later rejects). NEVER a user-visible failure.
+        // The REST fallback is REMOVED from the send path: idempotency
+        // never needed it (the message doc id IS the client id on the
+        // SDK path), and on the links where the SDK stalls, HTTP
+        // stalls identically — its failure was the raw-error dialog.
         var sdkError: Throwable? = null
         val sdkCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
-            // A commit that THROWS (permission/network) must also reach the REST fallback
-            // below — withTimeoutOrNull alone only converts timeouts, not exceptions.
-            // The original error is KEPT (round-3): the fallback used to swallow it and
-            // report only a generic "could not verify" message, masking the real cause
-            // (e.g. a rules PERMISSION_DENIED) behind a misleading one.
             runCatching { batch.commit().await() }
                 .onFailure { sdkError = it }
                 .isSuccess
         } ?: false
-
-        if (!sdkCommitted) {
-            // REST fallback (this path existed in FirestoreRest but was never wired in).
-            // First check whether the timed-out batch actually landed: both write paths are
-            // atomic, so an existing message document means the summary was applied too, and
-            // repeating the commit would double-increment unread counts.
-            //
-            // R6 FIX (messages sent twice — one copy stuck in error state, one delivered):
-            // the old code FAILED the send whenever this probe was inconclusive (null).
-            // That verdict was unsound: withTimeoutOrNull cannot cancel the Firestore SDK
-            // batch — once queued (persistent cache) it stays in the SDK's mutation queue
-            // and commits asynchronously — so the message document DID land moments later
-            // while the ViewModel had already marked the optimistic echo FAILED and kept
-            // it in the outbox: the user saw the delivered server copy AND an error copy
-            // of the same message. The probe is therefore re-run once, and if it is STILL
-            // inconclusive we proceed to the REST commit exactly like the `false` case:
-            // the REST write targets the SAME fixed document id with a full set(), so it
-            // can never create a second message document (worst case, shared with the
-            // pre-existing `false` branch, is a double unread increment if the queued
-            // SDK batch also lands). If the REST commit itself fails, the send honestly
-            // fails and the single FAILED echo + outbox retry (same id) remain.
-            val messageDocPath =
-                "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
-            var alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
-            if (alreadyLanded == null) {
-                alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
-            }
-            if (alreadyLanded == false || alreadyLanded == null) {
-                val chatScalarFields = hashMapOf<String, Any?>(
-                    "lastMessagePreview" to preview,
-                    "lastMessageTime" to now,
-                    "lastMessageSenderId" to myUid,
-                    "lastMessageStatus" to MessageStatus.SENT.raw,
-                    "deletedForUsers" to emptyList<String>()
-                )
-                var restError: Throwable? = null
-                val httpCode = runCatching {
-                    FirestoreRest.commitTextMessage(
-                        auth = auth,
-                        chatDocPath = "${Constants.COLLECTION_CHATS}/$chatId",
-                        messageDocPath = messageDocPath,
-                        messageData = messageData,
-                        chatScalarFields = chatScalarFields,
-                        unreadIncrementUids = participants.filter { it != myUid }
-                    )
-                }.onFailure { restError = it }.getOrDefault(-1)
-                check(httpCode in 200..299) {
-                    "تعذر إرسال الرسالة (SDK timeout, REST fallback code=$httpCode)" +
-                        (restError?.let { " — REST: ${it.message ?: it.toString()}" } ?: "") +
-                        (sdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
-                }
-            }
+        when {
+            sdkCommitted -> Unit
+            sdkError != null -> throw sdkError!!
+            else -> throw MessageQueuedException()
         }
     }
 
@@ -1985,8 +1963,12 @@ class ChatRepositoryImpl @Inject constructor(
         participants.filter { it != myUid }.forEach { otherUid ->
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
         }
-        // Same atomic + timeout + REST-fallback pattern as sendTextMessage.
-        // Spec §1.2: server timestamp on the SDK batch; REST keeps the client value.
+        // Spec §1.2: server timestamp on the SDK batch.
+        // Round 12 (addendum 12): same ACK-window semantics as
+        // sendTextMessage — a slow network queues the write in the
+        // SDK's persistent mutation queue (MessageQueuedException),
+        // a thrown commit is a permanent failure, and the REST
+        // fallback is removed (see sendTextMessage for the full note).
         val sdkMsg = msg.toMutableMap().apply {
             put("timestamp", FieldValue.serverTimestamp())
         }
@@ -1995,46 +1977,14 @@ class ChatRepositoryImpl @Inject constructor(
         locationBatch.update(chatRef, chatUpdates)
         var locationSdkError: Throwable? = null
         val locationCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
-            // Same original-error preservation as sendTextMessage (round-3).
             runCatching { locationBatch.commit().await() }
                 .onFailure { locationSdkError = it }
                 .isSuccess
         } ?: false
-        if (!locationCommitted) {
-            val messageDocPath =
-                "${Constants.COLLECTION_CHATS}/$chatId/${Constants.COLLECTION_MESSAGES}/$messageId"
-            // R6 FIX: same unsound inconclusive-probe verdict as sendTextMessage (see
-            // there) — re-probe once, then fall through to the idempotent REST commit
-            // (same fixed document id) instead of failing a send whose queued SDK batch
-            // is about to land, which produced a delivered copy + an error copy.
-            var alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
-            if (alreadyLanded == null) {
-                alreadyLanded = FirestoreRest.documentExists(auth, messageDocPath)
-            }
-            if (alreadyLanded == false || alreadyLanded == null) {
-                var locationRestError: Throwable? = null
-                val httpCode = runCatching {
-                    FirestoreRest.commitTextMessage(
-                        auth = auth,
-                        chatDocPath = "${Constants.COLLECTION_CHATS}/$chatId",
-                        messageDocPath = messageDocPath,
-                        messageData = msg,
-                        chatScalarFields = hashMapOf(
-                            "lastMessagePreview" to chatUpdates["lastMessagePreview"],
-                            "lastMessageTime" to now,
-                            "lastMessageSenderId" to myUid,
-                            "lastMessageStatus" to MessageStatus.SENT.raw,
-                            "deletedForUsers" to emptyList<String>()
-                        ),
-                        unreadIncrementUids = participants.filter { it != myUid }
-                    )
-                }.onFailure { locationRestError = it }.getOrDefault(-1)
-                check(httpCode in 200..299) {
-                    "تعذر إرسال الموقع (SDK timeout, REST fallback code=$httpCode)" +
-                        (locationRestError?.let { " — REST: ${it.message ?: it.toString()}" } ?: "") +
-                        (locationSdkError?.let { " — الخطأ الأصلي: ${it.message ?: it.toString()}" } ?: "")
-                }
-            }
+        when {
+            locationCommitted -> Unit
+            locationSdkError != null -> throw locationSdkError!!
+            else -> throw MessageQueuedException()
         }
     }
 

@@ -283,7 +283,7 @@ class ChatsListViewModel @Inject constructor(
                         else -> "تم رفض الطلب وحذفه"
                     }
                 }
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الطلب" }
+                .onFailure { _toastMessage.value = "تعذر تحديث الطلب" }
         }
     }
 
@@ -291,7 +291,7 @@ class ChatsListViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.acceptContactRequest(requestId)
                 .onSuccess { _toastMessage.value = "تم قبول طلب التعارف" }
-                .onFailure { _toastMessage.value = it.localizedMessage }
+                .onFailure { _toastMessage.value = "تعذر قبول الطلب" }
         }
     }
 
@@ -305,7 +305,7 @@ class ChatsListViewModel @Inject constructor(
                     }
                     _toastMessage.value = "تم تعليق الطلب في قائمة الانتظار"
                 }
-                .onFailure { _toastMessage.value = it.localizedMessage }
+                .onFailure { _toastMessage.value = "تعذر تعليق الطلب" }
         }
     }
 
@@ -319,7 +319,7 @@ class ChatsListViewModel @Inject constructor(
                     }
                     _toastMessage.value = "تم رفض الطلب"
                 }
-                .onFailure { _toastMessage.value = it.localizedMessage }
+                .onFailure { _toastMessage.value = "تعذر رفض الطلب" }
         }
     }
 
@@ -342,7 +342,7 @@ class ChatsListViewModel @Inject constructor(
             ).onSuccess {
                 _toastMessage.value = "تم إرسال البلاغ للإدارة"
             }.onFailure {
-                _toastMessage.value = it.localizedMessage ?: "تعذر إرسال البلاغ"
+                _toastMessage.value = "تعذر إرسال البلاغ"
             }
         }
     }
@@ -368,7 +368,7 @@ class ChatsListViewModel @Inject constructor(
         // identical to success (the row just never changed). Surface failures.
         viewModelScope.launch {
             chatRepository.togglePinChat(chat.chatId, !chat.isPinned)
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث التثبيت" }
+                .onFailure { _toastMessage.value = "تعذر تحديث التثبيت" }
         }
     }
 
@@ -376,7 +376,7 @@ class ChatsListViewModel @Inject constructor(
         // AUDIT SEC-A fix: same discarded-Result problem as togglePin.
         viewModelScope.launch {
             chatRepository.toggleMuteChat(chat.chatId, !chat.isMuted)
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الكتم" }
+                .onFailure { _toastMessage.value = "تعذر تحديث الكتم" }
         }
     }
 
@@ -397,7 +397,7 @@ class ChatsListViewModel @Inject constructor(
                     prefs.toggleLockedChat(chat.chatId, false)
                     _toastMessage.value = "تم حظر المستخدم وحذف المحادثة"
                 }
-                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر حظر المستخدم" }
+                .onFailure { _toastMessage.value = "تعذر حظر المستخدم" }
         }
     }
 
@@ -422,10 +422,10 @@ class ChatsListViewModel @Inject constructor(
                         chatRepository.setMessageRequestDecision(directChatIdFor(senderUid), senderUid, "ACCEPTED")
                         chatRepository.getOrCreateDirectChat(senderUid)
                             .onSuccess { chatId -> onOpenChat(chatId) }
-                            .onFailure { _toastMessage.value = it.localizedMessage ?: "تم القبول، تعذر فتح المحادثة" }
+                            .onFailure { _toastMessage.value = "تم القبول، تعذر فتح المحادثة" }
                     }
                 }
-                .onFailure { _toastMessage.value = it.localizedMessage }
+                .onFailure { _toastMessage.value = "تعذر قبول الطلب" }
         }
     }
 
@@ -437,7 +437,7 @@ class ChatsListViewModel @Inject constructor(
                     _toastMessage.value = if (next) "تمت أرشفة المحادثة" else "تمت إعادة المحادثة من الأرشيف"
                 }
                 .onFailure {
-                    _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الأرشفة"
+                    _toastMessage.value = "تعذر تحديث الأرشفة"
                 }
         }
     }
@@ -455,7 +455,7 @@ class ChatsListViewModel @Inject constructor(
                     }
                 }
                 .onFailure { err ->
-                    _toastMessage.value = err.localizedMessage ?: "تعذر حذف المحادثة"
+                    _toastMessage.value = "تعذر حذف المحادثة"
                 }
         }
     }
