@@ -1,9 +1,13 @@
 package com.wesal.messenger.presentation.components
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
 import android.util.LruCache
+import coil.ImageLoader
+import coil.disk.DiskCache
+import coil.memory.MemoryCache
 import coil.size.Size
 import coil.transform.Transformation
 import com.wesal.messenger.BuildConfig
@@ -179,6 +183,51 @@ class AlphaBoundsTransformation(private val boundsCacheKey: String?) : Transform
         }
         return input
     }
+}
+
+/**
+ * Coil loader WITHOUT the animated-image decoders, for rendering a frame STILL.
+ *
+ * WesalApplication's loader registers ImageDecoderDecoder/GifDecoder, so a GIF or
+ * animated-WebP frame image animates intrinsically wherever Coil draws it — the
+ * per-frame `animated` flag and the master switch could not stop it (round-5 gap).
+ * This loader deliberately registers NO animated decoder: only Coil's default
+ * components resolve the request, and BitmapFactoryDecoder returns the FIRST frame
+ * as a static bitmap — exactly the behaviour WesalApplication's own comment records
+ * for the pre-GIF-decoder builds. WesalAvatar (and the admin pickers) route frame
+ * images through this loader whenever the frame's effective animation is OFF, and
+ * through the normal loader when it is ON, so the admin's on/off choice is honoured
+ * even for intrinsically animated files.
+ *
+ * Separate caches (small memory cache, own disk directory) keep still decodes from
+ * colliding with the main loader's animated drawables under the same cache keys.
+ */
+object WesalStillImageLoader {
+
+    @Volatile
+    private var instance: ImageLoader? = null
+
+    fun get(context: Context): ImageLoader =
+        instance ?: synchronized(this) {
+            instance ?: build(context.applicationContext).also { instance = it }
+        }
+
+    private fun build(appContext: Context): ImageLoader =
+        ImageLoader.Builder(appContext)
+            .memoryCache {
+                MemoryCache.Builder(appContext)
+                    .maxSizePercent(0.06)
+                    .build()
+            }
+            .diskCache {
+                DiskCache.Builder()
+                    .directory(appContext.cacheDir.resolve("image_cache_still"))
+                    .maxSizeBytes(25L * 1024L * 1024L)
+                    .build()
+            }
+            .crossfade(false)
+            .respectCacheHeaders(false)
+            .build()
 }
 
 fun wesalImageCacheKey(url: String?): String? {

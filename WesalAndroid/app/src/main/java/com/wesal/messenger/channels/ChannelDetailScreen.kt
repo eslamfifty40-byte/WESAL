@@ -1,7 +1,10 @@
 package com.wesal.messenger.channels
 
+import android.app.Activity
+import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,11 +43,13 @@ import coil.compose.AsyncImage
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.ScreenshotProtectionPolicy
 import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.domain.model.ChannelPost
 import com.wesal.messenger.domain.model.ChannelPostType
 import com.wesal.messenger.domain.model.ChannelRole
 import com.wesal.messenger.media.FullscreenImageViewer
+import com.wesal.messenger.media.VideoPlayerBox
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
@@ -80,6 +85,7 @@ fun ChannelDetailScreen(
     val message by viewModel.message.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val currentUserPhotoUrl by viewModel.currentUserPhotoUrl.collectAsStateWithLifecycle()
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
     val uiScope = rememberCoroutineScope()
 
     var postText by remember { mutableStateOf("") }
@@ -92,6 +98,7 @@ fun ChannelDetailScreen(
     var editingPost by remember { mutableStateOf<ChannelPost?>(null) }
     var commentSheetPostId by remember { mutableStateOf<String?>(null) }
     var fullscreenImageUrl by remember { mutableStateOf<String?>(null) }
+    var fullscreenVideoUrl by remember { mutableStateOf<String?>(null) }
     var copiedNotice by remember { mutableStateOf(false) }
 
     LaunchedEffect(channelId) {
@@ -104,6 +111,29 @@ fun ChannelDetailScreen(
 
     DisposableEffect(channelId) {
         onDispose { viewModel.stopAudioPlayback() }
+    }
+
+    // FIX 3 (round 5): channels are chat destinations too — apply FLAG_SECURE
+    // while a channel is open, governed by the same «حماية المحادثات من تصوير
+    // الشاشة» toggle (channels have no hidden/view-once variants, so the
+    // policy's always-on cases are false here). currentUser == null counts as
+    // ON (no unprotected flash); the flag is removed on dispose, so profile /
+    // settings screens stay screenshot-able.
+    val channelActivity = context as? Activity
+    val secureChannel = ScreenshotProtectionPolicy.shouldSecureChat(
+        toggleEnabled = currentUser?.privacySettings?.screenshotProtectionEnabled ?: true,
+        isHiddenChat = false,
+        viewOnceViewerOpen = false
+    )
+    DisposableEffect(channelActivity, secureChannel) {
+        if (secureChannel) {
+            channelActivity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            if (secureChannel) {
+                channelActivity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
     }
 
     fun resolveMeta(uri: Uri): Pair<String, Long> {
@@ -466,6 +496,21 @@ fun ChannelDetailScreen(
                                 commentSheetPostId = post.postId
                             },
                             onOpenImage = { url -> fullscreenImageUrl = url },
+                            onOpenVideo = { url -> fullscreenVideoUrl = url },
+                            onOpenFile = { url, mime ->
+                                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(Uri.parse(url), mime.ifBlank { "*/*" })
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                                runCatching { context.startActivity(viewIntent) }
+                                    .onFailure {
+                                        Toast.makeText(
+                                            context,
+                                            if (strings.isEnglish) "No app can open this file" else "لا يوجد تطبيق لفتح هذا الملف",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                            },
                             onSaveImage = { url ->
                                 uiScope.launch {
                                     saveImageUrlToGallery(context, url, "WESAL_CHANNEL")
@@ -786,7 +831,8 @@ fun ChannelDetailScreen(
                                     neonGlowIntensity = mod.neonGlowIntensity,
                                     neonEnabled = mod.neonEnabled,
                                     style = MaterialTheme.typography.bodySmall,
-                                    badgeSize = 14.dp
+                                    badgeSize = 14.dp,
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(mod.iconId, mod.iconUrl)
                                 )
                                 if (mod.numericId.isNotBlank()) {
                                     Text("ID: ${mod.numericId}", color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
@@ -924,9 +970,14 @@ fun ChannelDetailScreen(
                                 WesalNameWithBadge(
                                     name = c.authorName,
                                     isVerified = c.authorVerified,
+                                    verificationType = c.authorVerificationType,
+                                    neonColor = c.authorNeonColor,
+                                    neonGlowIntensity = c.authorNeonGlowIntensity,
+                                    neonEnabled = c.authorNeonEnabled,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
-                                    badgeSize = 14.dp
+                                    badgeSize = 14.dp,
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(c.authorIconId, c.authorIconUrl)
                                 )
                                 Text(c.text, color = palette.textPrimary, style = MaterialTheme.typography.bodySmall)
                             }
@@ -995,6 +1046,26 @@ fun ChannelDetailScreen(
                 imageModel = imgUrl,
                 onClose = { fullscreenImageUrl = null }
             )
+        }
+    }
+
+    fullscreenVideoUrl?.let { videoUrl ->
+        Dialog(
+            onDismissRequest = { fullscreenVideoUrl = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                VideoPlayerBox(uri = Uri.parse(videoUrl), modifier = Modifier.fillMaxSize())
+                IconButton(
+                    onClick = { fullscreenVideoUrl = null },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = strings.close, tint = Color.White)
+                }
+            }
         }
     }
 }
@@ -1111,6 +1182,8 @@ private fun ChannelPostCard(
     onReact: (String) -> Unit,
     onOpenComments: () -> Unit,
     onOpenImage: (String) -> Unit,
+    onOpenVideo: (String) -> Unit,
+    onOpenFile: (String, String) -> Unit,
     onSaveImage: (String) -> Unit,
     onEdit: () -> Unit,
     onTogglePin: () -> Unit,
@@ -1141,8 +1214,13 @@ private fun ChannelPostCard(
                     WesalNameWithBadge(
                         name = post.authorName.ifBlank { "WESAL Channel" },
                         isVerified = post.authorVerified,
+                        verificationType = post.authorVerificationType,
+                        neonColor = post.authorNeonColor,
+                        neonGlowIntensity = post.authorNeonGlowIntensity,
+                        neonEnabled = post.authorNeonEnabled,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(post.authorIconId, post.authorIconUrl)
                     )
                     Text(timeLabel, color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
                 }
@@ -1234,6 +1312,8 @@ private fun ChannelPostCard(
                     }
                 }
             } else if (post.type != ChannelPostType.TEXT && post.mediaUrl.isNotBlank()) {
+                // Video posts play in-app and document posts open in a viewer app —
+                // this row used to be a dead, non-clickable surface.
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1241,11 +1321,18 @@ private fun ChannelPostCard(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(palette.surfaceElevated)
+                        .clickable {
+                            if (post.type == ChannelPostType.VIDEO) {
+                                onOpenVideo(post.mediaUrl)
+                            } else {
+                                onOpenFile(post.mediaUrl, post.mediaMimeType)
+                            }
+                        }
                         .padding(10.dp)
                 ) {
                     Icon(
                         imageVector = when (post.type) {
-                            ChannelPostType.VIDEO -> Icons.Default.VideoFile
+                            ChannelPostType.VIDEO -> Icons.Default.PlayCircle
                             else -> Icons.Default.Description
                         },
                         contentDescription = null,

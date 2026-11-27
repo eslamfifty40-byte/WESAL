@@ -31,7 +31,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -293,7 +295,17 @@ class ProfileViewModel @Inject constructor(
 
     fun updatePrivacy(settings: PrivacySettings) {
         viewModelScope.launch {
+            // Audit B4: the Result was discarded — a failed privacy write left
+            // the switch visually flipped with nothing saved (placebo toggle).
+            // The switch state derives from the observed user doc, so on
+            // failure it snaps back on its own; surface WHY via uiStatus.
             userRepository.updatePrivacySettings(settings)
+                .onFailure { err ->
+                    _uiStatus.value = ProfileUiStatus(
+                        message = err.localizedMessage ?: "تعذر حفظ إعدادات الخصوصية",
+                        isError = true
+                    )
+                }
         }
     }
 
@@ -594,12 +606,18 @@ fun ProfileScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Cover Banner + Circular Avatar Header
-            Box(
+            // Cover Banner + framed avatar header (round 5, FIX 2 — owner's
+            // definitive spec): (a) the cover photo renders FULLY —
+            // ContentScale.Fit over a blurred/enlarged backdrop of the same
+            // image, never a hard crop; (b) the framed avatar block sits fully
+            // BELOW the cover with a clear gap strip between cover bottom and
+            // frame top (the cutout head pop-out renders into that gap);
+            // (c) inside the frame, WesalAvatar's opaque frame-coloured glow
+            // disc guarantees the cover never shows through the aperture.
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                contentAlignment = Alignment.BottomCenter
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -613,11 +631,30 @@ fun ProfileScreen(
                     ) {
                         val coverPreview = selectedCoverUri?.toString() ?: user?.coverUrl.orEmpty()
                         if (coverPreview.isNotBlank()) {
+                            // FIX 2 (a): FULL cover, never hard-cropped — a
+                            // blurred, slightly enlarged Crop copy fills the
+                            // 16:9 band as backdrop, a subtle scrim settles
+                            // it, and the complete cover draws on top with
+                            // ContentScale.Fit (same treatment as the
+                            // Settings account card). Modifier.blur needs
+                            // API 31+; below that it no-ops and the darkened
+                            // backdrop still fills the band.
+                            AsyncImage(
+                                model = wesalImageModel(coverPreview),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize().scale(1.15f).blur(24.dp),
+                                contentScale = ContentScale.Crop
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .background(palette.background.copy(alpha = 0.35f))
+                            )
                             AsyncImage(
                                 model = wesalImageModel(coverPreview),
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
+                                contentScale = ContentScale.Fit
                             )
                         } else {
                             Column(
@@ -704,16 +741,16 @@ fun ProfileScreen(
                             }
                         }
                     }
-                    // §5.1: the framed avatar's real footprint is 1.38x its nominal size
-                    // (118dp -> ~163dp). A 160dp spacer below the cover leaves only a small
-                    // deliberate overlap at the cover's bottom edge, so the cover photo
-                    // stays clearly visible behind/above the framed avatar.
-                    Spacer(Modifier.height(160.dp))
-                }
+                    // FIX 2 (b): clear gap strip between the cover's bottom
+                    // edge and the framed avatar block below it. The avatar
+                    // (118dp nominal, ~163dp framed footprint) now lives
+                    // entirely under this gap — it no longer overlaps or
+                    // covers any part of the cover photo, and the cutout
+                    // head pop-out renders upward into this strip.
+                    Spacer(Modifier.height(20.dp))
 
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
                         .clickable(enabled = !uiStatus.isSaving) {
                             activeCropKind = PendingCropKind.AVATAR
                             showSourceSheetFor = PendingCropKind.AVATAR
@@ -762,7 +799,8 @@ fun ProfileScreen(
                     neonColor = activeNeon,
                     neonGlowIntensity = activeGlow,
                     neonEnabled = user?.neonEnabled != false,
-                    nameplateColorKey = user?.nameplateColor ?: "CRIMSON"
+                    nameplateColorKey = user?.nameplateColor ?: "CRIMSON",
+                    iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty())
                 )
                 if (publicId.isNotBlank()) {
                     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -1560,14 +1598,26 @@ fun ProfileScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                WesalAvatar(imageUrl = v.visitorAvatarUrl, name = v.visitorName, size = 40.dp)
+                                WesalAvatar(
+                                    imageUrl = v.visitorAvatarUrl,
+                                    name = v.visitorName,
+                                    size = 40.dp,
+                                    iconUrl = WesalFrameLibrary.resolveIconUrl(v.visitorIconId, v.visitorIconUrl),
+                                    neonColor = if (v.visitorNeonEnabled) v.visitorNeonColor else "",
+                                    neonGlowIntensity = v.visitorNeonGlowIntensity,
+                                    fitInsideBounds = true
+                                )
                                 Column(modifier = Modifier.weight(1f)) {
                                     WesalNameWithBadge(
                                         name = v.visitorName.ifBlank { "@${v.visitorPublicId}" },
                                         isVerified = v.visitorVerified,
                                         verificationType = v.visitorVerificationType,
+                                        neonColor = v.visitorNeonColor,
+                                        neonGlowIntensity = v.visitorNeonGlowIntensity,
+                                        neonEnabled = v.visitorNeonEnabled,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        iconUrl = WesalFrameLibrary.resolveIconUrl(v.visitorIconId, v.visitorIconUrl)
                                     )
                                     Text(
                                         text = DateTimeUtils.formatChatListTime(v.visitedAt),

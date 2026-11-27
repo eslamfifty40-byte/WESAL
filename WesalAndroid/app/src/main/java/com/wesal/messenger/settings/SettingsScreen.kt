@@ -79,6 +79,7 @@ import com.wesal.messenger.domain.model.GroupAddPrivacy
 import com.wesal.messenger.domain.model.PrivacySettings
 import com.wesal.messenger.domain.model.PrivacyVisibility
 import com.wesal.messenger.domain.model.SavedWesalAccount
+import com.wesal.messenger.notifications.ToneFileImporter
 import com.wesal.messenger.domain.model.SubscriptionRequest
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
@@ -93,8 +94,10 @@ import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
@@ -590,6 +593,35 @@ fun SettingsScreen(
         }
     }
 
+    // §2.5 «إضافة من ملفاتي»: SAF audio import for both tones. The picked file is
+    // copied into the app-private tones dir and a persistable read grant is taken
+    // (see ToneFileImporter); the persisted choice is the picked content URI.
+    val notifToneFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val persisted = withContext(Dispatchers.IO) {
+                    ToneFileImporter.importTone(context, uri, isCall = false)
+                }
+                viewModel.setNotificationToneUri(persisted)
+            }
+        }
+    }
+
+    val callToneFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val persisted = withContext(Dispatchers.IO) {
+                    ToneFileImporter.importTone(context, uri, isCall = true)
+                }
+                viewModel.setCallRingtoneUri(persisted)
+            }
+        }
+    }
+
     fun fetchGoogleTokenAndRun(onToken: (String) -> Unit, onNoCredential: () -> Unit = {}) {
         if (activity == null) return
         scope.launch {
@@ -732,14 +764,17 @@ fun SettingsScreen(
                     val isNeonOn = user?.neonEnabled != false
                     val activeNeonColor = if (isNeonOn) user?.neonColor.orEmpty() else ""
                     val activeGlow = user?.neonGlowIntensity ?: 0.7f
-                    // Avatar band BELOW the cover strip, pulled up 30dp for the slight
-                    // overlap ProfileScreen has — on the plain card surface, so no scrim
-                    // is needed behind the name/ID text any more.
+                    // Avatar band fully BELOW the cover strip (round 5, FIX 2):
+                    // the old -30.dp offset pulled the framed avatar up OVER the
+                    // cover's bottom edge — the owner's screenshot complaint.
+                    // Now a clear 14.dp gap strip separates cover bottom from
+                    // frame top (the cutout head pop-out renders into that gap),
+                    // on the plain card surface, so no scrim is needed behind
+                    // the name/ID text.
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .offset(y = (-30).dp)
-                            .padding(horizontal = 16.dp),
+                            .padding(start = 16.dp, end = 16.dp, top = 14.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -771,7 +806,8 @@ fun SettingsScreen(
                                 verificationGlowIntensity = user?.verificationGlowIntensity ?: 0.7f,
                                 neonColor = activeNeonColor,
                                 neonGlowIntensity = activeGlow,
-                                neonEnabled = isNeonOn
+                                neonEnabled = isNeonOn,
+                                iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty())
                             )
                             Surface(
                                 color = palette.emerald.copy(alpha = 0.18f),
@@ -1017,7 +1053,11 @@ fun SettingsScreen(
                 Icons.Default.Storage,
                 if (strings.isEnglish) "Build version" else "نسخة التطبيق",
                 com.wesal.messenger.BuildConfig.BUILD_STAMP
-            ) { }
+            ) {
+                // AUDIT-C: was an empty {} handler — a visibly tappable row
+                // that did nothing. Surface the stamp in the status banner.
+                viewModel.showMessage(com.wesal.messenger.BuildConfig.BUILD_STAMP)
+            }
             SettingsRow(
                 Icons.Default.Storage,
                 if (strings.isEnglish) "Storage Cache" else "إدارة التخزين",
@@ -1575,6 +1615,14 @@ fun SettingsScreen(
                         Text(if (strings.isEnglish) "Record Profile Visits" else "تسجيل زوار الحساب", color = palette.textPrimary)
                         Switch(checked = ps.recordProfileVisits, onCheckedChange = { ps = ps.copy(recordProfileVisits = it) })
                     }
+                    // FIX 3 (round 5): screenshot / screen-recording protection
+                    // for chat screens (FLAG_SECURE). Default ON. Hidden chats
+                    // and view-once media stay protected even when this is OFF
+                    // (see ScreenshotProtectionPolicy).
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (strings.isEnglish) "Protect chats from screenshots" else "حماية المحادثات من تصوير الشاشة", color = palette.textPrimary)
+                        Switch(checked = ps.screenshotProtectionEnabled, onCheckedChange = { ps = ps.copy(screenshotProtectionEnabled = it) })
+                    }
                     HorizontalDivider(color = palette.border)
                     // §10.5: deletion & retention disclosure entry (privacy section).
                     OutlinedButton(
@@ -1701,6 +1749,10 @@ fun SettingsScreen(
                         onReset = {
                             stopActivePreview()
                             viewModel.setNotificationToneUri("")
+                        },
+                        onImport = {
+                            stopActivePreview()
+                            notifToneFilePicker.launch(arrayOf("audio/*"))
                         }
                     )
 
@@ -1729,6 +1781,10 @@ fun SettingsScreen(
                         onReset = {
                             stopActivePreview()
                             viewModel.setCallRingtoneUri("")
+                        },
+                        onImport = {
+                            stopActivePreview()
+                            callToneFilePicker.launch(arrayOf("audio/*"))
                         }
                     )
                 }
@@ -1914,7 +1970,12 @@ fun SettingsScreen(
         var cutoutPreview by remember { mutableStateOf(user?.photoRemovedBg == true) }
         var idPhotoUri by remember { mutableStateOf<Uri?>(null) }
         var requestNote by remember { mutableStateOf("") }
-        val customerFrames = remember { WesalFrameLibrary.pickerItems("CUSTOMER", includeHiddenAndDeleted = false) }
+        // Round 5: the «إطارات متحركة» set is requestable/selectable in the same
+        // subscription flow as the customer frames, under the same grant rules.
+        val customerFrames = remember {
+            WesalFrameLibrary.pickerItems("CUSTOMER", includeHiddenAndDeleted = false) +
+                WesalFrameLibrary.pickerItems("ANIMATED", includeHiddenAndDeleted = false)
+        }
         val idPicker = rememberLauncherForActivityResult(
             ActivityResultContracts.PickVisualMedia()
         ) { uri ->
@@ -1988,7 +2049,8 @@ fun SettingsScreen(
                                     neonColor = selectedGlow.key,
                                     neonEnabled = selectedGlow != NeonColorPreset.NONE,
                                     neonGlowIntensity = 0.85f,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty())
                                 )
                                 Text(
                                     text = if (strings.isEnglish) "Live Preview" else "معاينة حية للطلب",
@@ -2296,7 +2358,8 @@ private fun SoundPickerCard(
     hasCustomTone: Boolean,
     onPick: () -> Unit,
     onPreviewToggle: () -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    onImport: (() -> Unit)? = null
 ) {
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
@@ -2350,6 +2413,27 @@ private fun SoundPickerCard(
                     ) {
                         Text(strings.resetDefaultSound, color = palette.textSecondary, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                     }
+                }
+            }
+            if (onImport != null) {
+                OutlinedButton(
+                    onClick = onImport,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FolderOpen,
+                        contentDescription = null,
+                        tint = palette.turquoise,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = if (strings.isEnglish) "Add from my files" else "إضافة من ملفاتي",
+                        color = palette.turquoise,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1
+                    )
                 }
             }
         }

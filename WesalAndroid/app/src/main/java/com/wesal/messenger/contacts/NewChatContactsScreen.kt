@@ -40,6 +40,7 @@ import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.WesalFeatureFlags
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.core.util.WesalShareUtils
 import com.wesal.messenger.domain.model.ChatListSyncStatus
@@ -82,6 +83,39 @@ fun NewChatContactsScreen(
     var showCreateEventDialog by remember { mutableStateOf(false) }
     var selectedBroadcastUids by remember { mutableStateOf(setOf<String>()) }
     var broadcastText by remember { mutableStateOf("") }
+
+    // Bulk WhatsApp invites over the unregistered phone contacts (owner request).
+    // Selection + invited tracking live in the ViewModel state; the admin kill-switch is
+    // Compose snapshot state, so this screen reacts the moment an admin flips it.
+    var inviteSelectionMode by remember { mutableStateOf(false) }
+    var showBulkDeleteConfirm by remember { mutableStateOf(false) }
+    val bulkInvitesEnabled = WesalFeatureFlags.bulkWhatsAppInvitesEnabled
+    val selectedInviteContacts = remember(state.nonWesalContacts, state.selectedContactKeys) {
+        state.nonWesalContacts.filter { deviceContactKey(it) in state.selectedContactKeys }
+    }
+    val nextInviteCandidate = remember(selectedInviteContacts, state.invitedContactKeys) {
+        selectedInviteContacts.firstOrNull { c ->
+            deviceContactKey(c) !in state.invitedContactKeys && WesalShareUtils.isInvitablePhone(c.e164Phone)
+        }
+    }
+    val skippedInviteCount = remember(selectedInviteContacts) {
+        selectedInviteContacts.count { !WesalShareUtils.isInvitablePhone(it.e164Phone) }
+    }
+    val dispatchInvite: (DeviceContact) -> Unit = { contact ->
+        // Name and number come from the SAME contact record — a name/number mix-up is
+        // impossible by construction.
+        viewModel.markContactInvited(contact)
+        WesalShareUtils.shareViaWhatsApp(
+            context = context,
+            message = WesalShareUtils.buildInviteMessage(
+                myWesalId = currentUser?.publicId,
+                targetContactName = contact.displayName,
+                isEnglish = strings.isEnglish,
+                senderName = currentUser?.displayName
+            ),
+            targetPhoneE164 = contact.e164Phone
+        )
+    }
 
     LaunchedEffect(contactsPermission.status.isGranted) {
         if (contactsPermission.status.isGranted) {
@@ -238,6 +272,100 @@ fun NewChatContactsScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = palette.surface)
             )
+        },
+        bottomBar = {
+            // Persistent bulk-invite bar while selection mode is on: after returning from
+            // one WhatsApp chat, the NEXT selected contact is one tap away right here.
+            if (activeSection == 0 && inviteSelectionMode) {
+                Surface(color = palette.surface, shadowElevation = 8.dp) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = if (strings.isEnglish) "Selected: ${selectedInviteContacts.size}" else "تم تحديد: ${selectedInviteContacts.size}",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = palette.textPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (skippedInviteCount > 0) {
+                                Text(
+                                    text = if (strings.isEnglish) {
+                                        "$skippedInviteCount skipped (invalid number)"
+                                    } else {
+                                        "تم تخطي $skippedInviteCount لعدم صحة الرقم"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.error
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            TextButton(onClick = {
+                                inviteSelectionMode = false
+                                viewModel.clearContactSelection()
+                            }) {
+                                Text(if (strings.isEnglish) "Cancel" else "إلغاء", color = palette.textSecondary)
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (bulkInvitesEnabled) {
+                                Button(
+                                    onClick = { nextInviteCandidate?.let { c -> dispatchInvite(c) } },
+                                    enabled = nextInviteCandidate != null,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
+                                ) {
+                                    Text(
+                                        text = when {
+                                            nextInviteCandidate != null && state.invitedContactKeys.isEmpty() ->
+                                                if (strings.isEnglish) "Send WhatsApp Invites" else "إرسال دعوات واتساب"
+                                            nextInviteCandidate != null ->
+                                                if (strings.isEnglish) "Next: ${nextInviteCandidate.displayName}" else "التالي: ${nextInviteCandidate.displayName}"
+                                            selectedInviteContacts.isNotEmpty() ->
+                                                if (strings.isEnglish) "All Invited ✓" else "تمت دعوة الكل ✓"
+                                            else ->
+                                                if (strings.isEnglish) "Send WhatsApp Invites" else "إرسال دعوات واتساب"
+                                        },
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = if (strings.isEnglish) {
+                                        "Bulk invites are currently disabled by the admin"
+                                    } else {
+                                        "الدعوات الجماعية موقوفة من الإدارة حالياً"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = palette.textSecondary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { showBulkDeleteConfirm = true },
+                                enabled = selectedInviteContacts.isNotEmpty(),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = palette.error, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(if (strings.isEnglish) "Delete Selected" else "حذف المحدد", color = palette.error, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
         }
     ) { padding ->
         Column(
@@ -593,7 +721,8 @@ fun NewChatContactsScreen(
                                         verificationGlowColor = user.verificationGlowColor,
                                         verificationGlowEnabled = user.verificationGlowEnabled,
                                         verificationGlowIntensity = user.verificationGlowIntensity,
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.weight(1f),
+                                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                     )
                                 }
                             }
@@ -684,12 +813,25 @@ fun NewChatContactsScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        WesalAvatar(imageUrl = req.senderAvatarUrl, name = req.senderName, size = 44.dp)
+                                        WesalAvatar(
+                                            imageUrl = req.senderAvatarUrl,
+                                            name = req.senderName,
+                                            size = 44.dp,
+                                            iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.senderIconId, req.senderIconUrl),
+                                            neonColor = if (req.senderNeonEnabled) req.senderNeonColor else "",
+                                            neonGlowIntensity = req.senderNeonGlowIntensity,
+                                            fitInsideBounds = true
+                                        )
                                         Column(modifier = Modifier.weight(1f)) {
                                             WesalNameWithBadge(
                                                 name = req.senderName.ifBlank { "@${req.senderPublicId}" },
                                                 isVerified = req.senderVerified,
-                                                fontWeight = FontWeight.SemiBold
+                                                verificationType = req.senderVerificationType,
+                                                neonColor = req.senderNeonColor,
+                                                neonGlowIntensity = req.senderNeonGlowIntensity,
+                                                neonEnabled = req.senderNeonEnabled,
+                                                fontWeight = FontWeight.SemiBold,
+                                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.senderIconId, req.senderIconUrl)
                                             )
                                             if (req.senderPublicId.isNotBlank()) {
                                                 Text("@${req.senderPublicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
@@ -816,7 +958,8 @@ fun NewChatContactsScreen(
                                         text = if (strings.isEnglish) "Other Phone Contacts — ${strings.inviteFriends} (${filteredNonWesalContacts.size})" else "جهات اتصال الهاتف غير المسجلة (${filteredNonWesalContacts.size})",
                                         style = MaterialTheme.typography.titleSmall,
                                         color = palette.textSecondary,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.weight(1f)
                                     )
                                     if (state.invitedPhonesCount > 0) {
                                         Text(
@@ -825,38 +968,81 @@ fun NewChatContactsScreen(
                                             color = palette.emerald
                                         )
                                     }
+                                    if (!inviteSelectionMode) {
+                                        TextButton(onClick = { inviteSelectionMode = true }) {
+                                            Text(if (strings.isEnglish) "Select" else "تحديد", color = palette.turquoise, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                            if (inviteSelectionMode) {
+                                item(key = "invite_selection_controls") {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        TextButton(onClick = { viewModel.selectAllContacts(filteredNonWesalContacts) }) {
+                                            Text(if (strings.isEnglish) "Select All" else "تحديد الكل", color = palette.emerald, fontWeight = FontWeight.Bold)
+                                        }
+                                        TextButton(onClick = { viewModel.clearContactSelection() }) {
+                                            Text(if (strings.isEnglish) "Deselect All" else "إلغاء التحديد", color = palette.textSecondary)
+                                        }
+                                        Spacer(Modifier.weight(1f))
+                                        Text(
+                                            text = if (strings.isEnglish) "Selected: ${selectedInviteContacts.size}" else "تم تحديد: ${selectedInviteContacts.size}",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = palette.textPrimary
+                                        )
+                                    }
                                 }
                             }
                             items(filteredNonWesalContacts, key = { "invite_${it.contactId}_${it.rawPhone}" }) { contact ->
+                                val contactKey = deviceContactKey(contact)
+                                val isSelected = contactKey in state.selectedContactKeys
+                                val isInvited = contactKey in state.invitedContactKeys
                                 Row(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = inviteSelectionMode) { viewModel.toggleContactSelected(contact) }
+                                        .padding(vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
+                                    if (inviteSelectionMode) {
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = { viewModel.toggleContactSelected(contact) }
+                                        )
+                                    }
                                     WesalAvatar(imageUrl = "", name = contact.displayName, size = 44.dp)
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(contact.displayName, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(contact.e164Phone ?: contact.rawPhone, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
-                                    }
-                                    FilledTonalButton(
-                                        onClick = {
-                                            viewModel.recordInviteDispatched()
-                                            WesalShareUtils.shareViaWhatsApp(
-                                                context = context,
-                                                message = WesalShareUtils.buildInviteMessage(
-                                                    myWesalId = currentUser?.publicId,
-                                                    targetContactName = contact.displayName,
-                                                    isEnglish = strings.isEnglish,
-                                                    senderName = currentUser?.displayName
-                                                ),
-                                                targetPhoneE164 = contact.e164Phone
+                                        if (isInvited) {
+                                            Text(
+                                                text = if (strings.isEnglish) "Invited ✓" else "تمت دعوته ✓",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = palette.emerald,
+                                                fontWeight = FontWeight.Bold
                                             )
-                                        },
+                                        }
+                                    }
+                                    if (!inviteSelectionMode) {
+                                    FilledTonalButton(
+                                        onClick = { dispatchInvite(contact) },
                                         shape = RoundedCornerShape(10.dp),
-                                        colors = ButtonDefaults.filledTonalButtonColors(containerColor = palette.emerald.copy(alpha = 0.16f), contentColor = palette.emerald),
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = if (isInvited) palette.surfaceElevated else palette.emerald.copy(alpha = 0.16f),
+                                            contentColor = palette.emerald
+                                        ),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                                     ) {
-                                        Text("WhatsApp", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                                        Text(
+                                            if (isInvited) (if (strings.isEnglish) "Invited ✓" else "تمت الدعوة ✓") else "WhatsApp",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.labelMedium
+                                        )
                                     }
                                     IconButton(
                                         onClick = {
@@ -883,6 +1069,7 @@ fun NewChatContactsScreen(
                                     ) {
                                         Icon(Icons.Default.DeleteOutline, contentDescription = strings.delete, tint = palette.error, modifier = Modifier.size(18.dp))
                                     }
+                                    }
                                 }
                                 HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                             }
@@ -907,11 +1094,24 @@ fun NewChatContactsScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    WesalAvatar(imageUrl = req.receiverAvatarUrl, name = req.receiverName, size = 40.dp)
+                                    WesalAvatar(
+                                        imageUrl = req.receiverAvatarUrl,
+                                        name = req.receiverName,
+                                        size = 40.dp,
+                                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.receiverIconId, req.receiverIconUrl),
+                                        neonColor = if (req.receiverNeonEnabled) req.receiverNeonColor else "",
+                                        neonGlowIntensity = req.receiverNeonGlowIntensity,
+                                        fitInsideBounds = true
+                                    )
                                     Column(modifier = Modifier.weight(1f)) {
                                         WesalNameWithBadge(
                                             name = req.receiverName.ifBlank { "@${req.receiverPublicId}" },
-                                            isVerified = req.receiverVerified
+                                            isVerified = req.receiverVerified,
+                                            verificationType = req.receiverVerificationType,
+                                            neonColor = req.receiverNeonColor,
+                                            neonGlowIntensity = req.receiverNeonGlowIntensity,
+                                            neonEnabled = req.receiverNeonEnabled,
+                                            iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.receiverIconId, req.receiverIconUrl)
                                         )
                                         Text(strings.pendingRequestSent, color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
                                     }
@@ -1021,6 +1221,45 @@ fun NewChatContactsScreen(
                 }
             }
         }
+    }
+
+    if (showBulkDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showBulkDeleteConfirm = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    if (strings.isEnglish) "Delete Selected Contacts" else "حذف جهات الاتصال المحددة",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (strings.isEnglish) {
+                        "${selectedInviteContacts.size} contacts will be permanently deleted from your PHONE's contacts — not just from WESAL. Continue?"
+                    } else {
+                        "هيتم حذف ${selectedInviteContacts.size} جهة اتصال من جهات اتصال الهاتف نهائيًا — مش من وِصال بس. متأكد؟"
+                    },
+                    color = palette.textPrimary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBulkDeleteConfirm = false
+                        viewModel.deleteSelectedContacts()
+                        inviteSelectionMode = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.error, contentColor = palette.onPrimary)
+                ) { Text(if (strings.isEnglish) "Delete" else "حذف") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBulkDeleteConfirm = false }) {
+                    Text(if (strings.isEnglish) "Cancel" else "إلغاء")
+                }
+            }
+        )
     }
 
     if (showAddEditContactDialog) {
@@ -1205,7 +1444,8 @@ private fun WesalContactDirectoryRow(
                 neonEnabled = user.neonEnabled,
                 verificationGlowColor = user.verificationGlowColor,
                 verificationGlowEnabled = user.verificationGlowEnabled,
-                verificationGlowIntensity = user.verificationGlowIntensity
+                verificationGlowIntensity = user.verificationGlowIntensity,
+                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
             )
             val subtitle = buildList {
                 if (user.numericId.isNotBlank()) add("ID: ${user.numericId}")

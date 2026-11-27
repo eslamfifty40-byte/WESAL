@@ -20,11 +20,10 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.functions.FirebaseFunctions
-import com.google.firebase.functions.FirebaseFunctionsException
 import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalIdUtils
@@ -66,7 +65,7 @@ class AuthRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
-    private val functions: FirebaseFunctions,
+    private val supabasePhone: SupabasePhoneClient,
     private val messaging: FirebaseMessaging,
     private val prefs: UserPreferencesDataStore,
     private val database: WesalDatabase,
@@ -110,7 +109,13 @@ class AuthRepositoryImpl @Inject constructor(
         get() = auth.currentUser?.email
 
     override val currentUserPhoneNumber: String?
-        get() = auth.currentUser?.phoneNumber
+        get() = auth.currentUser?.phoneNumber?.takeIf { it.isNotBlank() }
+            // Phone-login accounts are anonymous-auth: the Auth user itself
+            // carries no phone number, so fall back to the number this
+            // session OTP-verified for the current uid (registry-bound).
+            ?: sessionVerifiedPhoneE164?.takeIf {
+                sessionVerifiedPhoneUid != null && sessionVerifiedPhoneUid == auth.currentUser?.uid
+            }
 
     override fun observeAuthState(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
@@ -143,7 +148,8 @@ class AuthRepositoryImpl @Inject constructor(
             canonical.await() ?: legacy.await()
         } ?: return false to ""
         val type = snap.getString("type").orEmpty()
-        val expiresAt = snap.getLong("expiresAt") ?: 0L
+        // AUDIT-C: type-tolerant expiry, same rationale as below.
+        val expiresAt = coerceBanEpochMillis(snap.get("expiresAt")) ?: 0L
         val permanent = snap.getBoolean("permanent") ?: (expiresAt == 0L)
         if (!permanent && expiresAt > 0L && System.currentTimeMillis() > expiresAt) {
             return false to ""
@@ -164,36 +170,68 @@ class AuthRepositoryImpl @Inject constructor(
         val snap = runCatching {
             firestore.collection(Constants.COLLECTION_USERS).document(uid).get().awaitBounded(4_000L)
         }.getOrNull() ?: return
-        val deletedAt = snap.getLong("deletedAt") ?: 0L
+        // AUDIT-C FIX (ban fallback): this was the ONLY ban reader in the app
+        // that still used raw getLong("banExpiresAt") + "expiry 0 = permanent".
+        // A legacy doc whose banExpiresAt is a Timestamp/String threw or
+        // degraded to 0L, and a doc carrying ONLY a stale isBanned=true flag
+        // (no PERMANENT type, no readable future expiry) locked the user out
+        // of sign-in forever — contradicting firestore.rules
+        // isCurrentlyBanned() and UserRepositoryImpl.isBanClearlyActive,
+        // which both require a POSITIVELY established ban. This matters
+        // doubly because the setUserBanState callable is NOT deployed: ban
+        // enforcement must stand entirely on this Firestore-doc fallback
+        // (UserRepositoryImpl.banUser writes these fields first; the
+        // callable is fire-and-forget claims mirroring only). Use the same
+        // type-tolerant, positive-ban-only helpers as every other reader.
+        val deletedAt = coerceBanEpochMillis(snap.get("deletedAt")) ?: 0L
         val deletedPermanent = snap.getBoolean("deletedPermanent") ?: false
         if (deletedAt > 0L || deletedPermanent) {
             auth.signOut()
             throw IllegalStateException("تم حذف هذا الحساب نهائياً")
         }
-        val isBanned = snap.getBoolean("isBanned") ?: false
-        if (isBanned) {
-            val banType = snap.getString("banType").orEmpty()
-            val banExpiresAt = snap.getLong("banExpiresAt") ?: 0L
+        val isBannedFlag = snap.get("isBanned") as? Boolean ?: false
+        if (isBannedFlag) {
+            val banType = snap.get("banType") as? String ?: ""
+            val banExpiresAt = coerceBanEpochMillis(snap.get("banExpiresAt"))
             val reason = snap.getString("banReason").orEmpty()
             val now = System.currentTimeMillis()
-            if (banType != "PERMANENT" && banExpiresAt > 0L && now > banExpiresAt) {
-                runCatching {
-                    firestore.collection(Constants.COLLECTION_USERS).document(uid).set(
-                        mapOf(
-                            "isBanned" to false,
-                            "banType" to "",
-                            "banExpiresAt" to 0L
-                        ),
-                        SetOptions.merge()
-                    ).awaitQueued()
+            val banActive = isBanClearlyActive(
+                snap.get("isBanned"),
+                snap.get("banType"),
+                snap.get("banExpiresAt"),
+                now
+            )
+            // A readable, already-past expiry on a non-PERMANENT ban: clear
+            // the stale flag (previous behaviour) and let sign-in proceed.
+            val banExpired = !banType.equals("PERMANENT", ignoreCase = true) &&
+                banExpiresAt != null && banExpiresAt > 0L && now > banExpiresAt
+            when {
+                banActive -> {
+                    auth.signOut()
+                    val msg = buildString {
+                        append("تم حظر هذا الحساب من استخدام WESAL")
+                        if (reason.isNotBlank()) append(": $reason")
+                    }
+                    throw IllegalStateException(msg)
                 }
-            } else {
-                auth.signOut()
-                val msg = buildString {
-                    append("تم حظر هذا الحساب من استخدام WESAL")
-                    if (reason.isNotBlank()) append(": $reason")
+                banExpired -> {
+                    runCatching {
+                        firestore.collection(Constants.COLLECTION_USERS).document(uid).set(
+                            mapOf(
+                                "isBanned" to false,
+                                "banType" to "",
+                                "banExpiresAt" to 0L
+                            ),
+                            SetOptions.merge()
+                        ).awaitQueued()
+                    }
                 }
-                throw IllegalStateException(msg)
+                else -> {
+                    // Flag set but no positive ban (missing/malformed expiry,
+                    // non-PERMANENT type): NOT banned — same verdict as the
+                    // rules gate. Do not sign out and do not clear: the doc
+                    // may be mid-write by an admin ban flow.
+                }
             }
         }
     }
@@ -339,52 +377,131 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     // ---------------------------------------------------------------------
-    // Phone phase (round 4): OTP registration + mandatory verification gate.
-    // The server (sendPhoneCode / verifyPhoneCode / verifyPhoneCodeForCurrentUser
-    // callables) generates, delivers (Zavu), expires and verifies the codes;
-    // the client only shapes the calls. The callables' Arabic HttpsError
-    // messages are user-facing by design and are surfaced verbatim.
+    // Phone verification (round 5): OTP registration + mandatory verification
+    // gate, backed by the Supabase phone backend (Edge Functions
+    // send-phone-code / verify-phone-code + the verified_phones registry).
+    // The Firebase project is a Google-managed project where Cloud Functions
+    // cannot be deployed, so the round-4 Firebase callables were replaced by
+    // this backend: it generates, delivers (Zavu), expires and verifies the
+    // codes and is the SOLE authority on which number is verified for which
+    // uid. Firestore keeps only a best-effort display mirror (phone /
+    // isPhoneVerified / phoneHash on the user doc), written by
+    // stampVerifiedPhoneInFirestore after a successful gate verify — the
+    // deployed rules allow the owner to write those fields on their own doc
+    // (none of them is in the users update protected-keys list), and
+    // phone_uniqueness + users/{uid}/private/info are owner-writable too.
     // ---------------------------------------------------------------------
 
-    /** Generous bound: the server may try WhatsApp delivery, then SMS. */
-    private suspend fun <T> phoneFunctionCall(block: suspend () -> T): T =
+    /** Uid of the anonymous session created for the phone-login flow, if any. */
+    @Volatile
+    private var phoneLoginAnonUid: String? = null
+
+    /** Account that was active when an add-account phone login replaced it. */
+    @Volatile
+    private var phoneLoginPreviousUid: String? = null
+
+    /**
+     * Number OTP-verified in THIS process, and the uid it belongs to. Phone-
+     * login accounts are anonymous-auth, so their Auth user carries no phone
+     * number; this session record is what [currentUserPhoneNumber] falls
+     * back to for them (profile setup's «رقم موثّق» prefill/marker).
+     */
+    @Volatile
+    private var sessionVerifiedPhoneUid: String? = null
+
+    @Volatile
+    private var sessionVerifiedPhoneE164: String? = null
+
+    /** Generous bound: the backend may try WhatsApp delivery, then SMS. */
+    private suspend fun <T> phoneBackendCall(block: suspend () -> T): T =
         withTimeoutOrNull(50_000L) { block() }
             ?: throw IllegalStateException("انتهت مهلة الاتصال بخادم التحقق، تحقق من الإنترنت وحاول مرة أخرى")
 
-    private fun mapPhoneFunctionError(e: Exception, fallback: String): String {
-        if (e is FirebaseFunctionsException) {
-            val serverMessage = e.message?.trim().orEmpty()
-            // Callable errors carry the server's Arabic message; a bare code
-            // name (e.g. functions not deployed yet) is not user-facing.
-            return if (serverMessage.isNotBlank() &&
-                serverMessage != e.code.name &&
-                !serverMessage.startsWith("UNKNOWN")
-            ) {
-                serverMessage
-            } else {
-                fallback
-            }
+    private fun mapSupabasePhoneError(e: Exception, fallback: String): String {
+        if (e is SupabasePhoneException) {
+            return PhoneOtpLogic.arabicMessageForErrorCode(e.errorCode, e.message, fallback)
         }
         if (e is IllegalStateException && !e.message.isNullOrBlank()) return e.message!!
         return e.localizedMessage?.takeIf { it.isNotBlank() } ?: fallback
+    }
+
+    /**
+     * Fresh ID token for the signed-in user: the phone backend authenticates
+     * the caller by verifying this token itself (iss/aud = the Firebase
+     * project) and binds every code challenge to its uid.
+     */
+    private suspend fun currentIdToken(): String {
+        val user = auth.currentUser ?: error("سجّل الدخول أولاً")
+        return user.getIdToken(true).await().token
+            ?: error("تعذر تجهيز جلسة التحقق، حاول مرة أخرى")
+    }
+
+    /**
+     * ID token for the phone-LOGIN flow. The code challenge must be bound to
+     * the account that will own the number, and a phone-only account starts
+     * life as a Firebase Anonymous session (anonymous auth is enabled on the
+     * project): the registry binds the verified number to that uid and the
+     * existing skeleton/profile flow then runs on it. When an add-account
+     * phone login starts while another account is active, signInAnonymously
+     * replaces the session — the same replacement the old custom-token
+     * sign-in performed at verify time, moved earlier because the backend
+     * needs the new account's token already at send time; the replaced
+     * account is finished off by clearActiveSessionForSwitch once the
+     * verify succeeds, and abandonPhoneLoginSession undoes the swap when
+     * the user backs out instead.
+     */
+    private suspend fun phoneLoginIdToken(): String {
+        val current = auth.currentUser
+        val user = when {
+            current == null -> {
+                val anon = auth.signInAnonymously().await().user
+                    ?: error("تعذر بدء جلسة التحقق، حاول مرة أخرى")
+                phoneLoginAnonUid = anon.uid
+                anon
+            }
+            current.isAnonymous -> {
+                phoneLoginAnonUid = current.uid
+                current
+            }
+            else -> {
+                phoneLoginPreviousUid = current.uid
+                val anon = auth.signInAnonymously().await().user
+                    ?: error("تعذر بدء جلسة التحقق، حاول مرة أخرى")
+                phoneLoginAnonUid = anon.uid
+                anon
+            }
+        }
+        return user.getIdToken(true).await().token
+            ?: error("تعذر تجهيز جلسة التحقق، حاول مرة أخرى")
     }
 
     override suspend fun sendPhoneOtp(phoneE164: String): Result<String> {
         return try {
             val normalized = PhoneUtils.normalizeToE164(phoneE164)
                 ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
-            val result = phoneFunctionCall {
-                functions.getHttpsCallable("sendPhoneCode")
-                    .call(mapOf("phone" to normalized))
-                    .await()
+            val channel = phoneBackendCall {
+                supabasePhone.sendPhoneCode(normalized, phoneLoginIdToken())
             }
-            val channel = (result.getData() as? Map<*, *>)?.get("channel")?.toString()
-                ?.takeIf { it.isNotBlank() } ?: "sms"
             Result.success(channel)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(Exception(mapPhoneFunctionError(e, "تعذر إرسال كود التحقق، حاول مرة أخرى"), e))
+            Result.failure(Exception(mapSupabasePhoneError(e, "تعذر إرسال كود التحقق، حاول مرة أخرى"), e))
+        }
+    }
+
+    override suspend fun sendPhoneOtpForCurrentUser(phoneE164: String): Result<String> {
+        return try {
+            val normalized = PhoneUtils.normalizeToE164(phoneE164)
+                ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
+            val channel = phoneBackendCall {
+                supabasePhone.sendPhoneCode(normalized, currentIdToken())
+            }
+            Result.success(channel)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(Exception(mapSupabasePhoneError(e, "تعذر إرسال كود التحقق، حاول مرة أخرى"), e))
         }
     }
 
@@ -392,40 +509,45 @@ class AuthRepositoryImpl @Inject constructor(
         return try {
             val normalized = PhoneUtils.normalizeToE164(phoneE164)
                 ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
-            val verifyResult = phoneFunctionCall {
-                functions.getHttpsCallable("verifyPhoneCode")
-                    .call(mapOf("phone" to normalized, "code" to code.trim()))
-                    .await()
+            // The phone-login session (anonymous, created at send time) IS
+            // the account: the backend bound the code challenge to its uid,
+            // and a successful verify binds the number to that same uid in
+            // the registry. This design has no custom token and no second
+            // sign-in — the session simply continues into the standard flow.
+            val firebaseUser = auth.currentUser
+                ?: error("انتهت جلسة التحقق — اطلب كود جديد")
+            phoneBackendCall {
+                supabasePhone.verifyPhoneCode(normalized, code.trim(), currentIdToken())
             }
-            val data = verifyResult.getData() as? Map<*, *>
-            val customToken = data?.get("customToken")?.toString()?.takeIf { it.isNotBlank() }
-                ?: error("تعذر إتمام تسجيل الدخول بالرقم، حاول مرة أخرى")
-
-            val previousUid = auth.currentUser?.uid
-            val authResult = auth.signInWithCustomToken(customToken).await()
-            val firebaseUser = authResult.user ?: error("تعذر تسجيل الدخول بالرقم")
+            val uid = firebaseUser.uid
 
             // Same ban gates as the other sign-in paths: a banned phone
             // identifier (deleted/banned account) or a banned user doc stops
             // the sign-in here too.
             val phoneBannedReason = bannedPhoneIdentifierReason(normalized)
             if (phoneBannedReason != null) {
-                auth.signOut()
+                signOut()
                 error(
                     if (phoneBannedReason.isNotBlank()) "هذا الرقم محظور من استخدام WESAL: $phoneBannedReason"
                     else "هذا الرقم محظور من استخدام WESAL"
                 )
             }
-            assertUserNotBannedOrSignOut(firebaseUser.uid)
+            assertUserNotBannedOrSignOut(uid)
 
-            if (previousUid != null && previousUid != firebaseUser.uid) {
+            val previousUid = phoneLoginPreviousUid
+            if (previousUid != null && previousUid != uid) {
                 clearActiveSessionForSwitch(previousUid)
             }
-            // The Auth user was created/found BY PHONE (verifyPhoneCode), so the
-            // number is OTP-verified by construction: the skeleton stamps
-            // phone + isPhoneVerified + phoneHash + the uniqueness lock.
+            phoneLoginPreviousUid = null
+            sessionVerifiedPhoneUid = uid
+            sessionVerifiedPhoneE164 = normalized
+
+            // The number is OTP-verified by construction (registry-bound to
+            // this uid), so the skeleton stamps phone + isPhoneVerified +
+            // phoneHash + the uniqueness lock, exactly as it did for the old
+            // phone-created accounts.
             val needsSetup = ensureUserSkeletonExists(
-                uid = firebaseUser.uid,
+                uid = uid,
                 phone = normalized,
                 email = firebaseUser.email.orEmpty(),
                 suggestedName = firebaseUser.displayName.orEmpty(),
@@ -433,13 +555,13 @@ class AuthRepositoryImpl @Inject constructor(
                 phoneVerified = true,
                 provider = "phone"
             )
-            prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
-            launchPostAuthTail(firebaseUser.uid, firebaseUser.displayName.orEmpty(), needsSetup)
+            prefs.setCachedStartupProfileState(uid, !needsSetup)
+            launchPostAuthTail(uid, firebaseUser.displayName.orEmpty(), needsSetup)
             Result.success(needsSetup)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(Exception(mapPhoneFunctionError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
+            Result.failure(Exception(mapSupabasePhoneError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
         }
     }
 
@@ -447,19 +569,99 @@ class AuthRepositoryImpl @Inject constructor(
         return try {
             val normalized = PhoneUtils.normalizeToE164(phoneE164)
                 ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
-            phoneFunctionCall {
-                functions.getHttpsCallable("verifyPhoneCodeForCurrentUser")
-                    .call(mapOf("phone" to normalized, "code" to code.trim()))
-                    .await()
+            val uid = auth.currentUser?.uid ?: error("سجّل الدخول أولاً")
+            val phoneHash = phoneBackendCall {
+                supabasePhone.verifyPhoneCode(normalized, code.trim(), currentIdToken())
             }
-            // The function stamped phone/isPhoneVerified/phoneHash server-side.
-            // No local-cache mirror is needed here: the mandatory gate observes
-            // the user doc live and lifts itself as soon as the stamp lands.
+            sessionVerifiedPhoneUid = uid
+            sessionVerifiedPhoneE164 = normalized
+            // The registry row the backend just wrote is the authority and
+            // the mandatory gate consults it directly; the Firestore stamp
+            // below is a best-effort mirror (the same fields the old callable
+            // wrote server-side) so the profile / privacy / contacts paths
+            // that read the user doc stay consistent. It never fails the
+            // verification.
+            stampVerifiedPhoneInFirestore(uid, normalized, phoneHash)
             Result.success(Unit)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(Exception(mapPhoneFunctionError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
+            Result.failure(Exception(mapSupabasePhoneError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
+        }
+    }
+
+    /**
+     * Best-effort Firestore mirror of a Supabase-verified number: users/{uid}
+     * (phoneNumber + isPhoneVerified + phoneHash), users/{uid}/private/info
+     * (the same phone fields — the old callable kept the private backup in
+     * sync) and the phone_uniqueness lock under the same no-steal rule as
+     * healMissingPhoneHash. Rules check (deployed firestore.rules): the
+     * owner update arm for users/{userId} protects verification/admin/frame
+     * fields but NOT phoneNumber / isPhoneVerified / phoneHash, the private
+     * subcollection is owner-writable, and phone_uniqueness allows
+     * create/update for any signed-in user — so the mirror is allowed as-is.
+     * Bounded and fail-silent: the Supabase registry remains the authority.
+     */
+    private suspend fun stampVerifiedPhoneInFirestore(
+        uid: String,
+        normalizedPhone: String,
+        phoneHash: String
+    ) {
+        runCatching {
+            withTimeoutOrNull(10_000L) {
+                val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
+                userRef.set(
+                    mapOf(
+                        "phoneNumber" to normalizedPhone,
+                        "isPhoneVerified" to true,
+                        "phoneHash" to phoneHash
+                    ),
+                    SetOptions.merge()
+                ).await()
+                runCatching {
+                    userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
+                        .set(
+                            mapOf(
+                                "phoneNumber" to normalizedPhone,
+                                "isPhoneVerified" to true,
+                                "updatedAt" to System.currentTimeMillis()
+                            ),
+                            SetOptions.merge()
+                        ).await()
+                }
+                val lockRef = firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                    .document(phoneHash)
+                runCatching {
+                    firestore.runTransaction { tx ->
+                        val lockSnap = tx.get(lockRef)
+                        val ownerUid = lockSnap.getString("uid").orEmpty()
+                        if (!lockSnap.exists() || ownerUid.isBlank() || ownerUid == uid) {
+                            tx.set(
+                                lockRef,
+                                mapOf(
+                                    "uid" to uid,
+                                    "updatedAt" to System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    }.await()
+                }
+            }
+        }.onFailure { Log.w(TAG, "verified-phone Firestore mirror failed: ${it.message}") }
+    }
+
+    override suspend fun isPhoneVerifiedInRegistry(uid: String): Boolean {
+        if (uid.isBlank()) return false
+        return runCatching { supabasePhone.fetchVerifiedPhoneForUid(uid) != null }
+            .getOrDefault(false)
+    }
+
+    override suspend fun abandonPhoneLoginSession() {
+        val current = auth.currentUser ?: return
+        if (current.isAnonymous && current.uid == phoneLoginAnonUid) {
+            phoneLoginAnonUid = null
+            phoneLoginPreviousUid = null
+            signOut()
         }
     }
 
@@ -479,7 +681,10 @@ class AuthRepositoryImpl @Inject constructor(
                 .awaitBounded(4_000L)
         }.getOrNull() ?: return null
         if (!snap.exists()) return null
-        val expiresAt = snap.getLong("expiresAt") ?: 0L
+        // AUDIT-C: type-tolerant expiry (see assertUserNotBannedOrSignOut) —
+        // a Timestamp/String expiresAt must not throw out of the phone
+        // sign-in path via a raw getLong().
+        val expiresAt = coerceBanEpochMillis(snap.get("expiresAt")) ?: 0L
         val permanent = snap.getBoolean("permanent") ?: (expiresAt == 0L)
         if (!permanent && expiresAt > 0L && System.currentTimeMillis() > expiresAt) {
             return null
@@ -764,23 +969,26 @@ class AuthRepositoryImpl @Inject constructor(
      * owned by a different uid is never stolen. Fire-and-forget in appScope, at
      * most once per session per user, never overwriting a non-blank hash.
      *
-     * Phone phase (owner rule, 2026-11-27): the heal is now GATED on the number
-     * being VERIFIED ([verified] = this sign-in's phoneVerified flag or the
-     * doc's stored isPhoneVerified). Contacts discoverability requires a
-     * verified phone — an unverified number stays on the profile with NO
-     * phoneHash, which also stops number spoofing in contacts. Unverified
-     * accounts get their hash from the mandatory verification gate instead:
-     * verifyPhoneCodeForCurrentUser stamps it server-side the moment the OTP
-     * checks out.
+     * Phone phase (owner rule, 2026-11-27): the heal is GATED on the number
+     * being VERIFIED. Contacts discoverability requires a verified phone —
+     * an unverified number stays on the profile with NO phoneHash, which
+     * also stops number spoofing in contacts. Round 5: the gate is now the
+     * Supabase verified_phones registry — the heal runs only when the
+     * registry binds a number to this uid, and the stamped hash is the
+     * registry's own canonical phoneHash (sha256 of the E.164 number, the
+     * same value contacts lookups compute), so a user whose verification
+     * mirror was lost is repaired from the authority itself. Unverified
+     * accounts get their registry row from the mandatory verification gate
+     * (verifyPhoneOtpForCurrentUser) the moment the OTP checks out.
      */
-    private fun healMissingPhoneHash(uid: String, rawPhone: String, verified: Boolean) {
-        if (!verified) return
-        if (uid.isBlank() || rawPhone.isBlank() || phoneHashHealAttemptedUid == uid) return
+    private fun healMissingPhoneHash(uid: String) {
+        if (uid.isBlank() || phoneHashHealAttemptedUid == uid) return
         phoneHashHealAttemptedUid = uid
         appScope.launch {
             runCatching {
-                val normalizedPhone = PhoneUtils.normalizeToE164(rawPhone) ?: return@runCatching
-                val hash = PhoneUtils.sha256Hash(normalizedPhone)
+                val row = supabasePhone.fetchVerifiedPhoneForUid(uid) ?: return@runCatching
+                val hash = row.phoneHash
+                if (hash.isBlank()) return@runCatching
                 firestore.collection(Constants.COLLECTION_USERS).document(uid)
                     .set(mapOf("phoneHash" to hash), SetOptions.merge())
                     .awaitQueued(8_000L)
@@ -873,8 +1081,9 @@ class AuthRepositoryImpl @Inject constructor(
             )
             userRef.set(newUserMap, SetOptions.merge()).awaitQueued()
             // Phone phase: a phone-registered account (OTP-verified by
-            // construction — verifyPhoneCode created/found the Auth user by
-            // number) also gets its phone_uniqueness lock at skeleton time, so
+            // construction — the Supabase backend bound the number to this
+            // uid in its registry at verify time) also gets its
+            // phone_uniqueness lock at skeleton time, so
             // the number is claimed from day one and not only at profile
             // completion. Same no-steal rule as the heal: a lock already owned
             // by a different uid is never taken over. Bounded + fail-silent —
@@ -994,9 +1203,11 @@ class AuthRepositoryImpl @Inject constructor(
             // spoofing in contacts). The re-stamp is therefore gated again on
             // verification provenance (this sign-in's verified Auth phone, or
             // the doc's stored isPhoneVerified). Unverified accounts are routed
-            // through the mandatory verification gate, whose callable stamps
-            // the hash server-side at OTP success; verified accounts whose hash
-            // was lost are still repaired by healMissingPhoneHash below.
+            // through the mandatory verification gate, whose Supabase verify
+            // binds the number in the registry at OTP success (and mirrors
+            // the stamp); verified accounts whose hash was lost are still
+            // repaired by healMissingPhoneHash below, which reads the
+            // registry itself.
             if (!hidePhone && effectivePhone.isNotBlank() &&
                 (phoneVerified || existingVerified)
             ) {
@@ -1034,13 +1245,12 @@ class AuthRepositoryImpl @Inject constructor(
             // means this account is invisible to contacts discovery (see
             // healMissingPhoneHash) — heal it fire-and-forget. Skipped when the
             // user hides their number: the completion/update paths deliberately
-            // blank the hash in that state and that privacy choice wins. Phone
-            // phase: also skipped for UNVERIFIED numbers (owner rule — only
-            // verified accounts get a phoneHash; the gate stamps it instead).
-            if (existingPhoneHash.isBlank() && effectivePhone.isNotBlank() && !hidePhone &&
-                (phoneVerified || existingVerified)
-            ) {
-                healMissingPhoneHash(uid, effectivePhone, verified = true)
+            // blank the hash in that state and that privacy choice wins. Round
+            // 5: the heal no longer trusts the doc/Auth verification flags —
+            // it self-gates on the Supabase registry (owner rule preserved:
+            // only a registry-verified number ever receives the stamp).
+            if (existingPhoneHash.isBlank() && effectivePhone.isNotBlank() && !hidePhone) {
+                healMissingPhoneHash(uid)
             }
             val finalNumericId = when {
                 Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.SECONDARY_ADMIN_NUMERIC_ID
@@ -1202,8 +1412,9 @@ class AuthRepositoryImpl @Inject constructor(
             // by construction) or the number the user doc already carries as
             // isPhoneVerified. Any other typed number is stored on the profile
             // with NO phoneHash and isPhoneVerified=false; the mandatory gate
-            // then OTP-verifies it before the app opens, and the callable
-            // stamps the hash at success. (reserveUniquePhone above still
+            // then OTP-verifies it before the app opens, and the Supabase
+            // verify binds it in the registry (mirroring the hash here) at
+            // success. (reserveUniquePhone above still
             // claims the uniqueness lock for the typed number — duplicate
             // prevention is unchanged, and the gate's lock check accepts a
             // lock owned by this same uid.)

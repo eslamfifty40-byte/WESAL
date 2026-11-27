@@ -443,14 +443,15 @@ fun ChatsListScreen(
             title = {
                 WesalNameWithBadge(
                     name = chat.title,
-                    isVerified = (!chat.isGroup && chat.peerVerified) || chat.isOfficialWesalChat,
-                    verificationType = if (chat.isOfficialWesalChat) "BLUE" else chat.peerVerificationType,
+                    isVerified = chat.peerVerified && (!chat.isGroup || chat.isOfficialWesalChat),
+                    verificationType = chat.peerVerificationType.ifBlank { "BLUE" },
                     neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerNeonColor else "",
                     neonGlowIntensity = chat.peerNeonGlowIntensity,
                     neonEnabled = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled,
                     verificationGlowColor = if (chat.isOfficialWesalChat) "" else chat.peerVerificationGlowColor,
                     verificationGlowEnabled = chat.peerVerificationGlowEnabled,
-                    verificationGlowIntensity = chat.peerVerificationGlowIntensity
+                    verificationGlowIntensity = chat.peerVerificationGlowIntensity,
+                    iconUrl = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerIconUrl else ""
                 )
             },
             text = {
@@ -583,6 +584,20 @@ fun ChatsListScreen(
                             selectedChatForMenu = null
                         }
                     )
+                    if (!chat.isGroup && !chat.isOfficialWesalChat && chat.peerUid.isNotBlank()) {
+                        // AUDIT SEC-A fix (A2): Block was missing from the row menu.
+                        ListItem(
+                            headlineContent = {
+                                Text(if (strings.isEnglish) "Block User" else "حظر المستخدم", color = palette.error)
+                            },
+                            leadingContent = { Icon(Icons.Default.Block, contentDescription = null, tint = palette.error) },
+                            colors = menuItemColors,
+                            modifier = Modifier.clickable {
+                                viewModel.blockChatPeer(chat)
+                                selectedChatForMenu = null
+                            }
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -819,7 +834,18 @@ fun ChatsListScreen(
                                                 onOpenChat(reqChat.chatId)
                                             }
                                         ) {
-                                            WesalAvatar(imageUrl = reqChat.avatarUrl, name = reqChat.title, size = 40.dp)
+                                            WesalAvatar(
+                                                imageUrl = reqChat.avatarUrl,
+                                                name = reqChat.title,
+                                                size = 40.dp,
+                                                frameId = if (!reqChat.isGroup && !reqChat.isOfficialWesalChat) reqChat.peerFrameId else "",
+                                                frameExpiresAt = reqChat.peerFrameExpiresAt,
+                                                isCutout = !reqChat.isGroup && !reqChat.isOfficialWesalChat && reqChat.peerPhotoRemovedBg,
+                                                iconUrl = if (!reqChat.isGroup && !reqChat.isOfficialWesalChat) reqChat.peerIconUrl else "",
+                                                neonColor = if (!reqChat.isGroup && !reqChat.isOfficialWesalChat && reqChat.peerNeonEnabled) reqChat.peerNeonColor else "",
+                                                neonGlowIntensity = reqChat.peerNeonGlowIntensity,
+                                                fitInsideBounds = true
+                                            )
                                             Column(modifier = Modifier.weight(1f)) {
                                                 WesalNameWithBadge(
                                                     name = reqChat.title,
@@ -828,7 +854,11 @@ fun ChatsListScreen(
                                                     verificationGlowColor = reqChat.peerVerificationGlowColor,
                                                     verificationGlowEnabled = reqChat.peerVerificationGlowEnabled,
                                                     verificationGlowIntensity = reqChat.peerVerificationGlowIntensity,
-                                                    fontWeight = FontWeight.Bold
+                                                    neonColor = if (!reqChat.isGroup && !reqChat.isOfficialWesalChat) reqChat.peerNeonColor else "",
+                                                    neonGlowIntensity = reqChat.peerNeonGlowIntensity,
+                                                    neonEnabled = !reqChat.isGroup && !reqChat.isOfficialWesalChat && reqChat.peerNeonEnabled,
+                                                    fontWeight = FontWeight.Bold,
+                                                    iconUrl = if (!reqChat.isGroup && !reqChat.isOfficialWesalChat) reqChat.peerIconUrl else ""
                                                 )
                                                 Text(
                                                     text = reqChat.lastMessagePreview.ifBlank { if (strings.isEnglish) "Message request" else "طلب مراسلة" },
@@ -849,7 +879,13 @@ fun ChatsListScreen(
                                         }
                                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                             Button(
-                                                onClick = { viewModel.decideMessageRequest(reqChat.chatId, reqChat.peerUid, "ACCEPTED") },
+                                                onClick = {
+                                                    // AUDIT SEC-A fix (A11): Accept must OPEN the chat,
+                                                    // not only flip the status behind the dialog.
+                                                    viewModel.decideMessageRequest(reqChat.chatId, reqChat.peerUid, "ACCEPTED")
+                                                    showRequestsDialog = false
+                                                    onOpenChat(reqChat.chatId)
+                                                },
                                                 colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                 modifier = Modifier.weight(1f)
@@ -884,12 +920,25 @@ fun ChatsListScreen(
                                 ) {
                                     Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            WesalAvatar(imageUrl = cReq.senderAvatarUrl, name = cReq.senderName, size = 40.dp)
+                                            WesalAvatar(
+                                                imageUrl = cReq.senderAvatarUrl,
+                                                name = cReq.senderName,
+                                                size = 40.dp,
+                                                iconUrl = WesalFrameLibrary.resolveIconUrl(cReq.senderIconId, cReq.senderIconUrl),
+                                                neonColor = if (cReq.senderNeonEnabled) cReq.senderNeonColor else "",
+                                                neonGlowIntensity = cReq.senderNeonGlowIntensity,
+                                                fitInsideBounds = true
+                                            )
                                             Column(modifier = Modifier.weight(1f)) {
                                                 WesalNameWithBadge(
                                                     name = cReq.senderName.ifBlank { "@${cReq.senderPublicId}" },
                                                     isVerified = cReq.senderVerified,
-                                                    fontWeight = FontWeight.Bold
+                                                    verificationType = cReq.senderVerificationType,
+                                                    neonColor = cReq.senderNeonColor,
+                                                    neonGlowIntensity = cReq.senderNeonGlowIntensity,
+                                                    neonEnabled = cReq.senderNeonEnabled,
+                                                    fontWeight = FontWeight.Bold,
+                                                    iconUrl = WesalFrameLibrary.resolveIconUrl(cReq.senderIconId, cReq.senderIconUrl)
                                                 )
                                                 if (cReq.senderPublicId.isNotBlank()) {
                                                     Text("@${cReq.senderPublicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
@@ -898,18 +947,23 @@ fun ChatsListScreen(
                                         }
                                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                             Button(
-                                                onClick = { viewModel.acceptContactRequest(cReq.requestId) },
+                                                onClick = {
+                                                    // AUDIT SEC-A fix (A11): Accept flips the request AND
+                                                    // opens the (newly permitted) chat.
+                                                    showRequestsDialog = false
+                                                    viewModel.acceptContactRequestAndOpenChat(cReq.requestId, cReq.senderUid, onOpenChat)
+                                                },
                                                 colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                 modifier = Modifier.weight(1f)
                                             ) { Text(if (strings.isEnglish) "Accept" else "قبول", maxLines = 1) }
                                             OutlinedButton(
-                                                onClick = { viewModel.holdContactRequest(cReq.requestId) },
+                                                onClick = { viewModel.holdContactRequest(cReq.requestId, cReq.senderUid) },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                 modifier = Modifier.weight(1f)
                                             ) { Text(if (strings.isEnglish) "Hold" else "تعليق", color = palette.warning, maxLines = 1) }
                                             OutlinedButton(
-                                                onClick = { viewModel.rejectContactRequest(cReq.requestId) },
+                                                onClick = { viewModel.rejectContactRequest(cReq.requestId, cReq.senderUid) },
                                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                                 modifier = Modifier.weight(1f)
                                             ) { Text(if (strings.isEnglish) "Reject" else "رفض", color = palette.error, maxLines = 1) }
@@ -1074,8 +1128,8 @@ private fun ChatRowItem(
                 ) {
                     WesalNameWithBadge(
                         name = chat.title,
-                        isVerified = (!chat.isGroup && chat.peerVerified) || chat.isOfficialWesalChat,
-                        verificationType = if (chat.isOfficialWesalChat) "BLUE" else chat.peerVerificationType,
+                        isVerified = chat.peerVerified && (!chat.isGroup || chat.isOfficialWesalChat),
+                        verificationType = chat.peerVerificationType.ifBlank { "BLUE" },
                         neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerNeonColor else "",
                         neonGlowIntensity = chat.peerNeonGlowIntensity,
                         neonEnabled = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled,
@@ -1083,7 +1137,11 @@ private fun ChatRowItem(
                         verificationGlowEnabled = chat.peerVerificationGlowEnabled,
                         verificationGlowIntensity = chat.peerVerificationGlowIntensity,
                         fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1f, fill = false)
+                        modifier = Modifier.weight(1f, fill = false),
+                        // FIX 1 (round 5): nameplate icon beside the name — the
+                        // same resolved URL the row's avatar already shows
+                        // (1:1 chats only, mirroring the avatar's condition).
+                        iconUrl = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerIconUrl else ""
                     )
                     if (isLocked) {
                         Icon(Icons.Default.Lock, contentDescription = null, tint = palette.warning, modifier = Modifier.size(14.dp))

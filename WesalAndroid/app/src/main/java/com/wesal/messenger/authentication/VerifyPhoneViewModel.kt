@@ -39,12 +39,14 @@ data class VerifyPhoneUiState(
 
 /**
  * Mandatory phone-verification gate (phone phase, owner rule 2026-11-27):
- * EVERY signed-in account whose doc is not phone-verified lands here before
+ * EVERY signed-in account whose number is not verified lands here before
  * the app opens — Gmail/email accounts and existing unverified accounts pass
  * it once; admins are not exempt. The flow never deletes or blocks the
- * account: it only completes verification (send code → verify code), and the
- * server callable stamps phone + isPhoneVerified + phoneHash + the
- * phone_uniqueness lock. Signing out is the only way off this screen.
+ * account: it only completes verification (send code → verify code). The
+ * Supabase verification backend binds the number to the account in its
+ * registry (the authority the gate consults), and the client mirrors phone
+ * + isPhoneVerified + phoneHash + the phone_uniqueness lock into Firestore.
+ * Signing out is the only way off this screen.
  */
 @HiltViewModel
 class VerifyPhoneViewModel @Inject constructor(
@@ -64,8 +66,9 @@ class VerifyPhoneViewModel @Inject constructor(
             userRepository.observeCurrentUser().collect { user ->
                 if (user == null) return@collect
                 if (user.isPhoneVerified) {
-                    // The server stamp landed (or the account was already
-                    // verified): MainViewModel's gate observer routes home.
+                    // The Firestore mirror stamp landed (or the account was
+                    // already verified): MainViewModel's gate observer routes
+                    // home (it also accepts the registry directly).
                     _uiState.update { it.copy(verified = true) }
                 } else if (!prefilled && user.phoneNumber.isNotBlank()) {
                     // Pre-fill the number already on the account so the user
@@ -127,7 +130,7 @@ class VerifyPhoneViewModel @Inject constructor(
         }
         _uiState.update { it.copy(isBusy = true, errorMessage = null, infoMessage = null) }
         viewModelScope.launch {
-            gateCall { authRepository.sendPhoneOtp(e164) }
+            gateCall { authRepository.sendPhoneOtpForCurrentUser(e164) }
                 .onSuccess { channel ->
                     _uiState.update {
                         it.copy(

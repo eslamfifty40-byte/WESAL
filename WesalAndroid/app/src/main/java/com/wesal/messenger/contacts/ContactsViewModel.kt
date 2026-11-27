@@ -25,6 +25,14 @@ data class MatchedWesalContact(
     val user: WesalUser
 )
 
+/**
+ * Stable key for one unregistered device-contact row — the same (contactId, rawPhone)
+ * pair the contacts list rows are keyed by. Selection and invited tracking are keyed by
+ * this, never by name or by a bare number, so a selection entry always points at exactly
+ * one contact record (and its invite always uses that record's own name AND number).
+ */
+fun deviceContactKey(contact: DeviceContact): String = "${contact.contactId}_${contact.rawPhone}"
+
 data class ContactsUiState(
     val query: String = "",
     val isLoadingContacts: Boolean = false,
@@ -33,6 +41,10 @@ data class ContactsUiState(
     val searchResults: List<WesalUser> = emptyList(),
     val isSearching: Boolean = false,
     val invitedPhonesCount: Int = 0,
+    /** Bulk-invite selection mode: keys ([deviceContactKey]) of the unregistered contacts the user ticked. */
+    val selectedContactKeys: Set<String> = emptySet(),
+    /** Keys of contacts already invited in this session — drives the «تمت دعوته ✓» row state and the bulk "next" advance. */
+    val invitedContactKeys: Set<String> = emptySet(),
     val broadcastResults: Map<String, Boolean>? = null,
     val isSendingBroadcast: Boolean = false,
     val error: String? = null,
@@ -166,7 +178,11 @@ class ContactsViewModel @Inject constructor(
                     it.copy(
                         isLoadingContacts = false,
                         wesalContacts = matched,
-                        nonWesalContacts = unmatched
+                        nonWesalContacts = unmatched,
+                        // Keep the bulk-invite selection honest across refreshes: drop
+                        // keys whose contact no longer exists in the unregistered list.
+                        selectedContactKeys = it.selectedContactKeys
+                            .intersect(unmatched.map { c -> deviceContactKey(c) }.toSet())
                     )
                 }
             }.onFailure { err ->
@@ -213,6 +229,10 @@ class ContactsViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر حذف جهة الاتصال") }
+                    // Audit B5: the row was optimistically hidden above; without a
+                    // resync a FAILED delete looked exactly like a successful one
+                    // until the next manual refresh. Resync restores the true row.
+                    syncDeviceContacts()
                 }
         }
     }
@@ -356,6 +376,90 @@ class ContactsViewModel @Inject constructor(
 
     fun recordInviteDispatched() {
         _uiState.update { it.copy(invitedPhonesCount = it.invitedPhonesCount + 1) }
+    }
+
+    // ---- Bulk WhatsApp invites: selection mode over the unregistered phone contacts ----
+
+    fun toggleContactSelected(contact: DeviceContact) {
+        val key = deviceContactKey(contact)
+        _uiState.update { st ->
+            st.copy(
+                selectedContactKeys = if (key in st.selectedContactKeys) {
+                    st.selectedContactKeys - key
+                } else {
+                    st.selectedContactKeys + key
+                }
+            )
+        }
+    }
+
+    /**
+     * «تحديد الكل» — selects exactly the contacts the user can SEE (the screen passes its
+     * search-filtered list): with a search query active, contacts hidden by the filter must
+     * never be silently selected — the selection also feeds the bulk device delete.
+     */
+    fun selectAllContacts(contacts: List<DeviceContact>) {
+        _uiState.update { st ->
+            st.copy(selectedContactKeys = contacts.map { deviceContactKey(it) }.toSet())
+        }
+    }
+
+    fun clearContactSelection() {
+        _uiState.update { it.copy(selectedContactKeys = emptySet()) }
+    }
+
+    /**
+     * Marks a contact as invited in this session: the row switches to «تمت دعوته ✓» and
+     * the header «دعوات مرسلة» counter moves — both fed from the same state so the bulk
+     * "next" advance and the counter can never disagree. Idempotent per contact.
+     */
+    fun markContactInvited(contact: DeviceContact) {
+        val key = deviceContactKey(contact)
+        _uiState.update { st ->
+            if (key in st.invitedContactKeys) st
+            else st.copy(
+                invitedContactKeys = st.invitedContactKeys + key,
+                invitedPhonesCount = st.invitedPhonesCount + 1
+            )
+        }
+    }
+
+    /**
+     * «حذف المحدد» — bulk delete with the EXACT semantics of the per-row 🗑 delete: every
+     * selected contact goes through [PhoneContactsHelper.deleteDeviceContact] (same store,
+     * same duplicate-number sweep). Rows are hidden optimistically, then ONE resync at the
+     * end restores the truth — so a failed delete can never look like a successful one
+     * (same contract as audit fix B5 for the single delete).
+     */
+    fun deleteSelectedContacts() {
+        val selected = _uiState.value.nonWesalContacts
+            .filter { deviceContactKey(it) in _uiState.value.selectedContactKeys }
+        if (selected.isEmpty()) return
+        viewModelScope.launch {
+            val keys = selected.map { deviceContactKey(it) }.toSet()
+            _uiState.update { st ->
+                st.copy(
+                    nonWesalContacts = st.nonWesalContacts.filterNot { deviceContactKey(it) in keys },
+                    selectedContactKeys = emptySet()
+                )
+            }
+            var failures = 0
+            selected.forEach { contact ->
+                PhoneContactsHelper.deleteDeviceContact(context, contact.contactId, contact.rawPhone)
+                    .onFailure { failures++ }
+            }
+            _uiState.update { st ->
+                if (failures == 0) {
+                    st.copy(feedback = "تم حذف ${selected.size} جهة اتصال ✓")
+                } else {
+                    st.copy(
+                        feedback = "تم حذف ${selected.size - failures} من أصل ${selected.size} جهة اتصال",
+                        error = "تعذر حذف $failures جهة اتصال"
+                    )
+                }
+            }
+            syncDeviceContacts()
+        }
     }
 
     fun clearFeedback() {

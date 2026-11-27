@@ -66,4 +66,80 @@ class PhoneOtpLogicTest {
         assertEquals("رسالة", PhoneOtpLogic.channelDisplayNameAr("carrier-pigeon"))
         assertEquals("رسالة", PhoneOtpLogic.channelDisplayNameAr(""))
     }
+
+    @Test
+    fun errorMappingDeliveryFailedHasDedicatedHonestMessage() {
+        // The Zavu sender is configured owner-side; while it is unavailable the
+        // user must see a clear "could not send now" state, whatever the
+        // server's own wording is.
+        assertEquals(
+            "تعذر إرسال الكود حالياً — حاول مرة أخرى بعد شوية",
+            PhoneOtpLogic.arabicMessageForErrorCode("delivery_failed", "No default sender configured", "احتياطي")
+        )
+        assertEquals(
+            "تعذر إرسال الكود حالياً — حاول مرة أخرى بعد شوية",
+            PhoneOtpLogic.arabicMessageForErrorCode("delivery_failed", "تعذر إرسال الكود دلوقتي — حاول مرة أخرى بعد شوية", "احتياطي")
+        )
+    }
+
+    @Test
+    fun errorMappingKnownCodesUseThePhoneScreensArabic() {
+        assertEquals(
+            "استنى دقيقة قبل ما تطلب كود جديد",
+            PhoneOtpLogic.arabicMessageForErrorCode("rate_limited_resend", "", "احتياطي")
+        )
+        assertEquals(
+            "وصلت للحد الأقصى لطلب الأكواد للرقم ده — حاول مرة أخرى بعد شوية",
+            PhoneOtpLogic.arabicMessageForErrorCode("rate_limited_hourly", "", "احتياطي")
+        )
+        assertEquals(
+            "الكود انتهت صلاحيته — اطلب كود جديد",
+            PhoneOtpLogic.arabicMessageForErrorCode("code_expired", "", "احتياطي")
+        )
+        assertEquals(
+            "الكود غير صحيح — راجعه وحاول تاني",
+            PhoneOtpLogic.arabicMessageForErrorCode("invalid_code", "", "احتياطي")
+        )
+        assertEquals(
+            "الرقم ده مربوط بحساب تاني",
+            PhoneOtpLogic.arabicMessageForErrorCode("phone_in_use", "", "احتياطي")
+        )
+        assertEquals(
+            "انتهت الجلسة — سجّل الدخول من جديد وحاول مرة أخرى",
+            PhoneOtpLogic.arabicMessageForErrorCode("unauthenticated", "Authentication required", "احتياطي")
+        )
+        assertEquals(
+            "الكود ده اتبعت من جلسة تانية — اطلب كود جديد من هنا",
+            PhoneOtpLogic.arabicMessageForErrorCode("session_mismatch", "Session mismatch", "احتياطي")
+        )
+    }
+
+    @Test
+    fun errorMappingArabicServerMessagePassesThroughForUnknownCodes() {
+        val serverAr = "رسالة خطأ من الخادم"
+        assertEquals(
+            serverAr,
+            PhoneOtpLogic.arabicMessageForErrorCode("some_future_code", serverAr, "احتياطي")
+        )
+        assertEquals(
+            serverAr,
+            PhoneOtpLogic.arabicMessageForErrorCode(null, serverAr, "احتياطي")
+        )
+    }
+
+    @Test
+    fun errorMappingEnglishOrMissingMessageFallsBack() {
+        assertEquals(
+            "احتياطي",
+            PhoneOtpLogic.arabicMessageForErrorCode("some_future_code", "Internal error", "احتياطي")
+        )
+        assertEquals(
+            "احتياطي",
+            PhoneOtpLogic.arabicMessageForErrorCode(null, null, "احتياطي")
+        )
+        assertEquals(
+            "احتياطي",
+            PhoneOtpLogic.arabicMessageForErrorCode("", "   ", "احتياطي")
+        )
+    }
 }

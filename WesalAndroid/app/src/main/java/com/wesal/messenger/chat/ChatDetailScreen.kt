@@ -63,6 +63,8 @@ import com.wesal.messenger.calls.CallActivity
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.ScreenshotProtectionPolicy
+import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.crop.CropActivity
 import com.wesal.messenger.domain.model.DisappearingTimer
 import com.wesal.messenger.domain.model.MessageStatus
@@ -118,14 +120,8 @@ fun ChatDetailScreen(
     val allChats by viewModel.allChatsForForward.collectAsStateWithLifecycle()
     val recentEmojis by viewModel.recentEmojis.collectAsStateWithLifecycle()
     val quickReplies by viewModel.quickReplies.collectAsStateWithLifecycle()
-
-    // FLAG_SECURE against screenshots inside chat & view-once media viewer (Sec 17)
-    DisposableEffect(activity) {
-        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        onDispose {
-            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        }
-    }
+    val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
+    val isCurrentChatHidden by viewModel.isCurrentChatHidden.collectAsStateWithLifecycle()
 
     // Metadata-only live presence inside chat
     LaunchedEffect(chat?.chatId, chat?.participantIds?.size) {
@@ -159,6 +155,44 @@ fun ChatDetailScreen(
 
     var fullscreenImageState by remember { mutableStateOf<Pair<File, WesalMessage?>?>(null) }
     var playingVideoState by remember { mutableStateOf<Pair<File, WesalMessage?>?>(null) }
+
+    // FIX 3 (round 5): FLAG_SECURE per ScreenshotProtectionPolicy — the user's
+    // «حماية المحادثات من تصوير الشاشة» toggle governs ordinary chats; hidden
+    // chats and an open view-once viewer stay protected even with the toggle
+    // OFF. currentUser == null (user doc not loaded yet) counts as ON, so
+    // there is no unprotected flash at entry. A single effect owns the flag
+    // end-to-end: entering/leaving the destination and toggle flips apply or
+    // remove it without two effects fighting over the window flag. The
+    // fullscreen image/video viewers below are states of THIS destination,
+    // so the same window flag covers the view-once viewer.
+    val screenshotToggleOn = currentUser?.privacySettings?.screenshotProtectionEnabled ?: true
+    val viewOnceViewerOpen = fullscreenImageState?.second?.isViewOnce == true ||
+        playingVideoState?.second?.isViewOnce == true
+    val secureThisChat = ScreenshotProtectionPolicy.shouldSecureChat(
+        toggleEnabled = screenshotToggleOn,
+        isHiddenChat = isCurrentChatHidden,
+        viewOnceViewerOpen = viewOnceViewerOpen
+    )
+    DisposableEffect(activity, secureThisChat) {
+        if (secureThisChat) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        onDispose {
+            if (secureThisChat) {
+                activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
+        }
+    }
+    // Re-assert after every recomposition: arriving here from the unlocked
+    // hidden-chats list (which holds its own FLAG_SECURE effect), the list's
+    // dispose-clear can land after this screen's add — the back-stack change
+    // recomposes this destination, and this re-add restores the flag.
+    SideEffect {
+        if (secureThisChat) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+    }
+
     var selectedMessageForActions by remember { mutableStateOf<WesalMessage?>(null) }
     var forwardingMessage by remember { mutableStateOf<WesalMessage?>(null) }
 
@@ -433,7 +467,14 @@ fun ChatDetailScreen(
                             name = chat?.title ?: strings.appShortName,
                             size = 38.dp,
                             isOnline = chat?.isGroup == false && !isOfficialReadOnly && chat?.peerOnline == true,
-                            frameId = if (!isOfficialReadOnly && chat?.isGroup == false) chat?.peerFrameId.orEmpty() else "",
+                            frameId = if (chat?.isOfficialWesalChat == true) {
+                                // Round 5: the welcome conversation wears the official
+                                // account's frame exactly like the chats list does
+                                // (royal crest as the default when none is set).
+                                chat?.peerFrameId.orEmpty().ifBlank { WesalFrameLibrary.ADMIN_FRAME_ID }
+                            } else if (!isOfficialReadOnly && chat?.isGroup == false) {
+                                chat?.peerFrameId.orEmpty()
+                            } else "",
                             frameExpiresAt = chat?.peerFrameExpiresAt ?: 0L,
                             isCutout = !isOfficialReadOnly && chat?.isGroup == false && (chat?.peerPhotoRemovedBg == true),
                             iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) chat?.peerIconUrl.orEmpty() else "",
@@ -444,8 +485,8 @@ fun ChatDetailScreen(
                         Column {
                             WesalNameWithBadge(
                                 name = chat?.title ?: if (strings.isEnglish) "Chat" else "محادثة",
-                                isVerified = (chat?.isGroup == false && chat?.peerVerified == true) || isOfficialReadOnly,
-                                verificationType = if (isOfficialReadOnly) "BLUE" else (chat?.peerVerificationType ?: "BLUE"),
+                                isVerified = chat?.peerVerified == true && (chat?.isGroup == false || isOfficialReadOnly),
+                                verificationType = chat?.peerVerificationType?.ifBlank { "BLUE" } ?: "BLUE",
                                 neonColor = peerUser?.neonColor ?: chat?.peerNeonColor.orEmpty(),
                                 neonGlowIntensity = peerUser?.neonGlowIntensity ?: (chat?.peerNeonGlowIntensity ?: 0.7f),
                                 neonEnabled = if (isOfficialReadOnly || chat?.isGroup == true) false else (peerUser?.neonEnabled ?: (chat?.peerNeonEnabled == true)),
@@ -453,7 +494,20 @@ fun ChatDetailScreen(
                                 verificationGlowEnabled = peerUser?.verificationGlowEnabled ?: (chat?.peerVerificationGlowEnabled ?: true),
                                 verificationGlowIntensity = peerUser?.verificationGlowIntensity ?: (chat?.peerVerificationGlowIntensity ?: 0.7f),
                                 style = MaterialTheme.typography.titleMedium,
-                                color = palette.textPrimary
+                                color = palette.textPrimary,
+                                // FIX 1 (round 5): the peer's nameplate icon beside
+                                // the header name — same value the header avatar
+                                // shows (1:1 chats only; groups/official excluded,
+                                // mirroring the avatar's own condition).
+                                iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) {
+                                    val livePeer = peerUser
+                                    if (livePeer != null) {
+                                        WesalFrameLibrary.resolveIconUrl(livePeer.iconId, livePeer.iconUrl)
+                                            .ifBlank { chat?.peerIconUrl.orEmpty() }
+                                    } else {
+                                        chat?.peerIconUrl.orEmpty()
+                                    }
+                                } else ""
                             )
                             val activeTimer = DisappearingTimer.fromSeconds(chat?.disappearingDurationSec ?: 0L)
                             val timerSuffix = if (activeTimer != DisappearingTimer.OFF) {
@@ -485,7 +539,16 @@ fun ChatDetailScreen(
                     if (chat?.isGroup == false && !isOfficialReadOnly) {
                         IconButton(onClick = {
                             scope.launch {
-                                val peer = viewModel.getPeerUser() ?: return@launch
+                                // AUDIT SEC-A fix: a null peer (user doc failed to load)
+                                // made both call buttons silently dead. Say so instead.
+                                val peer = viewModel.getPeerUser() ?: run {
+                                    Toast.makeText(
+                                        context,
+                                        if (strings.isEnglish) "Couldn't load this user — try again" else "تعذر تحميل بيانات المستخدم — حاول مرة أخرى",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@launch
+                                }
                                 context.startActivity(
                                     CallActivity.createOutgoingIntent(context, peer, isVideo = true)
                                 )
@@ -495,7 +558,14 @@ fun ChatDetailScreen(
                         }
                         IconButton(onClick = {
                             scope.launch {
-                                val peer = viewModel.getPeerUser() ?: return@launch
+                                val peer = viewModel.getPeerUser() ?: run {
+                                    Toast.makeText(
+                                        context,
+                                        if (strings.isEnglish) "Couldn't load this user — try again" else "تعذر تحميل بيانات المستخدم — حاول مرة أخرى",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@launch
+                                }
                                 context.startActivity(
                                     CallActivity.createOutgoingIntent(context, peer, isVideo = false)
                                 )
@@ -1295,6 +1365,14 @@ fun ChatDetailScreen(
                                         loc.longitude,
                                         "Location (${String.format("%.4f", loc.latitude)}, ${String.format("%.4f", loc.longitude)})"
                                     )
+                                } else {
+                                    // AUDIT SEC-A fix: lastLocation is routinely null on a
+                                    // cold device — the tap used to do nothing at all.
+                                    Toast.makeText(
+                                        context,
+                                        if (strings.isEnglish) "Couldn't get your location yet — enable GPS and try again" else "تعذر تحديد موقعك حالياً — فعّل GPS وحاول مرة أخرى",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 }
                             }
                         } else {
@@ -1726,6 +1804,13 @@ fun ChatDetailScreen(
                                             },
                                             liveDurationMinutes = mins
                                         )
+                                    } else {
+                                        // AUDIT SEC-A fix: same silent-null dead tap as above.
+                                        Toast.makeText(
+                                            context,
+                                            if (strings.isEnglish) "Couldn't get your location yet — enable GPS and try again" else "تعذر تحديد موقعك حالياً — فعّل GPS وحاول مرة أخرى",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     }
                                 }
                             },
@@ -1971,7 +2056,24 @@ private fun MessageBubble(
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (!isMine && isGroup && message.senderName.isNotBlank()) {
-                    Text(message.senderName, style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
+                    // FIX 1 (round 5): group sender names render through the
+                    // shared name composable so the sender's nameplate icon,
+                    // neon colour and verified badge (snapshotted onto the
+                    // message at send time) appear beside the name. Messages
+                    // sent before the snapshot existed have empty fields and
+                    // render as a plain turquoise name, as before.
+                    WesalNameWithBadge(
+                        name = message.senderName,
+                        isVerified = message.senderVerified,
+                        verificationType = message.senderVerificationType,
+                        neonColor = message.senderNeonColor,
+                        neonGlowIntensity = message.senderNeonGlowIntensity,
+                        neonEnabled = message.senderNeonEnabled,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = palette.turquoise,
+                        badgeSize = 13.dp,
+                        iconUrl = WesalFrameLibrary.resolveIconUrl(message.senderIconId, message.senderIconUrl)
+                    )
                 }
 
                 if (!message.forwardedFromName.isNullOrBlank()) {

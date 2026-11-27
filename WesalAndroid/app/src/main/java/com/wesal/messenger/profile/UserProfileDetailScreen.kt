@@ -23,7 +23,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -194,6 +196,8 @@ class UserProfileDetailViewModel @Inject constructor(
                 .onSuccess {
                     _statusMessage.value = if (!chat.isMuted) "تم كتم إشعارات المحادثة" else "تم تفعيل إشعارات المحادثة"
                 }
+                // Audit B4: failure was silent — the row looked toggled but nothing was written.
+                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر تغيير حالة كتم الإشعارات" }
         }
     }
 
@@ -208,6 +212,7 @@ class UserProfileDetailViewModel @Inject constructor(
                         "تم تفعيل مؤقت ${timer.labelAr}"
                     }
                 }
+                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر تغيير مؤقت اختفاء الرسائل" }
         }
     }
 
@@ -222,15 +227,20 @@ class UserProfileDetailViewModel @Inject constructor(
 
     fun toggleFavoriteInList(favoriteList: ContactLabelList?) {
         viewModelScope.launch {
+            // Audit B4: every branch was onSuccess-only — a failed write flipped
+            // nothing visibly and told the user nothing.
             if (favoriteList == null) {
                 userRepository.upsertContactList(null, "المفضلة", listOf(targetUid))
                     .onSuccess { _statusMessage.value = "تمت الإضافة إلى المفضلة ✓" }
+                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث المفضلة" }
             } else if (targetUid in favoriteList.memberUids) {
                 userRepository.removeUidFromContactList(favoriteList.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإزالة من المفضلة" }
+                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث المفضلة" }
             } else {
                 userRepository.addUidToContactList(favoriteList.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإضافة إلى المفضلة ✓" }
+                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث المفضلة" }
             }
         }
     }
@@ -240,10 +250,32 @@ class UserProfileDetailViewModel @Inject constructor(
             if (targetUid in list.memberUids) {
                 userRepository.removeUidFromContactList(list.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإزالة من قائمة ${list.name}" }
+                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث القائمة" }
             } else {
                 userRepository.addUidToContactList(list.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإضافة إلى قائمة ${list.name} ✓" }
+                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث القائمة" }
             }
+        }
+    }
+
+    /**
+     * Audit B4 (owner: «أقدر احذفهم أقدر أضيفهم — كل حاجة»): removing a contact
+     * from the other-user profile. Deletes the contact_requests doc between the
+     * two accounts (the repository requires the caller to be a participant), so
+     * an ACCEPTED contact is removed and a PENDING outgoing request is cancelled
+     * with the same real Firestore effect the contacts screen uses.
+     */
+    fun removeContactRequest(requestId: String, isEn: Boolean) {
+        viewModelScope.launch {
+            userRepository.cancelOrRemoveContactRequest(requestId)
+                .onSuccess {
+                    _statusMessage.value = if (isEn) "Contact removed" else "تمت إزالة جهة الاتصال"
+                }
+                .onFailure {
+                    _statusMessage.value = it.localizedMessage
+                        ?: if (isEn) "Could not remove the contact" else "تعذّرت إزالة جهة الاتصال"
+                }
         }
     }
 
@@ -306,14 +338,26 @@ class UserProfileDetailViewModel @Inject constructor(
                     if (isEn) "User blocked" else "تم حظر المستخدم"
                 }
             }
+            // Audit B4: a failed block/unblock was completely silent.
+            res.onFailure {
+                _statusMessage.value = it.localizedMessage
+                    ?: if (isEn) "Could not update the block state" else "تعذّر تحديث حالة الحظر"
+            }
         }
     }
 
     fun reportUser(reason: String, isEn: Boolean) {
         viewModelScope.launch {
-            userRepository.reportUser(targetUid, reason, targetType = "USER").onSuccess {
-                _statusMessage.value = if (isEn) "Report submitted" else "تم إرسال البلاغ بنجاح"
-            }
+            userRepository.reportUser(targetUid, reason, targetType = "USER")
+                .onSuccess {
+                    _statusMessage.value = if (isEn) "Report submitted" else "تم إرسال البلاغ بنجاح"
+                }
+                // Audit B4: the dialog closed either way, so a failed report
+                // looked exactly like a submitted one.
+                .onFailure {
+                    _statusMessage.value = it.localizedMessage
+                        ?: if (isEn) "Could not submit the report" else "تعذّر إرسال البلاغ"
+                }
         }
     }
 
@@ -513,6 +557,48 @@ fun UserProfileDetailScreen(
                                         showListsDialog = true
                                     }
                                 )
+                                // Audit B4 (owner: from the ⋮ menu «أقدر احذفهم
+                                // أقدر أضيفهم — كل حاجة»): remove-contact, block
+                                // and report used to live only far down the page
+                                // (remove-contact nowhere at all). Same handlers
+                                // as the in-page rows — real Firestore effects.
+                                if (req != null) {
+                                    val currentReqId = req.requestId
+                                    DropdownMenuItem(
+                                        text = { Text(if (strings.isEnglish) "Remove Contact" else "إزالة جهة الاتصال", color = palette.error) },
+                                        leadingIcon = { Icon(Icons.Default.PersonRemove, contentDescription = null, tint = palette.error) },
+                                        onClick = {
+                                            showTopMenu = false
+                                            viewModel.removeContactRequest(currentReqId, strings.isEnglish)
+                                        }
+                                    )
+                                }
+                                val menuIsBlocked = me?.blockedUsers?.contains(target.uid) == true
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            if (menuIsBlocked) {
+                                                if (strings.isEnglish) "Unblock User" else "إلغاء حظر المستخدم"
+                                            } else {
+                                                if (strings.isEnglish) "Block User" else "حظر المستخدم"
+                                            },
+                                            color = if (menuIsBlocked) palette.emerald else palette.error
+                                        )
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Block, contentDescription = null, tint = if (menuIsBlocked) palette.emerald else palette.error) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        viewModel.toggleBlock(menuIsBlocked, strings.isEnglish)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (strings.isEnglish) "Report User" else "الإبلاغ عن المستخدم", color = palette.warning) },
+                                    leadingIcon = { Icon(Icons.Default.Report, contentDescription = null, tint = palette.warning) },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showReportDialog = true
+                                    }
+                                )
                             }
                         }
                     }
@@ -562,8 +648,14 @@ fun UserProfileDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 val detailScope = rememberCoroutineScope()
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                // Round 5, FIX 2 (same definitive spec as ProfileScreen): the
+                // cover renders FULLY (Fit over a blurred backdrop) and the
+                // framed avatar block sits fully BELOW it with a clear gap
+                // strip — no overlap over the cover.
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -580,13 +672,27 @@ fun UserProfileDetailScreen(
                                 )
                         ) {
                             if (showCover) {
+                                // FIX 2 (a): blurred/enlarged backdrop + the
+                                // FULL cover with ContentScale.Fit on top —
+                                // the design is never hard-cropped.
+                                AsyncImage(
+                                    model = wesalImageModel(target.coverUrl),
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize().scale(1.15f).blur(24.dp),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .background(palette.background.copy(alpha = 0.35f))
+                                )
                                 AsyncImage(
                                     model = wesalImageModel(target.coverUrl),
                                     contentDescription = null,
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .clickable { fullscreenMediaUrl = target.coverUrl },
-                                    contentScale = ContentScale.Crop
+                                    contentScale = ContentScale.Fit
                                 )
                                 Surface(
                                     color = palette.background.copy(alpha = 0.72f),
@@ -640,11 +746,9 @@ fun UserProfileDetailScreen(
                                 }
                             }
                         }
-                        // §5.1: same geometry as the own-profile header — 160dp spacer
-                        // and a 118dp avatar (framed footprint ~163dp) so the cover stays
-                        // clearly visible with only a small overlap at its bottom edge.
-                        Spacer(Modifier.height(160.dp))
-                    }
+                        // FIX 2 (b): clear gap strip — the framed avatar
+                        // block below starts fully under the cover.
+                        Spacer(Modifier.height(20.dp))
 
                     Box(modifier = Modifier.clickable(enabled = showAvatar) { fullscreenMediaUrl = target.photoUrl }) {
                         WesalAvatar(
@@ -674,7 +778,8 @@ fun UserProfileDetailScreen(
                         neonColor = neonColor,
                         neonGlowIntensity = neonGlow,
                         neonEnabled = target.neonEnabled,
-                        nameplateColorKey = target.nameplateColor
+                        nameplateColorKey = target.nameplateColor,
+                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(target.iconId, target.iconUrl)
                     )
                     if (target.publicId.isNotBlank()) {
                         Row(

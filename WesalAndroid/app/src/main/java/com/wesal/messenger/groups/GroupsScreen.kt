@@ -241,6 +241,14 @@ class GroupsViewModel @Inject constructor(
         }
     }
 
+    fun deleteGroup(groupId: String, onDeleted: () -> Unit) {
+        viewModelScope.launch {
+            groupRepository.deleteGroup(groupId)
+                .onSuccess { onDeleted() }
+                .onFailure { postStatus(it.localizedMessage ?: "تعذر حذف المجموعة") }
+        }
+    }
+
     fun createBroadcastList(name: String, recipientUids: List<String>, onDone: () -> Unit) {
         viewModelScope.launch {
             isCreating.value = true
@@ -805,7 +813,8 @@ fun GroupsScreen(
                                     neonEnabled = user.neonEnabled,
                                     verificationGlowEnabled = user.verificationGlowEnabled,
                                     verificationGlowIntensity = user.verificationGlowIntensity,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                 )
                                 Checkbox(checked = isSelected, onCheckedChange = { viewModel.toggleMemberSelection(user) })
                             }
@@ -904,7 +913,11 @@ fun GroupsScreen(
                                     name = user.displayName.ifBlank { "@${user.publicId}" },
                                     isVerified = user.isVerified,
                                     verificationType = user.verificationType,
-                                    modifier = Modifier.weight(1f)
+                                    neonColor = user.neonColor,
+                                    neonGlowIntensity = user.neonGlowIntensity,
+                                    neonEnabled = user.neonEnabled,
+                                    modifier = Modifier.weight(1f),
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                 )
                                 Checkbox(checked = isSelected, onCheckedChange = { viewModel.toggleMemberSelection(user) })
                             }
@@ -1015,6 +1028,7 @@ fun GroupInfoScreen(
     val searchResults by viewModel.searchedUsers.collectAsStateWithLifecycle()
     var showEditDialog by remember { mutableStateOf(false) }
     var showInviteDialog by remember { mutableStateOf(false) }
+    var showDeleteGroupDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(group?.memberIds) {
         group?.memberIds?.let { ids ->
@@ -1245,7 +1259,8 @@ fun GroupInfoScreen(
                                 neonEnabled = user.neonEnabled,
                                 verificationGlowEnabled = user.verificationGlowEnabled,
                                 verificationGlowIntensity = user.verificationGlowIntensity,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                             )
                             Icon(Icons.Default.PersonAdd, contentDescription = null, tint = palette.emerald)
                         }
@@ -1293,7 +1308,8 @@ fun GroupInfoScreen(
                                 neonGlowIntensity = member.neonGlowIntensity,
                                 neonEnabled = member.neonEnabled,
                                 verificationGlowEnabled = member.verificationGlowEnabled,
-                                verificationGlowIntensity = member.verificationGlowIntensity
+                                verificationGlowIntensity = member.verificationGlowIntensity,
+                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(member.iconId, member.iconUrl)
                             )
                             if (memberIsAdmin) {
                                 Text(
@@ -1329,6 +1345,18 @@ fun GroupInfoScreen(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
                     ) {
                         Text(if (strings.isEnglish) "Leave Group" else "مغادرة المجموعة")
+                    }
+                }
+
+                if (g.creatorId == viewModel.myUid) {
+                    item {
+                        OutlinedButton(
+                            onClick = { showDeleteGroupDialog = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
+                        ) {
+                            Text(if (strings.isEnglish) "Delete Group" else "حذف المجموعة")
+                        }
                     }
                 }
             }
@@ -1438,6 +1466,35 @@ fun GroupInfoScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showEditDialog = false }) { Text(strings.cancel) }
+            }
+        )
+    }
+
+    if (showDeleteGroupDialog && group != null) {
+        val g = group!!
+        AlertDialog(
+            onDismissRequest = { showDeleteGroupDialog = false },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "Delete Group" else "حذف المجموعة", color = palette.textPrimary) },
+            text = {
+                Text(
+                    if (strings.isEnglish) "This permanently deletes the group for all members. This cannot be undone." else "سيتم حذف المجموعة نهائياً لدى جميع الأعضاء. لا يمكن التراجع عن هذا الإجراء.",
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteGroupDialog = false
+                        viewModel.deleteGroup(g.groupId, onLeftGroup)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = palette.error, contentColor = palette.onPrimary)
+                ) {
+                    Text(if (strings.isEnglish) "Delete" else "حذف")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteGroupDialog = false }) { Text(strings.cancel) }
             }
         )
     }

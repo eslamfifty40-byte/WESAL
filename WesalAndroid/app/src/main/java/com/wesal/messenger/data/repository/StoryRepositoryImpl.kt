@@ -97,6 +97,12 @@ class StoryRepositoryImpl @Inject constructor(
                             ownerName = doc.getString("ownerName").orEmpty(),
                             ownerAvatarUrl = doc.getString("ownerAvatarUrl").orEmpty(),
                             ownerVerified = doc.getBoolean("ownerVerified") ?: false,
+                            ownerVerificationType = doc.getString("ownerVerificationType") ?: "BLUE",
+                            ownerIconId = doc.getString("ownerIconId").orEmpty(),
+                            ownerIconUrl = doc.getString("ownerIconUrl").orEmpty(),
+                            ownerNeonColor = doc.getString("ownerNeonColor").orEmpty(),
+                            ownerNeonEnabled = doc.getBoolean("ownerNeonEnabled") ?: false,
+                            ownerNeonGlowIntensity = doc.getDouble("ownerNeonGlowIntensity")?.toFloat() ?: 0.7f,
                             type = StoryType.fromRaw(doc.getString("type")),
                             textContent = doc.getString("textContent").orEmpty(),
                             backgroundColorHex = doc.getLong("backgroundColorHex") ?: 0xFF064E3B,
@@ -160,7 +166,14 @@ class StoryRepositoryImpl @Inject constructor(
                         uid = uid,
                         displayName = doc.getString("displayName")?.ifBlank { "مستخدم وصال" } ?: "مستخدم وصال",
                         photoUrl = doc.getString("photoUrl").orEmpty(),
-                        viewedAt = doc.getLong("viewedAt") ?: 0L
+                        viewedAt = doc.getLong("viewedAt") ?: 0L,
+                        isVerified = doc.getBoolean("isVerified") ?: false,
+                        verificationType = doc.getString("verificationType") ?: "BLUE",
+                        iconId = doc.getString("iconId").orEmpty(),
+                        iconUrl = doc.getString("iconUrl").orEmpty(),
+                        neonColor = doc.getString("neonColor").orEmpty(),
+                        neonEnabled = doc.getBoolean("neonEnabled") ?: false,
+                        neonGlowIntensity = doc.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f
                     )
                 }.orEmpty()
                 trySend(list)
@@ -191,6 +204,12 @@ class StoryRepositoryImpl @Inject constructor(
                 ?: "مستخدم WESAL"),
             "ownerAvatarUrl" to (userSnap.getString("photoUrl") ?: ""),
             "ownerVerified" to (userSnap.getBoolean("isVerified") ?: false),
+            "ownerVerificationType" to (userSnap.getString("verificationType") ?: "BLUE"),
+            "ownerIconId" to (userSnap.getString("iconId") ?: ""),
+            "ownerIconUrl" to (userSnap.getString("iconUrl") ?: ""),
+            "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
+            "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
+            "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
             "type" to StoryType.TEXT.raw,
             "textContent" to text.trim(),
             "backgroundColorHex" to backgroundColorHex,
@@ -255,6 +274,12 @@ class StoryRepositoryImpl @Inject constructor(
                         ?: "مستخدم WESAL"),
                     "ownerAvatarUrl" to (userSnap.getString("photoUrl") ?: ""),
                     "ownerVerified" to (userSnap.getBoolean("isVerified") ?: false),
+                    "ownerVerificationType" to (userSnap.getString("verificationType") ?: "BLUE"),
+                    "ownerIconId" to (userSnap.getString("iconId") ?: ""),
+                    "ownerIconUrl" to (userSnap.getString("iconUrl") ?: ""),
+                    "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
+                    "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
+                    "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
                     "type" to if (isVideo) StoryType.VIDEO.raw else StoryType.IMAGE.raw,
                     "textContent" to "",
                     "backgroundColorHex" to backgroundColorHex,
@@ -328,6 +353,12 @@ class StoryRepositoryImpl @Inject constructor(
                         ?: "مستخدم WESAL"),
                     "ownerAvatarUrl" to (userSnap.getString("photoUrl") ?: ""),
                     "ownerVerified" to (userSnap.getBoolean("isVerified") ?: false),
+                    "ownerVerificationType" to (userSnap.getString("verificationType") ?: "BLUE"),
+                    "ownerIconId" to (userSnap.getString("iconId") ?: ""),
+                    "ownerIconUrl" to (userSnap.getString("iconUrl") ?: ""),
+                    "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
+                    "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
+                    "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
                     "type" to StoryType.AUDIO.raw,
                     "textContent" to "",
                     "backgroundColorHex" to backgroundColorHex,
@@ -376,7 +407,14 @@ class StoryRepositoryImpl @Inject constructor(
                         "uid" to uid,
                         "displayName" to viewerName,
                         "photoUrl" to viewerPhoto,
-                        "viewedAt" to System.currentTimeMillis()
+                        "viewedAt" to System.currentTimeMillis(),
+                        "isVerified" to (viewerSnap.getBoolean("isVerified") ?: false),
+                        "verificationType" to (viewerSnap.getString("verificationType") ?: "BLUE"),
+                        "iconId" to (viewerSnap.getString("iconId") ?: ""),
+                        "iconUrl" to (viewerSnap.getString("iconUrl") ?: ""),
+                        "neonColor" to (viewerSnap.getString("neonColor") ?: ""),
+                        "neonEnabled" to (viewerSnap.getBoolean("neonEnabled") ?: viewerSnap.getString("neonColor").orEmpty().isNotBlank()),
+                        "neonGlowIntensity" to (viewerSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f)
                     )
                 ).await()
             }

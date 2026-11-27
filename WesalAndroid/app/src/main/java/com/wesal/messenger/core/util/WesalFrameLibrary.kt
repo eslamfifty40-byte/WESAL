@@ -35,7 +35,7 @@ import java.util.ArrayDeque
 data class FrameDoc(
     val id: String,
     val titleAr: String = "",
-    val category: String = "CUSTOMER", // CUSTOMER | ADMIN | ICON | OFFICIAL
+    val category: String = "CUSTOMER", // CUSTOMER | ADMIN | ICON | OFFICIAL | ANIMATED
     val kind: String = "FRAME", // FRAME | ICON
     val imageUrl: String = "",
     val glowColor: Long = 0L,
@@ -251,14 +251,10 @@ object WesalFrameLibrary {
             // (frame_library/wesal_admin_golden). Defaults preserve the historical look:
             // animated PULSE_GLOW when no override doc exists. Never expires.
             val doc = docs[frameId]
-            val isAnimated = if (doc != null && doc.hasAnimatedOverride) doc.animated else true
-            val animStyle = if (doc != null && doc.hasAnimationStyleOverride) {
-                doc.animationStyle
-            } else {
-                "PULSE_GLOW"
-            }
-            val glowI = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f
-            val glowS = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
+            val isAnimated = FrameOverrideResolver.animated(doc, builtinDefault = true)
+            val animStyle = FrameOverrideResolver.style(doc, builtinDefault = "PULSE_GLOW")
+            val glowI = FrameOverrideResolver.glowIntensity(doc)
+            val glowS = FrameOverrideResolver.glowSpeed(doc)
             val overrideUrl = doc?.imageUrl?.takeIf { it.isNotBlank() }.orEmpty()
             return ResolvedFrame(
                 id = ADMIN_FRAME_ID,
@@ -281,18 +277,10 @@ object WesalFrameLibrary {
         if (expiresAt > 0L && System.currentTimeMillis() > expiresAt) return null
         val doc = docs[frameId]
         val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
-        val isAnimated = if (doc != null && doc.hasAnimatedOverride) {
-            doc.animated
-        } else {
-            builtin?.defaultAnimated == true
-        }
-        val animStyle = if (doc != null && doc.hasAnimationStyleOverride) {
-            doc.animationStyle
-        } else {
-            builtin?.defaultAnimationStyle ?: "PULSE_GLOW"
-        }
-        val glowI = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f
-        val glowS = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
+        val isAnimated = FrameOverrideResolver.animated(doc, builtinDefault = builtin?.defaultAnimated == true)
+        val animStyle = FrameOverrideResolver.style(doc, builtinDefault = builtin?.defaultAnimationStyle ?: "PULSE_GLOW")
+        val glowI = FrameOverrideResolver.glowIntensity(doc)
+        val glowS = FrameOverrideResolver.glowSpeed(doc)
         val cy = builtin?.apertureCenterYFraction ?: 0.50f
         val dFrac = builtin?.apertureDiameterFraction ?: 0.62f
         if (doc != null && doc.imageUrl.isNotBlank()) {
@@ -370,16 +358,21 @@ object WesalFrameLibrary {
                     deleted = deleted,
                     builtin = true,
                     kind = "FRAME",
-                    animated = if (doc != null && doc.hasAnimatedOverride) doc.animated else true,
-                    animationStyle = if (doc != null && doc.hasAnimationStyleOverride) doc.animationStyle else "PULSE_GLOW",
-                    glowIntensity = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f,
-                    glowSpeed = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
+                    animated = FrameOverrideResolver.animated(doc, builtinDefault = true),
+                    animationStyle = FrameOverrideResolver.style(doc, builtinDefault = "PULSE_GLOW"),
+                    glowIntensity = FrameOverrideResolver.glowIntensity(doc),
+                    glowSpeed = FrameOverrideResolver.glowSpeed(doc)
                 )
             }
         }
         // OFFICIAL (§5.7): no bundled artwork — WESAL-team frames live only as library uploads.
         val builtinList = when (category) {
-            "ADMIN" -> WesalFrameCatalog.adminFrames
+            // Tier-4 «ملكي» animated frames (crowns/lions/dragons — the most ornate)
+            // are admin-flavoured: they surface in the ADMIN picker as well as in
+            // «إطارات متحركة». Same spec, same override doc — managing them from
+            // either tab writes the one frame_library/<id> doc.
+            "ADMIN" -> WesalFrameCatalog.adminFrames + WesalFrameCatalog.animatedFrames.filter { it.tier >= 4 }
+            "ANIMATED" -> WesalFrameCatalog.animatedFrames
             "OFFICIAL" -> emptyList()
             else -> WesalFrameCatalog.customerFrames
         }
@@ -398,10 +391,10 @@ object WesalFrameLibrary {
                 deleted = deleted,
                 builtin = true,
                 kind = "FRAME",
-                animated = if (doc != null && doc.hasAnimatedOverride) doc.animated else spec.defaultAnimated,
-                animationStyle = if (doc != null && doc.hasAnimationStyleOverride) doc.animationStyle else spec.defaultAnimationStyle,
-                glowIntensity = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f,
-                glowSpeed = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
+                animated = FrameOverrideResolver.animated(doc, builtinDefault = spec.defaultAnimated),
+                animationStyle = FrameOverrideResolver.style(doc, builtinDefault = spec.defaultAnimationStyle),
+                glowIntensity = FrameOverrideResolver.glowIntensity(doc),
+                glowSpeed = FrameOverrideResolver.glowSpeed(doc)
             )
         }
         val builtinIds = WesalFrameCatalog.allFrames.map { it.id }.toSet()
@@ -441,6 +434,19 @@ object WesalFrameLibrary {
 
     private fun col() = db().collection(COLLECTION)
 
+    /**
+     * Firestore `category` string for a catalogue category. Override docs written for a
+     * built-in frame must carry the frame's OWN category (an «إطارات متحركة» frame's
+     * override used to be mistagged CUSTOMER), so the doc stays truthful wherever
+     * category-filtered reads meet it.
+     */
+    internal fun categoryKeyOf(category: FrameCategory): String = when (category) {
+        FrameCategory.ADMIN -> "ADMIN"
+        FrameCategory.ANIMATED -> "ANIMATED"
+        FrameCategory.OFFICIAL -> "OFFICIAL"
+        else -> "CUSTOMER"
+    }
+
     /** Uploads a NEW frame or icon to the library. Returns the new item id. */
     suspend fun uploadNewFrame(
         ctx: Context,
@@ -456,6 +462,7 @@ object WesalFrameLibrary {
             isIcon -> "icon_x_"
             category == "ADMIN" -> "admin_x_"
             category == "OFFICIAL" -> "off_x_"
+            category == "ANIMATED" -> "anim_x_"
             else -> "cust_x_"
         }
         val id = prefix + System.currentTimeMillis()
@@ -494,7 +501,7 @@ object WesalFrameLibrary {
         )
         if (builtin != null) {
             data["builtin"] = true
-            data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["category"] = categoryKeyOf(builtin.category)
             data["kind"] = "FRAME"
         } else if (existingDoc != null) {
             data["kind"] = existingDoc.kind
@@ -535,7 +542,7 @@ object WesalFrameLibrary {
         )
         if (builtin != null) {
             data["builtin"] = true
-            data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["category"] = categoryKeyOf(builtin.category)
             data["kind"] = "FRAME"
         } else if (existingDoc != null) {
             data["kind"] = existingDoc.kind
@@ -561,7 +568,7 @@ object WesalFrameLibrary {
         )
         if (builtin != null) {
             data["builtin"] = true
-            data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["category"] = categoryKeyOf(builtin.category)
             data["kind"] = "FRAME"
         } else if (existingDoc != null) {
             data["kind"] = existingDoc.kind
@@ -585,7 +592,7 @@ object WesalFrameLibrary {
         val data = hashMapOf<String, Any>(key to value, "updatedAt" to System.currentTimeMillis())
         if (builtin != null) {
             data["builtin"] = true
-            data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["category"] = categoryKeyOf(builtin.category)
             data["kind"] = "FRAME"
         } else if (existingDoc != null) {
             data["kind"] = existingDoc.kind

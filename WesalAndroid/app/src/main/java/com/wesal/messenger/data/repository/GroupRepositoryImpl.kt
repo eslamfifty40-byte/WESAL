@@ -521,8 +521,18 @@ class GroupRepositoryImpl @Inject constructor(
     }
 
     override suspend fun removeMember(groupId: String, targetUid: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
         val groupRef = firestore.collection(Constants.COLLECTION_GROUPS).document(groupId)
-        val chatId = groupRef.get().await().getString("chatId").orEmpty()
+        val snap = groupRef.get().await()
+        val chatId = snap.getString("chatId").orEmpty()
+        // Caller authorization (mirrors updateGroupInfo/approveGroupJoinRequest):
+        // only a group admin may remove someone else; removing yourself is the
+        // leaveGroup path and stays allowed for any member.
+        if (targetUid != uid) {
+            @Suppress("UNCHECKED_CAST")
+            val admins = (snap.get("adminIds") as? List<String>).orEmpty()
+            require(admins.contains(uid)) { "فقط مشرف المجموعة يمكنه إزالة الأعضاء" }
+        }
         groupRef.update(
             mapOf(
                 "memberIds" to FieldValue.arrayRemove(targetUid),
@@ -537,12 +547,52 @@ class GroupRepositoryImpl @Inject constructor(
     }
 
     override suspend fun setAdminRole(groupId: String, targetUid: String, isAdmin: Boolean): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val groupRef = firestore.collection(Constants.COLLECTION_GROUPS).document(groupId)
+        val snap = groupRef.get().await()
+        @Suppress("UNCHECKED_CAST")
+        val admins = (snap.get("adminIds") as? List<String>).orEmpty()
+        require(admins.contains(uid)) { "فقط مشرف المجموعة يمكنه تعديل صلاحيات المشرفين" }
         val op = if (isAdmin) FieldValue.arrayUnion(targetUid) else FieldValue.arrayRemove(targetUid)
-        firestore.collection(Constants.COLLECTION_GROUPS).document(groupId).update("adminIds", op).await()
+        groupRef.update("adminIds", op).await()
     }
 
     override suspend fun leaveGroup(groupId: String): Result<Unit> {
         val uid = auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Not authenticated"))
         return removeMember(groupId, uid)
+    }
+
+    override suspend fun deleteGroup(groupId: String): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val groupRef = firestore.collection(Constants.COLLECTION_GROUPS).document(groupId)
+        val snap = groupRef.get().await()
+        require(snap.exists()) { "المجموعة غير موجودة" }
+        // Creator-only, mirroring deleteChannel's owner-only require.
+        require(snap.getString("creatorId") == uid) { "فقط منشئ المجموعة يمكنه حذفها" }
+        val chatId = snap.getString("chatId").orEmpty()
+        @Suppress("UNCHECKED_CAST")
+        val memberIds = (snap.get("memberIds") as? List<String>).orEmpty()
+        // Best-effort cleanup of pending join requests (mirrors deleteChannel caps).
+        runCatching {
+            val reqSnap = groupRef.collection(Constants.SUBCOLLECTION_JOIN_REQUESTS).limit(100).get().await()
+            reqSnap.documents.forEach { it.reference.delete().await() }
+        }
+        // Hide the linked group chat for every member: chat-doc delete is
+        // super-admin-only in the rules, but any participant may update the
+        // chat doc, and deletedForUsers is exactly what the chat list filters
+        // on — so the deleted group's chat disappears from everyone's list.
+        if (chatId.isNotBlank()) {
+            runCatching {
+                firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+                    .update(
+                        mapOf(
+                            "deletedForUsers" to memberIds,
+                            "groupDeleted" to true
+                        )
+                    )
+                    .await()
+            }
+        }
+        groupRef.delete().await()
     }
 }

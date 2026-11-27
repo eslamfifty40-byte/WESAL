@@ -119,7 +119,11 @@ data class PrivacySettings(
     val hideBirthDate: Boolean = false,
     val hideAvatarPhoto: Boolean = false,
     val hideCoverPhoto: Boolean = false,
-    val recordProfileVisits: Boolean = true
+    val recordProfileVisits: Boolean = true,
+    // FIX 3 (round 5): «حماية المحادثات من تصوير الشاشة» — when ON (default),
+    // chat destinations apply FLAG_SECURE. Hidden chats and view-once media
+    // stay protected regardless (see ScreenshotProtectionPolicy).
+    val screenshotProtectionEnabled: Boolean = true
 )
 
 @Serializable
@@ -333,11 +337,25 @@ data class ContactRequest(
     val senderPublicId: String = "",
     val senderAvatarUrl: String = "",
     val senderVerified: Boolean = false,
+    // FIX 1 (round 5): appearance snapshot for both sides of the request so
+    // request rows render the nameplate icon/neon like every other surface.
+    val senderVerificationType: String = "BLUE",
+    val senderIconId: String = "",
+    val senderIconUrl: String = "",
+    val senderNeonColor: String = "",
+    val senderNeonEnabled: Boolean = false,
+    val senderNeonGlowIntensity: Float = 0.7f,
     val receiverUid: String = "",
     val receiverName: String = "",
     val receiverPublicId: String = "",
     val receiverAvatarUrl: String = "",
     val receiverVerified: Boolean = false,
+    val receiverVerificationType: String = "BLUE",
+    val receiverIconId: String = "",
+    val receiverIconUrl: String = "",
+    val receiverNeonColor: String = "",
+    val receiverNeonEnabled: Boolean = false,
+    val receiverNeonGlowIntensity: Float = 0.7f,
     val status: ContactRequestStatus = ContactRequestStatus.PENDING,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
@@ -351,6 +369,12 @@ data class ProfileVisitor(
     val visitorAvatarUrl: String = "",
     val visitorVerified: Boolean = false,
     val visitorVerificationType: String = "BLUE",
+    // FIX 1 (round 5): visitor appearance snapshot for the visitors list.
+    val visitorIconId: String = "",
+    val visitorIconUrl: String = "",
+    val visitorNeonColor: String = "",
+    val visitorNeonEnabled: Boolean = false,
+    val visitorNeonGlowIntensity: Float = 0.7f,
     val visitedAt: Long = System.currentTimeMillis()
 )
 
@@ -485,6 +509,17 @@ data class WesalMessage(
     val chatId: String = "",
     val senderId: String = "",
     val senderName: String = "",
+    // FIX 1 (round 5): sender appearance snapshot, written at send time from
+    // the sender's user doc so group-chat sender names render with the same
+    // nameplate icon / neon / verified badge as everywhere else. Empty for
+    // messages sent before this snapshot existed (name renders plainly).
+    val senderIconId: String = "",
+    val senderIconUrl: String = "",
+    val senderVerified: Boolean = false,
+    val senderVerificationType: String = "BLUE",
+    val senderNeonColor: String = "",
+    val senderNeonEnabled: Boolean = false,
+    val senderNeonGlowIntensity: Float = 0.7f,
     val type: MessageType = MessageType.TEXT,
     val ciphertext: String = "",
     val text: String = "",
@@ -654,6 +689,13 @@ data class ChannelPost(
     val authorName: String = "",
     val authorAvatarUrl: String = "",
     val authorVerified: Boolean = false,
+    // FIX 1 (round 5): author appearance snapshot for post headers.
+    val authorIconId: String = "",
+    val authorIconUrl: String = "",
+    val authorVerificationType: String = "BLUE",
+    val authorNeonColor: String = "",
+    val authorNeonEnabled: Boolean = false,
+    val authorNeonGlowIntensity: Float = 0.7f,
     val type: ChannelPostType = ChannelPostType.TEXT,
     val text: String = "",
     val mediaUrl: String = "",
@@ -676,6 +718,13 @@ data class ChannelComment(
     val authorName: String = "",
     val authorAvatarUrl: String = "",
     val authorVerified: Boolean = false,
+    // FIX 1 (round 5): author appearance snapshot for comment rows.
+    val authorIconId: String = "",
+    val authorIconUrl: String = "",
+    val authorVerificationType: String = "BLUE",
+    val authorNeonColor: String = "",
+    val authorNeonEnabled: Boolean = false,
+    val authorNeonGlowIntensity: Float = 0.7f,
     val text: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )
@@ -709,6 +758,14 @@ data class StoryItem(
     val ownerName: String = "",
     val ownerAvatarUrl: String = "",
     val ownerVerified: Boolean = false,
+    // FIX 1 (round 5): owner appearance snapshot (icon/neon) for story rows
+    // and the story viewer header.
+    val ownerVerificationType: String = "BLUE",
+    val ownerIconId: String = "",
+    val ownerIconUrl: String = "",
+    val ownerNeonColor: String = "",
+    val ownerNeonEnabled: Boolean = false,
+    val ownerNeonGlowIntensity: Float = 0.7f,
     val type: StoryType = StoryType.TEXT,
     val textContent: String = "",
     val backgroundColorHex: Long = 0xFF064E3B,
@@ -727,7 +784,15 @@ data class StoryViewer(
     val uid: String = "",
     val displayName: String = "",
     val photoUrl: String = "",
-    val viewedAt: Long = 0L
+    val viewedAt: Long = 0L,
+    // FIX 1 (round 5): viewer appearance snapshot for the viewers list.
+    val isVerified: Boolean = false,
+    val verificationType: String = "BLUE",
+    val iconId: String = "",
+    val iconUrl: String = "",
+    val neonColor: String = "",
+    val neonEnabled: Boolean = false,
+    val neonGlowIntensity: Float = 0.7f
 )
 
 enum class CallStatus(val raw: String) {

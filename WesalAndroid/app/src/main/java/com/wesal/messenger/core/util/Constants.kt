@@ -67,8 +67,18 @@ object Constants {
     const val OFFICIAL_WESAL_SENDER_NAME = "WESAL Messenger"
 
     // Official approved invite URL & web portal base URL
-    const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-Messenger"
+    const val APK_DOWNLOAD_URL = "https://github.com/eslamfifty40-byte/WESAL/releases/latest/download/WESAL-Messenger.apk"
     const val WEB_BASE_URL = "https://ais-pre-dcqe7rfl5fmp57d6kasklc-603239014289.europe-west3.run.app"
+
+    // Supabase phone-verification backend (round 5): the Firebase project is a
+    // Google-managed project where Cloud Functions cannot be deployed, so ONLY
+    // the phone-OTP backend (code delivery via Zavu + the verified_phones
+    // registry) lives on Supabase; Firebase remains the base for auth, data and
+    // rules. The anon key is a PUBLIC client key by design — it ships in every
+    // client and Row Level Security is what protects the data; it is not a
+    // secret and grants no write access to the registry.
+    const val SUPABASE_BASE_URL = "https://wqfoeyxwofkabcpdvzzb.supabase.co"
+    const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndxZm9leXh3b2ZrYWJjcGR2enpiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU3MzgwMjAsImV4cCI6MjExMTMxNDAyMH0.8rm4kiKBuN-ZNAUR32ao0YOLZfms77juHk3UFRlLzKs"
 
     const val MESSAGE_EDIT_WINDOW_MS = 15 * 60 * 1000L // 15 minutes edit policy
     const val STORY_EXPIRATION_MS = 24 * 60 * 60 * 1000L // 24 hours

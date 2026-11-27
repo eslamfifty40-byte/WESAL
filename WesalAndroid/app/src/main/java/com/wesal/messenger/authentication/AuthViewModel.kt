@@ -508,6 +508,19 @@ class AuthViewModel @Inject constructor(
         sendPhoneOtp()
     }
 
+    /**
+     * Add-account back-out: the phone flow replaced the active session with
+     * its anonymous phone-login session when the code was requested, so
+     * abandon that session here (the replaced account stays in the
+     * saved-accounts list for one-tap re-entry). No-op when no phone login
+     * is in flight.
+     */
+    fun abandonPhoneLoginSession() {
+        viewModelScope.launch {
+            runCatching { authRepository.abandonPhoneLoginSession() }
+        }
+    }
+
     fun cancelPhoneOtp() {
         phoneResendJob?.cancel()
         _uiState.update {
@@ -523,8 +536,10 @@ class AuthViewModel @Inject constructor(
         }
     }
 
-    /** Phone sign-in option, step 2: verify the code and sign in with the
-     *  custom token the server returns; routing matches the Google flow. */
+    /** Phone sign-in option, step 2: verify the code with the Supabase
+     *  backend — the anonymous phone-login session created at send time is
+     *  the account, and a successful verify binds the number to it in the
+     *  registry; routing matches the Google flow. */
     fun verifyPhoneOtp() {
         if (!networkMonitor.isCurrentlyConnected()) {
             _uiState.update { it.copy(errorMessage = "لا يوجد اتصال بالإنترنت، تحقق من الشبكة") }

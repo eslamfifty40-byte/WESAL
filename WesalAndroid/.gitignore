@@ -21,6 +21,7 @@ local.properties
 !app/wesal-debug.keystore
 
 # OS / temporary files
+supabase/.temp/
 .DS_Store
 Thumbs.db
 *.hprof

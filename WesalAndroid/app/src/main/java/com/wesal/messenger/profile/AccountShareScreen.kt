@@ -124,7 +124,8 @@ fun AccountShareScreen(
                         neonEnabled = user?.neonEnabled != false,
                         style = MaterialTheme.typography.titleLarge,
                         color = palette.textPrimary,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty())
                     )
 
                     if (numericId.isNotBlank()) {
@@ -177,8 +178,22 @@ fun AccountShareScreen(
                             color = palette.textSecondary,
                             textAlign = TextAlign.Center
                         )
-                    } else {
+                    } else if (user == null) {
                         CircularProgressIndicator(color = palette.turquoise)
+                    } else {
+                        // Audit B4: the user doc loaded but carries neither a
+                        // numericId nor a publicId yet — the old code spun this
+                        // indicator forever with no explanation.
+                        Text(
+                            text = if (strings.isEnglish) {
+                                "Your WESAL ID is not available yet. Finish setting up your profile first, then come back to share it."
+                            } else {
+                                "معرّف WESAL الخاص بك غير متاح بعد. أكمل إعداد ملفك الشخصي أولاً ثم ارجع لمشاركته."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.textSecondary,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
             }

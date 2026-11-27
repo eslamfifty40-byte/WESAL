@@ -89,6 +89,18 @@ class ChatDetailViewModel @Inject constructor(
     val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    // FIX 3 (round 5): the current user, for the screenshot-protection toggle
+    // (privacySettings.screenshotProtectionEnabled). Null until the user doc
+    // loads — the screen treats null as ON so there is no unprotected flash.
+    val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    // FIX 3 (round 5): hidden chats stay FLAG_SECURE-protected even when the
+    // user toggle is OFF (see ScreenshotProtectionPolicy).
+    val isCurrentChatHidden: StateFlow<Boolean> = prefs.settingsFlow
+        .map { settings -> chatId in settings.hiddenChatIds }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     val personalWallpaper: StateFlow<String> = prefs.settingsFlow
         .map { settings ->
             val uid = myUid
@@ -761,7 +773,12 @@ class ChatDetailViewModel @Inject constructor(
     }
 
     fun deleteForMe(messageId: String) {
-        viewModelScope.launch { chatRepository.deleteMessageForMe(chatId, messageId) }
+        // AUDIT SEC-A fix: the Result was discarded — a failed delete-for-me was
+        // indistinguishable from success (message stayed, no feedback).
+        viewModelScope.launch {
+            chatRepository.deleteMessageForMe(chatId, messageId)
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر حذف الرسالة" }
+        }
     }
 
     fun deleteForEveryone(messageId: String) {
@@ -1010,9 +1027,13 @@ class ChatDetailViewModel @Inject constructor(
 
     fun blockPeer(peerUid: String) {
         viewModelScope.launch {
-            userRepository.blockUser(peerUid).onSuccess {
-                _toastMessage.value = "تم حظر المستخدم"
-            }
+            userRepository.blockUser(peerUid)
+                .onSuccess {
+                    _toastMessage.value = "تم حظر المستخدم"
+                }
+                // AUDIT SEC-A fix: failures were swallowed — the menu closed and
+                // the user believed the block had applied when it had not.
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر حظر المستخدم" }
         }
     }
 

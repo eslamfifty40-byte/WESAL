@@ -219,7 +219,11 @@ fun InviteLandingScreen(
                                 size = 92.dp,
                                 isOnline = inviter.isOnline,
                                 frameId = inviter.frameId,
-                                frameExpiresAt = inviter.frameExpiresAt
+                                frameExpiresAt = inviter.frameExpiresAt,
+                                isCutout = inviter.photoRemovedBg,
+                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(inviter.iconId, inviter.iconUrl),
+                                neonColor = if (inviter.neonEnabled) inviter.neonColor else "",
+                                neonGlowIntensity = inviter.neonGlowIntensity
                             )
 
                             WesalNameWithBadge(
@@ -229,7 +233,9 @@ fun InviteLandingScreen(
                                 fontWeight = FontWeight.Bold,
                                 verificationType = inviter.verificationType,
                                 neonColor = inviter.neonColor,
-                                neonGlowIntensity = inviter.neonGlowIntensity
+                                neonGlowIntensity = inviter.neonGlowIntensity,
+                                neonEnabled = inviter.neonEnabled,
+                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(inviter.iconId, inviter.iconUrl)
                             )
 
                             if (inviter.numericId.isNotBlank()) {

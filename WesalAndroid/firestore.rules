@@ -451,6 +451,24 @@ service cloud.firestore {
       match /private/{docId} {
         allow read, write, delete: if isOwner(userId) || isSuperAdmin() || hasModPermission('canInspectPrivateData');
       }
+
+      // Profile visitors (Sec 23) — STAGED by audit B14 (2026-11-27), NOT YET
+      // DEPLOYED: until this file is deployed the subcollection has no match
+      // and is deny-by-default, so recordProfileVisit() writes fail silently
+      // (swallowed by runCatching) and observeProfileVisitors() maps the
+      // listener error to an empty list — the feature shows 0 visits forever.
+      // Shape mirrors the client exactly: the doc id IS the visitor's uid
+      // (recordProfileVisit writes document(myUid) with visitorUid == myUid),
+      // the profile owner reads and clears (batch-deletes) their own list,
+      // and a visitor may create/update ONLY their own visitor doc. Nobody
+      // can read another user's visitors.
+      match /profile_visitors/{visitorId} {
+        allow read: if isOwner(userId);
+        allow create, update: if isSignedIn() && !isCurrentlyBanned() &&
+          visitorId == request.auth.uid &&
+          request.resource.data.visitorUid == request.auth.uid;
+        allow delete: if isOwner(userId);
+      }
     }
 
     // Deleted-account tombstones (spec §10.2): deleteAccountPermanently() writes one
@@ -560,7 +578,34 @@ service cloud.firestore {
         resource.data.memberIds.removeAll([request.auth.uid]) == request.resource.data.memberIds &&
         resource.data.adminIds.removeAll([request.auth.uid]) == request.resource.data.adminIds
       ));
-      allow delete: if false;
+      // Group delete — STAGED by audit R5 (2026-11-27), NOT YET DEPLOYED:
+      // was `allow delete: if false`, which made the new creator-only
+      // deleteGroup() client path impossible. Creator-only, mirroring the
+      // repository require. The linked grp_ chat doc is hidden for all
+      // members client-side via deletedForUsers (chat delete stays
+      // super-admin-only; participant update is already allowed).
+      allow delete: if isSignedIn() && !isCurrentlyBanned() && resource.data.creatorId == request.auth.uid;
+
+      // Group join requests — STAGED by audit R5 (2026-11-27), NOT YET
+      // DEPLOYED: this subcollection previously had NO match at all
+      // (deny-by-default), so APPROVAL_REQUIRED join requests could not be
+      // written or read by clients. Shape mirrors the client exactly: the
+      // doc id IS the requester's uid (requestJoinGroup writes
+      // document(uid) with requesterUid == uid, status PENDING); group
+      // admins read/approve/reject; the requester reads/cancels their own.
+      match /join_requests/{requestId} {
+        allow read: if !isCurrentlyBanned() && (isGroupAdmin(groupId) || (
+          isSignedIn() && resource.data.requesterUid == request.auth.uid
+        ));
+        allow create: if isSignedIn() && !isCurrentlyBanned() &&
+          requestId == request.auth.uid &&
+          request.resource.data.requesterUid == request.auth.uid &&
+          request.resource.data.status == 'PENDING';
+        allow update: if !isCurrentlyBanned() && isGroupAdmin(groupId);
+        allow delete: if isGroupAdmin(groupId) || (
+          isSignedIn() && resource.data.requesterUid == request.auth.uid
+        );
+      }
     }
 
     // Broadcast Channels (Public & Private)

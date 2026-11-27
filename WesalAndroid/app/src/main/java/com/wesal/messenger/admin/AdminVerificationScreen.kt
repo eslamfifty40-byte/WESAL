@@ -44,17 +44,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
+import coil.compose.LocalImageLoader
 import coil.request.ImageRequest
 import com.google.firebase.firestore.FirebaseFirestore
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.FrameAnimationPolicy
 import com.wesal.messenger.core.util.FramePickerItem
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.VerificationDurationOption
 import com.wesal.messenger.core.util.VerificationSealType
+import com.wesal.messenger.core.util.WesalFeatureFlags
 import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.core.util.WesalIdUtils
@@ -79,6 +82,7 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
 import com.wesal.messenger.presentation.components.WesalVerifiedBadge
+import com.wesal.messenger.presentation.components.WesalStillImageLoader
 import com.wesal.messenger.presentation.components.wesalImageModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -1392,7 +1396,14 @@ fun AdminVerificationScreen(
                     canManageOfficialIdentity = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
                     officialPhotoUrl = officialChatPhotoUrl.ifBlank { officialTeamChannel?.avatarUrl.orEmpty() },
                     officialIdentityBusy = "official_identity" in busyOps,
-                    onPickOfficialPhoto = { ctx, uri -> viewModel.updateOfficialIdentityPhoto(ctx, uri) }
+                    onPickOfficialPhoto = { ctx, uri -> viewModel.updateOfficialIdentityPhoto(ctx, uri) },
+                    // Round 5: the official account (10001) edited exactly like any
+                    // user — the same parent-hosted verify / frame-neon dialogs.
+                    officialUser = users.firstOrNull { it.numericId == Constants.OWNER_ADMIN_NUMERIC_ID },
+                    canEditOfficialAccount = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
+                    canVerifyOfficialAccount = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
+                    onOpenOfficialVerify = { verifyTarget = it },
+                    onOpenOfficialFrameNeon = { frameNeonTarget = it }
                 )
 
                 AdminSection.WELCOME_MSG -> AdminWelcomeConfigSection(
@@ -1550,7 +1561,8 @@ fun AdminVerificationScreen(
                             neonColor = u.neonColor,
                             neonGlowIntensity = u.neonGlowIntensity,
                             neonEnabled = u.neonEnabled,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            iconUrl = WesalFrameLibrary.resolveIconUrl(u.iconId, u.iconUrl)
                         )
                         Text("ID: ${u.numericId.ifBlank { "—" }} • @${u.publicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
                     }
@@ -1712,7 +1724,10 @@ fun AdminVerificationScreen(
             confirmButton = {
                 Button(
                     onClick = { viewModel.warnUser(target, reason); warnTarget = null },
-                    enabled = "warn_${target.uid}" !in busyOps,
+                    // AUDIT-C: was enabled with a blank reason — the dialog
+                    // closed and the VM silently dropped the warn (only a
+                    // banner the user may miss), looking like a dead button.
+                    enabled = reason.isNotBlank() && "warn_${target.uid}" !in busyOps,
                     colors = ButtonDefaults.buttonColors(containerColor = palette.warning)
                 ) { Text("إرسال الإنذار") }
             },
@@ -2053,7 +2068,8 @@ private fun AdminUsersListSection(
                                 neonColor = user.neonColor,
                                 neonGlowIntensity = user.neonGlowIntensity,
                                 neonEnabled = user.neonEnabled,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                             )
                             Text(
                                 text = "ID: ${user.numericId.ifBlank { "—" }} • @${user.publicId.ifBlank { "—" }}",
@@ -2510,7 +2526,11 @@ private fun AdminBansWarningsSection(
                                     name = user.displayName.ifBlank { "@${user.publicId}" },
                                     isVerified = user.isVerified,
                                     verificationType = user.verificationType,
-                                    verificationGlowColor = user.verificationGlowColor
+                                    verificationGlowColor = user.verificationGlowColor,
+                                    neonColor = user.neonColor,
+                                    neonGlowIntensity = user.neonGlowIntensity,
+                                    neonEnabled = user.neonEnabled,
+                                    iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                 )
                                 Text("ID: ${user.numericId} • إنذارات: ${user.warningsCount}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
                             }
@@ -2643,7 +2663,7 @@ private fun AdminVerificationAndAppearanceSection(
         var draftFrameId by remember(currentDefaultFrameId) { mutableStateOf(currentDefaultFrameId) }
         var draftIconId by remember(globalAppearance.defaultCustomerIconId) { mutableStateOf(globalAppearance.defaultCustomerIconId) }
         var draftIconUrl by remember(globalAppearance.defaultCustomerIconUrl) { mutableStateOf(globalAppearance.defaultCustomerIconUrl) }
-        val allFrames = WesalFrameLibrary.pickerItems("CUSTOMER", false) + WesalFrameLibrary.pickerItems("ADMIN", false)
+        val allFrames = WesalFrameLibrary.pickerItems("CUSTOMER", false) + WesalFrameLibrary.pickerItems("ADMIN", false) + WesalFrameLibrary.pickerItems("ANIMATED", false)
         val allIcons = WesalFrameLibrary.pickerItems("ICON", false)
         val pickerCtx = androidx.compose.ui.platform.LocalContext.current
 
@@ -2698,7 +2718,12 @@ private fun AdminVerificationAndAppearanceSection(
                                     model = thumbRequest,
                                     contentDescription = item.title,
                                     modifier = Modifier.fillMaxSize().padding(3.dp),
-                                    contentScale = ContentScale.Fit
+                                    contentScale = ContentScale.Fit,
+                                    imageLoader = if (FrameAnimationPolicy.effectiveAnimated(item.animated, WesalFrameLibrary.framesAnimationEnabled)) {
+                                        LocalImageLoader.current
+                                    } else {
+                                        WesalStillImageLoader.get(pickerCtx)
+                                    }
                                 )
                             }
                         }
@@ -2865,6 +2890,41 @@ private fun AdminVerificationAndAppearanceSection(
             }
         }
 
+        // Bulk WhatsApp invites kill-switch (owner request): writes `bulkWhatsAppInvitesEnabled`
+        // in system_config/features via WesalFeatureFlags; every client's contacts screen
+        // observes it live and hides the bulk-invite send action while it is off (contact
+        // selection for delete stays available). Default is ON.
+        Card(
+            colors = CardDefaults.cardColors(containerColor = palette.surfaceElevated),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("الدعوات الجماعية عبر واتساب", color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "مفتاح رئيسي لكل المستخدمين: إيقافه يخفي إرسال الدعوات الجماعية (تحديد الكل) من شاشة جهات الاتصال عند كل العملاء",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                Switch(
+                    checked = WesalFeatureFlags.bulkWhatsAppInvitesEnabled,
+                    onCheckedChange = { enabled ->
+                        animScope.launch {
+                            WesalFeatureFlags.setBulkWhatsAppInvitesEnabled(enabled)
+                        }
+                    }
+                )
+            }
+        }
+
         ScrollableTabRow(
             selectedTabIndex = subTab,
             containerColor = palette.surface,
@@ -2943,7 +3003,8 @@ private fun AdminVerificationAndAppearanceSection(
                                     neonColor = user.neonColor,
                                     neonGlowIntensity = user.neonGlowIntensity,
                                     neonEnabled = user.neonEnabled,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                 )
                                 Text("ID: ${user.numericId} • @${user.publicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
                                 if (user.isVerified) {
@@ -2983,7 +3044,12 @@ private fun AdminWesalTeamSection(
     canManageOfficialIdentity: Boolean = false,
     officialPhotoUrl: String = "",
     officialIdentityBusy: Boolean = false,
-    onPickOfficialPhoto: (android.content.Context, android.net.Uri) -> Unit = { _, _ -> }
+    onPickOfficialPhoto: (android.content.Context, android.net.Uri) -> Unit = { _, _ -> },
+    officialUser: WesalUser? = null,
+    canEditOfficialAccount: Boolean = false,
+    canVerifyOfficialAccount: Boolean = false,
+    onOpenOfficialVerify: (WesalUser) -> Unit = {},
+    onOpenOfficialFrameNeon: (WesalUser) -> Unit = {}
 ) {
     val palette = WesalColors.current
     var postText by remember { mutableStateOf("") }
@@ -3020,6 +3086,65 @@ private fun AdminWesalTeamSection(
                     Text("فتح قناة فريق وصال الرسمية")
                 }
             }
+        }
+
+        // Round 5 (owner requirement): the official account (10001) is a NATURAL
+        // account — its frame (incl. the animated ones), verification badge,
+        // nameplate colour/neon and icon are edited with the SAME per-user
+        // dialogs as every other account, right from this section. Whatever is
+        // set here renders identically in the chats list, the welcome
+        // conversation header, the team channel and the account's profile page.
+        if (officialUser != null && (canEditOfficialAccount || canVerifyOfficialAccount)) {
+            val ou = officialUser
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("الحساب الرسمي (@${ou.publicId.ifBlank { "wesaladmin" }} — 10001)", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        WesalAvatar(
+                            imageUrl = ou.photoUrl,
+                            name = ou.displayName,
+                            size = 56.dp,
+                            frameId = ou.frameId,
+                            frameExpiresAt = ou.frameExpiresAt,
+                            isCutout = ou.photoRemovedBg,
+                            iconUrl = ou.iconUrl,
+                            neonColor = if (ou.neonEnabled) ou.neonColor else "",
+                            neonGlowIntensity = ou.neonGlowIntensity
+                        )
+                        WesalNameWithBadge(
+                            name = ou.displayName.ifBlank { "WESAL Messenger" },
+                            isVerified = ou.isVerified,
+                            verificationType = ou.verificationType,
+                            neonColor = ou.neonColor,
+                            neonGlowIntensity = ou.neonGlowIntensity,
+                            neonEnabled = ou.neonEnabled,
+                            fontWeight = FontWeight.Bold,
+                            iconUrl = WesalFrameLibrary.resolveIconUrl(ou.iconId, ou.iconUrl)
+                        )
+                    }
+                    Text(
+                        "عدّل الحساب الرسمي زي أي حساب عادي: الإطار (بما فيه الإطارات المتحركة والملكية)، شارة التوثيق، لون الاسم والنيون، والأيقونة — والتعديل يظهر بنفس الشكل في كل مكان. صورة الحساب تُضبط من محرر «الهوية الرسمية» بالأسفل وتتزامن تلقائياً مع صفحة الحساب.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (canVerifyOfficialAccount) {
+                        Button(onClick = { onOpenOfficialVerify(ou) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("التوثيق والشارة")
+                        }
+                    }
+                    if (canEditOfficialAccount) {
+                        Button(onClick = { onOpenOfficialFrameNeon(ou) }, modifier = Modifier.fillMaxWidth()) {
+                            Text("الإطار والنيون ولون الاسم والأيقونة")
+                        }
+                    }
+                }
+            }
+        } else if (officialUser == null) {
+            Text(
+                "الحساب الرسمي (10001) غير مُحمّل بعد: لو لم يظهر هنا فحسابه غير مسجّل في قاعدة البيانات — سجّل دخوله مرة واحدة من التطبيق ليُنشأ حسابه ويظهر للتحرير مثل أي حساب.",
+                color = palette.textMuted,
+                style = MaterialTheme.typography.labelSmall
+            )
         }
 
         // §9.6 official identity editor: the official/main chat's photo + the
@@ -3560,7 +3685,11 @@ private fun AdminOnlineUsersSection(
                                 name = user.displayName.ifBlank { "@${user.publicId}" },
                                 isVerified = user.isVerified,
                                 verificationType = user.verificationType,
-                                verificationGlowColor = user.verificationGlowColor
+                                verificationGlowColor = user.verificationGlowColor,
+                                neonColor = user.neonColor,
+                                neonGlowIntensity = user.neonGlowIntensity,
+                                neonEnabled = user.neonEnabled,
+                                iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                             )
                             Text(
                                 text = "ID: ${user.numericId} • ${user.lastDeviceName.ifBlank { "Android" }} (${user.lastAppVersion.ifBlank { "1.0" }})",
@@ -3610,7 +3739,11 @@ private fun AdminChatActivityMetadataSection(
                     WesalNameWithBadge(
                         name = "${user.displayName.ifBlank { "@${user.publicId}" }} (ID: ${user.numericId})",
                         isVerified = user.isVerified,
-                        verificationType = user.verificationType
+                        verificationType = user.verificationType,
+                        neonColor = user.neonColor,
+                        neonGlowIntensity = user.neonGlowIntensity,
+                        neonEnabled = user.neonEnabled,
+                        iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                     )
                     Text(
                         text = "نوع النشاط: ${user.lastActivityType.ifBlank { "NONE" }} • المعرف: ${user.lastActivityChatId.ifBlank { "—" }} • المشاركون: ${user.lastActivityParticipantsCount}",
@@ -3809,7 +3942,7 @@ private fun AdminFrameAndNeonDialog(
     onApplyNameplateColor: (String) -> Unit
 ) {
     val palette = WesalColors.current
-    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon, 4 = Nameplate colour, 5 = Official frames
+    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon, 4 = Nameplate colour, 5 = Official frames, 6 = Animated frames
     var selectedFrameId by remember(user.uid) { mutableStateOf(user.frameId) }
     var selectedNameplateKey by remember(user.uid) { mutableStateOf(user.nameplateColor) }
     var selectedIconId by remember(user.uid) { mutableStateOf(user.iconId) }
@@ -3831,39 +3964,40 @@ private fun AdminFrameAndNeonDialog(
     var renameTarget by remember { mutableStateOf<FramePickerItem?>(null) }
     var pickAction by remember { mutableStateOf("NEW") } // NEW | REPLACE
     var replaceId by remember { mutableStateOf("") }
+    // Round 5 (owner requirement): a NEW upload no longer uploads instantly with a
+    // blank title — the admin first names it and chooses animated or static in the
+    // details dialog below (GIFs are intrinsically animated and always stored as such).
+    var pendingUploadUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var pendingUploadCategory by remember { mutableStateOf("CUSTOMER") }
+    var pendingUploadKind by remember { mutableStateOf("FRAME") }
+    var uploadName by remember { mutableStateOf("") }
+    var uploadAnimated by remember { mutableStateOf(false) }
     val imagePicker = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            scope.launch {
-                busy = true
-                val res = if (pickAction == "REPLACE") {
-                    WesalFrameLibrary.replaceFrameImage(ctx, replaceId, uri).map { replaceId }
-                } else {
-                    val cat = when (modeTab) {
-                        1 -> "ADMIN"
-                        2 -> "ICON"
-                        5 -> "OFFICIAL"
-                        else -> "CUSTOMER"
-                    }
-                    val kind = if (modeTab == 2) "ICON" else "FRAME"
-                    WesalFrameLibrary.uploadNewFrame(ctx, uri, "", cat, kind = kind)
+            if (pickAction == "REPLACE") {
+                scope.launch {
+                    busy = true
+                    val res = WesalFrameLibrary.replaceFrameImage(ctx, replaceId, uri).map { replaceId }
+                    busy = false
+                    statusMsg = res.fold(
+                        onSuccess = { "تم الحفظ على Firebase ✓" },
+                        onFailure = { "فشل الحفظ: ${it.localizedMessage ?: "خطأ غير معروف"}" }
+                    )
                 }
-                busy = false
-                statusMsg = res.fold(
-                    onSuccess = { id ->
-                        if (pickAction == "NEW") {
-                            if (modeTab == 2) {
-                                selectedIconId = id
-                                selectedIconUrl = WesalFrameLibrary.resolveIconUrl(id)
-                            } else {
-                                selectedFrameId = id
-                            }
-                        }
-                        "تم الحفظ على Firebase ✓"
-                    },
-                    onFailure = { "فشل الحفظ: ${it.localizedMessage ?: "خطأ غير معروف"}" }
-                )
+            } else {
+                pendingUploadCategory = when (modeTab) {
+                    1 -> "ADMIN"
+                    2 -> "ICON"
+                    5 -> "OFFICIAL"
+                    6 -> "ANIMATED"
+                    else -> "CUSTOMER"
+                }
+                pendingUploadKind = if (modeTab == 2) "ICON" else "FRAME"
+                uploadName = ""
+                uploadAnimated = pendingUploadCategory == "ANIMATED"
+                pendingUploadUri = uri
             }
         }
     }
@@ -3874,6 +4008,66 @@ private fun AdminFrameAndNeonDialog(
             busy = false
             statusMsg = r.fold({ ok }, { "فشلت العملية: ${it.localizedMessage ?: "خطأ"}" })
         }
+    }
+
+    pendingUploadUri?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { pendingUploadUri = null },
+            containerColor = palette.surface,
+            title = { Text(if (pendingUploadKind == "ICON") "رفع أيقونة جديدة" else "رفع إطار جديد", color = palette.textPrimary) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = uploadName,
+                        onValueChange = { uploadName = it },
+                        label = { Text("الاسم") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Switch(checked = uploadAnimated, onCheckedChange = { uploadAnimated = it })
+                        Text(if (uploadAnimated) "متحرك" else "ثابت (بدون حركة)", color = palette.textPrimary)
+                    }
+                    Text(
+                        "ملفات GIF متحركة بطبيعتها وتُحفظ متحركة دائماً. العنصر الجديد يظهر في المكتبة فوراً ويمكن منحه لأي حساب.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !busy,
+                    onClick = {
+                        val cat = pendingUploadCategory
+                        val kind = pendingUploadKind
+                        val name = uploadName
+                        val anim = uploadAnimated
+                        pendingUploadUri = null
+                        scope.launch {
+                            busy = true
+                            val res = WesalFrameLibrary.uploadNewFrame(ctx, uri, name, cat, kind = kind, animated = anim)
+                            busy = false
+                            statusMsg = res.fold(
+                                onSuccess = { id ->
+                                    if (kind == "ICON") {
+                                        selectedIconId = id
+                                        selectedIconUrl = WesalFrameLibrary.resolveIconUrl(id)
+                                    } else {
+                                        selectedFrameId = id
+                                    }
+                                    "تم الحفظ على Firebase ✓"
+                                },
+                                onFailure = { "فشل الحفظ: ${it.localizedMessage ?: "خطأ غير معروف"}" }
+                            )
+                        }
+                    }
+                ) { Text("رفع وحفظ") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUploadUri = null }) { Text("إلغاء") }
+            }
+        )
     }
 
     renameTarget?.let { item ->
@@ -4051,7 +4245,8 @@ private fun AdminFrameAndNeonDialog(
                                 neonColor = selectedNeon.key,
                                 neonGlowIntensity = neonGlow,
                                 neonEnabled = neonEnabled,
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                             )
                             FilterChip(
                                 selected = previewCutout,
@@ -4079,17 +4274,19 @@ private fun AdminFrameAndNeonDialog(
                 ) {
                     Tab(selected = modeTab == 0, onClick = { modeTab = 0 }, text = { Text("العملاء (${WesalFrameLibrary.pickerItems("CUSTOMER", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 1, onClick = { modeTab = 1 }, text = { Text("الإدارة (${WesalFrameLibrary.pickerItems("ADMIN", false).size})", maxLines = 1) })
+                    Tab(selected = modeTab == 6, onClick = { modeTab = 6 }, text = { Text("إطارات متحركة (${WesalFrameLibrary.pickerItems("ANIMATED", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 5, onClick = { modeTab = 5 }, text = { Text("الرسمية (${WesalFrameLibrary.pickerItems("OFFICIAL", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 2, onClick = { modeTab = 2 }, text = { Text("الأيقونات (${WesalFrameLibrary.pickerItems("ICON", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 3, onClick = { modeTab = 3 }, text = { Text("النيون", maxLines = 1) })
                     Tab(selected = modeTab == 4, onClick = { modeTab = 4 }, text = { Text("لون الاسم", maxLines = 1) })
                 }
 
-                if (modeTab in 0..2 || modeTab == 5) {
+                if (modeTab in 0..2 || modeTab == 5 || modeTab == 6) {
                     val categoryKey = when (modeTab) {
                         1 -> "ADMIN"
                         2 -> "ICON"
                         5 -> "OFFICIAL"
+                        6 -> "ANIMATED"
                         else -> "CUSTOMER"
                     }
                     val libraryItems = WesalFrameLibrary.pickerItems(categoryKey, manageMode)
@@ -4169,7 +4366,14 @@ private fun AdminFrameAndNeonDialog(
                                         model = thumbRequest,
                                         contentDescription = item.title,
                                         modifier = Modifier.fillMaxSize().padding(3.dp).alpha(dim),
-                                        contentScale = ContentScale.Fit
+                                        contentScale = ContentScale.Fit,
+                                        // Animation OFF (per-frame or master) must show the
+                                        // frame STILL — the still loader has no GIF decoder.
+                                        imageLoader = if (FrameAnimationPolicy.effectiveAnimated(item.animated, WesalFrameLibrary.framesAnimationEnabled)) {
+                                            LocalImageLoader.current
+                                        } else {
+                                            WesalStillImageLoader.get(ctx)
+                                        }
                                     )
                                     if (item.deleted) {
                                         Text("محذوف", color = palette.error, style = MaterialTheme.typography.labelSmall)
@@ -4194,7 +4398,7 @@ private fun AdminFrameAndNeonDialog(
                         }
                     }
 
-                    if (modeTab == 0 || modeTab == 1 || modeTab == 5) {
+                    if (modeTab == 0 || modeTab == 1 || modeTab == 5 || modeTab == 6) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                             listOf(
                                 VerificationDurationOption.PERMANENT,
@@ -4444,7 +4648,10 @@ private fun AdminBanDialog(
                     val (exp, _) = if (permanent) 0L to "" else calculateDurationExpiresAt(durationOpt, customCount.toIntOrNull() ?: 7)
                     onConfirmBan(permanent, exp, reason, blockIdentifiers)
                 },
-                enabled = "ban_${user.uid}" !in busyOps,
+                // AUDIT-C: reason is labelled mandatory (إلزامي) and the VM
+                // rejects a blank one, but the button stayed enabled — the
+                // dialog closed with no ban applied (dead-button feel).
+                enabled = reason.isNotBlank() && "ban_${user.uid}" !in busyOps,
                 colors = ButtonDefaults.buttonColors(containerColor = palette.error)
             ) { Text("تأكيد الحظر") }
         },

@@ -87,6 +87,7 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             false // one-shot
         }
         com.wesal.messenger.core.util.WesalFrameLibrary.startWithAuth()
+        com.wesal.messenger.core.util.WesalFeatureFlags.startWithAuth()
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
     }
 
@@ -180,7 +181,17 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
 
     private fun rememberSignedInAccountLocally() {
         firebaseAuth.addAuthStateListener { a ->
-            val u = a.currentUser ?: return@addAuthStateListener
+            // Out-of-app notifications (no push server): the listener service runs
+            // exactly while a session exists — start on sign-in/app start with a
+            // persisted session, stop on sign-out. The service additionally rebinds
+            // its own listeners when the account changes and stops itself if it
+            // ever observes a signed-out state.
+            val u = a.currentUser
+            if (u == null) {
+                com.wesal.messenger.notifications.WesalListenerService.stop(this@WesalApplication)
+                return@addAuthStateListener
+            }
+            com.wesal.messenger.notifications.WesalListenerService.start(this@WesalApplication)
             // Direct uid → uid switch (e.g. Google credential sign-in replaces the current
             // user WITHOUT going through signOut, which is the path that used to clear the
             // caches): the Room read-through caches have no owner-uid column, so the previous

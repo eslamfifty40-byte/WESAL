@@ -119,6 +119,12 @@ class ChannelRepositoryImpl @Inject constructor(
             authorName = doc.getString("authorName").orEmpty(),
             authorAvatarUrl = doc.getString("authorAvatarUrl").orEmpty(),
             authorVerified = doc.getBoolean("authorVerified") ?: false,
+            authorIconId = doc.getString("authorIconId").orEmpty(),
+            authorIconUrl = doc.getString("authorIconUrl").orEmpty(),
+            authorVerificationType = doc.getString("authorVerificationType") ?: "BLUE",
+            authorNeonColor = doc.getString("authorNeonColor").orEmpty(),
+            authorNeonEnabled = doc.getBoolean("authorNeonEnabled") ?: false,
+            authorNeonGlowIntensity = doc.getDouble("authorNeonGlowIntensity")?.toFloat() ?: 0.7f,
             type = ChannelPostType.fromRaw(doc.getString("type")),
             text = doc.getString("text").orEmpty(),
             mediaUrl = doc.getString("mediaUrl").orEmpty(),
@@ -144,6 +150,12 @@ class ChannelRepositoryImpl @Inject constructor(
             authorName = doc.getString("authorName").orEmpty(),
             authorAvatarUrl = doc.getString("authorAvatarUrl").orEmpty(),
             authorVerified = doc.getBoolean("authorVerified") ?: false,
+            authorIconId = doc.getString("authorIconId").orEmpty(),
+            authorIconUrl = doc.getString("authorIconUrl").orEmpty(),
+            authorVerificationType = doc.getString("authorVerificationType") ?: "BLUE",
+            authorNeonColor = doc.getString("authorNeonColor").orEmpty(),
+            authorNeonEnabled = doc.getBoolean("authorNeonEnabled") ?: false,
+            authorNeonGlowIntensity = doc.getDouble("authorNeonGlowIntensity")?.toFloat() ?: 0.7f,
             text = doc.getString("text").orEmpty(),
             createdAt = doc.getLong("createdAt") ?: 0L
         )
@@ -441,6 +453,12 @@ class ChannelRepositoryImpl @Inject constructor(
         )
         if (avatarUri != null) {
             updates["avatarUrl"] = uploadChannelAvatar(channelId, avatarUri)
+            if (isOfficial) {
+                // Same stickiness as the §9.6 identity editor: an avatar chosen
+                // through this normal channel-edit path must not be overwritten
+                // by the owner-photo auto-sync in ensureOfficialTeamChannel.
+                updates["avatarSetByOfficialEditor"] = true
+            }
         }
         ref.update(updates).await()
     }
@@ -707,6 +725,12 @@ class ChannelRepositoryImpl @Inject constructor(
                     "authorName" to if (isOfficial) "فريق وصال | WESAL Team" else (me?.displayName?.ifBlank { "@${me.publicId}" } ?: "WESAL Channel"),
                     "authorAvatarUrl" to (me?.photoUrl ?: ""),
                     "authorVerified" to (isOfficial || me?.isVerified == true),
+                    "authorIconId" to (me?.iconId ?: ""),
+                    "authorIconUrl" to (me?.iconUrl ?: ""),
+                    "authorVerificationType" to (me?.verificationType ?: "BLUE"),
+                    "authorNeonColor" to (me?.neonColor ?: ""),
+                    "authorNeonEnabled" to (me?.neonEnabled ?: false),
+                    "authorNeonGlowIntensity" to (me?.neonGlowIntensity ?: 0.7f),
                     "type" to type.raw,
                     "text" to text.trim(),
                     "mediaUrl" to mediaUrl,
@@ -873,6 +897,12 @@ class ChannelRepositoryImpl @Inject constructor(
             "authorName" to (me?.displayName?.ifBlank { "@${me.publicId}" } ?: "WESAL User"),
             "authorAvatarUrl" to (me?.photoUrl ?: ""),
             "authorVerified" to (me?.isVerified == true),
+            "authorIconId" to (me?.iconId ?: ""),
+            "authorIconUrl" to (me?.iconUrl ?: ""),
+            "authorVerificationType" to (me?.verificationType ?: "BLUE"),
+            "authorNeonColor" to (me?.neonColor ?: ""),
+            "authorNeonEnabled" to (me?.neonEnabled ?: false),
+            "authorNeonGlowIntensity" to (me?.neonGlowIntensity ?: 0.7f),
             "text" to trimmed,
             "createdAt" to System.currentTimeMillis()
         )

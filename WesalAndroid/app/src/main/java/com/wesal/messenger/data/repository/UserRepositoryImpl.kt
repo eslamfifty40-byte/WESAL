@@ -161,12 +161,25 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
 
     val frameExpiresAt = getLong("frameExpiresAt") ?: 0L
     val rawFrameId = getString("frameId").orEmpty()
-    val isAdminAccount = getString("numericId").orEmpty() in Constants.ADMIN_NUMERIC_IDS
-    // The golden ADMIN frame is always shown for the admin accounts, for every viewer (not a picker entry).
+    val numericIdRaw = getString("numericId").orEmpty()
+    val isAdminAccount = numericIdRaw in Constants.ADMIN_NUMERIC_IDS
+    // Round 5 (owner requirement): the OFFICIAL account (10001) is a natural
+    // account like any other — a frame granted/set on it is honoured, and the
+    // golden ADMIN crest is only its DEFAULT when no live frame is set (or the
+    // set frame expired), so the official presence never renders unframed.
+    // The secondary admin account (10002) keeps the historical always-crest rule.
+    val isOfficialAccount = numericIdRaw == Constants.OWNER_ADMIN_NUMERIC_ID
+    val officialFrameLive = rawFrameId.isNotBlank() && !(frameExpiresAt > 0L && now > frameExpiresAt)
     val activeFrameId = when {
+        isOfficialAccount -> if (officialFrameLive) rawFrameId else WesalFrameLibrary.ADMIN_FRAME_ID
         isAdminAccount -> WesalFrameLibrary.ADMIN_FRAME_ID
         frameExpiresAt > 0L && now > frameExpiresAt -> ""
         else -> rawFrameId
+    }
+    val activeFrameExpiresAt = when {
+        isOfficialAccount -> if (officialFrameLive) frameExpiresAt else 0L
+        isAdminAccount -> 0L
+        else -> frameExpiresAt
     }
 
     // Round 4 (contacts M2): positive-ban-only, type-tolerant parse — see
@@ -215,7 +228,7 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         coverUrl = coverUrl,
         birthDate = birthDate,
         frameId = activeFrameId,
-        frameExpiresAt = if (isAdminAccount) 0L else frameExpiresAt,
+        frameExpiresAt = activeFrameExpiresAt,
         grantedFrameIds = (get("grantedFrameIds") as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
         iconId = rawIconId,
         iconUrl = resolvedIconUrl,
@@ -271,7 +284,10 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
             hideBirthDate = hideBirth,
             hideAvatarPhoto = hideAvatar,
             hideCoverPhoto = hideCover,
-            recordProfileVisits = recordVisits
+            recordProfileVisits = recordVisits,
+            // FIX 3 (round 5): absent key (docs written before this field
+            // existed) = ON, matching the PrivacySettings default.
+            screenshotProtectionEnabled = (privacyMap["screenshotProtectionEnabled"] as? Boolean) ?: true
         )
     )
 }
@@ -282,6 +298,7 @@ class UserRepositoryImpl @Inject constructor(
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
     private val functions: FirebaseFunctions,
+    private val supabasePhone: SupabasePhoneClient,
     private val prefs: UserPreferencesDataStore
 ) : UserRepository {
 
@@ -843,11 +860,18 @@ class UserRepositoryImpl @Inject constructor(
         val failedPrimaryChunks = java.util.concurrent.atomic.AtomicInteger(0)
         val chunks = distinct.chunked(30)
 
-        fun considerUserDoc(hash: String, doc: DocumentSnapshot) {
+        // [requireVerified] distinguishes the two match sources below: a
+        // Supabase-registry match is proof of verification by construction
+        // (rows are written only by the verification backend after an OTP
+        // check), so the hydrated doc needs no stamp of its own; a legacy
+        // Firestore-stamp match must additionally show isPhoneVerified on the
+        // doc, because those stamps are owner-writable.
+        fun considerUserDoc(hash: String, doc: DocumentSnapshot, requireVerified: Boolean) {
             if (!doc.exists() || hash.isBlank()) return
             val user = doc.toWesalUser()
             if (
                 user.uid != currentUid &&
+                (!requireVerified || user.isPhoneVerified) &&
                 !user.privacySettings.hidePhoneNumber &&
                 !user.hiddenFromSearch &&
                 user.numericId != Constants.SECONDARY_ADMIN_NUMERIC_ID &&
@@ -862,45 +886,72 @@ class UserRepositoryImpl @Inject constructor(
         coroutineScope {
             chunks.map { chunk ->
                 async(Dispatchers.IO) {
-                    val snap = withTimeoutOrNull(15_000L) {
-                        getQueryCachedOrServer(
-                            firestore.collection(Constants.COLLECTION_USERS)
-                                .whereIn("phoneHash", chunk)
-                        )
-                    }
-                    if (snap == null) failedPrimaryChunks.incrementAndGet()
-                    snap?.documents?.forEach { doc ->
-                        val hash = doc.getString("phoneHash").orEmpty()
-                        considerUserDoc(hash, doc)
+                    // Primary source (round 5): the Supabase verified_phones
+                    // registry — the sole authority on which number belongs
+                    // to which account. Registry rows map phoneHash →
+                    // firebase_uid; the Firestore user doc is then read only
+                    // to hydrate the profile and apply the usual privacy /
+                    // ban / hidden filters above.
+                    val registry = supabasePhone.findVerifiedPhonesByHashes(chunk)
+                    if (registry != null) {
+                        registry.values.map { row ->
+                            async(Dispatchers.IO) {
+                                withTimeoutOrNull(10_000L) { getDocCachedOrServer(row.firebaseUid) }
+                                    ?.let { uDoc -> considerUserDoc(row.phoneHash, uDoc, requireVerified = false) }
+                            }
+                        }.awaitAll()
                     }
 
-                    // Fallback lookup via phone_uniqueness for legacy accounts missing phoneHash on /users
+                    // Legacy fallback for hashes the registry did not match:
+                    // the pre-Supabase Firestore stamps (users.phoneHash, then
+                    // phone_uniqueness for accounts missing the hash on /users).
                     val missingHashes = chunk.filter { !matched.containsKey(it) }
+                    var firestoreFailed = false
                     if (missingHashes.isNotEmpty()) {
-                        val lockSnap = withTimeoutOrNull(15_000L) {
+                        val snap = withTimeoutOrNull(15_000L) {
                             getQueryCachedOrServer(
-                                firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
-                                    .whereIn(FieldPath.documentId(), missingHashes)
+                                firestore.collection(Constants.COLLECTION_USERS)
+                                    .whereIn("phoneHash", missingHashes)
                             )
                         }
-                        val missingTargets = lockSnap?.documents
-                            ?.mapNotNull { lockDoc ->
-                                val hash = lockDoc.id
-                                val ownerUid = lockDoc.getString("uid").orEmpty()
-                                if (ownerUid.isNotBlank() && ownerUid != currentUid && !matched.containsKey(hash)) {
-                                    hash to ownerUid
-                                } else null
+                        if (snap == null) firestoreFailed = true
+                        snap?.documents?.forEach { doc ->
+                            val hash = doc.getString("phoneHash").orEmpty()
+                            considerUserDoc(hash, doc, requireVerified = true)
+                        }
+
+                        val stillMissing = missingHashes.filter { !matched.containsKey(it) }
+                        if (stillMissing.isNotEmpty()) {
+                            val lockSnap = withTimeoutOrNull(15_000L) {
+                                getQueryCachedOrServer(
+                                    firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                                        .whereIn(FieldPath.documentId(), stillMissing)
+                                )
                             }
-                            .orEmpty()
-                        if (missingTargets.isNotEmpty()) {
-                            missingTargets.map { (hash, ownerUid) ->
-                                async(Dispatchers.IO) {
-                                    withTimeoutOrNull(10_000L) { getDocCachedOrServer(ownerUid) }
-                                        ?.let { uDoc -> considerUserDoc(hash, uDoc) }
+                            val missingTargets = lockSnap?.documents
+                                ?.mapNotNull { lockDoc ->
+                                    val hash = lockDoc.id
+                                    val ownerUid = lockDoc.getString("uid").orEmpty()
+                                    if (ownerUid.isNotBlank() && ownerUid != currentUid && !matched.containsKey(hash)) {
+                                        hash to ownerUid
+                                    } else null
                                 }
-                            }.awaitAll()
+                                .orEmpty()
+                            if (missingTargets.isNotEmpty()) {
+                                missingTargets.map { (hash, ownerUid) ->
+                                    async(Dispatchers.IO) {
+                                        withTimeoutOrNull(10_000L) { getDocCachedOrServer(ownerUid) }
+                                            ?.let { uDoc -> considerUserDoc(hash, uDoc, requireVerified = true) }
+                                    }
+                                }.awaitAll()
+                            }
                         }
                     }
+                    // A chunk counts as failed only when BOTH sources failed:
+                    // the registry is authoritative, so its success alone is a
+                    // complete answer for the chunk (nobody registered), and a
+                    // Firestore outage must not mask it.
+                    if (registry == null && firestoreFailed) failedPrimaryChunks.incrementAndGet()
                 }
             }.awaitAll()
         }
@@ -1315,7 +1366,8 @@ class UserRepositoryImpl @Inject constructor(
                     "hideBirthDate" to settings.hideBirthDate,
                     "hideAvatarPhoto" to settings.hideAvatarPhoto,
                     "hideCoverPhoto" to settings.hideCoverPhoto,
-                    "recordProfileVisits" to settings.recordProfileVisits
+                    "recordProfileVisits" to settings.recordProfileVisits,
+                    "screenshotProtectionEnabled" to settings.screenshotProtectionEnabled
                 )
             )
 
@@ -1596,6 +1648,11 @@ class UserRepositoryImpl @Inject constructor(
                 "visitorAvatarUrl" to me.photoUrl,
                 "visitorVerified" to me.isVerified,
                 "visitorVerificationType" to me.verificationType,
+                "visitorIconId" to me.iconId,
+                "visitorIconUrl" to me.iconUrl,
+                "visitorNeonColor" to me.neonColor,
+                "visitorNeonEnabled" to me.neonEnabled,
+                "visitorNeonGlowIntensity" to me.neonGlowIntensity,
                 "visitedAt" to System.currentTimeMillis()
             )
             firestore.collection(Constants.COLLECTION_USERS)
@@ -1632,6 +1689,11 @@ class UserRepositoryImpl @Inject constructor(
                                 visitorAvatarUrl = doc.getString("visitorAvatarUrl").orEmpty(),
                                 visitorVerified = doc.getBoolean("visitorVerified") ?: false,
                                 visitorVerificationType = doc.getString("visitorVerificationType") ?: "BLUE",
+                                visitorIconId = doc.getString("visitorIconId").orEmpty(),
+                                visitorIconUrl = doc.getString("visitorIconUrl").orEmpty(),
+                                visitorNeonColor = doc.getString("visitorNeonColor").orEmpty(),
+                                visitorNeonEnabled = doc.getBoolean("visitorNeonEnabled") ?: false,
+                                visitorNeonGlowIntensity = doc.getDouble("visitorNeonGlowIntensity")?.toFloat() ?: 0.7f,
                                 visitedAt = doc.getLong("visitedAt") ?: 0L
                             )
                         }.orEmpty()
@@ -3641,6 +3703,23 @@ class UserRepositoryImpl @Inject constructor(
             ).await()
         }
 
+        // 3) Round 5 (owner consistency requirement): the official ACCOUNT's
+        // own profile photo. 10001 is a real user doc and the SAME identity as
+        // the official presence, so its profile page must show the same photo
+        // as the official chat/channel ("from outside vs inside" complaint).
+        // Best-effort: steps 1–2 already landed, so a failure here (e.g. the
+        // 10001 doc does not exist yet) must not fail the whole update.
+        runCatching {
+            val ownerSnap = firestore.collection(Constants.COLLECTION_USERS)
+                .whereEqualTo("numericId", Constants.OWNER_ADMIN_NUMERIC_ID)
+                .limit(1)
+                .get()
+                .await()
+            ownerSnap.documents.firstOrNull()?.reference
+                ?.set(mapOf("photoUrl" to cleanUrl), SetOptions.merge())
+                ?.await()
+        }
+
         writeAdminActionLog(
             action = "OFFICIAL_IDENTITY_PHOTO_UPDATED",
             details = "تحديث صورة الهوية الرسمية (المحادثة الرسمية + قناة الفريق) على $updatedChats محادثة"
@@ -3690,11 +3769,23 @@ class UserRepositoryImpl @Inject constructor(
         senderPublicId = getString("senderPublicId").orEmpty(),
         senderAvatarUrl = getString("senderAvatarUrl").orEmpty(),
         senderVerified = getBoolean("senderVerified") ?: false,
+        senderVerificationType = getString("senderVerificationType") ?: "BLUE",
+        senderIconId = getString("senderIconId").orEmpty(),
+        senderIconUrl = getString("senderIconUrl").orEmpty(),
+        senderNeonColor = getString("senderNeonColor").orEmpty(),
+        senderNeonEnabled = getBoolean("senderNeonEnabled") ?: false,
+        senderNeonGlowIntensity = getDouble("senderNeonGlowIntensity")?.toFloat() ?: 0.7f,
         receiverUid = getString("receiverUid").orEmpty(),
         receiverName = getString("receiverName").orEmpty(),
         receiverPublicId = getString("receiverPublicId").orEmpty(),
         receiverAvatarUrl = getString("receiverAvatarUrl").orEmpty(),
         receiverVerified = getBoolean("receiverVerified") ?: false,
+        receiverVerificationType = getString("receiverVerificationType") ?: "BLUE",
+        receiverIconId = getString("receiverIconId").orEmpty(),
+        receiverIconUrl = getString("receiverIconUrl").orEmpty(),
+        receiverNeonColor = getString("receiverNeonColor").orEmpty(),
+        receiverNeonEnabled = getBoolean("receiverNeonEnabled") ?: false,
+        receiverNeonGlowIntensity = getDouble("receiverNeonGlowIntensity")?.toFloat() ?: 0.7f,
         status = ContactRequestStatus.fromRaw(getString("status")),
         createdAt = getLong("createdAt") ?: 0L,
         updatedAt = getLong("updatedAt") ?: 0L
@@ -3727,13 +3818,25 @@ class UserRepositoryImpl @Inject constructor(
                                             req.copy(
                                                 receiverName = peerUser.displayName.ifBlank { req.receiverName },
                                                 receiverAvatarUrl = peerUser.photoUrl.ifBlank { req.receiverAvatarUrl },
-                                                receiverVerified = peerUser.isVerified
+                                                receiverVerified = peerUser.isVerified,
+                                                receiverVerificationType = peerUser.verificationType,
+                                                receiverIconId = peerUser.iconId,
+                                                receiverIconUrl = peerUser.iconUrl,
+                                                receiverNeonColor = peerUser.neonColor,
+                                                receiverNeonEnabled = peerUser.neonEnabled,
+                                                receiverNeonGlowIntensity = peerUser.neonGlowIntensity
                                             )
                                         } else {
                                             req.copy(
                                                 senderName = peerUser.displayName.ifBlank { req.senderName },
                                                 senderAvatarUrl = peerUser.photoUrl.ifBlank { req.senderAvatarUrl },
-                                                senderVerified = peerUser.isVerified
+                                                senderVerified = peerUser.isVerified,
+                                                senderVerificationType = peerUser.verificationType,
+                                                senderIconId = peerUser.iconId,
+                                                senderIconUrl = peerUser.iconUrl,
+                                                senderNeonColor = peerUser.neonColor,
+                                                senderNeonEnabled = peerUser.neonEnabled,
+                                                senderNeonGlowIntensity = peerUser.neonGlowIntensity
                                             )
                                         }
                                     } else req
@@ -3811,11 +3914,23 @@ class UserRepositoryImpl @Inject constructor(
             senderPublicId = me.publicId,
             senderAvatarUrl = me.photoUrl,
             senderVerified = me.isVerified,
+            senderVerificationType = me.verificationType,
+            senderIconId = me.iconId,
+            senderIconUrl = me.iconUrl,
+            senderNeonColor = me.neonColor,
+            senderNeonEnabled = me.neonEnabled,
+            senderNeonGlowIntensity = me.neonGlowIntensity,
             receiverUid = targetUid,
             receiverName = target.displayName.ifBlank { "@${target.publicId}" },
             receiverPublicId = target.publicId,
             receiverAvatarUrl = target.photoUrl,
             receiverVerified = target.isVerified,
+            receiverVerificationType = target.verificationType,
+            receiverIconId = target.iconId,
+            receiverIconUrl = target.iconUrl,
+            receiverNeonColor = target.neonColor,
+            receiverNeonEnabled = target.neonEnabled,
+            receiverNeonGlowIntensity = target.neonGlowIntensity,
             status = ContactRequestStatus.PENDING,
             createdAt = now,
             updatedAt = now
@@ -3828,11 +3943,23 @@ class UserRepositoryImpl @Inject constructor(
             "senderPublicId" to request.senderPublicId,
             "senderAvatarUrl" to request.senderAvatarUrl,
             "senderVerified" to request.senderVerified,
+            "senderVerificationType" to request.senderVerificationType,
+            "senderIconId" to request.senderIconId,
+            "senderIconUrl" to request.senderIconUrl,
+            "senderNeonColor" to request.senderNeonColor,
+            "senderNeonEnabled" to request.senderNeonEnabled,
+            "senderNeonGlowIntensity" to request.senderNeonGlowIntensity,
             "receiverUid" to targetUid,
             "receiverName" to request.receiverName,
             "receiverPublicId" to request.receiverPublicId,
             "receiverAvatarUrl" to request.receiverAvatarUrl,
             "receiverVerified" to request.receiverVerified,
+            "receiverVerificationType" to request.receiverVerificationType,
+            "receiverIconId" to request.receiverIconId,
+            "receiverIconUrl" to request.receiverIconUrl,
+            "receiverNeonColor" to request.receiverNeonColor,
+            "receiverNeonEnabled" to request.receiverNeonEnabled,
+            "receiverNeonGlowIntensity" to request.receiverNeonGlowIntensity,
             "status" to ContactRequestStatus.PENDING.raw,
             "createdAt" to now,
             "updatedAt" to now

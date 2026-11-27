@@ -254,18 +254,30 @@ class ChatsListViewModel @Inject constructor(
         }
     }
 
-    fun holdContactRequest(requestId: String) {
+    fun holdContactRequest(requestId: String, senderUid: String = "") {
         viewModelScope.launch {
             userRepository.holdContactRequest(requestId)
-                .onSuccess { _toastMessage.value = "تم تعليق الطلب في قائمة الانتظار" }
+                .onSuccess {
+                    // AUDIT SEC-A (A11): keep the chat layer in sync when a chat doc exists.
+                    if (senderUid.isNotBlank()) {
+                        chatRepository.setMessageRequestDecision(directChatIdFor(senderUid), senderUid, "HELD")
+                    }
+                    _toastMessage.value = "تم تعليق الطلب في قائمة الانتظار"
+                }
                 .onFailure { _toastMessage.value = it.localizedMessage }
         }
     }
 
-    fun rejectContactRequest(requestId: String) {
+    fun rejectContactRequest(requestId: String, senderUid: String = "") {
         viewModelScope.launch {
             userRepository.rejectContactRequest(requestId)
-                .onSuccess { _toastMessage.value = "تم رفض الطلب" }
+                .onSuccess {
+                    // AUDIT SEC-A (A11): keep the chat layer in sync when a chat doc exists.
+                    if (senderUid.isNotBlank()) {
+                        chatRepository.setMessageRequestDecision(directChatIdFor(senderUid), senderUid, "REJECTED")
+                    }
+                    _toastMessage.value = "تم رفض الطلب"
+                }
                 .onFailure { _toastMessage.value = it.localizedMessage }
         }
     }
@@ -311,11 +323,69 @@ class ChatsListViewModel @Inject constructor(
     }
 
     fun togglePin(chat: ChatPreview) {
-        viewModelScope.launch { chatRepository.togglePinChat(chat.chatId, !chat.isPinned) }
+        // AUDIT SEC-A fix: the Result was discarded, so a failed pin write looked
+        // identical to success (the row just never changed). Surface failures.
+        viewModelScope.launch {
+            chatRepository.togglePinChat(chat.chatId, !chat.isPinned)
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث التثبيت" }
+        }
     }
 
     fun toggleMute(chat: ChatPreview) {
-        viewModelScope.launch { chatRepository.toggleMuteChat(chat.chatId, !chat.isMuted) }
+        // AUDIT SEC-A fix: same discarded-Result problem as togglePin.
+        viewModelScope.launch {
+            chatRepository.toggleMuteChat(chat.chatId, !chat.isMuted)
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر تحديث الكتم" }
+        }
+    }
+
+    /**
+     * AUDIT SEC-A fix (A2): the chat-row long-press menu had no Block action at
+     * all (block existed only inside a chat and in the requests dialog). Block
+     * writes blockedUsers on my user doc AND deletes the chat for me, so the row
+     * actually disappears — blockUser alone leaves the chat fully visible.
+     */
+    fun blockChatPeer(chat: ChatPreview) {
+        val peerUid = chat.peerUid
+        if (peerUid.isBlank() || chat.isGroup || chat.isOfficialWesalChat) return
+        viewModelScope.launch {
+            userRepository.blockUser(peerUid)
+                .onSuccess {
+                    chatRepository.deleteChat(chat.chatId, forEveryone = false)
+                    prefs.toggleHiddenChat(chat.chatId, false)
+                    prefs.toggleLockedChat(chat.chatId, false)
+                    _toastMessage.value = "تم حظر المستخدم وحذف المحادثة"
+                }
+                .onFailure { _toastMessage.value = it.localizedMessage ?: "تعذر حظر المستخدم" }
+        }
+    }
+
+    /** Deterministic 1:1 chat id, same construction as ChatRepositoryImpl. */
+    private fun directChatIdFor(otherUid: String): String {
+        val sorted = listOf(currentUid, otherUid).sorted()
+        return "dm_${sorted[0]}_${sorted[1]}"
+    }
+
+    /**
+     * AUDIT SEC-A fix (A11): accepting a CONTACT request must also flip the
+     * chat-layer requestStatus when a chat doc already exists, and must open
+     * the chat (previously Accept only flipped the contact_requests doc and the
+     * user had to go find the person again to start talking).
+     */
+    fun acceptContactRequestAndOpenChat(requestId: String, senderUid: String, onOpenChat: (String) -> Unit) {
+        viewModelScope.launch {
+            userRepository.acceptContactRequest(requestId)
+                .onSuccess {
+                    _toastMessage.value = "تم قبول طلب التعارف"
+                    if (senderUid.isNotBlank()) {
+                        chatRepository.setMessageRequestDecision(directChatIdFor(senderUid), senderUid, "ACCEPTED")
+                        chatRepository.getOrCreateDirectChat(senderUid)
+                            .onSuccess { chatId -> onOpenChat(chatId) }
+                            .onFailure { _toastMessage.value = it.localizedMessage ?: "تم القبول، تعذر فتح المحادثة" }
+                    }
+                }
+                .onFailure { _toastMessage.value = it.localizedMessage }
+        }
     }
 
     fun toggleArchive(chat: ChatPreview) {

@@ -40,12 +40,14 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -70,12 +72,17 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.filled.ContentCopy
 import coil.compose.AsyncImage
+import coil.compose.LocalImageLoader
 import coil.request.ImageRequest
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.AlphaBounds
+import com.wesal.messenger.core.util.FrameAnimationPolicy
 import com.wesal.messenger.core.util.FrameGlowDisc
+import com.wesal.messenger.core.util.FrameMotionTier
 import com.wesal.messenger.core.util.FramedCutoutLayout
 import com.wesal.messenger.core.util.FramedCutoutTransform
 import com.wesal.messenger.core.util.LocalWesalStrings
@@ -170,14 +177,29 @@ fun WesalAvatar(
     val frameGlowIntensity = (activeFrame?.glowIntensity ?: 1.0f).coerceIn(0f, 1f)
     val frameGlowSpeed = (activeFrame?.glowSpeed ?: 1.0f).coerceIn(0.5f, 2f)
 
-    // Perf: small list avatars (chat/contacts rows) render STATICALLY — no infinite
-    // transitions are created for them at all, so a scrolling list never pays for frame
-    // pulse/rotation or icon pulse animations it cannot meaningfully show. Larger
-    // avatars (profile, settings, detail screens) keep the full motion.
+    // Motion tiers (round 5, FrameAnimationPolicy — the pure rules are unit-tested):
+    // effective animation = the frame's resolved `animated` flag AND the admin master
+    // switch (system_config/global_appearance.framesAnimationEnabled). Both inputs are
+    // Compose snapshot state, so flipping either switch recomposes every avatar and
+    // the change applies immediately, with no restart — the owner's on/off guarantee.
+    //   NONE    (< 52dp, or animation off): fully static; no infinite transition is
+    //           created at all, so scrolling lists never pay for motion (perf rule).
+    //   REDUCED (52..<96dp): glow pulse only — halo + glow-disc breathing.
+    //   FULL    (>= 96dp: profile, detail, settings): glow pulse + shine sweep around
+    //           the ring + sparkle accents (FrameShineSparkles below).
+    val effectiveFrameAnimated = FrameAnimationPolicy.effectiveAnimated(
+        frameAnimated = activeFrame?.animated == true,
+        masterEnabled = WesalFrameLibrary.framesAnimationEnabled
+    )
+    val motionTier = FrameAnimationPolicy.motionTier(
+        sizeDp = size.value,
+        effectiveAnimated = effectiveFrameAnimated
+    )
+    val isAnimatedFrame = motionTier != FrameMotionTier.NONE
+    val fullMotion = motionTier == FrameMotionTier.FULL
+    // The corner icon badge keeps its own historical gate (pulse from 72dp up),
+    // independent of the frame tiers above.
     val allowMotion = size >= 72.dp
-    // Master switch (system_config/global_appearance.framesAnimationEnabled): when off,
-    // every frame renders statically even if its own `animated` flag is on.
-    val isAnimatedFrame = activeFrame?.animated == true && WesalFrameLibrary.framesAnimationEnabled && allowMotion
     val infiniteTransition = if (isAnimatedFrame) rememberInfiniteTransition(label = "wesal_frame_anim") else null
     val isRotateFanStyle = activeFrame?.animationStyle == "ROTATE_AURA" || activeFrame?.animationStyle == "ROTATE_FAN"
     val animPulse by (infiniteTransition?.animateFloat(
@@ -207,6 +229,22 @@ fun WesalAvatar(
         ),
         label = "rotate"
     ) ?: remember { mutableStateOf(0f) })
+    // Slow shine-sweep rotation (FULL tier only): one revolution per ~6.2s drives the
+    // highlight wedge travelling around the ring in FrameShineSparkles; its phase also
+    // clocks the sparkle twinkles, so no extra animation value is needed.
+    val animSweep by (if (fullMotion) {
+        infiniteTransition?.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = (6200 / frameGlowSpeed).toInt().coerceAtLeast(620), easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "sweep"
+        )
+    } else {
+        null
+    } ?: remember { mutableStateOf(0f) })
 
     // §5.9 (round-4 P2-8): a framed avatar's container is 1.38x the nominal size, so
     // in list rows a framed avatar used to occupy more layout space than an unframed
@@ -325,6 +363,18 @@ fun WesalAvatar(
         (baseGlowAlpha * animAlpha).coerceIn(0.1f, 0.95f)
     } * if (activeFrame != null) frameGlowIntensity else 1f).coerceIn(0f, 0.95f)
 
+    // Glow-DISC breathing (round 5): the opaque FrameGlowDisc behind the photo pulses
+    // gently by scaling the intensity fed to discStops() with the pulse phase
+    // (animAlpha runs 0.80..1.0, mapped to a 0.80..1.0 brightness factor). Applies in
+    // the REDUCED and FULL tiers; in the NONE tier the factor is a constant 1f, so
+    // the disc renders exactly as before. Opacity is untouched — every disc stop
+    // stays alpha 0xFF (FrameGlowDisc invariant).
+    val discPulseFactor = if (isAnimatedFrame) {
+        0.80f + 0.20f * ((animAlpha - 0.80f) / 0.20f).coerceIn(0f, 1f)
+    } else {
+        1f
+    }
+
     @Composable
     fun FanAuraSpinner(
         frame: ResolvedFrame,
@@ -382,11 +432,92 @@ fun WesalAvatar(
         }
     }
 
+    /**
+     * The SVGA-style living treatment (round 5), FULL motion tier only, drawn OVER the
+     * frame artwork and UNDER the pop-out head strip. Plain Compose Canvas — no new
+     * dependencies:
+     *  - a soft shine wedge (sweep gradient in the frame's glow colour with a white
+     *    core) travels slowly around the ring band, one revolution per sweep cycle;
+     *  - seven four-point sparkles twinkle on the ring band at deterministic
+     *    per-frame positions (seeded by the frame id, so every avatar wearing the
+     *    same frame sparkles in the same places), phased by the same sweep clock.
+     * The whole overlay exists only while the avatar is composed — when it leaves
+     * composition the infinite transition stops, so off-screen avatars cost nothing.
+     */
+    @Composable
+    fun FrameShineSparkles(frame: ResolvedFrame) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val ringCenter = Offset(
+                x = size.width / 2f,
+                y = size.height / 2f + apertureOffsetYPx
+            )
+            val ringRadius = apertureRadiusPx * 1.24f
+            val intensity = frameGlowIntensity.coerceIn(0f, 1f)
+
+            // Shine sweep: one bright wedge rotating around the ring band.
+            rotate(degrees = animSweep, pivot = ringCenter) {
+                drawCircle(
+                    brush = Brush.sweepGradient(
+                        colorStops = arrayOf(
+                            0f to Color.Transparent,
+                            0.36f to Color.Transparent,
+                            0.45f to frame.glow.copy(alpha = 0.20f * intensity),
+                            0.50f to Color.White.copy(alpha = 0.32f * intensity),
+                            0.55f to frame.glow.copy(alpha = 0.20f * intensity),
+                            0.64f to Color.Transparent,
+                            1f to Color.Transparent
+                        ),
+                        center = ringCenter
+                    ),
+                    radius = ringRadius,
+                    center = ringCenter,
+                    style = Stroke(width = apertureRadiusPx * 0.34f)
+                )
+            }
+
+            // Sparkle accents: four-point stars with a concave waist.
+            fun sparkle(at: Offset, s: Float, color: Color) {
+                val path = Path().apply {
+                    moveTo(at.x, at.y - s)
+                    quadraticBezierTo(at.x, at.y, at.x + s, at.y)
+                    quadraticBezierTo(at.x, at.y, at.x, at.y + s)
+                    quadraticBezierTo(at.x, at.y, at.x - s, at.y)
+                    quadraticBezierTo(at.x, at.y, at.x, at.y - s)
+                    close()
+                }
+                drawPath(path, color)
+            }
+            val seed = frame.id.hashCode()
+            val phase = animSweep * (Math.PI.toFloat() / 60f) // 3 twinkle cycles per revolution
+            for (i in 0 until 7) {
+                val h = (seed * 31 + i * 137) and 0xFFFF
+                val angRad = Math.toRadians(((h % 360).toFloat() + i * 51.43f).toDouble())
+                val rr = ringRadius * (0.94f + ((h / 360) % 16) / 100f)
+                val tw = sin(phase + i * 1.93f)
+                if (tw <= 0.2f) continue
+                val a = ((tw - 0.2f) / 0.8f).coerceIn(0f, 1f) * 0.85f * intensity
+                if (a <= 0.01f) continue
+                val s = apertureRadiusPx * 0.09f * (0.7f + 0.3f * tw)
+                sparkle(
+                    at = Offset(
+                        x = ringCenter.x + (rr * cos(angRad)).toFloat(),
+                        y = ringCenter.y + (rr * sin(angRad)).toFloat()
+                    ),
+                    s = s,
+                    color = Color.White.copy(alpha = a)
+                )
+            }
+        }
+    }
+
     @Composable
     fun FrameLayer(frame: ResolvedFrame) {
         val animModifier = when {
             !isAnimatedFrame -> Modifier.fillMaxSize()
             isRotateFanStyle -> Modifier.fillMaxSize() // Frame crest remains stationary in-place without scaling/bouncing
+            // REDUCED tier: glow pulse only — the artwork itself stays still; the
+            // breathing lives in the halo + glow disc (avatarGlowAlpha/discPulseFactor).
+            motionTier == FrameMotionTier.REDUCED -> Modifier.fillMaxSize()
             frame.animationStyle == "SHIMMER" -> Modifier.fillMaxSize().alpha(animAlpha).graphicsLayer {
                 scaleX = animPulse
                 scaleY = animPulse
@@ -398,8 +529,17 @@ fun WesalAvatar(
                 transformOrigin = TransformOrigin.Center
             }
         }
+        // Intrinsically animated frame files (GIF / animated WebP uploads): the main
+        // Coil loader animates them by itself, ignoring every switch. When the frame's
+        // effective animation is OFF, route the load through WesalStillImageLoader
+        // (no animated decoders → first frame only) so off really means still.
+        val frameImageLoader = if (effectiveFrameAnimated) {
+            LocalImageLoader.current
+        } else {
+            WesalStillImageLoader.get(context)
+        }
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            if (isAnimatedFrame && isRotateFanStyle) {
+            if (isAnimatedFrame && fullMotion && isRotateFanStyle) {
                 FanAuraSpinner(
                     frame = frame,
                     spinnerSize = (innerAvatarSize * 1.12f).coerceAtMost(containerSize),
@@ -418,6 +558,7 @@ fun WesalAvatar(
                         .crossfade(false)
                         .build(),
                     contentDescription = null,
+                    imageLoader = frameImageLoader,
                     modifier = animModifier,
                     contentScale = ContentScale.Fit
                 )
@@ -431,6 +572,7 @@ fun WesalAvatar(
                         .crossfade(false)
                         .build(),
                     contentDescription = null,
+                    imageLoader = frameImageLoader,
                     modifier = animModifier,
                     contentScale = ContentScale.Fit
                 )
@@ -599,7 +741,7 @@ fun WesalAvatar(
             ),
         contentAlignment = Alignment.Center
     ) {
-        if (activeFrame != null && isAnimatedFrame && isRotateFanStyle) {
+        if (activeFrame != null && isAnimatedFrame && fullMotion && isRotateFanStyle) {
             FanAuraSpinner(
                 frame = activeFrame,
                 spinnerSize = containerSize * 0.94f,
@@ -630,7 +772,7 @@ fun WesalAvatar(
                         activeFrame != null -> {
                             val stops = FrameGlowDisc.discStops(
                                 glowArgb = frameDiscGlowColor.toArgb().toLong() and 0xFFFFFFFFL,
-                                intensity = frameGlowIntensity
+                                intensity = frameGlowIntensity * discPulseFactor
                             )
                             Modifier.drawBehind {
                                 // NOTE: `this.size` is required — WesalAvatar's own
@@ -784,6 +926,13 @@ fun WesalAvatar(
             FrameLayer(activeFrame)
         }
 
+        // Living treatment (round 5): shine sweep + sparkles over the frame artwork,
+        // under the pop-out head strip. FULL tier only; ROTATE_AURA frames keep their
+        // own fan treatment instead (FanAuraSpinner above).
+        if (activeFrame != null && fullMotion && !isRotateFanStyle) {
+            FrameShineSparkles(activeFrame)
+        }
+
         // Pop-out window 2 of 2: the SAME rendering clipped to the strip above the
         // aperture's top edge, drawn OVER the frame — the head/shoulders of the cutout
         // overlap the frame's upper ring, exactly like the owner's reference composite.
@@ -899,7 +1048,13 @@ fun WesalNameWithBadge(
     glowColor: Color? = null,
     verificationGlowColor: String = "",
     verificationGlowEnabled: Boolean = true,
-    verificationGlowIntensity: Float = 0.7f
+    verificationGlowIntensity: Float = 0.7f,
+    // FIX 1 (round 5): the user's chosen nameplate icon, resolved from the
+    // user-doc fields (WesalFrameLibrary.resolveIconUrl(iconId, iconUrl)).
+    // Owner rule: the icon must sit beside EVERY rendered name, so this shared
+    // composable renders it right after the name text (before the verified
+    // badge) whenever a non-blank resolved URL is supplied. Empty = no icon.
+    iconUrl: String = ""
 ) {
     val preset = NeonColorPreset.fromKey(neonColor)
     val neonOn = neonEnabled && preset != NeonColorPreset.NONE
@@ -926,6 +1081,24 @@ fun WesalNameWithBadge(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false)
         )
+        if (iconUrl.isNotBlank()) {
+            // Same loading treatment as the avatar-corner icon (cached Coil
+            // request, Fit), sized to sit naturally next to the name text.
+            // Deliberately no pulse/scale animation here: name rows live in
+            // dense lists where constant motion is noise and costs frames.
+            val iconCtx = LocalContext.current
+            AsyncImage(
+                model = ImageRequest.Builder(iconCtx)
+                    .data(wesalImageModel(iconUrl))
+                    .memoryCacheKey(wesalImageCacheKey(iconUrl))
+                    .diskCacheKey(wesalImageCacheKey(iconUrl))
+                    .crossfade(true)
+                    .build(),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(badgeSize + 3.dp)
+            )
+        }
         if (isVerified) {
             WesalVerifiedBadge(
                 size = badgeSize,
@@ -954,7 +1127,10 @@ fun WesalRoyalNameplateBanner(
     neonEnabled: Boolean = true,
     nameplateColorKey: String = "CRIMSON",
     accentColor: Color = Color(0xFFFFD54F),
-    crimsonColor: Color = Color(0xFFD50026)
+    crimsonColor: Color = Color(0xFFD50026),
+    // FIX 1 (round 5): resolved nameplate icon shown beside the name inside
+    // the banner (profile pages), same rule as WesalNameWithBadge.
+    iconUrl: String = ""
 ) {
     val context = LocalContext.current
     val strings = LocalWesalStrings.current
@@ -1045,7 +1221,8 @@ fun WesalRoyalNameplateBanner(
                     neonEnabled = neonEnabled,
                     verificationGlowColor = verificationGlowColor,
                     verificationGlowEnabled = verificationGlowEnabled,
-                    verificationGlowIntensity = verificationGlowIntensity
+                    verificationGlowIntensity = verificationGlowIntensity,
+                    iconUrl = iconUrl
                 )
                 Text("✦", color = resolvedBorderAccent, style = MaterialTheme.typography.labelLarge)
             }

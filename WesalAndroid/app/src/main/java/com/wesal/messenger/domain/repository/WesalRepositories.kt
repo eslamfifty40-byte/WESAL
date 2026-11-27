@@ -22,7 +22,10 @@ interface AuthRepository {
     val currentUserEmail: String?
     /** The signed-in Auth user's phone number, when the account carries one
      *  (phone-registered accounts created via the OTP flow, or legacy Firebase
-     *  phone-auth accounts). Presence means the number was OTP-verified. */
+     *  phone-auth accounts). Presence means the number was OTP-verified. The
+     *  OTP flow's accounts are anonymous-auth (their Auth user carries no
+     *  phone), so for those this falls back to the number verified in THIS
+     *  session for the current uid. */
     val currentUserPhoneNumber: String?
     fun observeAuthState(): Flow<String?>
     suspend fun signInWithGoogleIdToken(idToken: String): Result<Boolean>
@@ -30,24 +33,51 @@ interface AuthRepository {
     suspend fun signUpWithEmail(email: String, password: String, fullName: String = ""): Result<Boolean>
     suspend fun sendPasswordReset(email: String): Result<Unit>
     /**
-     * Phone phase: ask the server to generate + deliver a 6-digit code for
-     * [phoneE164] (callable sendPhoneCode; works signed-out for registration
-     * and signed-in for the verification gate). Success value = the delivery
-     * channel the server used ("whatsapp" / "sms").
+     * Phone LOGIN (sign-in screen): ask the Supabase phone backend to
+     * generate + deliver a 6-digit code for [phoneE164]. The backend binds
+     * the code challenge to a Firebase uid, so this first establishes the
+     * phone-login session — a fresh Firebase Anonymous session for the new
+     * account (replacing the active session in add-account mode, exactly as
+     * the old custom-token sign-in replaced it at verify time). Success
+     * value = the delivery channel the backend used ("whatsapp" / "sms").
      */
     suspend fun sendPhoneOtp(phoneE164: String): Result<String>
     /**
-     * Phone registration / sign-in: verify the code server-side (callable
-     * verifyPhoneCode), sign in with the returned custom token, then run the
-     * standard skeleton/profile routing. Success value = needsSetup.
+     * Phone verification for the CURRENTLY signed-in account (the mandatory
+     * gate / profile verify): same backend send as [sendPhoneOtp], but the
+     * challenge is bound to the signed-in user's own uid — no session is
+     * created or replaced.
+     */
+    suspend fun sendPhoneOtpForCurrentUser(phoneE164: String): Result<String>
+    /**
+     * Phone registration / sign-in: verify the code with the Supabase
+     * backend, which binds the number to the phone-login session's uid in
+     * the verified_phones registry; that anonymous session IS the account,
+     * so the standard ban gates + skeleton/profile routing then run on it.
+     * Success value = needsSetup.
      */
     suspend fun verifyPhoneOtpAndSignIn(phoneE164: String, code: String): Result<Boolean>
     /**
      * Mandatory gate / linking for an already signed-in account: verify the
-     * code server-side (callable verifyPhoneCodeForCurrentUser), which stamps
-     * phone + isPhoneVerified + phoneHash and the phone_uniqueness lock.
+     * code with the Supabase backend (the registry row it writes is the
+     * authority), then best-effort mirror phone + isPhoneVerified +
+     * phoneHash and the phone_uniqueness lock into Firestore.
      */
     suspend fun verifyPhoneOtpForCurrentUser(phoneE164: String, code: String): Result<Unit>
+    /**
+     * True when the Supabase verified_phones registry holds a row for
+     * [uid]. The registry is the authority for the mandatory gate; the user
+     * doc's isPhoneVerified is only its best-effort mirror. Network-bound
+     * and fail-closed: any error reads as "not verified".
+     */
+    suspend fun isPhoneVerifiedInRegistry(uid: String): Boolean
+    /**
+     * Abandons an in-flight phone login: when the current session is the
+     * anonymous session [sendPhoneOtp] created for it, sign it out (the
+     * account it replaced stays in the saved-accounts list for one-tap
+     * re-entry). No-op in every other state.
+     */
+    suspend fun abandonPhoneLoginSession()
     suspend fun completeUserProfile(
         displayName: String,
         bio: String,
@@ -376,6 +406,7 @@ interface GroupRepository {
     suspend fun removeMember(groupId: String, targetUid: String): Result<Unit>
     suspend fun setAdminRole(groupId: String, targetUid: String, isAdmin: Boolean): Result<Unit>
     suspend fun leaveGroup(groupId: String): Result<Unit>
+    suspend fun deleteGroup(groupId: String): Result<Unit>
 }
 
 interface ChannelRepository {

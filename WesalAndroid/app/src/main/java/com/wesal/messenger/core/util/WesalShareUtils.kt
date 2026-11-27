@@ -85,7 +85,44 @@ object WesalShareUtils {
         }
     }
 
+    /**
+     * Digits-only form of an E.164 phone, exactly as wa.me expects it (no '+', no spaces).
+     * Pure helper (no Android APIs) so the bulk-invite logic can be unit-tested.
+     */
+    fun inviteTargetDigits(targetPhoneE164: String?): String =
+        targetPhoneE164?.filter { it.isDigit() }.orEmpty()
+
+    /**
+     * True when a saved number normalized to a plausible international number, i.e. a
+     * wa.me chat can actually be opened for it. Contacts failing this are skipped (and
+     * counted) by the bulk-invite flow instead of opening a dead chat.
+     */
+    fun isInvitablePhone(targetPhoneE164: String?): Boolean = inviteTargetDigits(targetPhoneE164).length >= 9
+
     fun shareViaWhatsApp(context: Context, message: String, targetPhoneE164: String? = null) {
+        // Targeted invite (owner-reported bug fix): a wa.me deep link is the ONLY way to
+        // open a SPECIFIC person's chat with the message prefilled. The old order tried a
+        // generic ACTION_SEND first — that intent carries no phone number, so WhatsApp /
+        // WhatsApp Business simply opened its own share UI and the person's chat never
+        // opened; the wa.me fallback was unreachable whenever WhatsApp was installed.
+        val digitsPhone = inviteTargetDigits(targetPhoneE164)
+        if (digitsPhone.length >= 9) {
+            val waUrl = "https://wa.me/$digitsPhone?text=${Uri.encode(message)}"
+            val launched = listOf("com.whatsapp", "com.whatsapp.w4b", null).any { pkg ->
+                runCatching {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(waUrl))
+                    if (pkg != null) intent.setPackage(pkg)
+                    context.startActivity(intent)
+                    true
+                }.getOrDefault(false)
+            }
+            if (!launched) {
+                // WhatsApp not installed and nothing handled the link: generic share sheet.
+                shareGeneral(context, message, "WESAL Invite")
+            }
+            return
+        }
+
         val whatsappIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             setPackage("com.whatsapp")
@@ -108,12 +145,7 @@ object WesalShareUtils {
         }
 
         if (!launchedDirect) {
-            val digitsPhone = targetPhoneE164?.filter { it.isDigit() }.orEmpty()
-            val waUrl = if (digitsPhone.length >= 9) {
-                "https://wa.me/$digitsPhone?text=${Uri.encode(message)}"
-            } else {
-                "https://wa.me/?text=${Uri.encode(message)}"
-            }
+            val waUrl = "https://wa.me/?text=${Uri.encode(message)}"
             val browserFallback = Intent(Intent.ACTION_VIEW, Uri.parse(waUrl))
             runCatching {
                 context.startActivity(browserFallback)

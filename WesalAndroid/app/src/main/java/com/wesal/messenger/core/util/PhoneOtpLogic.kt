@@ -4,8 +4,10 @@ package com.wesal.messenger.core.util
  * Pure helpers for the phone-OTP flows (Zavu-delivered codes, phone phase):
  * the sign-in screen's phone option and the mandatory verify-your-number gate.
  * Kept free of Android/Firebase types so the rules are unit-testable — the
- * server (sendPhoneCode / verifyPhoneCode*) owns generation, expiry and the
- * attempt budget; these helpers only shape what the user types and sees.
+ * server (the Supabase phone backend: send-phone-code / verify-phone-code)
+ * owns generation, expiry and the attempt budget; these helpers only shape
+ * what the user types and sees, and map the backend's stable error codes to
+ * the Arabic messages the phone screens show.
  */
 object PhoneOtpLogic {
 
@@ -40,7 +42,42 @@ object PhoneOtpLogic {
     /** Arabic display name for the channel the server reports back. */
     fun channelDisplayNameAr(channel: String): String = when (channel.trim().lowercase()) {
         "whatsapp" -> "واتساب"
-        "sms" -> "رسالة نصية"
+        // The deployed send-phone-code returns its literal Zavu channel name
+        // "sms_oneway" (v2) — map it to the same label as plain SMS.
+        "sms", "sms_oneway" -> "رسالة نصية"
         else -> "رسالة"
+    }
+
+    /**
+     * Maps a Supabase phone-backend failure to the Arabic message the phone
+     * screens show. The backend returns the same Arabic strings as the old
+     * Firebase implementation for user-facing validation errors, and those
+     * are surfaced verbatim when present; the stable [errorCode] decides
+     * whenever the server message is English (the 401/403 pair) or the
+     * wording is a product requirement — delivery_failed must read as a
+     * clear "the code could not be sent right now" state, never a spinner
+     * that runs forever (the Zavu sender is configured owner-side and may
+     * legitimately be unavailable).
+     */
+    fun arabicMessageForErrorCode(errorCode: String?, serverMessage: String?, fallback: String): String {
+        when (errorCode?.trim()) {
+            "delivery_failed" -> return "تعذر إرسال الكود حالياً — حاول مرة أخرى بعد شوية"
+            "rate_limited_resend" -> return "استنى دقيقة قبل ما تطلب كود جديد"
+            "rate_limited_hourly" -> return "وصلت للحد الأقصى لطلب الأكواد للرقم ده — حاول مرة أخرى بعد شوية"
+            "code_expired" -> return "الكود انتهت صلاحيته — اطلب كود جديد"
+            "invalid_code" -> return "الكود غير صحيح — راجعه وحاول تاني"
+            "too_many_attempts" -> return "محاولات كتير غلط — اطلب كود جديد وحاول تاني"
+            "code_not_found" -> return "مفيش كود تحقق للرقم ده — اطلب كود جديد"
+            "phone_in_use" -> return "الرقم ده مربوط بحساب تاني"
+            "invalid_phone" -> return "رقم الهاتف غير صحيح — اكتبه بالصيغة الدولية"
+            "invalid_code_format" -> return "الكود لازم يكون ٦ أرقام"
+            "session_mismatch" -> return "الكود ده اتبعت من جلسة تانية — اطلب كود جديد من هنا"
+            "unauthenticated" -> return "انتهت الجلسة — سجّل الدخول من جديد وحاول مرة أخرى"
+            "server_error" -> return "خطأ في الخادم — حاول مرة أخرى"
+        }
+        val message = serverMessage?.trim().orEmpty()
+        // Arabic block U+0600..U+06FF: an Arabic server message is user-ready.
+        if (message.isNotBlank() && message.any { it in '\u0600'..'\u06FF' }) return message
+        return fallback
     }
 }

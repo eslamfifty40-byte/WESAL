@@ -284,7 +284,8 @@ enum class FrameCategory {
     DEFAULT_ALL_CUSTOMERS,
     CUSTOMER,
     ADMIN,
-    OFFICIAL
+    OFFICIAL,
+    ANIMATED
 }
 
 data class WesalFrameSpec(
@@ -298,7 +299,14 @@ data class WesalFrameSpec(
     val apertureCenterYFraction: Float = 0.50f,
     val apertureDiameterFraction: Float = 0.62f,
     val defaultAnimated: Boolean = false,
-    val defaultAnimationStyle: String = "PULSE_GLOW"
+    val defaultAnimationStyle: String = "PULSE_GLOW",
+    /**
+     * Luxury tier for the «إطارات متحركة» set (owner requirement, round 5):
+     * 1 = بسيط (simple), 2 = متوسط (medium), 3 = فاخر (luxury), 4 = ملكي (royal).
+     * 0 = untiered (all pre-existing customer/admin frames). Tier 4 frames also
+     * surface in the ADMIN picker.
+     */
+    val tier: Int = 0
 )
 
 object WesalFrameCatalog {
@@ -388,6 +396,83 @@ object WesalFrameCatalog {
         WesalFrameSpec("admin_38", "إطار إدارة #38", "Admin Frame #38", FrameCategory.ADMIN, R.drawable.wesal_frame_admin_38, true, 0xFF00D9E8L, apertureCenterYFraction = 0.40f, apertureDiameterFraction = 0.56f)
     )
 
+    /**
+     * «إطارات متحركة» (round 5): the owner's VIP-style frames, extracted from his two
+     * collages (hidden_audit/FRAMES_NEW_INVENTORY.md) plus the best of the extraction's
+     * skipped pool. Aperture centre-Y / diameter and glow colour are MEASURED per frame,
+     * never guessed: anim_01..anim_28 carry the extraction inventory's values;
+     * anim_29..anim_49 were measured from the extractions' alpha channels with the same
+     * 720-ray radial inner-edge method (validated against the inventory's frames to
+     * within ±0.017 Ø). Frames carrying baked-in text/rank banners (TOP1, NO.1, …) were
+     * excluded from the expansion picks. Assets ship as WebP (quality 90, alpha kept) —
+     * 49 frames ≈ 4.7MB instead of ≈ 15.9MB of PNG; PNG masters stay in hidden_audit.
+     * TIERS (owner requirement): the list is ordered by [WesalFrameSpec.tier] —
+     * 1 بسيط (Simple) → 2 متوسط (Medium) → 3 فاخر (Luxury) → 4 ملكي (Royal) — and every
+     * title carries its tier name. Tier-4 (crowns/lions/dragons, the most ornate) ALSO
+     * surfaces in the ADMIN picker (see WesalFrameLibrary.pickerItems). All are flagged
+     * animated (PULSE_GLOW, ice/crystal ones SHIMMER); the renderer adds the living
+     * treatment (pulsing glow disc, shine sweep, sparkles) and the admin can flip any
+     * of them to static from the admin panel via the frame_library override doc.
+     * Aperture centre-X is not modelled: measured centres sit at x≈0.49–0.50, and the
+     * few higher readings (anim_19/anim_23) were visually verified as ornament-pull
+     * artefacts — their openings are centred.
+     */
+    val animatedFrames: List<WesalFrameSpec> = listOf(
+        // ——— Tier 1: بسيط (Simple) ———
+        WesalFrameSpec("anim_03", "بسيط · إكليل الغار الذهبي", "Simple · Golden Laurel Wreath", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_03, true, 0xFFF8EAA4L, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.434f, defaultAnimated = true, tier = 1),
+        WesalFrameSpec("anim_16", "بسيط · حلقة ذهبية", "Simple · Gold Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_16, true, 0xFFFDD89BL, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.453f, defaultAnimated = true, tier = 1),
+        WesalFrameSpec("anim_25", "بسيط · حلقة فضية زرقاء", "Simple · Silver Blue Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_25, true, 0xFFEEF6FEL, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.523f, defaultAnimated = true, tier = 1),
+        WesalFrameSpec("anim_28", "بسيط · إكليل أخضر شاحب", "Simple · Pale Green Wreath", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_28, true, 0xFFEFFEE6L, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.467f, defaultAnimated = true, tier = 1),
+        WesalFrameSpec("anim_30", "بسيط · إكليل الغار والنجمة", "Simple · Laurel & Star", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_30, true, 0xFFFBD27CL, apertureCenterYFraction = 0.456f, apertureDiameterFraction = 0.559f, defaultAnimated = true, tier = 1),
+        WesalFrameSpec("anim_35", "بسيط · إكليل غار ذهبي", "Simple · Golden Laurel", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_35, true, 0xFFFBD58BL, apertureCenterYFraction = 0.455f, apertureDiameterFraction = 0.520f, defaultAnimated = true, tier = 1),
+        WesalFrameSpec("anim_40", "بسيط · إطار الاحتفال الوردي", "Simple · Pink Celebration", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_40, true, 0xFFF7C8C8L, apertureCenterYFraction = 0.488f, apertureDiameterFraction = 0.500f, defaultAnimated = true, tier = 1),
+        // ——— Tier 2: متوسط (Medium) ———
+        WesalFrameSpec("anim_04", "متوسط · حلقة ذهبية ملكية", "Medium · Ornate Gold Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_04, true, 0xFFFDDCB0L, apertureCenterYFraction = 0.497f, apertureDiameterFraction = 0.429f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_06", "متوسط · إكليل الغار الأحمر", "Medium · Red Gem Laurel", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_06, true, 0xFFFEE6A2L, apertureCenterYFraction = 0.533f, apertureDiameterFraction = 0.416f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_09", "متوسط · وردي فضي مزخرف", "Medium · Pink Silver Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_09, true, 0xFFFDE0F2L, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.542f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_18", "متوسط · أصفر مخضر مزخرف", "Medium · Yellow Green Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_18, true, 0xFFF1F58DL, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.505f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_20", "متوسط · بنفسجي وردي مزخرف", "Medium · Purple Pink Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_20, true, 0xFFF8B0FEL, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.566f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_21", "متوسط · حلقة جليدية زرقاء", "Medium · Ice Blue Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_21, true, 0xFFBBEBFEL, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.472f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 2),
+        WesalFrameSpec("anim_22", "متوسط · ذهبي وأخضر مزخرف", "Medium · Gold Green Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_22, true, 0xFFFDE49EL, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.486f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_23", "متوسط · ذهبي وردي ناعم", "Medium · Rose Gold Pink", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_23, true, 0xFFF6CCBFL, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.523f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_31", "متوسط · إكليل وردي بنفسجي", "Medium · Pink Purple Laurel", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_31, true, 0xFFF9DEBBL, apertureCenterYFraction = 0.422f, apertureDiameterFraction = 0.551f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_33", "متوسط · حلقة لافندر فضية", "Medium · Lavender Silver Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_33, true, 0xFFD8D6FBL, apertureCenterYFraction = 0.489f, apertureDiameterFraction = 0.531f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 2),
+        WesalFrameSpec("anim_38", "متوسط · حلقة وردية مجنحة", "Medium · Pink Winged Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_38, true, 0xFFFCD0D7L, apertureCenterYFraction = 0.491f, apertureDiameterFraction = 0.500f, defaultAnimated = true, tier = 2),
+        WesalFrameSpec("anim_48", "متوسط · حلقة الكريستال البنفسجية", "Medium · Violet Crystal Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_48, true, 0xFFE0DBFBL, apertureCenterYFraction = 0.467f, apertureDiameterFraction = 0.484f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 2),
+        // ——— Tier 3: فاخر (Luxury) ———
+        WesalFrameSpec("anim_01", "فاخر · أجنحة ذهبية وهلال", "Luxury · Golden Wings & Crescent", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_01, true, 0xFFFCEEC2L, apertureCenterYFraction = 0.447f, apertureDiameterFraction = 0.503f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_05", "فاخر · أجنحة البرق الزرقاء", "Luxury · Lightning Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_05, true, 0xFFE0EAD3L, apertureCenterYFraction = 0.497f, apertureDiameterFraction = 0.419f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_07", "فاخر · أجنحة جليدية", "Luxury · Ice Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_07, true, 0xFFB5EAFFL, apertureCenterYFraction = 0.537f, apertureDiameterFraction = 0.390f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 3),
+        WesalFrameSpec("anim_10", "فاخر · أجنحة ذهبية حمراء", "Luxury · Gold Red Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_10, true, 0xFFFEDBA1L, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.523f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_13", "فاخر · أجنحة فضية", "Luxury · Silver Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_13, true, 0xFFF9F6E7L, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.566f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_14", "فاخر · أبيض وذهبي مزخرف", "Luxury · White Gold Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_14, true, 0xFFFFF1CCL, apertureCenterYFraction = 0.545f, apertureDiameterFraction = 0.561f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_17", "فاخر · ذهبي أصفر مزخرف", "Luxury · Yellow Gold Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_17, true, 0xFFFCF5BBL, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.528f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_19", "فاخر · ذهبي مزخرف بأجنحة", "Luxury · Winged Gold Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_19, true, 0xFFFEE9C1L, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.523f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_24", "فاخر · أجنحة كريستال جليدية", "Luxury · Ice Crystal Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_24, true, 0xFFA0EEFEL, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.585f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 3),
+        WesalFrameSpec("anim_26", "فاخر · ذهبي مزخرف كلاسيك", "Luxury · Classic Gold Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_26, true, 0xFFFDEAAFL, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.547f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_29", "فاخر · إكليل بأجنحة بنفسجية", "Luxury · Purple Wing Laurel", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_29, true, 0xFFF9E0BFL, apertureCenterYFraction = 0.414f, apertureDiameterFraction = 0.570f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_34", "فاخر · بنفسجي ذهبي مزخرف", "Luxury · Purple Gold Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_34, true, 0xFFF8B28FL, apertureCenterYFraction = 0.498f, apertureDiameterFraction = 0.520f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_36", "فاخر · إكليل وردي متوج", "Luxury · Crowned Rose Laurel", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_36, true, 0xFFFBD1B2L, apertureCenterYFraction = 0.448f, apertureDiameterFraction = 0.508f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_37", "فاخر · أجنحة فضية جليدية", "Luxury · Silver Ice Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_37, true, 0xFFF0EEEDL, apertureCenterYFraction = 0.444f, apertureDiameterFraction = 0.500f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 3),
+        WesalFrameSpec("anim_41", "فاخر · عنقاء خضراء ذهبية", "Luxury · Green Gold Phoenix", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_41, true, 0xFFF0E195L, apertureCenterYFraction = 0.462f, apertureDiameterFraction = 0.496f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_42", "فاخر · أجنحة ذهبية متلألئة", "Luxury · Sparkling Gold Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_42, true, 0xFFFAD395L, apertureCenterYFraction = 0.414f, apertureDiameterFraction = 0.488f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 3),
+        WesalFrameSpec("anim_46", "فاخر · إكليل الأجنحة الذهبي", "Luxury · Golden Wing Wreath", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_46, true, 0xFFFAE5B7L, apertureCenterYFraction = 0.493f, apertureDiameterFraction = 0.461f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_47", "فاخر · إكليل الياقوت البنفسجي", "Luxury · Violet Gem Wreath", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_47, true, 0xFFFAD296L, apertureCenterYFraction = 0.496f, apertureDiameterFraction = 0.445f, defaultAnimated = true, tier = 3),
+        WesalFrameSpec("anim_49", "فاخر · هلال القلعة الذهبي", "Luxury · Golden Castle Crescent", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_49, true, 0xFFFAD772L, apertureCenterYFraction = 0.489f, apertureDiameterFraction = 0.430f, defaultAnimated = true, tier = 3),
+        // ——— Tier 4: ملكي (Royal) ———
+        WesalFrameSpec("anim_02", "ملكي · تنينان ذهبيان", "Royal · Twin Gold Dragons", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_02, true, 0xFFFBE3A3L, apertureCenterYFraction = 0.536f, apertureDiameterFraction = 0.449f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_08", "ملكي · أجنحة جليدية متوجة", "Royal · Crowned Ice Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_08, true, 0xFFBBECFEL, apertureCenterYFraction = 0.537f, apertureDiameterFraction = 0.382f, defaultAnimated = true, defaultAnimationStyle = "SHIMMER", tier = 4),
+        WesalFrameSpec("anim_11", "ملكي · ذهبي أحمر مزخرف", "Royal · Gold Red Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_11, true, 0xFFFDDDC1L, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.598f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_12", "ملكي · تاج ذهبي", "Royal · Gold Crown Ring", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_12, true, 0xFFFEE6ABL, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.491f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_15", "ملكي · ذهبي ملكي فاخر", "Royal · Royal Gold Ornate", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_15, true, 0xFFFEECC6L, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.598f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_27", "ملكي · تيجان بنفسجية ذهبية", "Royal · Purple Crown Gold", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_27, true, 0xFFFDE1BAL, apertureCenterYFraction = 0.495f, apertureDiameterFraction = 0.579f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_32", "ملكي · تاج ذهبي أحمر", "Royal · Gold Red Crown", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_32, true, 0xFFFBBA5EL, apertureCenterYFraction = 0.521f, apertureDiameterFraction = 0.535f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_39", "ملكي · إكليل التاج الذهبي", "Royal · Golden Crown Laurel", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_39, true, 0xFFFCC077L, apertureCenterYFraction = 0.421f, apertureDiameterFraction = 0.500f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_43", "ملكي · قصر الزمرد الذهبي", "Royal · Emerald Gold Palace", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_43, true, 0xFFFAE0A2L, apertureCenterYFraction = 0.457f, apertureDiameterFraction = 0.488f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_44", "ملكي · تاج العنقاء الذهبي", "Royal · Phoenix Crown", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_44, true, 0xFFFCD381L, apertureCenterYFraction = 0.453f, apertureDiameterFraction = 0.480f, defaultAnimated = true, tier = 4),
+        WesalFrameSpec("anim_45", "ملكي · أجنحة الأسود الذهبية", "Royal · Lion Wings", FrameCategory.ANIMATED, R.drawable.wesal_frame_new_45, true, 0xFFFBD382L, apertureCenterYFraction = 0.445f, apertureDiameterFraction = 0.460f, defaultAnimated = true, tier = 4)
+    )
+
     val builtinIcons: List<WesalBuiltinIconSpec> = listOf(
         WesalBuiltinIconSpec("builtin_icon_crown", "التاج الملكي", "Royal Crown", R.drawable.wesal_ic_badge_crown, 0xFFFFD54FL),
         WesalBuiltinIconSpec("builtin_icon_diamond", "الألماسة الفيروزية", "Turquoise Diamond", R.drawable.wesal_ic_badge_diamond, 0xFF00E5FFL),
@@ -403,7 +488,7 @@ object WesalFrameCatalog {
         WesalBuiltinIconSpec("builtin_icon_vip", "وسام VIP", "VIP Crest", R.drawable.wesal_ic_badge_vip, 0xFFFFD54FL)
     )
 
-    val allFrames: List<WesalFrameSpec> = customerFrames + adminFrames
+    val allFrames: List<WesalFrameSpec> = customerFrames + adminFrames + animatedFrames
 
     val builtinGlow: Map<String, Long> = allFrames.associate { it.id to it.accentColorHex }
 

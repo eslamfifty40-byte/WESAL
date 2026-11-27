@@ -221,7 +221,14 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                                     name = name,
                                     isVerified = verified,
                                     verificationType = verType,
-                                    fontWeight = FontWeight.Bold
+                                    neonColor = doc.getString("neonColor").orEmpty(),
+                                    neonGlowIntensity = doc.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f,
+                                    neonEnabled = doc.getBoolean("neonEnabled") ?: doc.getString("neonColor").orEmpty().isNotBlank(),
+                                    fontWeight = FontWeight.Bold,
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(
+                                        doc.getString("iconId").orEmpty(),
+                                        doc.getString("iconUrl").orEmpty()
+                                    )
                                 )
                                 if (numericId.isNotBlank()) Text("ID: $numericId")
                                 if (publicId.isNotBlank()) Text("@$publicId")

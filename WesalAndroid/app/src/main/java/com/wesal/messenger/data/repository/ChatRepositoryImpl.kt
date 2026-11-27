@@ -387,11 +387,19 @@ class ChatRepositoryImpl @Inject constructor(
 
         if (isOfficialWesalChat) {
             title = title.ifBlank { "WESAL Messenger" }
+            // Round 5: photo, frame and badge derive from the official account's
+            // own user doc (10001) — whatever the admin sets on that account is
+            // what the welcome conversation shows. Missing doc → historical
+            // defaults (verified BLUE badge; the UI falls back to the royal
+            // crest when no frame is set).
+            val ownerIdentity = fetchOwnerAdminIdentity()
             if (avatar.isBlank()) {
-                avatar = fetchOwnerAdminAvatarUrl()
+                avatar = ownerIdentity?.photoUrl.orEmpty()
             }
-            peerVerified = true
-            peerVerificationType = "BLUE"
+            peerVerified = ownerIdentity?.isVerified ?: true
+            peerVerificationType = ownerIdentity?.verificationType ?: "BLUE"
+            peerFrameId = ownerIdentity?.frameId.orEmpty()
+            peerFrameExpiresAt = ownerIdentity?.frameExpiresAt ?: 0L
         } else if (!isGroup) {
             peerUid = participantIds.firstOrNull { it != myUid }.orEmpty()
             if (peerUid.isNotBlank()) {
@@ -432,8 +440,19 @@ class ChatRepositoryImpl @Inject constructor(
 
         val rawPreview = doc.getString("lastMessagePreview").orEmpty()
         val sanitizedPreview = if (rawPreview == "رسالة مشفرة") "رسالة سابقة" else rawPreview
-        val reqStatus = doc.getString("requestStatus")?.takeIf { it.isNotBlank() } ?: "ACCEPTED"
-        val isReqFlag = (doc.getBoolean("isMessageRequest") ?: false) && reqStatus != "ACCEPTED"
+        // AUDIT SEC-A fix (A11 directionality): requestStatus is viewer-relative.
+        // A pending/held/rejected request binds the RECIPIENT, never the person who
+        // sent the request: previously both participants saw the chat as a "message
+        // request", so the sender's own chat vanished from their main list into the
+        // requests inbox and the in-chat banner offered them Accept/Hold/Reject on
+        // their own outgoing request. requestFromUid is stamped by
+        // setMessageRequestDecision; legacy docs without it keep the old behaviour.
+        val rawReqStatus = doc.getString("requestStatus")?.takeIf { it.isNotBlank() } ?: "ACCEPTED"
+        val requestFromUid = doc.getString("requestFromUid").orEmpty()
+        val iAmRequester = requestFromUid.isNotBlank() && requestFromUid == myUid
+        val reqStatus = if (iAmRequester) "ACCEPTED" else rawReqStatus
+        val isReqFlag = !iAmRequester &&
+            (doc.getBoolean("isMessageRequest") ?: false) && reqStatus != "ACCEPTED"
 
         return ChatPreview(
             chatId = doc.id,
@@ -926,6 +945,13 @@ class ChatRepositoryImpl @Inject constructor(
             chatId = chatId,
             senderId = senderId,
             senderName = doc.getString("senderName").orEmpty(),
+            senderIconId = doc.getString("senderIconId").orEmpty(),
+            senderIconUrl = doc.getString("senderIconUrl").orEmpty(),
+            senderVerified = doc.getBoolean("senderVerified") ?: false,
+            senderVerificationType = doc.getString("senderVerificationType") ?: "BLUE",
+            senderNeonColor = doc.getString("senderNeonColor").orEmpty(),
+            senderNeonEnabled = doc.getBoolean("senderNeonEnabled") ?: false,
+            senderNeonGlowIntensity = doc.getDouble("senderNeonGlowIntensity")?.toFloat() ?: 0.7f,
             type = MessageType.fromRaw(doc.getString("type")),
             ciphertext = ciphertext,
             text = resolvedText,
@@ -1104,25 +1130,56 @@ class ChatRepositoryImpl @Inject constructor(
         deterministicChatId
     }
 
-    private var cachedOwnerAdminAvatar: Pair<Long, String>? = null
-    private suspend fun fetchOwnerAdminAvatarUrl(): String {
+    /**
+     * Round 5 (owner requirement): the official presence IS the 10001 account —
+     * a real user doc like any other. Its photo, frame and verification badge are
+     * read from that doc so the official/welcome conversation renders EXACTLY
+     * like the account itself (profile page included). Cached for 60s like the
+     * avatar-only fetch this replaces; null when the doc does not exist (yet),
+     * in which case callers keep the historical defaults.
+     */
+    private data class OwnerAdminIdentity(
+        val photoUrl: String,
+        val frameId: String,
+        val frameExpiresAt: Long,
+        val isVerified: Boolean,
+        val verificationType: String
+    )
+
+    private var cachedOwnerAdminIdentity: Pair<Long, OwnerAdminIdentity?>? = null
+
+    private suspend fun fetchOwnerAdminIdentity(): OwnerAdminIdentity? {
         val now = System.currentTimeMillis()
-        val cached = cachedOwnerAdminAvatar
+        val cached = cachedOwnerAdminIdentity
         if (cached != null && now - cached.first < 60_000L) return cached.second
-        val url = runCatching {
-            firestore.collection(Constants.COLLECTION_USERS)
+        val identity = runCatching {
+            val doc = firestore.collection(Constants.COLLECTION_USERS)
                 .whereEqualTo("numericId", Constants.OWNER_ADMIN_NUMERIC_ID)
                 .limit(1)
                 .get()
                 .await()
                 .documents
                 .firstOrNull()
-                ?.getString("photoUrl")
-                .orEmpty()
-        }.getOrDefault("")
-        cachedOwnerAdminAvatar = now to url
-        return url
+                ?: return@runCatching null
+            val frameExpiresAt = doc.getLong("frameExpiresAt") ?: 0L
+            val rawFrameId = doc.getString("frameId").orEmpty()
+            val frameLive = rawFrameId.isNotBlank() && !(frameExpiresAt > 0L && now > frameExpiresAt)
+            val verificationExpiresAt = doc.getLong("verificationExpiresAt") ?: 0L
+            OwnerAdminIdentity(
+                photoUrl = doc.getString("photoUrl").orEmpty(),
+                frameId = if (frameLive) rawFrameId else "",
+                frameExpiresAt = if (frameLive) frameExpiresAt else 0L,
+                isVerified = (doc.getBoolean("isVerified") ?: false) &&
+                    (verificationExpiresAt == 0L || now <= verificationExpiresAt),
+                verificationType = doc.getString("verificationType")?.ifBlank { "BLUE" } ?: "BLUE"
+            )
+        }.getOrNull()
+        cachedOwnerAdminIdentity = now to identity
+        return identity
     }
+
+    private suspend fun fetchOwnerAdminAvatarUrl(): String =
+        fetchOwnerAdminIdentity()?.photoUrl.orEmpty()
 
     override suspend fun ensureOfficialWelcomeChat(displayName: String, forceResend: Boolean): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: return@runCatching
@@ -1293,6 +1350,13 @@ class ChatRepositoryImpl @Inject constructor(
             "senderName" to (me?.displayName?.ifBlank {
                 me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
             } ?: "WESAL User"),
+            "senderIconId" to (me?.iconId ?: ""),
+            "senderIconUrl" to (me?.iconUrl ?: ""),
+            "senderVerified" to (me?.isVerified ?: false),
+            "senderVerificationType" to (me?.verificationType ?: "BLUE"),
+            "senderNeonColor" to (me?.neonColor ?: ""),
+            "senderNeonEnabled" to (me?.neonEnabled ?: false),
+            "senderNeonGlowIntensity" to (me?.neonGlowIntensity ?: 0.7f),
             "type" to MessageType.TEXT.raw,
             "ciphertext" to "",
             "text" to cleanText,
@@ -1502,6 +1566,13 @@ class ChatRepositoryImpl @Inject constructor(
                     "senderName" to (me?.displayName?.ifBlank {
                         me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
                     } ?: "WESAL User"),
+                    "senderIconId" to (me?.iconId ?: ""),
+                    "senderIconUrl" to (me?.iconUrl ?: ""),
+                    "senderVerified" to (me?.isVerified ?: false),
+                    "senderVerificationType" to (me?.verificationType ?: "BLUE"),
+                    "senderNeonColor" to (me?.neonColor ?: ""),
+                    "senderNeonEnabled" to (me?.neonEnabled ?: false),
+                    "senderNeonGlowIntensity" to (me?.neonGlowIntensity ?: 0.7f),
                     "type" to type.raw,
                     "text" to caption.trim(),
                     "isEncrypted" to false,
@@ -1691,6 +1762,13 @@ class ChatRepositoryImpl @Inject constructor(
             "senderName" to (me?.displayName?.ifBlank {
                 me.publicId.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "WESAL User"
             } ?: "WESAL User"),
+            "senderIconId" to (me?.iconId ?: ""),
+            "senderIconUrl" to (me?.iconUrl ?: ""),
+            "senderVerified" to (me?.isVerified ?: false),
+            "senderVerificationType" to (me?.verificationType ?: "BLUE"),
+            "senderNeonColor" to (me?.neonColor ?: ""),
+            "senderNeonEnabled" to (me?.neonEnabled ?: false),
+            "senderNeonGlowIntensity" to (me?.neonGlowIntensity ?: 0.7f),
             "type" to if (isLive) MessageType.LIVE_LOCATION.raw else MessageType.LOCATION.raw,
             "text" to address.ifBlank { if (isLive) "مشاركة الموقع المباشر" else "الموقع الجغرافي" },
             "latitude" to latitude,
@@ -1791,6 +1869,13 @@ class ChatRepositoryImpl @Inject constructor(
                 "requestStatus" to reqStatus,
                 "isMessageRequest" to (reqStatus != "ACCEPTED")
             )
+            // AUDIT SEC-A fix (A11 directionality): record WHO sent the request.
+            // Callers pass peerUid = the other participant, i.e. the requester from
+            // the decider's point of view. mapChatPreview uses this so the request
+            // state only binds the recipient, not the requester.
+            if (peerUid.isNotBlank() && peerUid != myUid) {
+                chatPatch["requestFromUid"] = peerUid
+            }
             if (reqStatus == "REJECTED" || normalized == "DELETE") {
                 chatPatch["deletedForUsers"] = FieldValue.arrayUnion(myUid)
             }
@@ -1966,9 +2051,15 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun toggleArchiveChat(chatId: String, archived: Boolean): Result<Unit> = runCatching {
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
+        // AUDIT SEC-A fix: this used set(mapOf("archivedBy.$myUid" to archived), merge).
+        // A dotted key inside a set() map is stored as a LITERAL top-level field named
+        // "archivedBy.<uid>", never as the nested archivedBy map that mapChatPreview
+        // reads — so Archive/Unarchive was a placebo (isArchived never changed and the
+        // chat never moved to the archived list). update() interprets the dot as a
+        // field path, exactly like togglePinChat/toggleMuteChat above.
         firestore.collection(Constants.COLLECTION_CHATS)
             .document(chatId)
-            .set(mapOf("archivedBy.$myUid" to archived), SetOptions.merge())
+            .update("archivedBy.$myUid", archived)
             .await()
     }
 
@@ -2025,7 +2116,11 @@ class ChatRepositoryImpl @Inject constructor(
             }
             batch.commit().await()
         }
-        chatRef.set(mapOf("unreadCounts.$myUid" to 0), SetOptions.merge()).await()
+        // AUDIT R5 coordinator fix: same dotted-key set() bug as toggleArchiveChat —
+        // set(mapOf("unreadCounts.$myUid" to 0), merge) stored a literal top-level
+        // field named "unreadCounts.<uid>" and never zeroed the nested unreadCounts
+        // map entry the chat list reads. update() treats the dot as a field path.
+        chatRef.update("unreadCounts.$myUid", 0).await()
     }
 
     @Suppress("UNCHECKED_CAST")

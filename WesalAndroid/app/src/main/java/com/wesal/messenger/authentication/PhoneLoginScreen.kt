@@ -1,6 +1,7 @@
 package com.wesal.messenger.authentication
 
 import android.app.Activity
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -228,7 +229,18 @@ fun PhoneLoginScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    IconButton(onClick = onCancelAddAccount) {
+                    IconButton(
+                        onClick = {
+                            // Backing out of an add-account phone login: the
+                            // flow replaced the active session with its
+                            // anonymous session when the code was requested —
+                            // abandon it so the app returns to a clean
+                            // signed-out state (the replaced account remains
+                            // in the saved-accounts list below).
+                            viewModel.abandonPhoneLoginSession()
+                            onCancelAddAccount()
+                        }
+                    ) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = strings.back,
@@ -889,6 +901,26 @@ fun PhoneLoginScreen(
                                 } else if (acc.email.isNotBlank()) {
                                     viewModel.toggleSignUpMode(false)
                                     viewModel.updateEmailInput(acc.email)
+                                } else if (acc.phoneNumber.isNotBlank()) {
+                                    // Audit B15: phone-registered saved accounts
+                                    // (provider "phone", no email) matched NO
+                                    // branch above — tapping the row was a dead
+                                    // tap. Route it into the phone-OTP flow:
+                                    // prefill the number, then the user taps
+                                    // «ابعت الكود» to receive a fresh code.
+                                    val (detectedCountry, detectedLocal) =
+                                        CountryCatalog.detectFromE164(acc.phoneNumber)
+                                    viewModel.selectCountry(detectedCountry)
+                                    viewModel.updatePhoneInput(detectedLocal.filter { c -> c.isDigit() })
+                                    Toast.makeText(
+                                        context,
+                                        if (strings.isEnglish) {
+                                            "Number filled in — tap \"Send the Code\" to sign in"
+                                        } else {
+                                            "تم إدخال رقمك — اضغط «ابعت الكود» لتسجيل الدخول"
+                                        },
+                                        Toast.LENGTH_LONG
+                                    ).show()
                                 }
                             }
                     ) {

@@ -49,6 +49,11 @@ class ChannelsViewModel @Inject constructor(
         .map { it?.photoUrl.orEmpty() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
+    // FIX 3 (round 5): the full current user, for the screenshot-protection
+    // toggle (privacySettings.screenshotProtectionEnabled) in channel screens.
+    val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 

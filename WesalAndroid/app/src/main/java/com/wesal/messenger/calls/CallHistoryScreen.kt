@@ -480,7 +480,12 @@ fun CallHistoryScreen(viewModel: CallHistoryViewModel = hiltViewModel()) {
                                     WesalNameWithBadge(
                                         name = user.displayName.ifBlank { "@${user.publicId}" },
                                         isVerified = user.isVerified,
-                                        fontWeight = FontWeight.Medium
+                                        verificationType = user.verificationType,
+                                        neonColor = user.neonColor,
+                                        neonGlowIntensity = user.neonGlowIntensity,
+                                        neonEnabled = user.neonEnabled,
+                                        fontWeight = FontWeight.Medium,
+                                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                     )
                                     val callSub = listOfNotNull(
                                         user.numericId.takeIf { it.isNotBlank() }?.let { "ID: $it" },

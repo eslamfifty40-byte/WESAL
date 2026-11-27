@@ -82,6 +82,65 @@ class MainViewModel @Inject constructor(
 
     private var heartbeatJob: Job? = null
 
+    /**
+     * Uid whose Supabase-registry phone verification this process has already
+     * proven. The verified_phones registry is the authority for the mandatory
+     * gate; the user doc's isPhoneVerified is only its best-effort mirror, so
+     * a positive registry result is cached for the session instead of being
+     * re-queried on every start / doc emission.
+     */
+    @Volatile
+    private var registryVerifiedUid: String? = null
+
+    @Volatile
+    private var registryRecheckUid: String? = null
+
+    @Volatile
+    private var registryRecheckAtMs: Long = 0L
+
+    /**
+     * True when the account's phone counts as verified for the mandatory
+     * gate: the user doc says so (its mirror), this session already proved
+     * it against the registry, or the registry holds a row for [uid]
+     * (checked now, bounded at 6s, fail-closed).
+     */
+    private suspend fun isGateVerified(uid: String, docVerified: Boolean): Boolean {
+        if (docVerified || registryVerifiedUid == uid) {
+            registryVerifiedUid = uid
+            return true
+        }
+        val inRegistry = withTimeoutOrNull(6_000L) {
+            runCatching { authRepository.isPhoneVerifiedInRegistry(uid) }.getOrDefault(false)
+        } ?: false
+        if (inRegistry) registryVerifiedUid = uid
+        return inRegistry
+    }
+
+    /**
+     * While an unverified account is held at the gate, re-check the registry
+     * in the background (throttled to one check per uid per 20s — the doc
+     * observer re-emits on presence heartbeats, so this ticks regularly):
+     * a verification completed on another device, or one whose Firestore
+     * mirror stamp failed, lifts the gate from here even when the user doc
+     * never flips.
+     */
+    private fun recheckRegistryInBackground(uid: String) {
+        val now = System.currentTimeMillis()
+        if (registryRecheckUid == uid && now - registryRecheckAtMs < 20_000L) return
+        registryRecheckUid = uid
+        registryRecheckAtMs = now
+        viewModelScope.launch {
+            val inRegistry = runCatching { authRepository.isPhoneVerifiedInRegistry(uid) }
+                .getOrDefault(false)
+            if (inRegistry && authRepository.currentUserId == uid) {
+                registryVerifiedUid = uid
+                if (_startDestination.value == StartDestination.VerifyPhone) {
+                    _startDestination.value = StartDestination.Home
+                }
+            }
+        }
+    }
+
     init {
         resolveInitialRouteFast()
         observePendingChannelInvite()
@@ -131,7 +190,10 @@ class MainViewModel @Inject constructor(
                         _startDestination.value = when {
                             !complete -> StartDestination.ProfileSetup
                             // Mandatory gate: profile done but number unverified.
-                            !user.isPhoneVerified -> StartDestination.VerifyPhone
+                            // The Supabase registry is the authority — the
+                            // doc's isPhoneVerified is only its mirror, so a
+                            // lost mirror must not gate a proven-verified user.
+                            !isGateVerified(uid, user.isPhoneVerified) -> StartDestination.VerifyPhone
                             else -> StartDestination.Home
                         }
                     } else if (userResult.isSuccess) {
@@ -158,15 +220,23 @@ class MainViewModel @Inject constructor(
                 // Mandatory phone-verification gate (phone phase, owner rule):
                 // keep the destination in sync with the live user doc — an
                 // unverified complete account is held at the gate, and the
-                // moment the server stamp lands (isPhoneVerified=true) the
-                // destination flips to Home and the gate lifts itself. Profile
-                // setup still comes first for incomplete accounts.
+                // moment verification is proven (the doc mirror flips to
+                // isPhoneVerified=true, or the Supabase registry check comes
+                // back positive) the destination flips to Home and the gate
+                // lifts itself. Profile setup still comes first for
+                // incomplete accounts.
                 val complete = (user.profileCompleted ||
                     (user.displayName.isNotBlank() && user.phoneNumber.isNotBlank() && user.birthDate.isNotBlank()))
-                _startDestination.value = when {
-                    !complete -> StartDestination.ProfileSetup
-                    !user.isPhoneVerified -> StartDestination.VerifyPhone
-                    else -> StartDestination.Home
+                when {
+                    !complete -> _startDestination.value = StartDestination.ProfileSetup
+                    user.isPhoneVerified || registryVerifiedUid == user.uid -> {
+                        registryVerifiedUid = user.uid
+                        _startDestination.value = StartDestination.Home
+                    }
+                    else -> {
+                        _startDestination.value = StartDestination.VerifyPhone
+                        recheckRegistryInBackground(user.uid)
+                    }
                 }
             }
         }

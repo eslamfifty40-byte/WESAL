@@ -273,6 +273,42 @@ class StoriesViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Reply to someone else's story: lands as a real text message in the DM
+     * with the story owner (created on demand), prefixed with a short quote of
+     * the story so the owner knows what it answers. Mirrors the
+     * promoteStoryToContacts send path (getOrCreateDirectChat + sendTextMessage).
+     */
+    fun replyToStory(story: StoryItem, text: String, onDone: (Boolean) -> Unit) {
+        val clean = text.trim()
+        if (clean.isBlank() || story.ownerUid.isBlank() || story.ownerUid == myUid) {
+            onDone(false)
+            return
+        }
+        viewModelScope.launch {
+            val preview = when (story.type) {
+                StoryType.TEXT -> story.textContent
+                StoryType.AUDIO -> story.caption.ifBlank { "حالة صوتية" }
+                StoryType.VIDEO -> story.caption.ifBlank { "حالة فيديو" }
+                StoryType.IMAGE -> story.caption.ifBlank { "حالة مصورة" }
+            }
+            val message = buildString {
+                append("💬 رد على حالتك")
+                if (preview.isNotBlank()) {
+                    append(" «")
+                    append(preview.take(120))
+                    append("»")
+                }
+                append("\n")
+                append(clean)
+            }
+            val chatId = chatRepository.getOrCreateDirectChat(story.ownerUid).getOrNull()
+            val sent = !chatId.isNullOrBlank() &&
+                chatRepository.sendTextMessage(chatId, message).isSuccess
+            onDone(sent)
+        }
+    }
+
     fun publishTextStory(
         text: String,
         bgHex: Long,
@@ -771,6 +807,7 @@ fun StoriesScreen(
     currentActiveStory?.let { story ->
         val isOwner = story.ownerUid == myUid
         val isArchived = story.storyId in archivedStoryIds
+        var storyReplyText by remember(story.storyId) { mutableStateOf("") }
         LaunchedEffect(story.storyId) { viewModel.markViewed(story) }
         DisposableEffect(story.storyId, isOwner) {
             if (!isOwner) {
@@ -958,13 +995,26 @@ fun StoriesScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    WesalAvatar(imageUrl = story.ownerAvatarUrl, name = story.ownerName, size = 40.dp)
+                    WesalAvatar(
+                        imageUrl = story.ownerAvatarUrl,
+                        name = story.ownerName,
+                        size = 40.dp,
+                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(story.ownerIconId, story.ownerIconUrl),
+                        neonColor = if (story.ownerNeonEnabled) story.ownerNeonColor else "",
+                        neonGlowIntensity = story.ownerNeonGlowIntensity,
+                        fitInsideBounds = true
+                    )
                     Column {
                         WesalNameWithBadge(
                             name = story.ownerName,
                             isVerified = story.ownerVerified,
+                            verificationType = story.ownerVerificationType,
+                            neonColor = story.ownerNeonColor,
+                            neonGlowIntensity = story.ownerNeonGlowIntensity,
+                            neonEnabled = story.ownerNeonEnabled,
                             color = Color.White,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(story.ownerIconId, story.ownerIconUrl)
                         )
                         Text(
                             DateTimeUtils.formatChatListTime(story.createdAt),
@@ -1051,6 +1101,69 @@ fun StoriesScreen(
                             color = Color.White,
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
                         )
+                    }
+                }
+                if (!isOwner) {
+                    // Reply-to-story: sends a real DM to the story owner (see
+                    // StoriesViewModel.replyToStory). Previously viewers had no
+                    // reply affordance at all.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = storyReplyText,
+                            onValueChange = { storyReplyText = it },
+                            placeholder = {
+                                Text(
+                                    text = if (strings.isEnglish) "Reply to story..." else "الرد على الحالة...",
+                                    color = Color.White.copy(alpha = 0.7f)
+                                )
+                            },
+                            singleLine = true,
+                            shape = RoundedCornerShape(24.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = WesalTurquoise,
+                                focusedBorderColor = WesalTurquoise,
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.5f),
+                                focusedPlaceholderColor = Color.White.copy(alpha = 0.7f),
+                                unfocusedPlaceholderColor = Color.White.copy(alpha = 0.7f),
+                                focusedContainerColor = Color.Black.copy(alpha = 0.55f),
+                                unfocusedContainerColor = Color.Black.copy(alpha = 0.55f)
+                            ),
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = {
+                                val replyText = storyReplyText
+                                if (replyText.isNotBlank()) {
+                                    viewModel.replyToStory(story, replyText) { sent ->
+                                        Toast.makeText(
+                                            context,
+                                            if (sent) {
+                                                if (strings.isEnglish) "Reply sent ✓" else "تم إرسال الرد ✓"
+                                            } else {
+                                                if (strings.isEnglish) "Could not send reply" else "تعذر إرسال الرد"
+                                            },
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                    storyReplyText = ""
+                                }
+                            },
+                            enabled = storyReplyText.isNotBlank(),
+                            modifier = Modifier
+                                .background(WesalEmerald, CircleShape)
+                        ) {
+                            Icon(
+                                Icons.Default.Send,
+                                contentDescription = if (strings.isEnglish) "Send reply" else "إرسال الرد",
+                                tint = WesalDeepBlack
+                            )
+                        }
                     }
                 }
                 if (isOwner) {
@@ -1980,7 +2093,18 @@ fun StoryContactsPickerDialog(
                                     fitInsideBounds = true
                                 )
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(user.displayName.ifBlank { "@${user.publicId}" }, color = palette.textPrimary)
+                                    WesalNameWithBadge(
+                                        name = user.displayName.ifBlank { "@${user.publicId}" },
+                                        isVerified = user.isVerified,
+                                        verificationType = user.verificationType,
+                                        neonColor = user.neonColor,
+                                        neonGlowIntensity = user.neonGlowIntensity,
+                                        neonEnabled = user.neonEnabled,
+                                        verificationGlowColor = user.verificationGlowColor,
+                                        verificationGlowEnabled = user.verificationGlowEnabled,
+                                        verificationGlowIntensity = user.verificationGlowIntensity,
+                                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
+                                    )
                                     if (user.numericId.isNotBlank()) {
                                         Text("ID: ${user.numericId}", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
                                     }
@@ -2076,12 +2200,26 @@ private fun StoryViewersBottomSheet(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            WesalAvatar(imageUrl = viewer.photoUrl, name = viewer.displayName, size = 44.dp)
+                            WesalAvatar(
+                                imageUrl = viewer.photoUrl,
+                                name = viewer.displayName,
+                                size = 44.dp,
+                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(viewer.iconId, viewer.iconUrl),
+                                neonColor = if (viewer.neonEnabled) viewer.neonColor else "",
+                                neonGlowIntensity = viewer.neonGlowIntensity,
+                                fitInsideBounds = true
+                            )
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = viewer.displayName,
+                                WesalNameWithBadge(
+                                    name = viewer.displayName,
+                                    isVerified = viewer.isVerified,
+                                    verificationType = viewer.verificationType,
+                                    neonColor = viewer.neonColor,
+                                    neonGlowIntensity = viewer.neonGlowIntensity,
+                                    neonEnabled = viewer.neonEnabled,
                                     style = MaterialTheme.typography.titleMedium,
-                                    color = palette.textPrimary
+                                    color = palette.textPrimary,
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(viewer.iconId, viewer.iconUrl)
                                 )
                                 Text(
                                     text = if (viewer.viewedAt > 0L) {
@@ -2132,14 +2270,27 @@ private fun StoryRowCard(
                 .border(2.5.dp, palette.emerald, CircleShape)
                 .padding(3.dp)
         ) {
-            WesalAvatar(imageUrl = story.ownerAvatarUrl, name = story.ownerName, size = 52.dp)
+            WesalAvatar(
+                imageUrl = story.ownerAvatarUrl,
+                name = story.ownerName,
+                size = 52.dp,
+                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(story.ownerIconId, story.ownerIconUrl),
+                neonColor = if (story.ownerNeonEnabled) story.ownerNeonColor else "",
+                neonGlowIntensity = story.ownerNeonGlowIntensity,
+                fitInsideBounds = true
+            )
         }
         Column(modifier = Modifier.weight(1f)) {
             WesalNameWithBadge(
                 name = if (isMine) (if (strings.isEnglish) "My Story" else "حالتي") else story.ownerName,
                 isVerified = !isMine && story.ownerVerified,
+                verificationType = story.ownerVerificationType,
+                neonColor = if (isMine) "" else story.ownerNeonColor,
+                neonGlowIntensity = story.ownerNeonGlowIntensity,
+                neonEnabled = !isMine && story.ownerNeonEnabled,
                 style = MaterialTheme.typography.titleMedium,
-                color = palette.textPrimary
+                color = palette.textPrimary,
+                iconUrl = if (isMine) "" else com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(story.ownerIconId, story.ownerIconUrl)
             )
             val typeTag = when (story.type) {
                 StoryType.AUDIO -> if (strings.isEnglish) "Voice • " else "صوتية • "
@@ -2350,7 +2501,8 @@ private fun PromoteStoryDialog(
                                     neonGlowIntensity = user.neonGlowIntensity,
                                     verificationGlowEnabled = user.verificationGlowEnabled,
                                     verificationGlowIntensity = user.verificationGlowIntensity,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                 )
                             }
                         }
