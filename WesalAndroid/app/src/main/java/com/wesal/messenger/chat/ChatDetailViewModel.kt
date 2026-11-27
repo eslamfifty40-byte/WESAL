@@ -210,7 +210,9 @@ class ChatDetailViewModel @Inject constructor(
                             peerPhotoRemovedBg = peer.photoRemovedBg,
                             peerNeonColor = peer.neonColor,
                             peerNeonGlowIntensity = peer.neonGlowIntensity,
-                            peerNeonEnabled = peer.neonEnabled
+                            peerNeonEnabled = peer.neonEnabled,
+                            peerNameplateColor = peer.nameplateColor,
+                            peerPhotoUserFramed = peer.photoUserFramed
                         )
                     } else {
                         preview

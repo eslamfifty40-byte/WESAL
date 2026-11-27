@@ -490,6 +490,7 @@ fun ChatDetailScreen(
                             } else "",
                             frameExpiresAt = chat?.peerFrameExpiresAt ?: 0L,
                             isCutout = !isOfficialReadOnly && chat?.isGroup == false && (chat?.peerPhotoRemovedBg == true),
+                            isUserFramed = !isOfficialReadOnly && chat?.isGroup == false && (chat?.peerPhotoUserFramed == true),
                             iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) chat?.peerIconUrl.orEmpty() else "",
                             neonColor = if (!isOfficialReadOnly && chat?.isGroup == false && (chat?.peerNeonEnabled == true)) chat?.peerNeonColor.orEmpty() else "",
                             neonGlowIntensity = chat?.peerNeonGlowIntensity ?: 0.7f,

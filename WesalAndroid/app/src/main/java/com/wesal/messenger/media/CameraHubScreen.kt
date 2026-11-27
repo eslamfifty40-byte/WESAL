@@ -447,6 +447,10 @@ fun CameraHubScreen(
                                     imageUrl = chat.avatarUrl,
                                     name = chat.title.ifBlank { strings.appShortName },
                                     isOnline = chat.peerOnline,
+                                    frameId = if (!chat.isGroup) chat.peerFrameId else "",
+                                    frameExpiresAt = chat.peerFrameExpiresAt,
+                                    isCutout = !chat.isGroup && chat.peerPhotoRemovedBg,
+                                    isUserFramed = !chat.isGroup && chat.peerPhotoUserFramed,
                                     size = 44.dp
                                 )
                                 Column(modifier = Modifier.weight(1f)) {

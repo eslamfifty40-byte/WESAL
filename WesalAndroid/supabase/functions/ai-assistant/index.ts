@@ -99,6 +99,8 @@ function parseMessages(raw: unknown): ChatMessage[] | null {
 // The chain tries each in order on 404/503/429 and reports quota only when
 // every model says 429.
 const MODELS = ["gemini-3.5-flash", "gemini-3.8-flash", "gemini-flash-latest"];
+const MODEL_TIMEOUT_MS = 12_000;
+const TOTAL_DEADLINE_MS = 40_000;
 
 async function askGemini(
   apiKey: string,
@@ -120,8 +122,11 @@ async function askGemini(
     generationConfig: { maxOutputTokens: 1024, temperature: 0.7 },
   });
 
+  const deadline = Date.now() + TOTAL_DEADLINE_MS;
   let sawQuota = false;
   for (const model of MODELS) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 1_500) break;
     try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -132,6 +137,7 @@ async function askGemini(
             "x-goog-api-key": apiKey,
           },
           body: payload,
+          signal: AbortSignal.timeout(Math.min(MODEL_TIMEOUT_MS, remainingMs)),
         },
       );
       if (res.status === 429) {
@@ -159,7 +165,7 @@ async function askGemini(
         : "";
       if (reply) return { reply };
     } catch {
-      // Network hiccup on this model — try the next one.
+      // Network hiccup or timeout on this model — try the next one within budget.
     }
   }
   return sawQuota ? { quota: true } : null;

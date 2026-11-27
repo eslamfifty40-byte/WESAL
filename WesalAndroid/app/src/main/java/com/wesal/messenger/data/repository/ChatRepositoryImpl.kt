@@ -193,10 +193,6 @@ class ChatRepositoryImpl @Inject constructor(
     private val userCacheTtlMs = 20_000L
     private val deliveredThrottleMs = ConcurrentHashMap<String, Long>()
 
-    // Scaling pass: per-chat throttle for the mapper's identical
-    // lastMessageStatus = DELIVERED stamps (see mapAndDecryptMessage).
-    private val lastMessageStatusThrottleMs = ConcurrentHashMap<String, Long>()
-
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
         auth.addAuthStateListener(listener)
@@ -243,7 +239,6 @@ class ChatRepositoryImpl @Inject constructor(
     private fun chatsFlow(uid: String?, limit: Long?, paged: Boolean): Flow<List<ChatPreview>> {
         userCache.clear()
         deliveredThrottleMs.clear()
-        lastMessageStatusThrottleMs.clear()
         if (uid == null) {
             if (paged) _chatListState.value = ChatListSyncState(ChatListSyncStatus.READY)
             return flowOf(emptyList())
@@ -434,6 +429,8 @@ class ChatRepositoryImpl @Inject constructor(
         var peerNeonColor = ""
         var peerNeonGlowIntensity = 0.7f
         var peerNeonEnabled = false
+        var peerNameplateColor = ""
+        var peerPhotoUserFramed = false
 
         val unreadCount = unreadMap[myUid]?.toInt() ?: 0
         val lastSenderId = doc.getString("lastMessageSenderId").orEmpty()
@@ -454,6 +451,7 @@ class ChatRepositoryImpl @Inject constructor(
             peerVerificationType = ownerIdentity?.verificationType ?: "BLUE"
             peerFrameId = ownerIdentity?.frameId.orEmpty()
             peerFrameExpiresAt = ownerIdentity?.frameExpiresAt ?: 0L
+            peerPhotoUserFramed = ownerIdentity?.photoUserFramed ?: false
         } else if (!isGroup) {
             peerUid = participantIds.firstOrNull { it != myUid }.orEmpty()
             if (peerUid.isNotBlank()) {
@@ -483,6 +481,8 @@ class ChatRepositoryImpl @Inject constructor(
                         peerNeonColor = peer.neonColor
                         peerNeonGlowIntensity = peer.neonGlowIntensity
                         peerNeonEnabled = peer.neonEnabled
+                        peerNameplateColor = peer.nameplateColor
+                        peerPhotoUserFramed = peer.photoUserFramed
                     }
                 }
             }
@@ -531,6 +531,8 @@ class ChatRepositoryImpl @Inject constructor(
             peerNeonColor = peerNeonColor,
             peerNeonGlowIntensity = peerNeonGlowIntensity,
             peerNeonEnabled = peerNeonEnabled,
+            peerNameplateColor = peerNameplateColor,
+            peerPhotoUserFramed = peerPhotoUserFramed,
             officialWallpaperUrl = doc.getString("officialWallpaperUrl").orEmpty(),
             lastMessagePreview = sanitizedPreview,
             lastMessageTime = doc.getLong("lastMessageTime") ?: 0L,
@@ -731,6 +733,18 @@ class ChatRepositoryImpl @Inject constructor(
                             chatId = chatId
                         )
                         launch(Dispatchers.Default) {
+                            val pendingDeliveryRefs = snapshot.documents.mapNotNull { doc ->
+                                val sId = doc.getString("senderId").orEmpty()
+                                val statusRaw = doc.getString("status")
+                                if (sId.isNotBlank() && sId != myUid && sId != "wesal_system" &&
+                                    MessageStatus.fromRaw(statusRaw) == MessageStatus.SENT
+                                ) doc.reference else null
+                            }
+                            if (pendingDeliveryRefs.isNotEmpty()) {
+                                launch(Dispatchers.IO) {
+                                    markMessageRefsDeliveredBatched(chatId, pendingDeliveryRefs)
+                                }
+                            }
                             val messages = snapshot.documents.mapNotNull { doc ->
                                 mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
                             }
@@ -983,21 +997,8 @@ class ChatRepositoryImpl @Inject constructor(
         }
 
         val rawStatus = MessageStatus.fromRaw(doc.getString("status"))
-        if (senderId != myUid && senderId != "wesal_system" && rawStatus == MessageStatus.SENT) {
-            runCatching { doc.reference.update("status", MessageStatus.DELIVERED.raw) }
-            // Scaling pass: a burst of SENT messages each used to rewrite
-            // the chat doc's lastMessageStatus with the identical value.
-            // The first stamp in the window lands it; the rest are no-ops.
-            val stampNowMs = System.currentTimeMillis()
-            val lastStampMs = lastMessageStatusThrottleMs[chatId] ?: 0L
-            if (stampNowMs - lastStampMs >= 5_000L) {
-                lastMessageStatusThrottleMs[chatId] = stampNowMs
-                runCatching {
-                    firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-                        .update("lastMessageStatus", MessageStatus.DELIVERED.raw)
-                }
-            }
-        }
+        // Batched delivery acks run once per snapshot in observeMessages()
+        // instead of per document (see markMessageRefsDeliveredBatched).
 
         val mediaUrl = if (isViewOnce && viewedBy.isNotEmpty() && senderId != myUid) {
             ""
@@ -1399,7 +1400,8 @@ class ChatRepositoryImpl @Inject constructor(
         val frameId: String,
         val frameExpiresAt: Long,
         val isVerified: Boolean,
-        val verificationType: String
+        val verificationType: String,
+        val photoUserFramed: Boolean = false
     )
 
     private var cachedOwnerAdminIdentity: Pair<Long, OwnerAdminIdentity?>? = null
@@ -1427,7 +1429,8 @@ class ChatRepositoryImpl @Inject constructor(
                 frameExpiresAt = if (frameLive) frameExpiresAt else 0L,
                 isVerified = (doc.getBoolean("isVerified") ?: false) &&
                     (verificationExpiresAt == 0L || now <= verificationExpiresAt),
-                verificationType = doc.getString("verificationType")?.ifBlank { "BLUE" } ?: "BLUE"
+                verificationType = doc.getString("verificationType")?.ifBlank { "BLUE" } ?: "BLUE",
+                photoUserFramed = doc.getBoolean("photoUserFramed") ?: false
             )
         }.getOrNull()
         cachedOwnerAdminIdentity = now to identity
@@ -2173,6 +2176,38 @@ class ChatRepositoryImpl @Inject constructor(
             report[peerUid] = res.isSuccess
         }
         report
+    }
+
+    /**
+     * Studio-2 take (batched delivery acks): one throttled, chunked batch
+     * per messages snapshot replaces the per-document DELIVERED update()
+     * the mapper used to fire for every SENT message. The throttle is the
+     * same 5 s per-chat window (deliveredThrottleMs, shared with
+     * markIncomingMessagesDelivered) that also gated r14's identical
+     * lastMessageStatus stamps — the stamp now rides the first batch chunk
+     * and only fires when a real SENT→DELIVERED transition exists in the
+     * snapshot, so the r14 semantics (no repeated identical stamps) hold.
+     */
+    private suspend fun markMessageRefsDeliveredBatched(
+        chatId: String,
+        refs: List<com.google.firebase.firestore.DocumentReference>
+    ) {
+        if (refs.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val lastRun = deliveredThrottleMs[chatId] ?: 0L
+        if (now - lastRun < 5_000L) return
+        deliveredThrottleMs[chatId] = now
+        runCatching {
+            val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+            refs.chunked(400).forEachIndexed { idx, chunk ->
+                val batch = firestore.batch()
+                chunk.forEach { batch.update(it, "status", MessageStatus.DELIVERED.raw) }
+                if (idx == 0) {
+                    batch.update(chatRef, "lastMessageStatus", MessageStatus.DELIVERED.raw)
+                }
+                batch.commit().await()
+            }
+        }
     }
 
     override suspend fun setTyping(chatId: String, isTyping: Boolean) {

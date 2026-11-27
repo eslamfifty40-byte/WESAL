@@ -4526,6 +4526,7 @@ private fun AdminFrameAndNeonDialog(
                             frameId = selectedFrameId,
                             frameExpiresAt = 0L,
                             isCutout = previewCutout,
+                            isUserFramed = user.photoUserFramed,
                             iconUrl = selectedIconUrl,
                             neonColor = if (neonEnabled) selectedNeon.key else "",
                             neonGlowIntensity = neonGlow

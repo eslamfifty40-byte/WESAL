@@ -639,6 +639,8 @@ data class ChatPreview(
     val peerNeonColor: String = "",
     val peerNeonGlowIntensity: Float = 0.7f,
     val peerNeonEnabled: Boolean = false,
+    val peerNameplateColor: String = "",
+    val peerPhotoUserFramed: Boolean = false,
     val officialWallpaperUrl: String = "",
     val lastMessagePreview: String = "",
     val lastMessageTime: Long = 0L,

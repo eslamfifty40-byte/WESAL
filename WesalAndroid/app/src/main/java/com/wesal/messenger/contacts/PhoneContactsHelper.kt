@@ -1,6 +1,7 @@
 package com.wesal.messenger.contacts
 
 import android.Manifest
+import android.accounts.AccountManager
 import android.content.ContentProviderOperation
 import android.content.Context
 import android.content.pm.PackageManager
@@ -224,7 +225,9 @@ object PhoneContactsHelper {
                         while (cursor.moveToNext()) {
                             val storedDigits = PhoneUtils.normalizeAsciiDigits(cursor.getString(0).orEmpty())
                                 .filter { it.isDigit() }
-                            if (storedDigits == wantedDigits || storedDigits.endsWith(wantedDigits.takeLast(9))) {
+                            if (storedDigits == wantedDigits ||
+                                (wantedDigits.length >= 9 && storedDigits.endsWith(wantedDigits.takeLast(9)))
+                            ) {
                                 found = true
                                 break
                             }
@@ -235,17 +238,7 @@ object PhoneContactsHelper {
 
                 var landed = insertIntoAccount(null, null)
                 if (!landed) {
-                    val writableAccount = runCatching {
-                        resolver.query(
-                            ContactsContract.RawContacts.CONTENT_URI,
-                            arrayOf(ContactsContract.RawContacts.ACCOUNT_TYPE, ContactsContract.RawContacts.ACCOUNT_NAME),
-                            "${ContactsContract.RawContacts.ACCOUNT_TYPE} IS NOT NULL AND ${ContactsContract.RawContacts.ACCOUNT_NAME} IS NOT NULL",
-                            null,
-                            null
-                        )?.use { c ->
-                            if (c.moveToFirst()) c.getString(0) to c.getString(1) else null
-                        }
-                    }.getOrNull()
+                    val writableAccount = findWritableAccount(context)
                     if (writableAccount != null) {
                         landed = insertIntoAccount(writableAccount.first, writableAccount.second)
                     }
@@ -256,6 +249,39 @@ object PhoneContactsHelper {
             }
             Unit
         }
+    }
+
+    /**
+     * Studio-2 take: scan ALL existing raw-contact accounts for a writable
+     * one, skipping WhatsApp accounts (inserting into a WhatsApp account is
+     * a real failure mode), before falling back to AccountManager. Main
+     * previously took only the first account found.
+     */
+    private fun findWritableAccount(context: Context): Pair<String, String>? {
+        val resolver = context.contentResolver
+        runCatching {
+            resolver.query(
+                ContactsContract.RawContacts.CONTENT_URI,
+                arrayOf(ContactsContract.RawContacts.ACCOUNT_TYPE, ContactsContract.RawContacts.ACCOUNT_NAME),
+                "${ContactsContract.RawContacts.ACCOUNT_TYPE} IS NOT NULL AND ${ContactsContract.RawContacts.ACCOUNT_NAME} IS NOT NULL",
+                null,
+                null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val type = c.getString(0).orEmpty()
+                    val name = c.getString(1).orEmpty()
+                    if (type.isNotBlank() && name.isNotBlank() && !type.contains("whatsapp", ignoreCase = true)) {
+                        return type to name
+                    }
+                }
+            }
+        }
+        return runCatching {
+            val acc = AccountManager.get(context).accounts.firstOrNull {
+                it.type.isNotBlank() && it.name.isNotBlank()
+            }
+            if (acc != null) acc.type to acc.name else null
+        }.getOrNull()
     }
 
     /**
