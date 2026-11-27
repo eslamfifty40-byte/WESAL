@@ -32,27 +32,36 @@ import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
 import com.wesal.messenger.core.theme.WesalDeepBlack
 import com.wesal.messenger.core.util.LocalWesalStrings
-import com.wesal.messenger.presentation.components.saveImageUrlToGallery
+import com.wesal.messenger.presentation.components.WesalMediaKind
+import com.wesal.messenger.presentation.components.rememberSavePermissionGate
+import com.wesal.messenger.presentation.components.saveMediaToGallery
 import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun FullscreenImageViewer(
     imageModel: Any,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    canSave: Boolean = true
 ) {
     val context = LocalContext.current
     val strings = LocalWesalStrings.current
     val scope = rememberCoroutineScope()
+    val savePermissionGate = rememberSavePermissionGate()
     var isSaving by remember { mutableStateOf(false) }
 
     val resolvedModel = (imageModel as? String)?.let {
         com.wesal.messenger.presentation.components.wesalImageModel(it)
     } ?: imageModel
-    val saveableString = when (imageModel) {
-        is String -> imageModel
-        is Uri -> imageModel.toString()
+    // Round-4 fix: chat photos reach this viewer as a decrypted java.io.File —
+    // the old when() only accepted String/Uri, so the save button NEVER rendered
+    // for chat media. File/Uri/String are all valid sources for the shared saver.
+    val saveSource: Any? = when (imageModel) {
+        is File -> imageModel
+        is String -> imageModel.takeIf { it.isNotBlank() }
+        is Uri -> imageModel
         else -> null
-    }?.takeIf { it.isNotBlank() }
+    }
 
     Box(
         modifier = Modifier
@@ -73,29 +82,31 @@ fun FullscreenImageViewer(
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (saveableString != null) {
+            if (canSave && saveSource != null) {
                 Surface(color = Color.Black.copy(alpha = 0.55f), shape = CircleShape) {
                     IconButton(
                         enabled = !isSaving,
                         onClick = {
-                            isSaving = true
-                            scope.launch {
-                                saveImageUrlToGallery(context, saveableString)
-                                    .onSuccess {
-                                        Toast.makeText(
-                                            context,
-                                            if (strings.isEnglish) "Saved to gallery ✓" else "تم حفظ الصورة في المعرض ✓",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                    .onFailure { err ->
-                                        Toast.makeText(
-                                            context,
-                                            err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر حفظ الصورة",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                isSaving = false
+                            savePermissionGate {
+                                isSaving = true
+                                scope.launch {
+                                    saveMediaToGallery(context, saveSource, WesalMediaKind.IMAGE, fileNamePrefix = "WESAL_IMG")
+                                        .onSuccess {
+                                            Toast.makeText(
+                                                context,
+                                                if (strings.isEnglish) "Saved to gallery ✓" else "تم حفظ الصورة في المعرض ✓",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                        .onFailure { err ->
+                                            Toast.makeText(
+                                                context,
+                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر حفظ الصورة",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    isSaving = false
+                                }
                             }
                         }
                     ) {

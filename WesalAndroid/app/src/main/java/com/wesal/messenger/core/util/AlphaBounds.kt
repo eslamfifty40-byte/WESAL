@@ -48,6 +48,16 @@ data class AlphaBounds(
 
         /** Smallest width/height a measured box is allowed to keep (fraction of canvas). */
         const val MIN_BOX_FRACTION = 0.02f
+
+        /** Minimum transparent fraction of the canvas for a cutout verdict (round-4). */
+        const val MIN_TRANSPARENT_FRACTION = 0.02f
+
+        /**
+         * Largest person-box extent allowed on ONE axis (fraction of canvas). A cutout
+         * verdict needs a real margin on at least one axis: width <= this OR height <=
+         * this (round-4 — replaces the old total-area gate, see [isCutoutBounds]).
+         */
+        const val MAX_BOX_AXIS_FRACTION = 0.97f
     }
 }
 
@@ -132,9 +142,21 @@ fun analyzeAlphaBounds(
 /**
  * Cutout verdict. The thresholds reject images that merely HAVE an alpha channel (PNG
  * screenshots, logos pasted on opaque photos): a real cutout has a meaningful amount of
- * transparency (>= 2% of the canvas) AND a person box that leaves a margin (<= 92% of the
- * canvas area). Only a verified verdict may drive the over-frame head strip — a false
- * positive there would paint a photo rectangle over the frame's crest.
+ * transparency (>= 2% of the canvas) AND a person box that leaves a real margin on at
+ * least one axis (box width <= 97% of the canvas OR box height <= 97%).
+ *
+ * Round-4 repair: round 3 gated on total box AREA (<= 92%), which rejected exactly the
+ * assets the pipeline itself produces — a tight head-and-shoulders cutout (e.g. the
+ * CropActivity trim to bbox + 3%) measures ~0.93-0.94 area and was classified
+ * NOT_A_CUTOUT, so the over-frame head strip never engaged for it. A trimmed cutout
+ * that spans the full height (box ~0.94 wide x 1.00 tall) is still a real cutout: it
+ * has transparency and a margin on the width axis. A full-bleed photo with incidental
+ * alpha has a near-full box on BOTH axes and stays rejected. Only a verified verdict
+ * may drive the over-frame head strip — a false positive there would paint a photo
+ * rectangle over the frame's crest.
  */
 fun isCutoutBounds(bounds: AlphaBounds?): Boolean =
-    bounds != null && bounds.transparentFraction >= 0.02f && bounds.area <= 0.92f
+    bounds != null &&
+        bounds.transparentFraction >= AlphaBounds.MIN_TRANSPARENT_FRACTION &&
+        (bounds.width <= AlphaBounds.MAX_BOX_AXIS_FRACTION ||
+            bounds.height <= AlphaBounds.MAX_BOX_AXIS_FRACTION)

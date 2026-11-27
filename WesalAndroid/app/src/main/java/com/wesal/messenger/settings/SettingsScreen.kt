@@ -32,7 +32,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -70,6 +72,8 @@ import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.AdminPermissions
+import com.wesal.messenger.domain.model.ChatListSyncState
+import com.wesal.messenger.domain.model.ChatListSyncStatus
 import com.wesal.messenger.domain.model.DeviceSession
 import com.wesal.messenger.domain.model.GroupAddPrivacy
 import com.wesal.messenger.domain.model.PrivacySettings
@@ -80,8 +84,10 @@ import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
+import com.wesal.messenger.notifications.BatteryExemptionCard
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalQrCodeBox
 import com.wesal.messenger.presentation.components.WesalVerifiedBadge
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.presentation.components.wesalNeonTextStyle
@@ -117,7 +123,16 @@ class SettingsViewModel @Inject constructor(
     val appSettings: StateFlow<AppUserSettings> = prefs.settingsFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUserSettings())
 
-    val sessions: StateFlow<List<DeviceSession>> = userRepository.observeSessions()
+    // §13.4 (round-4) + review M-4: the sessions refresh key restarts BOTH the
+    // data flow below and the sync-state flow further down. It used to restart
+    // only the sync-state collection — which just replayed the repository's
+    // shared ERROR — while the dead Firestore listener behind `sessions` was
+    // never re-subscribed, so the dialog's Retry could never recover.
+    private val sessionsRefreshKey = MutableStateFlow(0)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val sessions: StateFlow<List<DeviceSession>> = sessionsRefreshKey
+        .flatMapLatest { userRepository.observeSessions() }
         // §3.5 dedupe: legacy builds created duplicate session docs for one physical
         // device (pre stable-ID). Group by device identity (deviceName — the only
         // device key the session model carries) and keep the most recently active
@@ -142,6 +157,29 @@ class SettingsViewModel @Inject constructor(
     val isSubmittingSubscription = MutableStateFlow(false)
     val statusMessage = MutableStateFlow<String?>(null)
     val sessionLinkToken = MutableStateFlow<String?>(null)
+
+    // §13.4 (round-4): sessions sync state, collected alongside the sessions list
+    // so the sessions dialog can render LOADING / ERROR + retry instead of a
+    // silently empty list. The state itself is driven by the repository's
+    // sessions listener, so when Retry bumps the refresh key and the data flow
+    // above re-subscribes, the fresh listener drives LOADING → READY/ERROR
+    // into this flow (review M-4).
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val sessionsSyncState: StateFlow<ChatListSyncState> = sessionsRefreshKey
+        .flatMapLatest { userRepository.observeSessionsSyncState() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ChatListSyncState())
+
+    fun retrySessionsSync() {
+        sessionsRefreshKey.value += 1
+    }
+
+    // §2.4: per-account dismissal of the battery-exemption card (DataStore flag).
+    val batteryExemptionCardDismissed: StateFlow<Boolean> = prefs.batteryExemptionCardDismissedFlow()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun setBatteryExemptionCardDismissed(dismissed: Boolean) {
+        viewModelScope.launch { prefs.setBatteryExemptionCardDismissed(dismissed) }
+    }
 
     fun submitSubscriptionRequest(
         requestType: String,
@@ -502,6 +540,8 @@ fun SettingsScreen(
     val mySubscriptionRequests by viewModel.mySubscriptionRequests.collectAsStateWithLifecycle()
     val appSettings by viewModel.appSettings.collectAsStateWithLifecycle()
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    val sessionsSyncState by viewModel.sessionsSyncState.collectAsStateWithLifecycle()
+    val batteryCardDismissed by viewModel.batteryExemptionCardDismissed.collectAsStateWithLifecycle()
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
     val isSwitchingAccount by viewModel.isSwitchingAccount.collectAsStateWithLifecycle()
     val isDeletingAccount by viewModel.isDeletingAccount.collectAsStateWithLifecycle()
@@ -519,6 +559,7 @@ fun SettingsScreen(
     var showSupportDialog by remember { mutableStateOf(false) }
     var showSignOutConfirm by remember { mutableStateOf(false) }
     var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var showDeletionInfoDialog by remember { mutableStateOf(false) }
     var cacheText by remember { mutableStateOf(viewModel.getCacheSizeMb()) }
 
     val notifTonePicker = rememberLauncherForActivityResult(
@@ -627,11 +668,32 @@ fun SettingsScreen(
                             .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
                     ) {
                     if (coverUrl.isNotBlank()) {
+                        // Round-4 (report option c): the 120dp band centre-cropped a
+                        // portrait cover and cut the owner's face. Now the band draws
+                        // the cover TWICE: a blurred, darkened Crop copy as backdrop
+                        // (fills the band), and the FULL cover with ContentScale.Fit
+                        // on top — no part of the cover is ever cut, for portrait and
+                        // landscape covers alike. (Modifier.blur needs API 31+; on
+                        // older devices it no-ops and the darkened Crop backdrop
+                        // still fills the band behind the complete Fit cover.)
+                        AsyncImage(
+                            model = wesalImageModel(coverUrl),
+                            contentDescription = null,
+                            // Slight overscale: blur fades the outermost ~radius of
+                            // pixels, and the band must stay covered edge to edge.
+                            modifier = Modifier.fillMaxSize().scale(1.15f).blur(24.dp),
+                            contentScale = ContentScale.Crop
+                        )
+                        Box(
+                            modifier = Modifier
+                                .matchParentSize()
+                                .background(palette.background.copy(alpha = 0.45f))
+                        )
                         AsyncImage(
                             model = wesalImageModel(coverUrl),
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
+                            contentScale = ContentScale.Fit
                         )
                         Box(
                             modifier = Modifier
@@ -1128,6 +1190,15 @@ fun SettingsScreen(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    // §10.5: the same deletion/retention disclosure, linked from
+                    // the delete-account confirmation itself.
+                    TextButton(onClick = { showDeletionInfoDialog = true }) {
+                        Text(
+                            if (strings.isEnglish) "Deletion & data retention — what exactly is deleted?" else "الحذف والاحتفاظ بالبيانات — ما الذي يُحذف بالضبط؟",
+                            color = palette.turquoise,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = confirmedUnderstanding, onCheckedChange = { confirmedUnderstanding = it })
                         Text(
@@ -1177,6 +1248,77 @@ fun SettingsScreen(
                 TextButton(enabled = !isDeletingAccount, onClick = { showDeleteAccountDialog = false }) {
                     Text(strings.cancel)
                 }
+            }
+        )
+    }
+
+    // §10.5 deletion & data-retention disclosure (plain language, bilingual).
+    // Linked from Settings → Privacy and from the delete-account confirmation.
+    if (showDeletionInfoDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeletionInfoDialog = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    if (strings.isEnglish) "Deletion & data retention" else "الحذف والاحتفاظ بالبيانات",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = if (strings.isEnglish) "What account deletion removes" else "ما الذي يزيله حذف الحساب",
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "عند حذف حسابك نهائيًا يتم حذف ملفك الشخصي وصورتك وبيانات حسابك، وتسجيل خروجك من كل الأجهزة، وتحرير اسم المستخدم الخاص بك، ولا يمكن التراجع عن الحذف.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "Deleting your account permanently removes your profile, photo and account data, signs you out on every device, releases your @username, and cannot be undone.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = if (strings.isEnglish) "What we keep, and why" else "ما الذي نحتفظ به ولماذا",
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "نحتفظ بسجل مختصر (علامة حذف) وببصمات مشفّرة لمعرّفاتك (مثل البريد والهاتف) فقط، لمنع إساءة الاستخدام ومنع الحسابات المحظورة من إعادة التسجيل. لا نحتفظ بمحتوى محادثاتك أو ملفاتك لهذا الغرض.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "We keep only a minimal tombstone record and hashed identifiers (such as email/phone hashes) to prevent abuse and stop banned accounts from re-registering. We do not keep your chat content or files for this.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = if (strings.isEnglish) "Messages in other people's chats" else "الرسائل داخل محادثات الآخرين",
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "الرسائل التي أرسلتها داخل محادثات أشخاص آخرين لا تُحذف من أجهزتهم أو من سجل محادثاتهم عند حذف حسابك؛ تبقى ظاهرة لديهم كرسائل من حساب محذوف.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Text(
+                        text = "Messages you sent inside other people's chats are NOT deleted from their devices or their chat history when you delete your account; they remain visible to them as messages from a deleted account.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDeletionInfoDialog = false }) { Text(strings.close) }
             }
         )
     }
@@ -1433,6 +1575,19 @@ fun SettingsScreen(
                         Text(if (strings.isEnglish) "Record Profile Visits" else "تسجيل زوار الحساب", color = palette.textPrimary)
                         Switch(checked = ps.recordProfileVisits, onCheckedChange = { ps = ps.copy(recordProfileVisits = it) })
                     }
+                    HorizontalDivider(color = palette.border)
+                    // §10.5: deletion & retention disclosure entry (privacy section).
+                    OutlinedButton(
+                        onClick = { showDeletionInfoDialog = true },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.DeleteForever, contentDescription = null, tint = palette.error, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (strings.isEnglish) "Deletion & data retention" else "الحذف والاحتفاظ بالبيانات",
+                            color = palette.error
+                        )
+                    }
                 }
             },
             confirmButton = {
@@ -1500,6 +1655,12 @@ fun SettingsScreen(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // §2.4: one-time battery-exemption card (renders nothing when
+                    // the app is already exempt or the card was dismissed).
+                    BatteryExemptionCard(
+                        dismissed = batteryCardDismissed,
+                        onDismiss = { viewModel.setBatteryExemptionCardDismissed(true) }
+                    )
                     NotifSwitchRow(if (strings.isEnglish) "Chat Messages" else "رسائل الدردشة", appSettings.notificationsMessages) {
                         viewModel.updateNotificationPrefs(messages = it)
                     }
@@ -1588,6 +1749,45 @@ fun SettingsScreen(
             title = { Text(if (strings.isEnglish) "Active Sessions" else "الأجهزة والجلسات النشطة", color = palette.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // §13.4: sessions sync state — LOADING shows progress, ERROR
+                    // shows the message with a Retry that restarts collection;
+                    // READY falls through to the existing list unchanged.
+                    when (sessionsSyncState.status) {
+                        ChatListSyncStatus.LOADING -> {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = palette.turquoise,
+                                    strokeWidth = 2.dp
+                                )
+                                Text(
+                                    if (strings.isEnglish) "Loading sessions…" else "جارٍ تحميل الجلسات…",
+                                    color = palette.textSecondary,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                        ChatListSyncStatus.ERROR -> {
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    sessionsSyncState.errorMessage?.takeIf { it.isNotBlank() }
+                                        ?: if (strings.isEnglish) "Could not load sessions" else "تعذر تحميل الجلسات",
+                                    color = palette.error,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                OutlinedButton(
+                                    onClick = { viewModel.retrySessionsSync() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(if (strings.isEnglish) "Retry" else "إعادة المحاولة", color = palette.turquoise)
+                                }
+                            }
+                        }
+                        ChatListSyncStatus.READY -> Unit
+                    }
                     LazyColumn(modifier = Modifier.heightIn(max = 220.dp)) {
                         items(sessions, key = { it.sessionId }) { session ->
                             Row(
@@ -1632,24 +1832,40 @@ fun SettingsScreen(
                         Text(if (strings.isEnglish) "Generate 5-Min Link Token" else "رمز ربط جهاز جديد (صالح 5 دقائق)", color = palette.turquoise)
                     }
                     sessionLinkToken?.let { tok ->
-                        Surface(
-                            color = palette.background,
-                            shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.5f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    clipboard.setText(AnnotatedString(tok))
-                                    Toast.makeText(context, tok, Toast.LENGTH_SHORT).show()
-                                }
+                        // §3.6 (round-4): the session-link token is a live login
+                        // credential — it must NEVER be rendered as selectable or
+                        // copyable text. QR code + system share sheet only. The
+                        // shared payload is exactly what the old tap-to-copy
+                        // action put on the clipboard: the raw token itself.
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(tok, color = palette.turquoise, fontWeight = FontWeight.Bold)
-                                Text(
-                                    text = if (strings.isEnglish) "Single-use • Tap to copy" else "استخدام لمرة واحدة • اضغط للنسخ",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = palette.textSecondary
-                                )
+                            WesalQrCodeBox(payload = tok, size = 180.dp)
+                            Text(
+                                text = if (strings.isEnglish) "Single-use • Scan or share to link the new device" else "استخدام لمرة واحدة • امسح الرمز أو شاركه لربط الجهاز الجديد",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textSecondary
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, tok)
+                                    }
+                                    context.startActivity(
+                                        Intent.createChooser(
+                                            shareIntent,
+                                            if (strings.isEnglish) "Share link token" else "مشاركة رمز الربط"
+                                        )
+                                    )
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (strings.isEnglish) "Share" else "مشاركة", color = palette.turquoise)
                             }
                         }
                     }

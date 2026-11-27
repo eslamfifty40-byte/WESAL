@@ -3,6 +3,7 @@ package com.wesal.messenger.media
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.widget.Toast
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
@@ -41,7 +42,11 @@ import com.google.accompanist.permissions.rememberPermissionState
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.presentation.components.WesalMediaKind
+import com.wesal.messenger.presentation.components.rememberSavePermissionGate
+import com.wesal.messenger.presentation.components.saveMediaToGallery
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.UUID
 
@@ -54,6 +59,8 @@ fun CameraCaptureScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val savePermissionGate = rememberSavePermissionGate()
     val lifecycleOwner = LocalLifecycleOwner.current
     val cameraPermission = rememberPermissionState(Manifest.permission.CAMERA)
     val bothPermissions = rememberMultiplePermissionsState(
@@ -193,7 +200,39 @@ fun CameraCaptureScreen(
                     )
                 )
                 FloatingActionButton(
-                    onClick = { onMediaConfirmed(capturedUri!!, capturedIsVideo, caption) },
+                    onClick = {
+                        val confirmedUri = capturedUri!!
+                        val confirmedPath = capturedFilePath
+                        val confirmedIsVideo = capturedIsVideo
+                        // Round-4: a confirmed capture is also kept in the device
+                        // gallery (Pictures/WESAL or Movies/WESAL), byte-for-byte.
+                        // Fire-and-forget alongside the send; the outcome is
+                        // reported honestly by toast, never faked.
+                        if (confirmedPath != null) {
+                            savePermissionGate {
+                                scope.launch {
+                                    saveMediaToGallery(
+                                        context,
+                                        File(confirmedPath),
+                                        if (confirmedIsVideo) WesalMediaKind.VIDEO else WesalMediaKind.IMAGE
+                                    ).onSuccess {
+                                        Toast.makeText(
+                                            context,
+                                            if (strings.isEnglish) "Saved to gallery ✓" else "تم الحفظ في المعرض ✓",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }.onFailure { err ->
+                                        Toast.makeText(
+                                            context,
+                                            err.localizedMessage ?: if (strings.isEnglish) "Could not save to gallery" else "تعذر الحفظ في المعرض",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                        }
+                        onMediaConfirmed(confirmedUri, confirmedIsVideo, caption)
+                    },
                     containerColor = palette.emerald,
                     contentColor = palette.onAccent
                 ) {

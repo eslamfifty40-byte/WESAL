@@ -111,18 +111,37 @@ class UserProfileDetailViewModel @Inject constructor(
     val contactLists: StateFlow<List<ContactLabelList>> = userRepository.observeContactLists()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val directChat: StateFlow<ChatPreview?> = chatRepository.observeChats()
+    // Review M-3: both lookups use the UNPAGED variant — with the paged
+    // observeChats() the direct chat / mutual groups silently missed whenever
+    // the chat ranked past the newest 100.
+    val directChat: StateFlow<ChatPreview?> = chatRepository.observeAllChats()
         .map { list -> list.firstOrNull { !it.isGroup && !it.isOfficialWesalChat && it.peerUid == targetUid } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    val mutualGroups: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
+    val mutualGroups: StateFlow<List<ChatPreview>> = chatRepository.observeAllChats()
         .map { list -> list.filter { it.isGroup && targetUid in it.participantIds } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val sharedMessages: StateFlow<List<WesalMessage>> = directChat
         .flatMapLatest { chat ->
-            if (chat == null) flowOf(emptyList()) else chatRepository.observeMessages(chat.chatId)
+            if (chat == null) {
+                flowOf(emptyList())
+            } else {
+                // Review M-3: observeMessages now streams only the newest 60,
+                // which silently truncated this shared-media gallery to the
+                // newest page. Merge the live page with a one-shot
+                // full-history fetch (document-cursor paged in the
+                // repository), deduped by id, oldest first.
+                val history = flow {
+                    emit(chatRepository.fetchChatMessagesForGallery(chat.chatId))
+                }
+                combine(chatRepository.observeMessages(chat.chatId), history) { live, past ->
+                    (past + live)
+                        .distinctBy { it.messageId }
+                        .sortedBy { it.timestamp }
+                }
+            }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 

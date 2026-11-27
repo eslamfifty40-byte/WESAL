@@ -36,6 +36,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -76,8 +77,16 @@ fun ProfileSetupScreen(
     var bio by remember {
         mutableStateOf(if (strings.isEnglish) "Using WESAL Messenger" else "أستخدم تطبيق WESAL")
     }
-    var selectedCountry by remember { mutableStateOf(CountryCatalog.defaultEgypt) }
-    var localPhone by remember { mutableStateOf("") }
+    // Phone phase: a phone-registered account arrives with its OTP-verified
+    // number on the Auth user — pre-fill country + local number from it and
+    // mark the number verified under the field. Editing it away turns it into
+    // an ordinary unverified number (the gate verifies it after setup).
+    val verifiedPhoneE164 = remember { viewModel.verifiedPhoneE164() }
+    val verifiedPhoneParts = remember {
+        verifiedPhoneE164?.let { CountryCatalog.detectFromE164(it) }
+    }
+    var selectedCountry by remember { mutableStateOf(verifiedPhoneParts?.first ?: CountryCatalog.defaultEgypt) }
+    var localPhone by remember { mutableStateOf(verifiedPhoneParts?.second ?: "") }
     var birthDateIso by remember { mutableStateOf("") }
     var hideBirthDate by remember { mutableStateOf(false) }
     var inviterId by remember { mutableStateOf("") }
@@ -390,6 +399,41 @@ fun ProfileSetupScreen(
                             style = MaterialTheme.typography.labelSmall,
                             color = if (localPhone.isBlank()) palette.textSecondary else palette.error
                         )
+                    }
+                    if (verifiedPhoneE164 != null) {
+                        if (phoneValidation.e164 == verifiedPhoneE164) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = Color(0xFF00C853),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = if (strings.isEnglish) {
+                                        "Verified number — this is the number you registered with"
+                                    } else {
+                                        "رقم موثّق — ده الرقم اللي سجلت بيه"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF00C853),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        } else {
+                            Text(
+                                text = if (strings.isEnglish) {
+                                    "You changed the number — you will verify the new one with a code right after setup"
+                                } else {
+                                    "غيّرت الرقم — هتوثّق الرقم الجديد بالكود بعد إتمام الحساب على طول"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textSecondary
+                            )
+                        }
                     }
                 }
 

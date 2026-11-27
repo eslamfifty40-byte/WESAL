@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 sealed interface StartDestination {
@@ -30,6 +31,9 @@ sealed interface StartDestination {
     // anywhere — dead code that only invited a future gated/black startup screen.
     data object PhoneLogin : StartDestination
     data object ProfileSetup : StartDestination
+    /** Mandatory phone-verification gate (phone phase): signed in + profile
+     *  complete, but the number is not OTP-verified yet. */
+    data object VerifyPhone : StartDestination
     data object Home : StartDestination
 }
 
@@ -86,14 +90,26 @@ class MainViewModel @Inject constructor(
 
     private fun resolveInitialRouteFast() {
         viewModelScope.launch {
-            val uid = authRepository.currentUserId ?: authRepository.observeAuthState().first()
+            // The start destination's initial value already came from LOCAL auth state
+            // at construction, so the first frame never waits on this coroutine. What
+            // happens here is refinement only — and even the local reads get a hard 3s
+            // cap (round 4): if the auth-state flow or the DataStore cache stalls, the
+            // route settles on the construction-time fallback (Home when a Firebase
+            // user is cached, otherwise PhoneLogin) instead of lingering unresolved.
+            // The Firestore verification further below stays fully asynchronous and
+            // never gates the first screen.
+            val uid = withTimeoutOrNull(3_000L) {
+                authRepository.currentUserId ?: authRepository.observeAuthState().first()
+            } ?: authRepository.currentUserId
             if (uid != null) {
-                val cached = prefs.settingsFlow.first()
+                val cached = withTimeoutOrNull(3_000L) { prefs.settingsFlow.first() }
                 // Fast cache-first navigation directly to Chats (Home) without any splash delay (Sec 3 & 4)
-                _startDestination.value = if (cached.cachedUid == uid && !cached.cachedProfileComplete) {
-                    StartDestination.ProfileSetup
-                } else {
-                    StartDestination.Home
+                if (cached != null) {
+                    _startDestination.value = if (cached.cachedUid == uid && !cached.cachedProfileComplete) {
+                        StartDestination.ProfileSetup
+                    } else {
+                        StartDestination.Home
+                    }
                 }
 
                 // Background verification without blocking cold launch
@@ -112,7 +128,12 @@ class MainViewModel @Inject constructor(
                         val complete = (user.profileCompleted ||
                             (user.displayName.isNotBlank() && user.phoneNumber.isNotBlank() && user.birthDate.isNotBlank()))
                         prefs.setCachedStartupProfileState(uid, complete)
-                        _startDestination.value = if (complete) StartDestination.Home else StartDestination.ProfileSetup
+                        _startDestination.value = when {
+                            !complete -> StartDestination.ProfileSetup
+                            // Mandatory gate: profile done but number unverified.
+                            !user.isPhoneVerified -> StartDestination.VerifyPhone
+                            else -> StartDestination.Home
+                        }
                     } else if (userResult.isSuccess) {
                         prefs.setCachedStartupProfileState(uid, false)
                         _startDestination.value = StartDestination.ProfileSetup
@@ -132,6 +153,20 @@ class MainViewModel @Inject constructor(
                 val banActive = user.isBanned && (user.banType == "PERMANENT" || user.banExpiresAt == 0L || now <= user.banExpiresAt)
                 if (user.deletedAt > 0L || user.deletedPermanent || banActive) {
                     authRepository.signOut()
+                    return@collect
+                }
+                // Mandatory phone-verification gate (phone phase, owner rule):
+                // keep the destination in sync with the live user doc — an
+                // unverified complete account is held at the gate, and the
+                // moment the server stamp lands (isPhoneVerified=true) the
+                // destination flips to Home and the gate lifts itself. Profile
+                // setup still comes first for incomplete accounts.
+                val complete = (user.profileCompleted ||
+                    (user.displayName.isNotBlank() && user.phoneNumber.isNotBlank() && user.birthDate.isNotBlank()))
+                _startDestination.value = when {
+                    !complete -> StartDestination.ProfileSetup
+                    !user.isPhoneVerified -> StartDestination.VerifyPhone
+                    else -> StartDestination.Home
                 }
             }
         }

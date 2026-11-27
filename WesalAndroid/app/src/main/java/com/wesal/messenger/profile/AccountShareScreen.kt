@@ -137,7 +137,7 @@ fun AccountShareScreen(
                                 text = "${strings.wesalNumericIdLabel}: $numericId",
                                 style = wesalNeonTextStyle(
                                     baseStyle = MaterialTheme.typography.titleMedium,
-                                    neonColorKey = user?.neonColor.orEmpty(),
+                                    neonColorKey = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
                                     glowIntensity = user?.neonGlowIntensity ?: 0.7f,
                                     fallbackColor = palette.turquoise
                                 ),
@@ -152,7 +152,7 @@ fun AccountShareScreen(
                             text = "@$publicId",
                             style = wesalNeonTextStyle(
                                 baseStyle = MaterialTheme.typography.bodyLarge,
-                                neonColorKey = user?.neonColor.orEmpty(),
+                                neonColorKey = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
                                 glowIntensity = user?.neonGlowIntensity ?: 0.7f,
                                 fallbackColor = palette.textSecondary
                             ),

@@ -214,13 +214,18 @@ class ChannelRepositoryImpl @Inject constructor(
                 updateFields["isVerified"] = true
                 updateFields["verificationType"] = "BLUE"
             }
-            if (adminAvatarUrl.isNotBlank() && (isSuperAdmin || existingAvatar.isBlank()) && existingAvatar != adminAvatarUrl) {
+            // Round-4 P1-7 carve-out: an avatar set through the official-identity
+            // editor (UserRepositoryImpl.updateOfficialChatIdentity stamps
+            // avatarSetByOfficialEditor = true) is sticky — the owner-admin
+            // profile-photo auto-sync below must not overwrite it.
+            val editorAvatarLocked = existing.getBoolean("avatarSetByOfficialEditor") == true
+            if (!editorAvatarLocked && adminAvatarUrl.isNotBlank() && (isSuperAdmin || existingAvatar.isBlank()) && existingAvatar != adminAvatarUrl) {
                 updateFields["avatarUrl"] = adminAvatarUrl
             }
             if (updateFields.isNotEmpty()) {
                 runCatching { channelRef.update(updateFields).await() }
             }
-            val resolved = if (adminAvatarUrl.isNotBlank() && mapped != null && mapped.avatarUrl.isBlank()) {
+            val resolved = if (!editorAvatarLocked && adminAvatarUrl.isNotBlank() && mapped != null && mapped.avatarUrl.isBlank()) {
                 mapped.copy(avatarUrl = adminAvatarUrl)
             } else {
                 mapped

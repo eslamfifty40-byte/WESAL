@@ -20,11 +20,34 @@ interface AuthRepository {
     val isLoggedIn: Boolean
     val currentUserDisplayName: String?
     val currentUserEmail: String?
+    /** The signed-in Auth user's phone number, when the account carries one
+     *  (phone-registered accounts created via the OTP flow, or legacy Firebase
+     *  phone-auth accounts). Presence means the number was OTP-verified. */
+    val currentUserPhoneNumber: String?
     fun observeAuthState(): Flow<String?>
     suspend fun signInWithGoogleIdToken(idToken: String): Result<Boolean>
     suspend fun signInWithEmail(email: String, password: String): Result<Boolean>
     suspend fun signUpWithEmail(email: String, password: String, fullName: String = ""): Result<Boolean>
     suspend fun sendPasswordReset(email: String): Result<Unit>
+    /**
+     * Phone phase: ask the server to generate + deliver a 6-digit code for
+     * [phoneE164] (callable sendPhoneCode; works signed-out for registration
+     * and signed-in for the verification gate). Success value = the delivery
+     * channel the server used ("whatsapp" / "sms").
+     */
+    suspend fun sendPhoneOtp(phoneE164: String): Result<String>
+    /**
+     * Phone registration / sign-in: verify the code server-side (callable
+     * verifyPhoneCode), sign in with the returned custom token, then run the
+     * standard skeleton/profile routing. Success value = needsSetup.
+     */
+    suspend fun verifyPhoneOtpAndSignIn(phoneE164: String, code: String): Result<Boolean>
+    /**
+     * Mandatory gate / linking for an already signed-in account: verify the
+     * code server-side (callable verifyPhoneCodeForCurrentUser), which stamps
+     * phone + isPhoneVerified + phoneHash and the phone_uniqueness lock.
+     */
+    suspend fun verifyPhoneOtpForCurrentUser(phoneE164: String, code: String): Result<Unit>
     suspend fun completeUserProfile(
         displayName: String,
         bio: String,
@@ -51,7 +74,17 @@ interface UserRepository {
     suspend fun getUserOnce(uid: String): WesalUser?
     suspend fun findUserByPublicIdOrUid(idOrUid: String): WesalUser?
     suspend fun findExactUserByNumericId(numericId: String): WesalUser?
+    /**
+     * Unfiltered variants of the two resolvers above (spec §4.7, round 4 P2-2): the public
+     * resolvers return null for hidden/deleted/banned accounts (mirroring searchUsers'
+     * consider() filter exactly); these return the raw matched account and exist ONLY for
+     * admin-panel and invite/referral flows that legitimately need it.
+     */
+    suspend fun findUserByPublicIdOrUidUnfiltered(idOrUid: String): WesalUser?
+    suspend fun findExactUserByNumericIdUnfiltered(numericId: String): WesalUser?
     suspend fun searchUsers(query: String): List<WesalUser>
+    /** Spec §4.4 (round 4 P2-1): one-shot backfill of the `nameSearchKey` field for user docs that lack it. Returns how many docs were written. */
+    suspend fun backfillNameSearchKeys(limit: Int = 500): Result<Int>
     suspend fun listDiscoverableUsers(limit: Int = 30): List<WesalUser>
     suspend fun findUsersByPhoneHashes(phoneHashes: List<String>): Map<String, WesalUser>
     suspend fun updateProfile(
@@ -88,6 +121,8 @@ interface UserRepository {
         targetContentSnapshot: String = ""
     ): Result<Unit>
     fun observeSessions(): Flow<List<DeviceSession>>
+    /** Spec §13.4 (round 4 P1-10): LOADING/READY/ERROR state for the sessions listener. */
+    fun observeSessionsSyncState(): Flow<com.wesal.messenger.domain.model.ChatListSyncState>
     suspend fun revokeSession(sessionId: String): Result<Unit>
     suspend fun revokeAllOtherSessions(): Result<Unit>
     suspend fun createSessionLinkToken(): Result<String>
@@ -186,6 +221,13 @@ interface UserRepository {
     suspend fun updateWelcomeConfig(enabled: Boolean, template: String): Result<Unit>
     suspend fun sendWelcomeTestToSelf(): Result<Unit>
     suspend fun publishOfficialAnnouncement(title: String, body: String): Result<Unit>
+    /**
+     * Spec §9.6 (round 4 P1-7): sets the official identity photo — writes the official
+     * chat docs' photo field (`groupAvatarUrl` on chats/wesal_official_<uid>) and the
+     * team channel doc's `avatarUrl` (channels/wesal_official_team_channel).
+     * Permission-gated: full super admin or canManageFramesAndNeon.
+     */
+    suspend fun updateOfficialChatIdentity(photoUrl: String): Result<Unit>
     fun observeOfficialAnnouncements(): Flow<List<OfficialAnnouncement>>
 
     // Contact Requests, Friendship Gating, Custom Lists & Events
@@ -198,6 +240,8 @@ interface UserRepository {
     suspend fun cancelOrRemoveContactRequest(requestId: String): Result<Unit>
     suspend fun areContactsAccepted(peerUid: String): Boolean
     fun observeContactLists(): Flow<List<ContactLabelList>>
+    /** Spec §13.4 (round 4 P1-10): LOADING/READY/ERROR state for the contact-lists listener. */
+    fun observeContactListsSyncState(): Flow<com.wesal.messenger.domain.model.ChatListSyncState>
     suspend fun upsertContactList(listId: String?, name: String, memberUids: List<String>): Result<ContactLabelList>
     suspend fun addUidToContactList(listId: String, uid: String): Result<Unit>
     suspend fun removeUidFromContactList(listId: String, uid: String): Result<Unit>
@@ -225,9 +269,32 @@ interface UserRepository {
 
 interface ChatRepository {
     fun observeChats(): Flow<List<ChatPreview>>
+    /**
+     * Unpaged variant of [observeChats] for picker/lookup consumers — forward
+     * targets, camera share targets, profile direct-chat / mutual-groups
+     * (review M-3). The main chats list keeps the paged [observeChats]; this
+     * flow does not drive [observeChatListState].
+     */
+    fun observeAllChats(): Flow<List<ChatPreview>>
+    /** True while the paged [observeChats] listener's latest page came back full (review MINOR-4). */
+    fun observeChatsHasMore(): Flow<Boolean>
     /** Loading/error state for the chats list, driven by the same snapshot listener. */
     fun observeChatListState(): Flow<com.wesal.messenger.domain.model.ChatListSyncState>
+    /** Loading/error/cached state for the open chat's messages listener (spec §§1.2/13.4). */
+    fun observeMessageSyncState(): Flow<com.wesal.messenger.domain.model.ChatListSyncState>
+    /** Spec §13.3: grow the chats listener page (starts at 100, +100 per call, capped at 1000). */
+    fun requestMoreChats()
     fun observeMessages(chatId: String): Flow<List<WesalMessage>>
+    /**
+     * Spec §13.3: one page of messages older than [beforeTimestamp] (ascending order);
+     * a short page (< [pageSize]) means the beginning of the chat was reached.
+     */
+    suspend fun fetchOlderMessages(chatId: String, beforeTimestamp: Long, pageSize: Int = 60): List<WesalMessage>
+    /**
+     * The chat's whole history (ascending, capped at [maxMessages]) for the
+     * profile shared-media gallery — document-cursor paged (review M-3).
+     */
+    suspend fun fetchChatMessagesForGallery(chatId: String, maxMessages: Int = 2000): List<WesalMessage>
     suspend fun getOrCreateDirectChat(peerUid: String): Result<String>
     suspend fun openSupportChatByNumericId(targetNumericId: String = com.wesal.messenger.core.util.Constants.OWNER_ADMIN_NUMERIC_ID): Result<String>
     suspend fun ensureOfficialWelcomeChat(displayName: String, forceResend: Boolean = false): Result<Unit>
@@ -249,7 +316,8 @@ interface ChatRepository {
         durationMs: Long = 0L,
         waveform: List<Int> = emptyList(),
         caption: String = "",
-        isViewOnce: Boolean = false
+        isViewOnce: Boolean = false,
+        clientMessageId: String? = null
     ): Flow<Result<Float>>
     suspend fun markViewOnceOpened(chatId: String, messageId: String): Result<Unit>
     suspend fun sendLocationMessage(
@@ -276,6 +344,8 @@ interface ChatRepository {
     suspend fun deleteChat(chatId: String, forEveryone: Boolean = false): Result<Unit>
     suspend fun clearChatMessagesForMe(chatId: String): Result<Unit>
     suspend fun decryptMediaToCache(message: WesalMessage): Result<java.io.File>
+    /** Spec §8.3: remove every locally cached row of a chat (used when it becomes hidden). */
+    suspend fun purgeHiddenChatCache(chatId: String)
 
     // Separate Broadcast Lists (distinct from Groups; sender-only)
     fun observeBroadcastLists(): Flow<List<BroadcastList>>

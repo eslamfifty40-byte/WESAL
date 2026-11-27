@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PhoneUtils
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -17,6 +18,8 @@ import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.settings.WesalCredentialVault
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +44,15 @@ data class AuthUiState(
     val isSignUpMode: Boolean = false,
     val selectedCountry: CountryCode = CountryCatalog.defaultEgypt,
     val phoneNumberInput: String = "",
+    /** Phone sign-in option (phone phase): 0 = enter number, 1 = enter the OTP code. */
+    val phoneAuthStep: Int = 0,
+    val phoneOtpInput: String = "",
+    /** Canonical E.164 the current OTP was sent to (step 1). */
+    val phoneOtpE164: String = "",
+    /** Delivery channel reported by the server for the current OTP ("whatsapp"/"sms"). */
+    val phoneOtpChannel: String = "",
+    val isPhoneBusy: Boolean = false,
+    val phoneResendSecondsLeft: Int = 0,
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
     val infoMessage: String? = null,
@@ -74,11 +86,25 @@ class AuthViewModel @Inject constructor(
                 IllegalStateException("انتهت مهلة الاتصال بالخادم، تحقق من الإنترنت وحاول مرة أخرى")
             )
 
+    /**
+     * Ceiling for the phone-OTP calls only: delivery may try WhatsApp and then
+     * fall back to SMS server-side, which legitimately takes longer than the
+     * standard auth ceiling. Still bounded — the spinner always resolves.
+     */
+    private suspend fun <T> phoneAuthCall(block: suspend () -> Result<T>): Result<T> =
+        withTimeoutOrNull(PHONE_AUTH_TIMEOUT_MS) { block() }
+            ?: Result.failure(
+                IllegalStateException("انتهت مهلة الاتصال بالخادم، تحقق من الإنترنت وحاول مرة أخرى")
+            )
+
+    private var phoneResendJob: Job? = null
+
     private companion object {
         // 20s: the repository now returns success right after authentication + the
         // skeleton check (side effects are fire-and-forget), so the old 45s ceiling
         // only ever masked a stalled stream.
         const val AUTH_TIMEOUT_MS = 20_000L
+        const val PHONE_AUTH_TIMEOUT_MS = 60_000L
     }
 
     val savedAccounts: StateFlow<List<SavedWesalAccount>> = authRepository.observeSavedAccounts()
@@ -418,6 +444,160 @@ class AuthViewModel @Inject constructor(
         _uiState.update { it.copy(phoneNumberInput = digitsOnly, errorMessage = null) }
     }
 
+    /** The signed-in account's OTP-verified phone (phone-registered accounts), if any. */
+    fun verifiedPhoneE164(): String? =
+        authRepository.currentUserPhoneNumber?.takeIf { it.isNotBlank() }
+
+    fun updatePhoneOtpInput(input: String) {
+        _uiState.update {
+            it.copy(phoneOtpInput = PhoneOtpLogic.sanitizeOtpInput(input), errorMessage = null)
+        }
+    }
+
+    /**
+     * Phone sign-in option, step 1: validate the typed number (Egypt +20 by
+     * default via the selected country) and ask the server to deliver a code.
+     * The server enforces the real rate limits; the countdown here is only a
+     * UI mirror of its 60s resend interval.
+     */
+    fun sendPhoneOtp() {
+        if (!networkMonitor.isCurrentlyConnected()) {
+            _uiState.update { it.copy(errorMessage = "لا يوجد اتصال بالإنترنت، تحقق من الشبكة") }
+            return
+        }
+        val state = _uiState.value
+        if (state.isPhoneBusy || state.isLoading) return
+        val validation = PhoneUtils.validateForCountry(state.selectedCountry, state.phoneNumberInput)
+        val e164 = validation.e164
+        if (!validation.isValid || e164.isNullOrBlank()) {
+            _uiState.update {
+                it.copy(errorMessage = validation.errorAr.ifBlank { "يرجى إدخال رقم هاتف صحيح" })
+            }
+            return
+        }
+        _uiState.update { it.copy(isPhoneBusy = true, errorMessage = null, infoMessage = null) }
+        viewModelScope.launch {
+            phoneAuthCall { authRepository.sendPhoneOtp(e164) }
+                .onSuccess { channel ->
+                    _uiState.update {
+                        it.copy(
+                            isPhoneBusy = false,
+                            phoneAuthStep = 1,
+                            phoneOtpE164 = e164,
+                            phoneOtpChannel = channel,
+                            phoneOtpInput = "",
+                            infoMessage = "بعتنا كود التحقق على ${PhoneOtpLogic.channelDisplayNameAr(channel)} " +
+                                "لرقم ${PhoneOtpLogic.maskPhoneForDisplay(e164)} — الكود صالح ١٠ دقايق"
+                        )
+                    }
+                    startPhoneResendCountdown()
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            isPhoneBusy = false,
+                            errorMessage = err.localizedMessage ?: "تعذر إرسال كود التحقق"
+                        )
+                    }
+                }
+        }
+    }
+
+    fun resendPhoneOtp() {
+        if (_uiState.value.phoneResendSecondsLeft > 0) return
+        sendPhoneOtp()
+    }
+
+    fun cancelPhoneOtp() {
+        phoneResendJob?.cancel()
+        _uiState.update {
+            it.copy(
+                phoneAuthStep = 0,
+                phoneOtpInput = "",
+                phoneOtpE164 = "",
+                phoneOtpChannel = "",
+                phoneResendSecondsLeft = 0,
+                errorMessage = null,
+                infoMessage = null
+            )
+        }
+    }
+
+    /** Phone sign-in option, step 2: verify the code and sign in with the
+     *  custom token the server returns; routing matches the Google flow. */
+    fun verifyPhoneOtp() {
+        if (!networkMonitor.isCurrentlyConnected()) {
+            _uiState.update { it.copy(errorMessage = "لا يوجد اتصال بالإنترنت، تحقق من الشبكة") }
+            return
+        }
+        val state = _uiState.value
+        if (state.isPhoneBusy || state.isLoading) return
+        val code = PhoneOtpLogic.sanitizeOtpInput(state.phoneOtpInput)
+        if (!PhoneOtpLogic.isCompleteOtp(code)) {
+            _uiState.update { it.copy(errorMessage = "اكتب كود التحقق كامل (٦ أرقام)") }
+            return
+        }
+        val e164 = state.phoneOtpE164
+        if (e164.isBlank()) {
+            cancelPhoneOtp()
+            return
+        }
+        val openSupport = state.pendingSupportOnAuth
+        _uiState.update { it.copy(isPhoneBusy = true, errorMessage = null, infoMessage = null, supportAuthPromptMessage = null) }
+        viewModelScope.launch {
+            phoneAuthCall { authRepository.verifyPhoneOtpAndSignIn(e164, code) }
+                .onSuccess { needsSetup ->
+                    phoneResendJob?.cancel()
+                    if (openSupport) {
+                        val supportRes = chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
+                        val chatId = supportRes.getOrNull()
+                        if (!chatId.isNullOrBlank()) {
+                            _uiState.update {
+                                it.copy(
+                                    isPhoneBusy = false,
+                                    pendingSupportOnAuth = false,
+                                    navigateToSupportChatId = chatId
+                                )
+                            }
+                            return@launch
+                        }
+                    }
+                    _uiState.update {
+                        it.copy(
+                            isPhoneBusy = false,
+                            pendingSupportOnAuth = false,
+                            navigateToProfileSetup = needsSetup,
+                            navigateToHome = !needsSetup
+                        )
+                    }
+                }
+                .onFailure { err ->
+                    _uiState.update {
+                        it.copy(
+                            isPhoneBusy = false,
+                            errorMessage = err.localizedMessage ?: "تعذر التحقق من الكود"
+                        )
+                    }
+                }
+        }
+    }
+
+    private fun startPhoneResendCountdown() {
+        phoneResendJob?.cancel()
+        _uiState.update { it.copy(phoneResendSecondsLeft = PhoneOtpLogic.RESEND_COOLDOWN_SECONDS) }
+        phoneResendJob = viewModelScope.launch {
+            while (true) {
+                delay(1_000L)
+                val left = _uiState.value.phoneResendSecondsLeft
+                if (left <= 1) {
+                    _uiState.update { it.copy(phoneResendSecondsLeft = 0) }
+                    break
+                }
+                _uiState.update { it.copy(phoneResendSecondsLeft = left - 1) }
+            }
+        }
+    }
+
     fun completeProfile(
         displayName: String,
         bio: String,
@@ -503,6 +683,7 @@ class AuthViewModel @Inject constructor(
     }
 
     fun resetForNewLogin() {
+        phoneResendJob?.cancel()
         _uiState.value = AuthUiState()
     }
 }

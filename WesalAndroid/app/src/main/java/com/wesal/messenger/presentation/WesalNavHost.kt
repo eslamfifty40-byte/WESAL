@@ -18,6 +18,8 @@ import com.wesal.messenger.admin.AdminVerificationScreen
 import com.wesal.messenger.authentication.AuthViewModel
 import com.wesal.messenger.authentication.PhoneLoginScreen
 import com.wesal.messenger.authentication.ProfileSetupScreen
+import com.wesal.messenger.authentication.VerifyPhoneScreen
+import com.wesal.messenger.authentication.VerifyPhoneViewModel
 import com.wesal.messenger.channels.ChannelDetailScreen
 import com.wesal.messenger.chat.ChatDetailScreen
 import com.wesal.messenger.contacts.InviteLandingScreen
@@ -32,6 +34,7 @@ private object Routes {
     const val PHONE_LOGIN = "phone_login"
     const val ADD_ACCOUNT = "add_account?email={email}"
     const val PROFILE_SETUP = "profile_setup"
+    const val VERIFY_PHONE = "verify_phone"
     const val HOME = "home"
     const val CAMERA_HUB = "camera_hub"
     const val NEW_CHAT = "new_chat"
@@ -68,6 +71,9 @@ fun WesalNavHost(
         when (startDestination) {
             StartDestination.Home -> Routes.HOME
             StartDestination.ProfileSetup -> Routes.PROFILE_SETUP
+            // The gate is never a start route: Home opens first and the effect
+            // below immediately swaps it for the gate when verification is due.
+            StartDestination.VerifyPhone -> Routes.HOME
             else -> Routes.PHONE_LOGIN
         }
     }
@@ -78,6 +84,27 @@ fun WesalNavHost(
         if (startDestination == StartDestination.ProfileSetup && currentRoute == Routes.HOME) {
             navController.navigate(Routes.PROFILE_SETUP) {
                 popUpTo(Routes.HOME) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+    }
+
+    // Mandatory phone-verification gate (phone phase): a signed-in, profile-
+    // complete but unverified account is swapped from Home to the gate (Home
+    // is popped, so back cannot return to it), and the moment the user doc
+    // shows verified, the gate is swapped back out for Home. Like the profile
+    // setup correction above, this only ever fires FROM Home / the gate
+    // itself — never from inside a chat or another screen.
+    LaunchedEffect(startDestination, currentRoute) {
+        if (startDestination == StartDestination.VerifyPhone && currentRoute == Routes.HOME) {
+            navController.navigate(Routes.VERIFY_PHONE) {
+                popUpTo(Routes.HOME) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
+        if (startDestination == StartDestination.Home && currentRoute == Routes.VERIFY_PHONE) {
+            navController.navigate(Routes.HOME) {
+                popUpTo(Routes.VERIFY_PHONE) { inclusive = true }
                 launchSingleTop = true
             }
         }
@@ -113,8 +140,11 @@ fun WesalNavHost(
     // uid → uid account switch while inside the app: reset the back stack to Home so no
     // screen (or nav-scoped ViewModel) keeps showing the previous account. Previously only
     // the uid → null case below was handled, so after a switch the UI stayed on the old
-    // account's screens until the app was restarted (audit §3.4). Switches that go through
-    // the login routes are excluded — those flows navigate to Home themselves.
+    // account's screens until the app was restarted (audit §3.4). The phone-login route is
+    // excluded — that flow navigates to Home itself. The add-account route is NOT excluded
+    // (round 4): when its sign-in succeeded at Firebase Auth but the repository call then
+    // timed out, the form's own success navigation never fired and the user was stranded
+    // on the form while actually signed in — this rescue is what lands them inside.
     var lastKnownAuthUid by remember { mutableStateOf(authUid) }
     LaunchedEffect(authUid, currentRoute) {
         val uid = authUid
@@ -122,8 +152,7 @@ fun WesalNavHost(
             val previous = lastKnownAuthUid
             if (previous != null && previous != uid &&
                 currentRoute != null &&
-                currentRoute != Routes.PHONE_LOGIN &&
-                !currentRoute.startsWith("add_account")
+                currentRoute != Routes.PHONE_LOGIN
             ) {
                 navController.navigate(Routes.HOME) {
                     popUpTo(navController.graph.id) { inclusive = true }
@@ -148,7 +177,8 @@ fun WesalNavHost(
             Routes.PROFILE,
             Routes.ACCOUNT_SHARE,
             Routes.USER_PROFILE,
-            Routes.PROFILE_SETUP
+            Routes.PROFILE_SETUP,
+            Routes.VERIFY_PHONE
         )
         if (authUid == null && currentRoute in protectedRoutes) {
             authViewModel.resetForNewLogin()
@@ -222,6 +252,11 @@ fun WesalNavHost(
                     }
                 }
             )
+        }
+
+        composable(Routes.VERIFY_PHONE) {
+            val verifyPhoneViewModel: VerifyPhoneViewModel = hiltViewModel()
+            VerifyPhoneScreen(viewModel = verifyPhoneViewModel)
         }
 
         composable(Routes.HOME) {

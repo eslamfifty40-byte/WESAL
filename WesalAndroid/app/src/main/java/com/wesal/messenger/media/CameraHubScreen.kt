@@ -67,7 +67,9 @@ class CameraHubViewModel @Inject constructor(
 ) : ViewModel() {
 
     val chats: StateFlow<List<ChatPreview>> = combine(
-        chatRepository.observeChats(),
+        // Review M-3: share-target picker needs the whole list — the paged
+        // observeChats() truncated targets past the newest 100 chats.
+        chatRepository.observeAllChats(),
         prefs.settingsFlow.map { it.hiddenChatIds }
     ) { list, hiddenIds ->
         list.filterNot { it.isOfficialWesalChat || it.chatId in hiddenIds }

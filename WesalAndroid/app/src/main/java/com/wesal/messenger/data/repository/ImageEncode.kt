@@ -183,6 +183,18 @@ suspend fun uploadRawBytesToStorage(
     url
 }
 
+/**
+ * Uploads profile media (avatar / cover / group, channel, wallpaper, attachment images) to
+ * Firebase Storage and returns the download URL.
+ *
+ * §5.4 (round 4): the old small base64 fallback is REMOVED — a `data:` string is never
+ * returned, so it can never be stored into photoUrl/coverUrl again. On Storage failure this
+ * throws the real upload exception; every repository caller wraps the call in
+ * runCatching/try-catch and surfaces it as Result.failure, and the profile screens render
+ * that error. The name and signature are kept identical for the existing callers.
+ * [uriToBase64Smart] is still used internally ONLY to produce the compact bytes that are
+ * decoded straight back and uploaded via putBytes — its data: string never leaves this file.
+ */
 suspend fun uploadProfileMediaToStorageOrSmallFallback(
     ctx: Context,
     storagePath: String,
@@ -191,27 +203,33 @@ suspend fun uploadProfileMediaToStorageOrSmallFallback(
     quality: Int = 84
 ): String {
     val mime = runCatching { ctx.contentResolver.getType(uri).orEmpty() }.getOrDefault("image/jpeg")
-    val storageUrl = runCatching {
+    var storageFailure: Throwable? = null
+    val storageUrl = try {
         val compactImage = uriToBase64Smart(ctx, uri, maxSide = maxSide, quality = quality, preserveAlphaIfPng = true)
         val base64Part = compactImage.substringAfter("base64,", "")
         if (base64Part.isNotBlank()) {
             val outMime = compactImage.substringAfter("data:", "image/jpeg").substringBefore(";base64", "image/jpeg")
             val rawBytes = Base64.decode(base64Part, Base64.DEFAULT)
-            uploadRawBytesToStorage(storagePath, rawBytes, outMime).getOrNull()
+            uploadRawBytesToStorage(storagePath, rawBytes, outMime)
+                .onFailure { storageFailure = it }
+                .getOrNull()
         } else {
             val raw = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            if (raw != null && raw.isNotEmpty()) uploadRawBytesToStorage(storagePath, raw, mime).getOrNull() else null
+            if (raw != null && raw.isNotEmpty()) {
+                uploadRawBytesToStorage(storagePath, raw, mime)
+                    .onFailure { storageFailure = it }
+                    .getOrNull()
+            } else {
+                null
+            }
         }
-    }.getOrNull()
+    } catch (e: Exception) {
+        storageFailure = e
+        null
+    }
     if (!storageUrl.isNullOrBlank()) return storageUrl
 
-    return uriToBase64Smart(
-        ctx = ctx,
-        uri = uri,
-        maxSide = minOf(maxSide, 512),
-        quality = minOf(quality, 78),
-        preserveAlphaIfPng = true
-    )
+    throw (storageFailure ?: IllegalStateException("تعذر رفع الصورة إلى التخزين السحابي"))
 }
 
 suspend fun uploadLibraryImageOrDataUrl(
@@ -229,49 +247,96 @@ suspend fun uploadLibraryImageOrDataUrl(
     )
 }
 
+/** MIME type for a file extension, or null when the extension is not a known media type. */
+internal fun mimeTypeForFileExtension(ext: String): String? = when (ext.lowercase()) {
+    "m4a" -> "audio/mp4"
+    "mp3" -> "audio/mpeg"
+    "aac" -> "audio/aac"
+    "wav" -> "audio/wav"
+    "ogg", "oga" -> "audio/ogg"
+    "opus" -> "audio/opus"
+    "mp4", "m4v" -> "video/mp4"
+    "mov" -> "video/quicktime"
+    "webm" -> "video/webm"
+    "3gp" -> "video/3gpp"
+    "jpg", "jpeg" -> "image/jpeg"
+    "png" -> "image/png"
+    "webp" -> "image/webp"
+    "gif" -> "image/gif"
+    else -> null
+}
+
+/**
+ * MIME for an upload: the ContentResolver's type when it reports a real one,
+ * otherwise derived from the file extension. For `file://` Uris — exactly what
+ * the story/voice publish flows pass — getType() returns null, and the old code
+ * coerced that to application/octet-stream. The value is baked into the inline
+ * fallback's data: URL, and the story player rejected octet-stream payloads
+ * outright, so every fallback audio story was unplayable. Never emit
+ * application/octet-stream for a known media extension.
+ */
+internal fun resolveUploadMimeType(ctx: Context, uri: Uri): String {
+    val resolved = runCatching { ctx.contentResolver.getType(uri) }.getOrNull().orEmpty()
+    if (resolved.isNotBlank() && !resolved.equals("application/octet-stream", ignoreCase = true)) {
+        return resolved
+    }
+    val fileName = (uri.lastPathSegment ?: uri.toString())
+        .substringBefore('?')
+        .substringBefore('#')
+    return mimeTypeForFileExtension(fileName.substringAfterLast('.', ""))
+        ?: resolved.ifBlank { "application/octet-stream" }
+}
+
+/**
+ * Uploads a file to Firebase Storage and returns the download URL.
+ *
+ * §5.4 (round 4): the base64 inline fallbacks are REMOVED — on Storage failure this returns
+ * Result.failure with the real upload exception; a `data:` string is never returned as an
+ * upload result.
+ *
+ * §1.4 (round 4): resumable-upload session hooks. Firebase Storage's putFile is already a
+ * resumable upload within the process; [resumeSessionUri] additionally resumes a session
+ * persisted from a previous attempt (via the putFile(uri, metadata, sessionUri) overload),
+ * and [onSessionUri] is invoked exactly once, as soon as an upload snapshot first exposes a
+ * sessionUri, so the caller (outbox) can persist it for a later resume. Both parameters are
+ * optional and default to the previous behaviour for existing callers.
+ */
 suspend fun uploadFileToFirebaseStorage(
     storagePath: String,
     uri: Uri,
-    onProgress: (Float) -> Unit = {}
+    onProgress: (Float) -> Unit = {},
+    resumeSessionUri: Uri? = null,
+    onSessionUri: (Uri) -> Unit = {}
 ): Result<String> = runCatching {
     val ctx = FirebaseApp.getInstance().applicationContext
-    val mime = runCatching { ctx.contentResolver.getType(uri).orEmpty() }
-        .getOrDefault("application/octet-stream")
-        .ifBlank { "application/octet-stream" }
+    val mime = resolveUploadMimeType(ctx, uri)
     onProgress(0.05f)
     val storageRef = com.google.firebase.storage.FirebaseStorage.getInstance().reference.child(storagePath)
     val metadata = com.google.firebase.storage.storageMetadata {
         contentType = mime
     }
-    val uploadResult = runCatching {
-        val task = storageRef.putFile(uri, metadata)
-        task.addOnProgressListener { snap ->
-            val total = snap.totalByteCount.coerceAtLeast(1L)
-            val frac = (snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.06f, 0.94f)
-            onProgress(frac)
+    val task = if (resumeSessionUri != null) {
+        storageRef.putFile(uri, metadata, resumeSessionUri)
+    } else {
+        storageRef.putFile(uri, metadata)
+    }
+    var sessionUriDelivered = false
+    task.addOnProgressListener { snap ->
+        val sessionUri = snap.sessionUri
+        if (!sessionUriDelivered && sessionUri != null) {
+            sessionUriDelivered = true
+            runCatching { onSessionUri(sessionUri) }
         }
-        task.await()
-        onProgress(0.97f)
-        val url = storageRef.downloadUrl.await().toString()
-        onProgress(1f)
-        url
+        val total = snap.totalByteCount.coerceAtLeast(1L)
+        val frac = (snap.bytesTransferred.toFloat() / total.toFloat()).coerceIn(0.06f, 0.94f)
+        onProgress(frac)
     }
-    uploadResult.getOrNull()?.takeIf { it.isNotBlank() }?.let { return@runCatching it }
-
-    // Safe small-image inline fallback ONLY if Storage bucket is unreachable and image fits inline budget
-    if (mime.startsWith("image/", ignoreCase = true)) {
-        val dataUrl = uriToBase64Smart(ctx, uri, maxSide = 760, quality = 80, preserveAlphaIfPng = true)
-        check(dataUrl.isNotBlank()) { "تعذر رفع أو ضغط الصورة" }
-        onProgress(1f)
-        return@runCatching dataUrl
-    }
-    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        ?: throw (uploadResult.exceptionOrNull() ?: IllegalStateException("تعذر قراءة الملف"))
-    if (bytes.size <= 450_000) {
-        onProgress(1f)
-        return@runCatching "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
-    }
-    throw (uploadResult.exceptionOrNull() ?: IllegalStateException("فشل رفع الملف إلى التخزين السحابي"))
+    task.await()
+    onProgress(0.97f)
+    val url = storageRef.downloadUrl.await().toString()
+    check(url.isNotBlank()) { "فشل رفع الملف إلى التخزين السحابي" }
+    onProgress(1f)
+    url
 }
 
 fun uriToBase64Audio(ctx: Context, uri: Uri, maxBytes: Int = 450_000): String? {

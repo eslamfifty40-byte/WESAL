@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -28,7 +27,8 @@ import java.util.ArrayDeque
 /**
  * Firestore document in `frame_library/{frameId}`.
  *
- * - Custom (uploaded) frames: builtin = false, imageUrl = Storage download URL (or data: URI fallback).
+ * - Custom (uploaded) frames: builtin = false, imageUrl = Storage download URL (upload failures
+ *   surface as Result.failure to the admin UI; no data: URI fallback since round 4, §5.4).
  * - Built-in frames can have an override document with the SAME id: it can hide/soft-delete the frame
  *   from the picker or replace its image, without touching users that already wear it.
  */
@@ -600,7 +600,14 @@ object WesalFrameLibrary {
         check(snap.exists()) { "لم يتم حفظ الإطار على Firebase" }
     }
 
-    /** Makes the image transparent and uploads to Firebase Storage, falling back cleanly to compact Base64 if Storage is unavailable. */
+    /**
+     * Makes the image transparent and uploads it to Firebase Storage.
+     *
+     * §5.4 (round 4): the base64 data-URI fallback is REMOVED — a `data:` string must never be
+     * stored as a frame's imageUrl. On Storage failure this throws the real upload exception;
+     * uploadNewFrame/replaceFrameImage wrap it in Result.failure, which the admin UI already
+     * renders as a visible "فشل الحفظ: …" status message.
+     */
     private suspend fun processAndStore(ctx: Context, uri: Uri, name: String): Pair<String, Long> = withContext(Dispatchers.IO) {
         val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 512)
             ?: error("تعذر قراءة الصورة")
@@ -608,34 +615,19 @@ object WesalFrameLibrary {
         val glow = FrameImageProcessor.dominantGlow(clean)
         val out = ByteArrayOutputStream()
         clean.compress(Bitmap.CompressFormat.PNG, 100, out)
-        var bytes = out.toByteArray()
+        val bytes = out.toByteArray()
 
-        val storageUrl = com.wesal.messenger.data.repository.uploadRawBytesToStorage(
+        val storageResult = com.wesal.messenger.data.repository.uploadRawBytesToStorage(
             storagePath = "frame_library/${name}.png",
             bytes = bytes,
             mimeType = "image/png"
-        ).getOrNull()
+        )
+        val storageUrl = storageResult.getOrNull()
         if (!storageUrl.isNullOrBlank()) {
             return@withContext storageUrl to glow
         }
-
-        var side = 460
-        var bm = clean
-        while (bytes.size > 560_000 && side >= 180) {
-            val sc = side.toFloat() / maxOf(clean.width, clean.height).coerceAtLeast(1)
-            bm = Bitmap.createScaledBitmap(
-                clean,
-                (clean.width * sc).toInt().coerceAtLeast(1),
-                (clean.height * sc).toInt().coerceAtLeast(1),
-                true
-            )
-            val o2 = ByteArrayOutputStream()
-            bm.compress(Bitmap.CompressFormat.PNG, 100, o2)
-            bytes = o2.toByteArray()
-            side -= 70
-        }
-        check(bytes.size <= 760_000) { "حجم الإطار كبير جدًا؛ يرجى اختيار صورة أصغر" }
-        ("data:image/png;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)) to glow
+        throw (storageResult.exceptionOrNull()
+            ?: IllegalStateException("تعذر رفع الإطار إلى التخزين السحابي"))
     }
 
     private suspend fun processAndStoreRawGif(ctx: Context, uri: Uri, name: String): Pair<String, Long> = withContext(Dispatchers.IO) {
@@ -643,16 +635,19 @@ object WesalFrameLibrary {
             ?: error("تعذر قراءة ملف GIF")
         val bmp = FrameImageProcessor.decodeScaled(ctx, uri, 256)
         val glow = bmp?.let { FrameImageProcessor.dominantGlow(it) } ?: 0xFF00D9E8L
-        val storageUrl = com.wesal.messenger.data.repository.uploadRawBytesToStorage(
+        val storageResult = com.wesal.messenger.data.repository.uploadRawBytesToStorage(
             storagePath = "frame_library/${name}.gif",
             bytes = bytes,
             mimeType = "image/gif"
-        ).getOrNull()
+        )
+        val storageUrl = storageResult.getOrNull()
         if (!storageUrl.isNullOrBlank()) {
             return@withContext storageUrl to glow
         }
-        check(bytes.size <= 760_000) { "حجم الصورة المتحركة كبير جدًا للتخزين داخل Firestore" }
-        ("data:image/gif;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)) to glow
+        // §5.4 (round 4): no base64 data-URI fallback — fail visibly with the real exception
+        // (uploadNewFrame surfaces it to the admin UI as Result.failure).
+        throw (storageResult.exceptionOrNull()
+            ?: IllegalStateException("تعذر رفع الصورة المتحركة إلى التخزين السحابي"))
     }
 }
 

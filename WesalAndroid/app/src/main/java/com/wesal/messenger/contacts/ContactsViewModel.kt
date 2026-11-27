@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.AppEventItem
+import com.wesal.messenger.domain.model.ChatListSyncState
 import com.wesal.messenger.domain.model.ContactLabelList
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.WesalUser
@@ -62,8 +63,24 @@ class ContactsViewModel @Inject constructor(
     val myReferrals: StateFlow<List<WesalUser>> = userRepository.observeMyReferrals()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val contactLists: StateFlow<List<ContactLabelList>> = userRepository.observeContactLists()
+    // Review MINOR-2: the contact-lists sync state existed repository-side
+    // (P1-10) with no UI consumer, and the data flow could never recover from
+    // a listener error. Both flows now hang off a retry key — bumping it
+    // re-subscribes the dead listener — and the lists section renders the
+    // ERROR state with a retry button.
+    private val contactListsRetryKey = MutableStateFlow(0)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val contactLists: StateFlow<List<ContactLabelList>> = contactListsRetryKey
+        .flatMapLatest { userRepository.observeContactLists() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val contactListsSyncState: StateFlow<ChatListSyncState> = userRepository.observeContactListsSyncState()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ChatListSyncState())
+
+    fun retryContactLists() {
+        contactListsRetryKey.value += 1
+    }
 
     val appEvents: StateFlow<List<AppEventItem>> = userRepository.observeAppEvents()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

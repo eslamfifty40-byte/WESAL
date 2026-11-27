@@ -244,7 +244,7 @@ class AdminVerificationViewModel @Inject constructor(
     fun replySupportTicket(ticketId: String, text: String, newStatus: String? = null) {
         val clean = text.trim()
         if (clean.isBlank()) return
-        viewModelScope.launch {
+        runOp("ticket_reply_$ticketId") {
             _busy.value = true
             userRepository.replySupportTicket(ticketId, clean, newStatus)
                 .onSuccess { _statusMessage.value = "تم إرسال الرد على التذكرة ✓" }
@@ -254,7 +254,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun setSupportTicketStatus(ticketId: String, status: String) {
-        viewModelScope.launch {
+        runOp("ticket_status_$ticketId") {
             _busy.value = true
             userRepository.updateSupportTicketStatus(ticketId, status)
                 .onSuccess { _statusMessage.value = "تم تحديث حالة التذكرة: $status" }
@@ -299,6 +299,30 @@ class AdminVerificationViewModel @Inject constructor(
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
+    // §9.11 per-operation busy keys: every admin action runs under a stable op
+    // key via [runOp]; a second call with the same key while the first is in
+    // flight is dropped, and the UI binds each action button's `enabled` to its
+    // key not being present in [busyOps]. The pre-existing global [busy] flag is
+    // kept unchanged alongside this.
+    private val _busyOps = MutableStateFlow<Set<String>>(emptySet())
+    val busyOps: StateFlow<Set<String>> = _busyOps.asStateFlow()
+
+    fun runOp(key: String, block: suspend () -> Unit) {
+        if (key in _busyOps.value) return
+        _busyOps.value = _busyOps.value + key
+        viewModelScope.launch {
+            try {
+                block()
+            } finally {
+                _busyOps.value = _busyOps.value - key
+            }
+        }
+    }
+
+    // §9.6: last official-chat/channel photo set from the identity editor card.
+    private val _officialChatPhotoUrl = MutableStateFlow("")
+    val officialChatPhotoUrl: StateFlow<String> = _officialChatPhotoUrl.asStateFlow()
+
     private var searchJob: Job? = null
 
     private fun hasPanelAccess(): Boolean = isSuperAdmin.value || adminPermissions.value.hasAnyAccess()
@@ -320,8 +344,8 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun refreshAll() {
-        viewModelScope.launch {
-            if (!hasPanelAccess() && !userRepository.isSuperAdmin()) return@launch
+        runOp("refresh") {
+            if (!hasPanelAccess() && !userRepository.isSuperAdmin()) return@runOp
             _busy.value = true
             runCatching { _stats.value = userRepository.computeAdminStats() }
             runCatching {
@@ -340,11 +364,11 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun loadAllChannels() {
-        viewModelScope.launch {
-            if (!hasPanelAccess() && !userRepository.isSuperAdmin()) return@launch
+        runOp("channels_load") {
+            if (!hasPanelAccess() && !userRepository.isSuperAdmin()) return@runOp
             val snap = runCatching {
                 firestore.collection(Constants.COLLECTION_CHANNELS).limit(150).get().await()
-            }.getOrNull() ?: return@launch
+            }.getOrNull() ?: return@runOp
             val mapped = snap.documents.mapNotNull { d ->
                 if (!d.exists()) return@mapNotNull null
                 @Suppress("UNCHECKED_CAST")
@@ -396,7 +420,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun inspectUser(uid: String) {
-        viewModelScope.launch {
+        runOp("inspect_$uid") {
             _busy.value = true
             userRepository.adminGetUserFullDetails(uid, reason = "معاينة الحساب من لوحة المشرف الأعلى")
                 .onSuccess { _inspectedUser.value = it }
@@ -418,7 +442,7 @@ class AdminVerificationViewModel @Inject constructor(
         durationLabel: String,
         note: String
     ) {
-        viewModelScope.launch {
+        runOp("verify_${target.uid}") {
             _busy.value = true
             userRepository.setAccountVerification(
                 targetUid = target.uid,
@@ -446,7 +470,7 @@ class AdminVerificationViewModel @Inject constructor(
         expiresAt: Long,
         durationLabel: String
     ) {
-        viewModelScope.launch {
+        runOp("frame_${target.uid}") {
             _busy.value = true
             userRepository.setAccountFrame(target.uid, frameId, expiresAt, durationLabel)
                 .onSuccess {
@@ -463,7 +487,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun saveAppUpdateConfig(config: AppUpdateConfig) {
-        viewModelScope.launch {
+        runOp("app_update_save") {
             _busy.value = true
             userRepository.updateAppUpdateConfig(config)
                 .onSuccess {
@@ -479,7 +503,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun toggleGlobalCustomerFrame(enabled: Boolean) {
-        viewModelScope.launch {
+        runOp("global_frame_toggle") {
             _busy.value = true
             userRepository.setGlobalCustomerFrameEnabled(enabled)
                 .onSuccess { updatedCount ->
@@ -502,7 +526,7 @@ class AdminVerificationViewModel @Inject constructor(
         iconId: String,
         iconUrl: String
     ) {
-        viewModelScope.launch {
+        runOp("global_defaults_save") {
             _busy.value = true
             userRepository.setGlobalCustomerDefaults(enabled, frameId, iconId, iconUrl)
                 .onSuccess { updatedCount ->
@@ -520,7 +544,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun applyNeon(target: WesalUser, preset: NeonColorPreset, glowIntensity: Float, enabled: Boolean) {
-        viewModelScope.launch {
+        runOp("neon_${target.uid}") {
             _busy.value = true
             userRepository.setAccountNeonStyle(target.uid, preset.key, glowIntensity, enabled)
                 .onSuccess {
@@ -537,7 +561,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun applyIcon(target: WesalUser, iconId: String, iconUrl: String) {
-        viewModelScope.launch {
+        runOp("icon_${target.uid}") {
             _busy.value = true
             userRepository.setAccountIcon(target.uid, iconId, iconUrl)
                 .onSuccess {
@@ -550,7 +574,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun applyNameplateColor(target: WesalUser, colorKey: String) {
-        viewModelScope.launch {
+        runOp("nameplate_${target.uid}") {
             _busy.value = true
             userRepository.setAccountNameplateColor(target.uid, colorKey)
                 .onSuccess {
@@ -571,7 +595,7 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "لا يمكن حذف حساب الإدارة المحمي ${target.numericId}"
             return
         }
-        viewModelScope.launch {
+        runOp("delete_${target.uid}") {
             _busy.value = true
             userRepository.adminDeleteUser(target.uid, permanent)
                 .onSuccess {
@@ -585,7 +609,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun saveGlobalAppearance(config: GlobalAppearanceConfig) {
-        viewModelScope.launch {
+        runOp("appearance_save") {
             _busy.value = true
             userRepository.updateGlobalAppearance(config)
                 .onSuccess {
@@ -597,7 +621,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun assignModerator(targetUid: String, permissions: AdminPermissions?) {
-        viewModelScope.launch {
+        runOp("moderator_$targetUid") {
             _busy.value = true
             userRepository.setModeratorPermissions(targetUid, permissions)
                 .onSuccess {
@@ -609,7 +633,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun reviewSubscription(reqId: String, approved: Boolean, note: String) {
-        viewModelScope.launch {
+        runOp("sub_review_$reqId") {
             _busy.value = true
             userRepository.reviewSubscriptionRequest(reqId, approved, note)
                 .onSuccess {
@@ -626,7 +650,7 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "اكتب سبب الإنذار أولاً"
             return
         }
-        viewModelScope.launch {
+        runOp("warn_${target.uid}") {
             _busy.value = true
             userRepository.warnUser(target.uid, reason)
                 .onSuccess {
@@ -643,7 +667,7 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "لا يمكن حذف حساب الإدارة المحمي ${target.numericId}"
             return
         }
-        viewModelScope.launch {
+        runOp("delete_permanent_${target.uid}") {
             _busy.value = true
             userRepository.deleteAccountPermanently(target.uid, reason)
                 .onSuccess {
@@ -670,7 +694,7 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "يرجى كتابة سبب الحظر"
             return
         }
-        viewModelScope.launch {
+        runOp("ban_${target.uid}") {
             _busy.value = true
             userRepository.banUser(target.uid, permanent, expiresAt, reason, blockIdentifiers)
                 .onSuccess {
@@ -683,7 +707,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun unbanUser(target: WesalUser) {
-        viewModelScope.launch {
+        runOp("ban_${target.uid}") {
             _busy.value = true
             userRepository.unbanUser(target.uid, note = "رفع الحظر من لوحة الإدارة")
                 .onSuccess {
@@ -696,7 +720,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun setHiddenFromSearch(target: WesalUser, hidden: Boolean, reason: String) {
-        viewModelScope.launch {
+        runOp("hide_${target.uid}") {
             _busy.value = true
             userRepository.setAccountHiddenFromSearch(target.uid, hidden, reason)
                 .onSuccess {
@@ -709,7 +733,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun updateReport(reportId: String, status: String, note: String, resolution: String) {
-        viewModelScope.launch {
+        runOp("report_$reportId") {
             _busy.value = true
             userRepository.updateReportStatus(reportId, status, note, resolution)
                 .onSuccess { _statusMessage.value = "تم تحديث البلاغ إلى: $status" }
@@ -723,7 +747,7 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "لا يوجد معرف محادثة مرتبط بهذا البلاغ"
             return
         }
-        viewModelScope.launch {
+        runOp("report_chat_${report.reportId}") {
             userRepository.adminLogReportChatInspection(
                 reportId = report.reportId,
                 chatId = report.targetChatId,
@@ -739,7 +763,7 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "لا يمكن تعليق قناة فريق وصال الرسمية"
             return
         }
-        viewModelScope.launch {
+        runOp("channel_suspend_${channel.channelId}") {
             _busy.value = true
             channelRepository.adminSetChannelSuspended(channel.channelId, suspended)
                 .onSuccess {
@@ -756,7 +780,7 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "لا يمكن حذف قناة فريق وصال الرسمية"
             return
         }
-        viewModelScope.launch {
+        runOp("channel_delete_${channel.channelId}") {
             _busy.value = true
             channelRepository.deleteChannel(channel.channelId)
                 .onSuccess {
@@ -774,13 +798,13 @@ class AdminVerificationViewModel @Inject constructor(
             _statusMessage.value = "اكتب نص المنشور أولاً"
             return
         }
-        viewModelScope.launch {
+        runOp("team_post") {
             _busy.value = true
             val ch = channelRepository.ensureOfficialTeamChannel()
             if (ch == null) {
                 _statusMessage.value = "تعذر العثور على قناة فريق وصال"
                 _busy.value = false
-                return@launch
+                return@runOp
             }
             channelRepository.publishPost(ch.channelId, ChannelPostType.TEXT, clean)
                 .collect { res ->
@@ -798,7 +822,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun saveWelcomeConfig(enabled: Boolean, template: String) {
-        viewModelScope.launch {
+        runOp("welcome_save") {
             _busy.value = true
             userRepository.updateWelcomeConfig(enabled, template)
                 .onSuccess {
@@ -811,7 +835,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun sendWelcomeTestToSelf() {
-        viewModelScope.launch {
+        runOp("welcome_test") {
             _busy.value = true
             userRepository.sendWelcomeTestToSelf()
                 .onSuccess { _statusMessage.value = "تم إرسال رسالة ترحيب تجريبية إلى محادثة WESAL Messenger لديك" }
@@ -821,7 +845,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun publishOfficialAnnouncement(title: String, body: String) {
-        viewModelScope.launch {
+        runOp("announcement_publish") {
             _busy.value = true
             userRepository.publishOfficialAnnouncement(title, body)
                 .onSuccess { _statusMessage.value = "تم إرسال الإعلان الرسمي إلى جميع المستخدمين بنجاح" }
@@ -831,7 +855,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun deleteAuditLog(collectionName: String, logId: String) {
-        viewModelScope.launch {
+        runOp("log_delete_$logId") {
             _busy.value = true
             userRepository.deleteAuditLog(collectionName, logId)
                 .onSuccess { _statusMessage.value = "تم حذف السجل بنجاح ✓" }
@@ -841,7 +865,7 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun clearAuditLogs(collectionName: String) {
-        viewModelScope.launch {
+        runOp("logs_clear_$collectionName") {
             _busy.value = true
             userRepository.clearAuditLogs(collectionName)
                 .onSuccess { _statusMessage.value = "تم تفريغ السجل بنجاح ✓" }
@@ -851,10 +875,47 @@ class AdminVerificationViewModel @Inject constructor(
     }
 
     fun openDirectChatWithUser(uid: String, onOpenChat: (String) -> Unit) {
-        viewModelScope.launch {
+        runOp("open_chat_$uid") {
             chatRepository.getOrCreateDirectChat(uid)
                 .onSuccess { chatId -> onOpenChat(chatId) }
                 .onFailure { _statusMessage.value = it.message ?: "تعذر فتح المحادثة" }
+        }
+    }
+
+    /**
+     * §9.6 official identity editor: pick → upload via the existing profile-media
+     * helper → write through the user repository. Cross-agent dependency:
+     * `userRepository.updateOfficialChatIdentity(url)` (suspend, Result<Unit>)
+     * is added to the user repository by another round-4 agent with exactly that
+     * name/signature; it writes the official chat doc's photo + the team
+     * channel's avatarUrl. The upload helper fails loudly on Storage errors; a
+     * blank result or a leftover inline `data:` payload is treated as failure
+     * and never written as the official photo.
+     */
+    fun updateOfficialIdentityPhoto(context: android.content.Context, uri: android.net.Uri) {
+        runOp("official_identity") {
+            _busy.value = true
+            val uploaded = runCatching {
+                com.wesal.messenger.data.repository.uploadProfileMediaToStorageOrSmallFallback(
+                    ctx = context,
+                    storagePath = "official_identity/official_photo_${System.currentTimeMillis()}.jpg",
+                    uri = uri,
+                    maxSide = 720,
+                    quality = 88
+                )
+            }.getOrDefault("")
+            if (uploaded.isBlank() || uploaded.startsWith("data:", ignoreCase = true)) {
+                _statusMessage.value = "تعذر رفع صورة الهوية الرسمية — حاول مرة أخرى"
+            } else {
+                userRepository.updateOfficialChatIdentity(uploaded)
+                    .onSuccess {
+                        _officialChatPhotoUrl.value = uploaded
+                        _statusMessage.value = "تم تحديث صورة المحادثة والقناة الرسمية ✓"
+                        loadAllChannels()
+                    }
+                    .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ صورة الهوية الرسمية" }
+            }
+            _busy.value = false
         }
     }
 
@@ -971,6 +1032,8 @@ fun AdminVerificationScreen(
     val announcements by viewModel.announcements.collectAsStateWithLifecycle()
     val inspectedUser by viewModel.inspectedUser.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val busyOps by viewModel.busyOps.collectAsStateWithLifecycle()
+    val officialChatPhotoUrl by viewModel.officialChatPhotoUrl.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
 
     val allowedSections = remember(adminPermissions) {
@@ -1023,7 +1086,7 @@ fun AdminVerificationScreen(
                         IconButton(onClick = { currentSection = AdminSection.SEARCH }) {
                             Icon(Icons.Default.Search, contentDescription = "بحث عن مستخدم", tint = palette.turquoise)
                         }
-                        IconButton(onClick = { viewModel.refreshAll() }, enabled = !busy) {
+                        IconButton(onClick = { viewModel.refreshAll() }, enabled = !busy && "refresh" !in busyOps) {
                             Icon(Icons.Default.Refresh, contentDescription = "تحديث", tint = palette.turquoise)
                         }
                     }
@@ -1194,6 +1257,7 @@ fun AdminVerificationScreen(
                             }
                         }
                         AdminUsersListSection(
+                            busyOps = busyOps,
                             title = "${activeUserFilter.labelAr} (${filteredUsers.size})",
                             users = filteredUsers,
                             canVerifyUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
@@ -1232,6 +1296,7 @@ fun AdminVerificationScreen(
                             .padding(12.dp)
                     )
                     AdminUsersListSection(
+                        busyOps = busyOps,
                         title = "نتائج البحث الإداري الشامل (${searchResults.size})",
                         users = searchResults,
                         canVerifyUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
@@ -1250,6 +1315,7 @@ fun AdminVerificationScreen(
                 }
 
                 AdminSection.REPORTS -> AdminReportsSection(
+                    busyOps = busyOps,
                     reports = reports,
                     onlyWithContentSnapshot = false,
                     onReviewReport = { reviewReportTarget = it },
@@ -1258,6 +1324,7 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.SUPPORT_TICKETS -> AdminSupportTicketsSection(
+                    busyOps = busyOps,
                     tickets = supportTickets,
                     selectedTicketId = selectedSupportTicketId,
                     messages = supportTicketMessages,
@@ -1267,6 +1334,7 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.BANS_WARNINGS -> AdminBansWarningsSection(
+                    busyOps = busyOps,
                     users = users,
                     onWarn = { warnTarget = it },
                     onBan = { banTarget = it },
@@ -1275,6 +1343,7 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.CHANNELS -> AdminChannelsSection(
+                    busyOps = busyOps,
                     channels = channels,
                     onOpenChannel = onOpenChannel,
                     onSuspendToggle = { ch -> viewModel.setChannelSuspended(ch, !ch.isSuspended) },
@@ -1282,6 +1351,7 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.CONTENT_MOD -> AdminReportsSection(
+                    busyOps = busyOps,
                     reports = reports.filter {
                         it.targetType != "USER" || it.targetContentSnapshot.isNotBlank() || it.targetChatId.isNotBlank()
                     },
@@ -1292,6 +1362,7 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.VERIFICATION_APPEARANCE -> AdminVerificationAndAppearanceSection(
+                    busyOps = busyOps,
                     users = users,
                     logs = verificationLogs,
                     globalFrameEnabled = globalFrameEnabled,
@@ -1309,26 +1380,37 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.WESAL_TEAM -> AdminWesalTeamSection(
+                    busyOps = busyOps,
                     channel = officialTeamChannel,
                     onOpenChannel = {
                         val cid = officialTeamChannel?.channelId ?: Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID
                         onOpenChannel(cid)
                     },
-                    onPublishPost = viewModel::publishOfficialTeamPost
+                    onPublishPost = viewModel::publishOfficialTeamPost,
+                    // §9.6: official identity editor, gated on the SAME permission
+                    // expression this screen uses for frame/neon management.
+                    canManageOfficialIdentity = adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary,
+                    officialPhotoUrl = officialChatPhotoUrl.ifBlank { officialTeamChannel?.avatarUrl.orEmpty() },
+                    officialIdentityBusy = "official_identity" in busyOps,
+                    onPickOfficialPhoto = { ctx, uri -> viewModel.updateOfficialIdentityPhoto(ctx, uri) }
                 )
 
                 AdminSection.WELCOME_MSG -> AdminWelcomeConfigSection(
+                    busyOps = busyOps,
                     config = welcomeConfig,
                     onSave = viewModel::saveWelcomeConfig,
                     onSendTest = viewModel::sendWelcomeTestToSelf
                 )
 
                 AdminSection.ANNOUNCEMENTS -> AdminAnnouncementsSection(
+                    busyOps = busyOps,
                     announcements = announcements,
                     onPublish = viewModel::publishOfficialAnnouncement
                 )
 
                 AdminSection.ACTION_LOGS -> AdminAuditLogsListSection(
+                    busyOps = busyOps,
+                    clearOpKey = "logs_clear_${Constants.COLLECTION_ADMIN_LOGS}",
                     title = "سجل الإجراءات الإدارية الشامل (${adminActionLogs.size})",
                     logs = adminActionLogs,
                     canDeleteLogs = isSuperAdmin,
@@ -1337,6 +1419,7 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.ADMIN_SETTINGS -> AdminSettingsSection(
+                    busyOps = busyOps,
                     globalFrameEnabled = globalFrameEnabled,
                     onToggleGlobalFrame = viewModel::toggleGlobalCustomerFrame,
                     appUpdateConfig = appUpdateConfig,
@@ -1356,6 +1439,7 @@ fun AdminVerificationScreen(
                             onQueryChange = { hiddenQuery = it }
                         )
                         AdminUsersListSection(
+                            busyOps = busyOps,
                             title = "التحكم في إخفاء الحسابات من البحث (المخفية: ${users.count { it.hiddenFromSearch }})",
                             users = hiddenFiltered,
                             canVerifyUsers = adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification,
@@ -1375,6 +1459,8 @@ fun AdminVerificationScreen(
                 }
 
                 AdminSection.HIDDEN_LOGS -> AdminAuditLogsListSection(
+                    busyOps = busyOps,
+                    clearOpKey = "logs_clear_${Constants.COLLECTION_HIDDEN_LOGS}",
                     title = "سجل تدقيق إخفاء الحسابات من البحث (${hiddenLogs.size})",
                     logs = hiddenLogs,
                     canDeleteLogs = isSuperAdmin,
@@ -1402,6 +1488,7 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.CONTENT_REVIEW -> AdminReportsSection(
+                    busyOps = busyOps,
                     reports = reports,
                     onlyWithContentSnapshot = false,
                     onReviewReport = { reviewReportTarget = it },
@@ -1410,18 +1497,21 @@ fun AdminVerificationScreen(
                 )
 
                 AdminSection.SUBSCRIPTION_REQUESTS -> AdminSubscriptionRequestsSection(
+                    busyOps = busyOps,
                     requests = subscriptionRequests,
                     onReview = { reqId, approved, note -> viewModel.reviewSubscription(reqId, approved, note) },
                     onInspectUser = { uid -> if (uid.isNotBlank()) viewModel.inspectUser(uid) }
                 )
 
                 AdminSection.MODERATORS -> AdminModeratorsSection(
+                    busyOps = busyOps,
                     users = users,
                     moderators = moderators,
                     onSavePermissions = viewModel::assignModerator
                 )
 
                 AdminSection.GLOBAL_APPEARANCE -> AdminGlobalAppearanceSection(
+                    busyOps = busyOps,
                     config = globalAppearance,
                     onSave = viewModel::saveGlobalAppearance
                 )
@@ -1516,6 +1606,7 @@ fun AdminVerificationScreen(
                                     viewModel.dismissInspectedUser()
                                     if (u.isBanned) viewModel.unbanUser(u) else banTarget = u
                                 },
+                                enabled = "ban_${u.uid}" !in busyOps,
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.filledTonalButtonColors(
                                     containerColor = if (u.isBanned) palette.emerald.copy(alpha = 0.16f) else palette.error.copy(alpha = 0.16f)
@@ -1567,6 +1658,7 @@ fun AdminVerificationScreen(
     verifyTarget?.let { target ->
         AdminVerificationDialog(
             user = target,
+            busyOps = busyOps,
             onDismiss = { verifyTarget = null },
             onApply = { verified, seal, glowColor, expiresAt, durationLabel, note ->
                 viewModel.applyVerification(target, verified, seal, glowColor, expiresAt, durationLabel, note)
@@ -1578,6 +1670,7 @@ fun AdminVerificationScreen(
     frameNeonTarget?.let { target ->
         AdminFrameAndNeonDialog(
             user = target,
+            busyOps = busyOps,
             onDismiss = { frameNeonTarget = null },
             onApplyFrame = { frameId, expiresAt, durationLabel ->
                 viewModel.applyFrame(target, frameId, expiresAt, durationLabel)
@@ -1619,6 +1712,7 @@ fun AdminVerificationScreen(
             confirmButton = {
                 Button(
                     onClick = { viewModel.warnUser(target, reason); warnTarget = null },
+                    enabled = "warn_${target.uid}" !in busyOps,
                     colors = ButtonDefaults.buttonColors(containerColor = palette.warning)
                 ) { Text("إرسال الإنذار") }
             },
@@ -1631,6 +1725,7 @@ fun AdminVerificationScreen(
     banTarget?.let { target ->
         AdminBanDialog(
             user = target,
+            busyOps = busyOps,
             onDismiss = { banTarget = null },
             onConfirmBan = { permanent, expiresAt, reason, blockIdentifiers ->
                 viewModel.banUser(target, permanent, expiresAt, reason, blockIdentifiers)
@@ -1658,10 +1753,13 @@ fun AdminVerificationScreen(
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    viewModel.setHiddenFromSearch(target, willHide, reason)
-                    hideTarget = null
-                }) { Text(strings.confirm) }
+                Button(
+                    onClick = {
+                        viewModel.setHiddenFromSearch(target, willHide, reason)
+                        hideTarget = null
+                    },
+                    enabled = "hide_${target.uid}" !in busyOps
+                ) { Text(strings.confirm) }
             },
             dismissButton = { TextButton(onClick = { hideTarget = null }) { Text(strings.cancel) } }
         )
@@ -1670,6 +1768,7 @@ fun AdminVerificationScreen(
     reviewReportTarget?.let { report ->
         AdminReportReviewDialog(
             report = report,
+            busyOps = busyOps,
             onDismiss = { reviewReportTarget = null },
             onSaveStatus = { status, note, resolution ->
                 viewModel.updateReport(report.reportId, status, note, resolution)
@@ -1699,11 +1798,15 @@ fun AdminVerificationScreen(
             },
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { viewModel.deleteUser(target, permanent = false); deleteTarget = null }) {
+                    OutlinedButton(
+                        onClick = { viewModel.deleteUser(target, permanent = false); deleteTarget = null },
+                        enabled = "delete_${target.uid}" !in busyOps
+                    ) {
                         Text("تعطيل مؤقت")
                     }
                     Button(
                         onClick = { viewModel.deleteUser(target, permanent = true); deleteTarget = null },
+                        enabled = "delete_${target.uid}" !in busyOps,
                         colors = ButtonDefaults.buttonColors(containerColor = palette.error)
                     ) { Text("حذف نهائي") }
                 }
@@ -1893,6 +1996,7 @@ private fun AdminStatisticsSection(
 
 @Composable
 private fun AdminUsersListSection(
+    busyOps: Set<String> = emptySet(),
     title: String,
     users: List<WesalUser>,
     canVerifyUsers: Boolean = true,
@@ -1989,14 +2093,23 @@ private fun AdminUsersListSection(
                         if (canModerateUsers) {
                             SmallAdminChip("إنذار", Icons.Default.Warning) { onWarn(user) }
                             if (!isProtected) {
-                                SmallAdminChip(if (user.isBanned) "فك حظر" else "حظر", Icons.Default.Block) { onBanToggle(user) }
+                                // §9.11: unban fires the op directly — gate the chip on its op key.
+                                SmallAdminChip(
+                                    if (user.isBanned) "فك حظر" else "حظر",
+                                    Icons.Default.Block,
+                                    enabled = "ban_${user.uid}" !in busyOps
+                                ) { onBanToggle(user) }
                             }
                             SmallAdminChip(if (user.hiddenFromSearch) "إظهار" else "إخفاء", Icons.Default.VisibilityOff) { onHideToggle(user) }
                         }
                         if (canDeleteUsers && !isProtected) {
                             SmallAdminChip("حذف", Icons.Default.DeleteForever) { onDelete(user) }
                         }
-                        SmallAdminChip("مراسلة", Icons.AutoMirrored.Filled.Chat) { onOpenChat(user) }
+                        SmallAdminChip(
+                            "مراسلة",
+                            Icons.AutoMirrored.Filled.Chat,
+                            enabled = "open_chat_${user.uid}" !in busyOps
+                        ) { onOpenChat(user) }
                     }
                 }
             }
@@ -2005,14 +2118,15 @@ private fun AdminUsersListSection(
 }
 
 @Composable
-private fun SmallAdminChip(text: String, icon: ImageVector, onClick: () -> Unit) {
+private fun SmallAdminChip(text: String, icon: ImageVector, enabled: Boolean = true, onClick: () -> Unit) {
     val palette = WesalColors.current
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = palette.surfaceElevated,
         modifier = Modifier
             .border(1.dp, palette.border, RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
+            .alpha(if (enabled) 1f else 0.45f)
+            .clickable(enabled = enabled, onClick = onClick)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 9.dp, vertical = 6.dp),
@@ -2027,6 +2141,7 @@ private fun SmallAdminChip(text: String, icon: ImageVector, onClick: () -> Unit)
 
 @Composable
 private fun AdminSupportTicketsSection(
+    busyOps: Set<String> = emptySet(),
     tickets: List<SupportTicket>,
     selectedTicketId: String?,
     messages: List<SupportTicketMessage>,
@@ -2166,6 +2281,7 @@ private fun AdminSupportTicketsSection(
                 FilterChip(
                     selected = selectedTicket.status == status,
                     onClick = { onStatusChange(selectedTicket.ticketId, status) },
+                    enabled = "ticket_status_${selectedTicket.ticketId}" !in busyOps,
                     label = { Text(status, maxLines = 1) }
                 )
             }
@@ -2244,7 +2360,7 @@ private fun AdminSupportTicketsSection(
                     onReply(selectedTicket.ticketId, replyText)
                     replyText = ""
                 },
-                enabled = replyText.isNotBlank()
+                enabled = replyText.isNotBlank() && "ticket_reply_${selectedTicket.ticketId}" !in busyOps
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, tint = palette.turquoise)
             }
@@ -2254,6 +2370,7 @@ private fun AdminSupportTicketsSection(
 
 @Composable
 private fun AdminReportsSection(
+    busyOps: Set<String> = emptySet(),
     reports: List<AdminReportRecord>,
     onlyWithContentSnapshot: Boolean,
     onReviewReport: (AdminReportRecord) -> Unit,
@@ -2335,7 +2452,10 @@ private fun AdminReportsSection(
                                 Text("معالجة البلاغ", maxLines = 1)
                             }
                             if (report.targetChatId.isNotBlank()) {
-                                OutlinedButton(onClick = { onOpenChat(report) }) {
+                                OutlinedButton(
+                                    onClick = { onOpenChat(report) },
+                                    enabled = "report_chat_${report.reportId}" !in busyOps
+                                ) {
                                     Text("فتح المحادثة", maxLines = 1)
                                 }
                             }
@@ -2354,6 +2474,7 @@ private fun AdminReportsSection(
 
 @Composable
 private fun AdminBansWarningsSection(
+    busyOps: Set<String> = emptySet(),
     users: List<WesalUser>,
     onWarn: (WesalUser) -> Unit,
     onBan: (WesalUser) -> Unit,
@@ -2405,6 +2526,7 @@ private fun AdminBansWarningsSection(
                             if (user.isBanned) {
                                 Button(
                                     onClick = { onUnban(user) },
+                                    enabled = "ban_${user.uid}" !in busyOps,
                                     colors = ButtonDefaults.buttonColors(containerColor = palette.emerald)
                                 ) { Text("رفع الحظر") }
                             } else if (!Constants.isProtectedAdminNumericId(user.numericId) && !Constants.isSuperAdminEmail(user.email)) {
@@ -2423,6 +2545,7 @@ private fun AdminBansWarningsSection(
 
 @Composable
 private fun AdminChannelsSection(
+    busyOps: Set<String> = emptySet(),
     channels: List<WesalChannel>,
     onOpenChannel: (String) -> Unit,
     onSuspendToggle: (WesalChannel) -> Unit,
@@ -2465,11 +2588,15 @@ private fun AdminChannelsSection(
                             Text("فتح")
                         }
                         if (!ch.isOfficialTeamChannel) {
-                            OutlinedButton(onClick = { onSuspendToggle(ch) }) {
+                            OutlinedButton(
+                                onClick = { onSuspendToggle(ch) },
+                                enabled = "channel_suspend_${ch.channelId}" !in busyOps
+                            ) {
                                 Text(if (ch.isSuspended) "إعادة تفعيل" else "تعليق")
                             }
                             OutlinedButton(
                                 onClick = { onDeleteChannel(ch) },
+                                enabled = "channel_delete_${ch.channelId}" !in busyOps,
                                 colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
                             ) {
                                 Text("حذف")
@@ -2484,6 +2611,7 @@ private fun AdminChannelsSection(
 
 @Composable
 private fun AdminVerificationAndAppearanceSection(
+    busyOps: Set<String> = emptySet(),
     users: List<WesalUser>,
     logs: List<VerificationAuditLog>,
     globalFrameEnabled: Boolean,
@@ -2637,10 +2765,13 @@ private fun AdminVerificationAndAppearanceSection(
                 }
             },
             confirmButton = {
-                Button(onClick = {
-                    onSaveGlobalCustomerDefaults(draftEnabled, draftFrameId, draftIconId, draftIconUrl)
-                    showGlobalPicker = false
-                }) { Text("تطبيق على جميع العملاء") }
+                Button(
+                    onClick = {
+                        onSaveGlobalCustomerDefaults(draftEnabled, draftFrameId, draftIconId, draftIconUrl)
+                        showGlobalPicker = false
+                    },
+                    enabled = "global_defaults_save" !in busyOps
+                ) { Text("تطبيق على جميع العملاء") }
             },
             dismissButton = {
                 TextButton(onClick = { showGlobalPicker = false }) { Text("إلغاء") }
@@ -2693,7 +2824,8 @@ private fun AdminVerificationAndAppearanceSection(
                 }
                 Switch(
                     checked = globalFrameEnabled,
-                    onCheckedChange = onToggleGlobalFrame
+                    onCheckedChange = onToggleGlobalFrame,
+                    enabled = "global_frame_toggle" !in busyOps
                 )
             }
         }
@@ -2750,6 +2882,8 @@ private fun AdminVerificationAndAppearanceSection(
 
         if (subTab == 3) {
             AdminAuditLogsListSection(
+                busyOps = busyOps,
+                clearOpKey = "logs_clear_${Constants.COLLECTION_VERIFICATION_LOGS}",
                 title = "سجل تدقيق التوثيق والإطارات (${logs.size})",
                 logs = logs,
                 canDeleteLogs = canManageAuditLogs,
@@ -2842,12 +2976,26 @@ private fun AdminVerificationAndAppearanceSection(
 
 @Composable
 private fun AdminWesalTeamSection(
+    busyOps: Set<String> = emptySet(),
     channel: WesalChannel?,
     onOpenChannel: () -> Unit,
-    onPublishPost: (String) -> Unit
+    onPublishPost: (String) -> Unit,
+    canManageOfficialIdentity: Boolean = false,
+    officialPhotoUrl: String = "",
+    officialIdentityBusy: Boolean = false,
+    onPickOfficialPhoto: (android.content.Context, android.net.Uri) -> Unit = { _, _ -> }
 ) {
     val palette = WesalColors.current
     var postText by remember { mutableStateOf("") }
+    // §9.6: image picker for the official identity card (same PickVisualMedia
+    // pattern as AdminFrameAndNeonDialog). Declared unconditionally; the card
+    // that launches it is permission-gated below.
+    val teamCtx = androidx.compose.ui.platform.LocalContext.current
+    val officialPhotoPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) onPickOfficialPhoto(teamCtx, uri)
+    }
 
     Column(
         modifier = Modifier
@@ -2874,6 +3022,47 @@ private fun AdminWesalTeamSection(
             }
         }
 
+        // §9.6 official identity editor: the official/main chat's photo + the
+        // team channel's avatar. Permission-gated by the caller on the same
+        // frame/neon management permission used across this screen.
+        if (canManageOfficialIdentity) {
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("الهوية الرسمية — صورة المحادثة والقناة الرسمية", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                    Text(
+                        "هذه الصورة تظهر كصورة المحادثة الرسمية وقناة فريق وصال لدى جميع المستخدمين.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (officialPhotoUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = wesalImageModel(officialPhotoUrl),
+                            contentDescription = null,
+                            modifier = Modifier.size(76.dp).clip(CircleShape),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Text("لا توجد صورة رسمية معيّنة بعد", color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
+                    }
+                    Button(
+                        onClick = {
+                            officialPhotoPicker.launch(
+                                androidx.activity.result.PickVisualMediaRequest(
+                                    androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly
+                                )
+                            )
+                        },
+                        enabled = !officialIdentityBusy,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Image, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (officialIdentityBusy) "جارٍ رفع الصورة…" else "اختيار صورة رسمية جديدة")
+                    }
+                }
+            }
+        }
+
         Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("نشر منشور سريع في قناة فريق وصال", color = palette.textPrimary, fontWeight = FontWeight.Bold)
@@ -2889,7 +3078,7 @@ private fun AdminWesalTeamSection(
                         onPublishPost(postText)
                         postText = ""
                     },
-                    enabled = postText.isNotBlank(),
+                    enabled = postText.isNotBlank() && "team_post" !in busyOps,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null)
@@ -2903,6 +3092,7 @@ private fun AdminWesalTeamSection(
 
 @Composable
 private fun AdminWelcomeConfigSection(
+    busyOps: Set<String> = emptySet(),
     config: SystemWelcomeConfig,
     onSave: (Boolean, String) -> Unit,
     onSendTest: () -> Unit
@@ -2941,10 +3131,18 @@ private fun AdminWelcomeConfigSection(
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(onClick = { onSave(enabled, template) }, modifier = Modifier.weight(1f)) {
+                        Button(
+                            onClick = { onSave(enabled, template) },
+                            enabled = "welcome_save" !in busyOps,
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Text("حفظ التعديل")
                         }
-                        OutlinedButton(onClick = onSendTest, modifier = Modifier.weight(1f)) {
+                        OutlinedButton(
+                            onClick = onSendTest,
+                            enabled = "welcome_test" !in busyOps,
+                            modifier = Modifier.weight(1f)
+                        ) {
                             Text("إرسال رسالة تجريبية لنفسي")
                         }
                     }
@@ -2978,6 +3176,7 @@ private fun AdminWelcomeConfigSection(
 
 @Composable
 private fun AdminAnnouncementsSection(
+    busyOps: Set<String> = emptySet(),
     announcements: List<OfficialAnnouncement>,
     onPublish: (String, String) -> Unit
 ) {
@@ -3013,7 +3212,7 @@ private fun AdminAnnouncementsSection(
                             onPublish(title, body)
                             body = ""
                         },
-                        enabled = body.isNotBlank(),
+                        enabled = body.isNotBlank() && "announcement_publish" !in busyOps,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.Campaign, contentDescription = null)
@@ -3042,6 +3241,8 @@ private fun AdminAnnouncementsSection(
 
 @Composable
 private fun AdminAuditLogsListSection(
+    busyOps: Set<String> = emptySet(),
+    clearOpKey: String = "",
     title: String,
     logs: List<VerificationAuditLog>,
     canDeleteLogs: Boolean = false,
@@ -3083,6 +3284,7 @@ private fun AdminAuditLogsListSection(
                         confirmClearAll = false
                         onClearLogs?.invoke()
                     },
+                    enabled = clearOpKey.isBlank() || clearOpKey !in busyOps,
                     colors = ButtonDefaults.buttonColors(containerColor = palette.error)
                 ) { Text("تأكيد المسح") }
             },
@@ -3140,6 +3342,7 @@ private fun AdminAuditLogsListSection(
                                 if (canDeleteLogs && onDeleteLog != null && docId.isNotBlank()) {
                                     IconButton(
                                         onClick = { onDeleteLog(docId) },
+                                        enabled = "log_delete_$docId" !in busyOps,
                                         modifier = Modifier.size(24.dp)
                                     ) {
                                         Icon(
@@ -3168,6 +3371,7 @@ private fun AdminAuditLogsListSection(
 
 @Composable
 private fun AdminSettingsSection(
+    busyOps: Set<String> = emptySet(),
     globalFrameEnabled: Boolean,
     onToggleGlobalFrame: (Boolean) -> Unit,
     appUpdateConfig: AppUpdateConfig,
@@ -3209,7 +3413,11 @@ private fun AdminSettingsSection(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text("الإطار الافتراضي التلقائي للعملاء الجدد", color = palette.textPrimary, modifier = Modifier.weight(1f))
-                    Switch(checked = globalFrameEnabled, onCheckedChange = onToggleGlobalFrame)
+                    Switch(
+                        checked = globalFrameEnabled,
+                        onCheckedChange = onToggleGlobalFrame,
+                        enabled = "global_frame_toggle" !in busyOps
+                    )
                 }
             }
         }
@@ -3284,6 +3492,7 @@ private fun AdminSettingsSection(
                                 )
                             )
                         },
+                        enabled = "app_update_save" !in busyOps,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("حفظ إعدادات التحديث")
@@ -3297,7 +3506,11 @@ private fun AdminSettingsSection(
             }
         }
         item {
-            Button(onClick = onRefreshAll, modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = onRefreshAll,
+                enabled = "refresh" !in busyOps,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Icon(Icons.Default.Refresh, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
                 Text("إعادة مزامنة كافة بيانات لوحة الإدارة")
@@ -3427,6 +3640,7 @@ private fun AdminInfoLine(label: String, value: String) {
 @Composable
 private fun AdminVerificationDialog(
     user: WesalUser,
+    busyOps: Set<String> = emptySet(),
     onDismiss: () -> Unit,
     onApply: (Boolean, VerificationSealType, NeonColorPreset, Long, String, String) -> Unit
 ) {
@@ -3565,13 +3779,17 @@ private fun AdminVerificationDialog(
                 if (user.isVerified && !isProtected) {
                     OutlinedButton(
                         onClick = { onApply(false, selectedSeal, NeonColorPreset.NONE, 0L, "سحب التوثيق", note) },
+                        enabled = "verify_${user.uid}" !in busyOps,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
                     ) { Text("سحب") }
                 }
-                Button(onClick = {
-                    val (exp, lbl) = calculateDurationExpiresAt(selectedDuration, customCountText.toIntOrNull() ?: 1)
-                    onApply(true, selectedSeal, selectedGlow, exp, lbl, note)
-                }) {
+                Button(
+                    onClick = {
+                        val (exp, lbl) = calculateDurationExpiresAt(selectedDuration, customCountText.toIntOrNull() ?: 1)
+                        onApply(true, selectedSeal, selectedGlow, exp, lbl, note)
+                    },
+                    enabled = "verify_${user.uid}" !in busyOps
+                ) {
                     Text(if (user.isVerified) "تحديث" else "منح الشارة")
                 }
             }
@@ -3583,6 +3801,7 @@ private fun AdminVerificationDialog(
 @Composable
 private fun AdminFrameAndNeonDialog(
     user: WesalUser,
+    busyOps: Set<String> = emptySet(),
     onDismiss: () -> Unit,
     onApplyFrame: (String, Long, String) -> Unit,
     onApplyIcon: (String, String) -> Unit,
@@ -4104,36 +4323,48 @@ private fun AdminFrameAndNeonDialog(
         },
         confirmButton = {
             when (modeTab) {
-                3 -> Button(onClick = {
-                    val effectivePreset = if (neonEnabled) selectedNeon else NeonColorPreset.NONE
-                    onApplyNeon(effectivePreset, neonGlow, neonEnabled)
-                }) {
+                3 -> Button(
+                    onClick = {
+                        val effectivePreset = if (neonEnabled) selectedNeon else NeonColorPreset.NONE
+                        onApplyNeon(effectivePreset, neonGlow, neonEnabled)
+                    },
+                    enabled = "neon_${user.uid}" !in busyOps
+                ) {
                     Text("حفظ النيون")
                 }
                 4 -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = { onApplyNameplateColor("") }) {
+                    OutlinedButton(
+                        onClick = { onApplyNameplateColor("") },
+                        enabled = "nameplate_${user.uid}" !in busyOps
+                    ) {
                         Text("إعادة تعيين")
                     }
                     Button(
                         onClick = { onApplyNameplateColor(selectedNameplateKey) },
-                        enabled = selectedNameplateKey.isNotBlank()
+                        enabled = selectedNameplateKey.isNotBlank() && "nameplate_${user.uid}" !in busyOps
                     ) {
                         Text("تطبيق اللون")
                     }
                 }
                 2 -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = { onApplyIcon("", "") }) {
+                    OutlinedButton(
+                        onClick = { onApplyIcon("", "") },
+                        enabled = "icon_${user.uid}" !in busyOps
+                    ) {
                         Text("إزالة")
                     }
                     Button(
                         onClick = { onApplyIcon(selectedIconId, selectedIconUrl) },
-                        enabled = selectedIconId.isNotBlank() && selectedIconUrl.isNotBlank()
+                        enabled = selectedIconId.isNotBlank() && selectedIconUrl.isNotBlank() && "icon_${user.uid}" !in busyOps
                     ) {
                         Text("تطبيق الأيقونة")
                     }
                 }
                 else -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    OutlinedButton(onClick = { onApplyFrame("", 0L, "إزالة") }) {
+                    OutlinedButton(
+                        onClick = { onApplyFrame("", 0L, "إزالة") },
+                        enabled = "frame_${user.uid}" !in busyOps
+                    ) {
                         Text("إزالة")
                     }
                     Button(
@@ -4141,7 +4372,7 @@ private fun AdminFrameAndNeonDialog(
                             val (exp, lbl) = calculateDurationExpiresAt(selectedDuration, customCount.toIntOrNull() ?: 7)
                             onApplyFrame(selectedFrameId, exp, lbl)
                         },
-                        enabled = selectedFrameId.isNotBlank()
+                        enabled = selectedFrameId.isNotBlank() && "frame_${user.uid}" !in busyOps
                     ) {
                         Text("تطبيق الإطار")
                     }
@@ -4155,6 +4386,7 @@ private fun AdminFrameAndNeonDialog(
 @Composable
 private fun AdminBanDialog(
     user: WesalUser,
+    busyOps: Set<String> = emptySet(),
     onDismiss: () -> Unit,
     onConfirmBan: (Boolean, Long, String, Boolean) -> Unit
 ) {
@@ -4212,6 +4444,7 @@ private fun AdminBanDialog(
                     val (exp, _) = if (permanent) 0L to "" else calculateDurationExpiresAt(durationOpt, customCount.toIntOrNull() ?: 7)
                     onConfirmBan(permanent, exp, reason, blockIdentifiers)
                 },
+                enabled = "ban_${user.uid}" !in busyOps,
                 colors = ButtonDefaults.buttonColors(containerColor = palette.error)
             ) { Text("تأكيد الحظر") }
         },
@@ -4222,6 +4455,7 @@ private fun AdminBanDialog(
 @Composable
 private fun AdminReportReviewDialog(
     report: AdminReportRecord,
+    busyOps: Set<String> = emptySet(),
     onDismiss: () -> Unit,
     onSaveStatus: (String, String, String) -> Unit,
     onOpenReportedChat: () -> Unit,
@@ -4279,7 +4513,10 @@ private fun AdminReportReviewDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onSaveStatus(status, note, resolution) }) {
+            Button(
+                onClick = { onSaveStatus(status, note, resolution) },
+                enabled = "report_${report.reportId}" !in busyOps
+            ) {
                 Text("حفظ")
             }
         },
@@ -4293,6 +4530,7 @@ private fun AdminReportReviewDialog(
 
 @Composable
 private fun AdminSubscriptionRequestsSection(
+    busyOps: Set<String> = emptySet(),
     requests: List<SubscriptionRequest>,
     onReview: (String, Boolean, String) -> Unit,
     onInspectUser: (String) -> Unit
@@ -4373,6 +4611,7 @@ private fun AdminSubscriptionRequestsSection(
                         onReview(req.requestId, approve, note)
                         reviewDialogTarget = null
                     },
+                    enabled = "sub_review_${req.requestId}" !in busyOps,
                     colors = ButtonDefaults.buttonColors(containerColor = if (approve) palette.emerald else palette.error)
                 ) { Text(if (approve) "موافقة وتوثيق" else "تأكيد الرفض") }
             },
@@ -4509,6 +4748,7 @@ private fun AdminSubscriptionRequestsSection(
 
 @Composable
 private fun AdminModeratorsSection(
+    busyOps: Set<String> = emptySet(),
     users: List<WesalUser>,
     moderators: List<Pair<WesalUser, AdminPermissions>>,
     onSavePermissions: (String, AdminPermissions?) -> Unit
@@ -4544,6 +4784,7 @@ private fun AdminModeratorsSection(
                             onSavePermissions(modUser.uid, null)
                             editingPair = null
                         },
+                        enabled = "moderator_${modUser.uid}" !in busyOps,
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.error)
                     ) { Text("سحب الإشراف") }
                     Button(
@@ -4551,6 +4792,7 @@ private fun AdminModeratorsSection(
                             onSavePermissions(modUser.uid, perms)
                             editingPair = null
                         },
+                        enabled = "moderator_${modUser.uid}" !in busyOps,
                         colors = ButtonDefaults.buttonColors(containerColor = palette.emerald)
                     ) { Text("حفظ") }
                 }
@@ -4653,6 +4895,7 @@ private fun AdminPermRow(label: String, checked: Boolean, onChange: (Boolean) ->
 
 @Composable
 private fun AdminGlobalAppearanceSection(
+    busyOps: Set<String> = emptySet(),
     config: GlobalAppearanceConfig,
     onSave: (GlobalAppearanceConfig) -> Unit
 ) {
@@ -4851,10 +5094,12 @@ private fun AdminGlobalAppearanceSection(
                         draft = reset
                         onSave(reset)
                     },
+                    enabled = "appearance_save" !in busyOps,
                     modifier = Modifier.weight(1f)
                 ) { Text("استعادة الافتراضي") }
                 Button(
                     onClick = { onSave(draft) },
+                    enabled = "appearance_save" !in busyOps,
                     colors = ButtonDefaults.buttonColors(containerColor = palette.emerald),
                     modifier = Modifier.weight(1f)
                 ) { Text("حفظ وتطبيق للجميع") }

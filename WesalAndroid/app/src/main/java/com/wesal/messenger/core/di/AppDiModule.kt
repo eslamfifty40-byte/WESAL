@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.functions.FirebaseFunctions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.google.firebase.storage.FirebaseStorage
 import com.wesal.messenger.data.local.WesalDatabase
@@ -37,12 +38,17 @@ object AppDiModule {
 
     @Provides
     @Singleton
+    fun provideFirebaseFunctions(): FirebaseFunctions = FirebaseFunctions.getInstance()
+
+    @Provides
+    @Singleton
     fun provideWesalDatabase(@ApplicationContext context: Context): WesalDatabase {
         return Room.databaseBuilder(
             context,
             WesalDatabase::class.java,
             "wesal_local_cache.db"
-        ).fallbackToDestructiveMigration().build()
+        ).addMigrations(WesalDatabase.MIGRATION_1_2)
+            .fallbackToDestructiveMigration().build()
     }
 
     @Provides

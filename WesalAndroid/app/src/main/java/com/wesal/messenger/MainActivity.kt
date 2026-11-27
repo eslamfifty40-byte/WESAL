@@ -33,6 +33,7 @@ import com.wesal.messenger.core.theme.WesalTheme
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.LocaleManager
+import com.wesal.messenger.core.util.PerfTrace
 import com.wesal.messenger.domain.model.AppUpdateConfig
 import com.wesal.messenger.presentation.MainViewModel
 import com.wesal.messenger.presentation.StartDestination
@@ -50,6 +51,7 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        PerfTrace.mark("main_oncreate")
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
         splashScreen.setKeepOnScreenCondition { false }
@@ -159,6 +161,21 @@ class MainActivity : AppCompatActivity() {
                         )
                     }
                 }
+            }
+        }
+    }
+
+    // §13.2: one-shot first-frame timing (DEBUG-only via PerfTrace): on the first
+    // resume, once the decor view has posted (i.e. after the first draw pass is
+    // queued), log how long cold start took from Application.onCreate entry.
+    private var firstFrameLogged = false
+
+    override fun onResume() {
+        super.onResume()
+        if (!firstFrameLogged) {
+            firstFrameLogged = true
+            window.decorView.post {
+                PerfTrace.logElapsed("first_frame", "app_oncreate_start")
             }
         }
     }

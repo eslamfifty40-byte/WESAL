@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
+import com.wesal.messenger.domain.model.ChatListSyncState
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.domain.model.DisappearingTimer
 import com.wesal.messenger.domain.model.MessageStatus
@@ -23,6 +24,8 @@ import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
+import com.wesal.messenger.presentation.components.WesalMediaKind
+import com.wesal.messenger.presentation.components.saveMediaToGallery
 import com.wesal.messenger.voice.VoicePlaybackState
 import com.wesal.messenger.voice.VoicePlayerManager
 import com.wesal.messenger.voice.VoiceRecorderManager
@@ -128,8 +131,11 @@ class ChatDetailViewModel @Inject constructor(
      * chatPreview and allChatsForForward each called observeChats(), running two
      * Firestore snapshot listeners over the same collection for the life of the
      * screen (spec §13 duplication); both now derive from this single flow.
+     * Review M-3: this uses the UNPAGED variant — the paged observeChats()
+     * (100-chat pages for the main list) silently truncated the forward
+     * picker and could lose this chat's own preview lookup past page 1.
      */
-    private val sharedChats: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
+    private val sharedChats: StateFlow<List<ChatPreview>> = chatRepository.observeAllChats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -171,16 +177,76 @@ class ChatDetailViewModel @Inject constructor(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    // Spec §§1.2/13.4: messages sync state (loading/error/cached) for the banner in
+    // the chat screen; the retry key re-subscribes the listener after an error
+    // (Firestore drops a listener once it errors).
+    private val _messagesRetryKey = MutableStateFlow(0)
+
+    val messageSyncState: StateFlow<ChatListSyncState> = chatRepository.observeMessageSyncState()
+        .map { state ->
+            // Review MINOR-6: the repository flow is a single shared state for
+            // whichever chat's listener reported last. A state stamped for a
+            // DIFFERENT chat is stale here (e.g. the previous chat's READY
+            // replaying on open) — fall back to the neutral loading state
+            // until this chat's own listener reports.
+            if (state.chatId.isNotBlank() && state.chatId != chatId) ChatListSyncState() else state
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ChatListSyncState())
+
+    fun retryMessageSync() {
+        _messagesRetryKey.value += 1
+    }
+
+    // Spec §13.3: the live listener streams only the newest page; older pages are
+    // fetched on demand and merged underneath it.
+    private val _olderMessages = MutableStateFlow<List<WesalMessage>>(emptyList())
+    private val _hasMoreOlderMessages = MutableStateFlow(true)
+    val hasMoreOlderMessages: StateFlow<Boolean> = _hasMoreOlderMessages.asStateFlow()
+    private var loadingOlderMessages = false
+
+    fun loadOlderMessages() {
+        if (loadingOlderMessages || !_hasMoreOlderMessages.value) return
+        val oldest = _olderMessages.value.firstOrNull()?.timestamp
+            ?: messages.value.firstOrNull()?.timestamp
+            ?: return
+        loadingOlderMessages = true
+        viewModelScope.launch {
+            val page = runCatching {
+                chatRepository.fetchOlderMessages(chatId, beforeTimestamp = oldest)
+            }.getOrDefault(emptyList())
+            loadingOlderMessages = false
+            if (page.size < 60) _hasMoreOlderMessages.value = false
+            if (page.isNotEmpty()) {
+                _olderMessages.update { current ->
+                    val known = current.mapTo(HashSet()) { it.messageId }
+                    (page.filterNot { it.messageId in known } + current).sortedBy { it.timestamp }
+                }
+            }
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val liveMessages: Flow<List<WesalMessage>> = _messagesRetryKey
+        .flatMapLatest { chatRepository.observeMessages(chatId) }
+
     val messages: StateFlow<List<WesalMessage>> = combine(
-        chatRepository.observeMessages(chatId),
+        liveMessages,
+        _olderMessages,
         _failedMessages,
         _searchQuery
-    ) { remote, failed, query ->
+    ) { remote, older, failed, query ->
         // Local echoes (SENDING / FAILED, backed by the persistent outbox) are shown until the
         // real message arrives from the server; once it does, the echo with the same id is dropped.
         val remoteIds = remote.mapTo(HashSet()) { it.messageId }
+        val olderOnly = older.filterNot { it.messageId in remoteIds }
+        val withOlder = if (olderOnly.isEmpty()) remote else (olderOnly + remote)
         val localOnly = failed.filterNot { it.messageId in remoteIds }
-        val merged = if (localOnly.isEmpty()) remote else (remote + localOnly)
+        // Review MINOR-7: do not rely on the concatenation seam being ordered —
+        // an older page fetched against a skewed client clock can straddle the
+        // live window. A stable sort by timestamp guarantees the ascending
+        // order the message list renders (ties keep their input order).
+        val merged = (if (localOnly.isEmpty()) withOlder else (withOlder + localOnly))
+            .sortedBy { it.timestamp }
         val normQuery = WesalIdUtils.normalizeSearchText(query)
         if (normQuery.isBlank()) merged
         else merged.filter { WesalIdUtils.normalizeSearchText(it.text).contains(normQuery) }
@@ -585,7 +651,11 @@ class ChatDetailViewModel @Inject constructor(
                 durationMs = upload.durationMs,
                 waveform = upload.waveform,
                 caption = upload.caption,
-                isViewOnce = upload.isViewOnce
+                isViewOnce = upload.isViewOnce,
+                // Spec §1.4: the pending-upload id doubles as the message id, so a
+                // retry reuses the same document/storage path and can resume the
+                // persisted upload session instead of restarting it.
+                clientMessageId = upload.id
             )
                 .catch { err ->
                     val errText = err.localizedMessage ?: "فشل الإرسال"
@@ -795,23 +865,47 @@ class ChatDetailViewModel @Inject constructor(
             viewModelScope.launch {
                 val saved = withContext(Dispatchers.IO) {
                     runCatching {
+                        // Round-4 nits: the fallback extension now follows the real
+                        // MIME (voice notes are m4a/audio-mp4, not .mp3), and the
+                        // MediaStore insert is IS_PENDING until the copy completes
+                        // so music apps never index a half-written file.
+                        val mime = message.mediaMimeType.ifBlank {
+                            if (message.type == MessageType.VOICE) "audio/mp4" else "audio/mpeg"
+                        }
+                        val fallbackExt = when (mime) {
+                            "audio/mp4" -> "m4a"
+                            "audio/mpeg" -> "mp3"
+                            "audio/aac" -> "aac"
+                            "audio/ogg" -> "ogg"
+                            "audio/x-wav", "audio/wav" -> "wav"
+                            else -> "m4a"
+                        }
                         val safeName = message.mediaFileName
-                            .ifBlank { "wesal_audio_${System.currentTimeMillis()}.mp3" }
+                            .ifBlank { "wesal_audio_${System.currentTimeMillis()}.$fallbackExt" }
                             .replace(Regex("[^a-zA-Z0-9._\\-\\u0600-\\u06FF ]"), "_")
-                        val mime = message.mediaMimeType.ifBlank { "audio/mpeg" }
 
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             val values = ContentValues().apply {
                                 put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
                                 put(MediaStore.MediaColumns.MIME_TYPE, mime)
                                 put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/WESAL")
+                                put(MediaStore.MediaColumns.IS_PENDING, 1)
                             }
                             val resolver = context.contentResolver
                             val targetUri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
                                 ?: error("تعذر إنشاء الملف في مجلد الموسيقى")
-                            resolver.openOutputStream(targetUri)?.use { out ->
-                                sourceFile.inputStream().use { inp -> inp.copyTo(out) }
-                            } ?: error("تعذر الكتابة للملف")
+                            try {
+                                resolver.openOutputStream(targetUri)?.use { out ->
+                                    sourceFile.inputStream().use { inp -> inp.copyTo(out) }
+                                } ?: error("تعذر الكتابة للملف")
+                                val done = ContentValues().apply {
+                                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                                }
+                                resolver.update(targetUri, done, null, null)
+                            } catch (e: Exception) {
+                                runCatching { resolver.delete(targetUri, null, null) }
+                                throw e
+                            }
                         } else {
                             @Suppress("DEPRECATION")
                             val musicDir = File(
@@ -827,6 +921,31 @@ class ChatDetailViewModel @Inject constructor(
                     _toastMessage.value = if (isEn) "Saved to Music/WESAL" else "تم حفظ الملف الصوتي في مجلد الموسيقى/WESAL"
                 }.onFailure { err ->
                     _toastMessage.value = err.localizedMessage ?: if (isEn) "Unable to save audio" else "تعذر حفظ الملف على الجهاز"
+                }
+            }
+        }
+    }
+
+    /**
+     * Round-4: documents previously could only be OPENED (the row's download
+     * icon was decorative). This saves the decrypted file byte-for-byte into
+     * Downloads/WESAL through the shared saver and reports the real outcome.
+     */
+    fun saveDocumentToDownloads(message: WesalMessage, isEn: Boolean) {
+        resolveMediaFile(message) { sourceFile ->
+            viewModelScope.launch {
+                val safeName = message.mediaFileName
+                    .ifBlank { "wesal_file_${System.currentTimeMillis()}" }
+                    .replace(Regex("[^a-zA-Z0-9._\\-\\u0600-\\u06FF ]"), "_")
+                saveMediaToGallery(
+                    context = context,
+                    source = sourceFile,
+                    kind = WesalMediaKind.DOCUMENT,
+                    fileName = safeName
+                ).onSuccess {
+                    _toastMessage.value = if (isEn) "Saved to Downloads/WESAL" else "تم حفظ الملف في التنزيلات/WESAL"
+                }.onFailure { err ->
+                    _toastMessage.value = err.localizedMessage ?: if (isEn) "Unable to save file" else "تعذر حفظ الملف على الجهاز"
                 }
             }
         }

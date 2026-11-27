@@ -765,12 +765,26 @@ fun ChannelDetailScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            WesalAvatar(imageUrl = mod.photoUrl, name = mod.displayName, size = 32.dp)
+                            WesalAvatar(
+                                imageUrl = mod.photoUrl,
+                                name = mod.displayName,
+                                size = 32.dp,
+                                frameId = mod.frameId,
+                                frameExpiresAt = mod.frameExpiresAt,
+                                isCutout = mod.photoRemovedBg,
+                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(mod.iconId, mod.iconUrl),
+                                neonColor = if (mod.neonEnabled) mod.neonColor else "",
+                                neonGlowIntensity = mod.neonGlowIntensity,
+                                fitInsideBounds = true
+                            )
                             Column(modifier = Modifier.weight(1f)) {
                                 WesalNameWithBadge(
                                     name = mod.displayName.ifBlank { "@${mod.publicId}" },
                                     isVerified = mod.isVerified,
                                     verificationType = mod.verificationType,
+                                    neonColor = mod.neonColor,
+                                    neonGlowIntensity = mod.neonGlowIntensity,
+                                    neonEnabled = mod.neonEnabled,
                                     style = MaterialTheme.typography.bodySmall,
                                     badgeSize = 14.dp
                                 )

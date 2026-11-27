@@ -3,6 +3,7 @@ package com.wesal.messenger.data.repository
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
@@ -14,6 +15,7 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.QuerySnapshot
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
+import com.google.firebase.functions.FirebaseFunctions
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.NeonColorPreset
@@ -26,13 +28,16 @@ import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.*
 import com.wesal.messenger.domain.repository.UserRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
@@ -91,6 +96,41 @@ private fun BusinessHoursSchedule.toFirestoreMap(): Map<String, Any> = mapOf(
     }
 )
 
+/**
+ * Epoch millis from a raw Firestore value of any plausible stored type; null when
+ * unreadable. Mirrors ChatRepositoryImpl.coerceEpochMillis (that one is a private
+ * member of its class, so it cannot be shared from here).
+ */
+internal fun coerceBanEpochMillis(raw: Any?): Long? = when (raw) {
+    is Number -> raw.toLong()
+    is Timestamp -> raw.toDate().time
+    is java.util.Date -> raw.time
+    is String -> raw.trim().toLongOrNull()
+    else -> null
+}
+
+/**
+ * Positive-ban-only, type-tolerant ban verdict (round 4, contacts M2): a ban counts
+ * ONLY when the flag is set AND (the type says PERMANENT OR a readable expiry is
+ * still in the future). The previous parse read `banExpiresAt` with getLong() only,
+ * so a legacy doc whose expiry is missing or stored as a Timestamp/String degraded
+ * to 0L = "no expiry = permanent ban" and the user silently vanished from contacts
+ * (considerUserDoc drops banned users). A missing/malformed expiry never bans on
+ * its own — the same semantics as firestore.rules isCurrentlyBanned() and
+ * ChatRepositoryImpl.isBanClearlyActive.
+ */
+internal fun isBanClearlyActive(
+    isBannedRaw: Any?,
+    banTypeRaw: Any?,
+    banExpiresAtRaw: Any?,
+    nowMillis: Long
+): Boolean {
+    if (isBannedRaw as? Boolean != true) return false
+    if ((banTypeRaw as? String).orEmpty().equals("PERMANENT", ignoreCase = true)) return true
+    val expiry = coerceBanEpochMillis(banExpiresAtRaw) ?: return false
+    return expiry > nowMillis
+}
+
 @Suppress("UNCHECKED_CAST")
 internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = false): WesalUser {
     val privacyMap = get("privacySettings") as? Map<String, Any?> ?: emptyMap()
@@ -129,9 +169,16 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         else -> rawFrameId
     }
 
-    val banExpiresAt = getLong("banExpiresAt") ?: 0L
-    val rawBanned = getBoolean("isBanned") ?: false
-    val isCurrentlyBanned = rawBanned && (banExpiresAt == 0L || now <= banExpiresAt)
+    // Round 4 (contacts M2): positive-ban-only, type-tolerant parse — see
+    // isBanClearlyActive. banExpiresAt keeps the coerced millis for display/admin
+    // use (0L when the stored value is unreadable, which no longer implies a ban).
+    val banExpiresAt = coerceBanEpochMillis(get("banExpiresAt")) ?: 0L
+    val isCurrentlyBanned = isBanClearlyActive(
+        get("isBanned"),
+        get("banType"),
+        get("banExpiresAt"),
+        now
+    )
 
     val lastHeartbeatAt = getLong("lastHeartbeatAt") ?: 0L
     val rawOnline = getBoolean("isOnline") ?: false
@@ -234,8 +281,54 @@ class UserRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
+    private val functions: FirebaseFunctions,
     private val prefs: UserPreferencesDataStore
 ) : UserRepository {
+
+    // Detached scope for fire-and-forget server mirrors (e.g. §10.3 ban claims):
+    // work launched here must never block or fail the Firestore write that
+    // triggered it.
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Spec §10.3 (round 4): mirror a ban/unban into the target's Auth custom
+     * claims via the setUserBanState callable — on ban the function stamps
+     * `banned: true` (read by the rules gate) and revokes the target's refresh
+     * tokens; on unban it strips the claim. STRICTLY fire-and-forget: the
+     * Firestore ban write in banUser()/unbanUser() is the source of truth and
+     * never waits on, nor fails because of, this call — a failure (including
+     * "functions not deployed yet") is only logged.
+     */
+    private fun notifyBanStateChanged(targetUid: String, banned: Boolean, banType: String, banExpiresAt: Long) {
+        backgroundScope.launch {
+            runCatching {
+                functions.getHttpsCallable("setUserBanState")
+                    .call(
+                        mapOf(
+                            "targetUid" to targetUid,
+                            "banned" to banned,
+                            "banType" to banType,
+                            "banExpiresAt" to banExpiresAt
+                        )
+                    )
+                    .await()
+            }.onFailure { e ->
+                Log.w("UserRepositoryImpl", "setUserBanState callable failed for $targetUid (banned=$banned)", e)
+            }
+        }
+    }
+
+    // Spec §13.4 (round 4, P1-10): sync state for the sessions and contact-lists
+    // listeners, mirroring ChatRepositoryImpl's chatListStateFlow pattern. LOADING when
+    // a listener (re)registers, READY on each successful snapshot, ERROR (with the
+    // listener exception's message) on error — so the sessions dialog and the
+    // contact-lists section can render loading/error/retry instead of a silent empty.
+    private val sessionsSyncState = MutableStateFlow(ChatListSyncState())
+    private val contactListsSyncState = MutableStateFlow(ChatListSyncState())
+
+    override fun observeSessionsSyncState(): Flow<ChatListSyncState> = sessionsSyncState
+
+    override fun observeContactListsSyncState(): Flow<ChatListSyncState> = contactListsSyncState
 
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
@@ -256,6 +349,7 @@ class UserRepositoryImpl @Inject constructor(
         var privatePhotoUrl = ""
         var privateCoverUrl = ""
         var numericBackfillStarted = false
+        var nameSearchKeyBackfillStarted = false
 
         fun emitMerged() {
             val pub = latestPublic ?: return
@@ -289,6 +383,27 @@ class UserRepositoryImpl @Inject constructor(
                     if (!numericBackfillStarted && !WesalIdUtils.isValidNumericId(latestPublic?.numericId)) {
                         numericBackfillStarted = true
                         launch { runCatching { ensureNumericIdAssigned() } }
+                    }
+                    // Spec §4.4 (round 4, P2-1) lazy self-backfill: if my own doc has a
+                    // display name but no nameSearchKey yet, write it once per session,
+                    // fire-and-forget — it never blocks or fails this flow.
+                    if (!nameSearchKeyBackfillStarted && snapshot != null && snapshot.exists()) {
+                        val ownName = snapshot.getString("displayName").orEmpty()
+                        val existingKey = snapshot.getString("nameSearchKey")
+                        if (existingKey.isNullOrBlank() && ownName.isNotBlank()) {
+                            nameSearchKeyBackfillStarted = true
+                            val key = WesalIdUtils.normalizeNameSearchKey(ownName)
+                            if (key.isNotBlank()) {
+                                launch {
+                                    runCatching {
+                                        firestore.collection(Constants.COLLECTION_USERS)
+                                            .document(uid)
+                                            .set(mapOf("nameSearchKey" to key), SetOptions.merge())
+                                            .await()
+                                    }
+                                }
+                            }
+                        }
                     }
                     emitMerged()
                 }
@@ -448,9 +563,31 @@ class UserRepositoryImpl @Inject constructor(
         return fallback
     }
 
-    override suspend fun findUserByPublicIdOrUid(idOrUid: String): WesalUser? {
+    /**
+     * Spec §4.7 (round 4, P2-2): the PUBLIC resolvers must not leak hidden/deleted
+     * accounts. This guard mirrors searchUsers' consider() filter EXACTLY for the
+     * account-state checks consider() applies: a matched user is dropped when
+     * hiddenFromSearch || deletedAt > 0 || deletedPermanent || isBanned.
+     * (consider() additionally drops the signed-in user themself, the secondary-admin
+     * account and block-list counterparts — those are caller-context checks that do
+     * not belong in a resolver; the secondary admin is also hiddenFromSearch=true,
+     * so it is covered here in practice.)
+     */
+    private fun WesalUser.takeIfPubliclyResolvable(): WesalUser? =
+        takeIf { !it.hiddenFromSearch && !it.deletedPermanent && it.deletedAt <= 0L && !it.isBanned }
+
+    override suspend fun findUserByPublicIdOrUid(idOrUid: String): WesalUser? =
+        findUserByPublicIdOrUidInternal(idOrUid, guarded = true)
+
+    override suspend fun findUserByPublicIdOrUidUnfiltered(idOrUid: String): WesalUser? =
+        findUserByPublicIdOrUidInternal(idOrUid, guarded = false)
+
+    private suspend fun findUserByPublicIdOrUidInternal(idOrUid: String, guarded: Boolean): WesalUser? {
         val raw = idOrUid.trim()
         if (raw.isBlank()) return null
+
+        fun WesalUser?.applyGuard(): WesalUser? =
+            if (guarded) this?.takeIfPubliclyResolvable() else this
 
         val numericQuery = WesalIdUtils.extractNumericIdQuery(raw)
         if (WesalIdUtils.isValidNumericId(numericQuery)) {
@@ -460,7 +597,7 @@ class UserRepositoryImpl @Inject constructor(
                     .limit(1)
             )
             val matchedNumeric = byNumeric?.documents?.firstOrNull()
-            if (matchedNumeric != null) return matchedNumeric.toWesalUser()
+            if (matchedNumeric != null) return matchedNumeric.toWesalUser().applyGuard()
         }
 
         val cleanHandle = WesalIdUtils.normalize(raw)
@@ -471,12 +608,18 @@ class UserRepositoryImpl @Inject constructor(
                     .limit(1)
             )
             val matchedDoc = byHandle?.documents?.firstOrNull()
-            if (matchedDoc != null) return matchedDoc.toWesalUser()
+            if (matchedDoc != null) return matchedDoc.toWesalUser().applyGuard()
         }
-        return getUserOnce(raw)
+        return getUserOnce(raw).applyGuard()
     }
 
-    override suspend fun findExactUserByNumericId(numericId: String): WesalUser? {
+    override suspend fun findExactUserByNumericId(numericId: String): WesalUser? =
+        findExactUserByNumericIdInternal(numericId, guarded = true)
+
+    override suspend fun findExactUserByNumericIdUnfiltered(numericId: String): WesalUser? =
+        findExactUserByNumericIdInternal(numericId, guarded = false)
+
+    private suspend fun findExactUserByNumericIdInternal(numericId: String, guarded: Boolean): WesalUser? {
         val clean = numericId.trim()
         if (!WesalIdUtils.isValidNumericId(clean)) return null
         val col = firestore.collection(Constants.COLLECTION_USERS)
@@ -487,14 +630,61 @@ class UserRepositoryImpl @Inject constructor(
         val matched = snap?.documents
             ?.firstOrNull { it.getString("numericId")?.trim() == clean }
             ?: return null
-        return matched.toWesalUser()
+        val user = matched.toWesalUser()
+        return if (guarded) user.takeIfPubliclyResolvable() else user
+    }
+
+    /**
+     * Spec §4.4 (round 4, P2-1): one-shot backfill for the admin panel / a future
+     * migration hook. Pages through the users collection with a startAfter cursor
+     * (page size 200) and merge-writes `nameSearchKey` for every doc that has a
+     * displayName but no key yet, stopping once [limit] docs have been written or
+     * the collection is exhausted. Returns the number of docs written. Not gated
+     * here by design — the admin hook that calls it gates at its own layer, and
+     * firestore.rules remain the real write barrier for non-admin callers.
+     */
+    override suspend fun backfillNameSearchKeys(limit: Int): Result<Int> = runCatching {
+        val target = limit.coerceIn(1, 5_000)
+        var written = 0
+        var lastDoc: DocumentSnapshot? = null
+        val usersCol = firestore.collection(Constants.COLLECTION_USERS)
+        while (written < target) {
+            var pageQuery = usersCol.limit(200)
+            if (lastDoc != null) pageQuery = pageQuery.startAfter(lastDoc!!)
+            val snap = pageQuery.get().await()
+            if (snap.isEmpty) break
+            lastDoc = snap.documents.last()
+            val missing = snap.documents.filter { doc ->
+                doc.getString("nameSearchKey").isNullOrBlank() &&
+                    !doc.getString("displayName").isNullOrBlank()
+            }
+            for (chunk in missing.chunked(380)) {
+                if (written >= target) break
+                val batch = firestore.batch()
+                var chunkWrites = 0
+                for (doc in chunk) {
+                    if (written + chunkWrites >= target) break
+                    val key = WesalIdUtils.normalizeNameSearchKey(doc.getString("displayName").orEmpty())
+                    if (key.isBlank()) continue
+                    batch.set(doc.reference, mapOf("nameSearchKey" to key), SetOptions.merge())
+                    chunkWrites++
+                }
+                if (chunkWrites > 0) {
+                    batch.commit().await()
+                    written += chunkWrites
+                }
+            }
+            if (snap.size() < 200) break
+        }
+        written
     }
 
     /**
      * Global Active User Search:
      * Searches all active, non-hidden, non-banned, non-deleted accounts by displayName,
      * @username (publicId), or numeric WESAL ID. Numeric-ID search is EXACT-only and limited
-     * to the spec §4.5 range (10000..100000); name search uses a bounded paginated scan.
+     * to the spec §4.5 range (10000..100000); name search is a Firestore prefix query
+     * over the maintained nameSearchKey field with cursor pagination (round 4, P2-1).
      * Throws IllegalStateException when every lookup failed so callers can show an error
      * instead of a misleading empty result.
      */
@@ -552,39 +742,58 @@ class UserRepositoryImpl @Inject constructor(
             exactHandleDef?.await()?.documents?.forEach { consider(it.toWesalUser()) }
         }
 
-        // Name/handle search: bounded paginated scan (5 pages x 120 = up to 600 newest users,
-        // previously only the 120 newest were ever scanned, so older accounts were unfindable).
+        // Name search (spec §4.4, round 4 P2-1): Firestore prefix query over the
+        // maintained `nameSearchKey` field instead of the old bounded client scan
+        // (5 pages x 120 newest users — older accounts were unfindable by name).
+        // The query prefix is normalized with the exact same folder the writers use
+        // (WesalIdUtils.normalizeNameSearchKey), pages of 40 are walked with a
+        // startAfter cursor, and every hit still passes through consider(), so the
+        // hidden/deleted/banned/blocked filtering is unchanged. Docs without a
+        // nameSearchKey yet are invisible to this path until the self-backfill /
+        // backfillNameSearchKeys() writes one — that is the spec's design.
         // Numeric "contains" matching is intentionally NOT done here (exact-only, see above).
         if (results.size < 5 && searchNumericId.isBlank()) {
-            val normalizedQueryText = WesalIdUtils.normalizeSearchText(trimmed)
-            var lastDoc: com.google.firebase.firestore.DocumentSnapshot? = null
-            var pagesFetched = 0
-            while (pagesFetched < 5 && results.size < 20) {
-                var pageQuery = usersCollection
-                    .orderBy("createdAt", Query.Direction.DESCENDING)
-                    .limit(120)
-                if (lastDoc != null) pageQuery = pageQuery.startAfter(lastDoc!!)
-                var poolSnap = getQueryCachedOrServer(pageQuery)
-                if (poolSnap == null && pagesFetched == 0) {
-                    poolSnap = getQueryCachedOrServer(usersCollection.limit(120))
-                }
-                if (poolSnap == null) break
-                anyLookupSucceeded.set(true)
-                pagesFetched++
-                val docs = poolSnap.documents
-                if (docs.isEmpty()) break
-                lastDoc = docs.last()
-                docs.forEach { doc ->
-                    val u = doc.toWesalUser()
-                    val normalizedName = WesalIdUtils.normalizeSearchText(u.displayName)
-                    val nameMatch = u.displayName.contains(trimmed, ignoreCase = true) ||
-                        (normalizedQueryText.isNotBlank() && normalizedName.contains(normalizedQueryText))
-                    val handleMatch = cleanHandle.length >= 2 && u.publicId.contains(cleanHandle, ignoreCase = true)
-                    if (nameMatch || handleMatch) {
-                        consider(u)
+            val nameQuery = WesalIdUtils.normalizeNameSearchKey(trimmed)
+            if (nameQuery.isNotBlank()) {
+                var lastDoc: DocumentSnapshot? = null
+                var pagesFetched = 0
+                while (pagesFetched < 10 && results.size < 20) {
+                    var pageQuery = usersCollection
+                        .orderBy("nameSearchKey")
+                        .endAt(nameQuery + "\uf8ff")
+                        .limit(40)
+                    pageQuery = if (lastDoc == null) {
+                        pageQuery.startAt(nameQuery)
+                    } else {
+                        pageQuery.startAfter(lastDoc!!)
                     }
+                    val snap = getQueryCachedOrServer(pageQuery) ?: break
+                    anyLookupSucceeded.set(true)
+                    pagesFetched++
+                    val docs = snap.documents
+                    if (docs.isEmpty()) break
+                    lastDoc = docs.last()
+                    docs.forEach { doc -> consider(doc.toWesalUser()) }
+                    // Cursor walked past the prefix range: nothing more can match.
+                    val lastKey = docs.last().getString("nameSearchKey").orEmpty()
+                    if (!lastKey.startsWith(nameQuery)) break
+                    if (docs.size < 40) break
                 }
-                if (docs.size < 120) break
+            }
+            // Handle prefix search on the same pattern (replaces the scan's partial
+            // publicId matching; the exact-handle lookup above is untouched).
+            if (cleanHandle.length >= 2 && results.size < 20) {
+                val handleSnap = getQueryCachedOrServer(
+                    usersCollection
+                        .orderBy("publicId")
+                        .startAt(cleanHandle)
+                        .endAt(cleanHandle + "\uf8ff")
+                        .limit(40)
+                )
+                if (handleSnap != null) {
+                    anyLookupSucceeded.set(true)
+                    handleSnap.documents.forEach { doc -> consider(doc.toWesalUser()) }
+                }
             }
         }
 
@@ -742,6 +951,8 @@ class UserRepositoryImpl @Inject constructor(
 
             val updates = hashMapOf<String, Any>(
                 "displayName" to trimmedName,
+                // Spec §4.4 (round 4, P2-1): keep the search key in lockstep with the name.
+                "nameSearchKey" to WesalIdUtils.normalizeNameSearchKey(trimmedName),
                 "bio" to bio.trim(),
                 "publicId" to sanitizedHandle,
                 "privacySettings" to existingPrivacy
@@ -1010,15 +1221,30 @@ class UserRepositoryImpl @Inject constructor(
             lockRef.set(mapOf("uid" to uid, "phoneHash" to fullHash, "updatedAt" to System.currentTimeMillis())).await()
         }
 
+        // Phone phase (owner rule, 2026-11-27): this path only FORMAT-validates
+        // the number (ProfileScreen.updateCountryPhone) — it performs no OTP
+        // check, so it must not assert verification. Verification survives the
+        // save only when the saved number IS the account's already-verified
+        // number (private backup wins, mirroring updatePrivacySettings); any
+        // other number is stored unverified with NO phoneHash, and the
+        // mandatory gate re-engages to OTP-verify it before the app opens.
+        val verifiedPhone = when {
+            oldPriv?.getBoolean("isPhoneVerified") == true -> oldPriv.getString("phoneNumber").orEmpty()
+            snap.getBoolean("isPhoneVerified") == true -> snap.getString("phoneNumber").orEmpty()
+            else -> ""
+        }
+        val staysVerified = verifiedPhone.isNotBlank() &&
+            PhoneUtils.normalizeToE164(verifiedPhone) == normalized
+
         privRef.set(
-            mapOf("phoneNumber" to normalized, "isPhoneVerified" to true),
+            mapOf("phoneNumber" to normalized, "isPhoneVerified" to staysVerified),
             SetOptions.merge()
         ).await()
 
         val updates = hashMapOf<String, Any>(
             "phoneNumber" to if (hidePhone) "" else normalized,
-            "isPhoneVerified" to true,
-            "phoneHash" to if (hidePhone) "" else fullHash
+            "isPhoneVerified" to staysVerified,
+            "phoneHash" to if (!hidePhone && staysVerified) fullHash else ""
         )
         docRef.set(updates, SetOptions.merge()).await()
     }
@@ -1104,7 +1330,10 @@ class UserRepositoryImpl @Inject constructor(
             } else if (currentPhone.isNotBlank()) {
                 val norm = PhoneUtils.normalizeToE164(currentPhone) ?: currentPhone
                 map["phoneNumber"] = norm
-                map["phoneHash"] = PhoneUtils.sha256Hash(norm)
+                // Phone phase (owner rule): un-hiding restores the phoneHash
+                // only for a VERIFIED number — an unverified number stays
+                // hash-less (undiscoverable) until the gate OTP-verifies it.
+                map["phoneHash"] = if (currentVerified) PhoneUtils.sha256Hash(norm) else ""
             }
 
             if (settings.hideBirthDate) {
@@ -1243,16 +1472,29 @@ class UserRepositoryImpl @Inject constructor(
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeSessions(): Flow<List<DeviceSession>> = observeAuthUid().flatMapLatest { uid ->
         if (uid == null) {
+            sessionsSyncState.value = ChatListSyncState(ChatListSyncStatus.READY)
             flowOf(emptyList())
         } else {
             callbackFlow {
                 var currentSessionId = ""
                 launch { currentSessionId = prefs.getOrCreateDeviceSessionId() }
 
+                // Spec §13.4 (round 4, P1-10): the listener error used to be ignored
+                // entirely (`{ snap, _ ->`). Now it drives observeSessionsSyncState();
+                // on error the flow simply keeps its last emitted value.
+                sessionsSyncState.value = ChatListSyncState(ChatListSyncStatus.LOADING)
                 val reg = firestore.collection(Constants.COLLECTION_USERS)
                     .document(uid)
                     .collection(Constants.COLLECTION_SESSIONS)
-                    .addSnapshotListener { snap, _ ->
+                    .addSnapshotListener { snap, error ->
+                        if (error != null) {
+                            sessionsSyncState.value = ChatListSyncState(
+                                ChatListSyncStatus.ERROR,
+                                error.message ?: "تعذر تحميل الجلسات"
+                            )
+                            return@addSnapshotListener
+                        }
+                        sessionsSyncState.value = ChatListSyncState(ChatListSyncStatus.READY)
                         val list = snap?.documents?.mapNotNull { doc ->
                             if (doc.id.startsWith("link_")) return@mapNotNull null
                             val sid = doc.getString("sessionId") ?: doc.id
@@ -1999,17 +2241,31 @@ class UserRepositoryImpl @Inject constructor(
             }
         }
 
-        // 4. Local pool filter for partial name matches
-        val allSnap = getQueryCachedOrServer(usersCol.limit(250))
-        allSnap?.documents?.forEach { doc ->
-            val u = doc.toWesalUser(includePrivateUnredacted = true)
-            if (u.displayName.contains(q, ignoreCase = true) ||
-                u.publicId.contains(handle, ignoreCase = true) ||
-                u.numericId.contains(q, ignoreCase = true) ||
-                u.email.contains(q, ignoreCase = true)
-            ) {
-                results[u.uid] = u
+        // 4. Local pool filter for partial name matches.
+        // Round 4 (P2-11): the pool used to be a single limit(250) fetch, so accounts
+        // beyond the first 250 were invisible to admin search. It is now walked with
+        // limit + startAfter cursor pages of 250 (safety cap 40 pages = 10,000 docs)
+        // applying the exact same per-doc filter, so the returned data only grows.
+        var poolLastDoc: DocumentSnapshot? = null
+        var poolPages = 0
+        while (poolPages < 40) {
+            var poolQuery = usersCol.limit(250)
+            if (poolLastDoc != null) poolQuery = poolQuery.startAfter(poolLastDoc!!)
+            val pageSnap = getQueryCachedOrServer(poolQuery) ?: break
+            poolPages++
+            if (pageSnap.isEmpty) break
+            poolLastDoc = pageSnap.documents.last()
+            pageSnap.documents.forEach { doc ->
+                val u = doc.toWesalUser(includePrivateUnredacted = true)
+                if (u.displayName.contains(q, ignoreCase = true) ||
+                    u.publicId.contains(handle, ignoreCase = true) ||
+                    u.numericId.contains(q, ignoreCase = true) ||
+                    u.email.contains(q, ignoreCase = true)
+                ) {
+                    results[u.uid] = u
+                }
             }
+            if (pageSnap.size() < 250) break
         }
         return results.values.toList()
     }
@@ -2054,13 +2310,34 @@ class UserRepositoryImpl @Inject constructor(
 
     override suspend fun computeAdminStats(): AdminDashboardStats {
         if (!getCurrentAdminPermissions().hasAnyAccess()) return AdminDashboardStats()
-        val snap = runCatching {
-            firestore.collection(Constants.COLLECTION_USERS).limit(500).get().await()
-        }.getOrNull() ?: return AdminDashboardStats()
+        // Round 4 (P2-11): the stats used to be computed over a single limit(500)
+        // fetch, silently capping every count at the first 500 accounts. The users
+        // collection is now walked in limit(500) + startAfter cursor pages and the
+        // exact same derived counting below runs over the full set. A Firestore
+        // aggregate count() query is supported by the pinned SDK (Firebase BoM
+        // 33.6.0 → firebase-firestore 25.x, well past the 24.4 / BoM 31.2 floor)
+        // but was deliberately NOT used here: most dashboard numbers are DERIVED
+        // (online = heartbeat-TTL effective presence, banned = positive-ban-only
+        // verdict, verified = expiry-aware), which a raw aggregate count over
+        // stored fields cannot reproduce — pagination preserves the exact numbers.
+        val users = mutableListOf<WesalUser>()
+        var statsLastDoc: DocumentSnapshot? = null
+        while (true) {
+            var pageQuery = firestore.collection(Constants.COLLECTION_USERS).limit(500)
+            if (statsLastDoc != null) pageQuery = pageQuery.startAfter(statsLastDoc!!)
+            val pageSnap = runCatching { pageQuery.get().await() }.getOrNull()
+            if (pageSnap == null) {
+                if (users.isEmpty()) return AdminDashboardStats()
+                break
+            }
+            if (pageSnap.isEmpty) break
+            statsLastDoc = pageSnap.documents.last()
+            users += pageSnap.documents.map { it.toWesalUser(includePrivateUnredacted = true) }
+            if (pageSnap.size() < 500) break
+        }
 
         val now = System.currentTimeMillis()
         val dayMs = 24L * 60L * 60L * 1000L
-        val users = snap.documents.map { it.toWesalUser(includePrivateUnredacted = true) }
 
         val onlineNow = users.count { it.isOnline }
         return AdminDashboardStats(
@@ -2554,6 +2831,16 @@ class UserRepositoryImpl @Inject constructor(
             SetOptions.merge()
         ).await()
 
+        // §10.3: stamp the banned claim + revoke the target's refresh tokens
+        // server-side. Fire-and-forget — the Firestore write above already
+        // succeeded and stands on its own if this call fails.
+        notifyBanStateChanged(
+            targetUid = targetUid,
+            banned = true,
+            banType = banType,
+            banExpiresAt = if (permanent) 0L else expiresAt
+        )
+
         if (blockEmailAndVerifiedPhone) {
             if (user.email.isNotBlank()) {
                 val eHash = PhoneUtils.sha256Hash(user.email.trim().lowercase())
@@ -2618,6 +2905,10 @@ class UserRepositoryImpl @Inject constructor(
             ),
             SetOptions.merge()
         ).await()
+
+        // §10.3: strip the banned claim server-side. Fire-and-forget, exactly
+        // like the ban path — the Firestore write above stands on its own.
+        notifyBanStateChanged(targetUid = targetUid, banned = false, banType = "", banExpiresAt = 0L)
 
         if (user.email.isNotBlank()) {
             val eHash = PhoneUtils.sha256Hash(user.email.trim().lowercase())
@@ -2815,6 +3106,7 @@ class UserRepositoryImpl @Inject constructor(
         ref.set(
             mapOf(
                 "displayName" to "حساب محذوف",
+                "nameSearchKey" to WesalIdUtils.normalizeNameSearchKey("حساب محذوف"),
                 "bio" to "",
                 "photoUrl" to "",
                 "coverUrl" to "",
@@ -3272,6 +3564,89 @@ class UserRepositoryImpl @Inject constructor(
         )
     }
 
+    /**
+     * Spec §9.6 (round 4, P1-7) — official identity photo writer.
+     * Targets identified from the existing writers (mirroring
+     * ChatRepositoryImpl.setChatOfficialWallpaper's chats-doc pattern and
+     * ChannelRepositoryImpl.ensureOfficialTeamChannel):
+     *  - Team channel: channels/{Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID}
+     *    ("wesal_official_team_channel"), photo field `avatarUrl`.
+     *  - Official chats: there is NO single "main" official chat document — the
+     *    official WESAL chat is a PER-USER doc chats/{OFFICIAL_CHAT_PREFIX}<uid>
+     *    (created by ensureOfficialWelcomeChat / warnUser / announcements), and its
+     *    photo field is `groupAvatarUrl` (the field the chats-list parser reads and
+     *    ensureOfficialWelcomeChat writes). So this writer merge-updates
+     *    `groupAvatarUrl` on EVERY chats doc with isOfficialWesalChat == true,
+     *    walked with limit(200) + startAfter cursor pages and batched writes; if
+     *    none exists yet it seeds the caller's own official chat doc.
+     */
+    override suspend fun updateOfficialChatIdentity(photoUrl: String): Result<Unit> = runCatching {
+        val admin = auth.currentUser ?: error("Not authenticated")
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canManageFramesAndNeon) {
+            "صلاحية إدارة الهوية الرسمية مطلوبة"
+        }
+        val cleanUrl = photoUrl.trim()
+        require(cleanUrl.isNotBlank()) { "رابط صورة الهوية الرسمية مطلوب" }
+
+        // 1) Team channel avatar.
+        firestore.collection(Constants.COLLECTION_CHANNELS)
+            .document(Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID)
+            .set(
+                mapOf(
+                    "channelId" to Constants.OFFICIAL_WESAL_TEAM_CHANNEL_ID,
+                    "isOfficialTeamChannel" to true,
+                    "avatarUrl" to cleanUrl,
+                    // Marker for ChannelRepositoryImpl.ensureOfficialTeamChannel:
+                    // an editor-set avatar is sticky — the owner-admin photo
+                    // auto-sync must not overwrite it (round-4 P1-7 carve-out).
+                    "avatarSetByOfficialEditor" to true
+                ),
+                SetOptions.merge()
+            ).await()
+
+        // 2) Every per-user official chat doc's photo field.
+        var updatedChats = 0
+        var lastDoc: DocumentSnapshot? = null
+        while (true) {
+            var query = firestore.collection(Constants.COLLECTION_CHATS)
+                .whereEqualTo("isOfficialWesalChat", true)
+                .limit(200)
+            if (lastDoc != null) query = query.startAfter(lastDoc!!)
+            val snap = query.get().await()
+            if (snap.isEmpty) break
+            lastDoc = snap.documents.last()
+            for (chunk in snap.documents.chunked(380)) {
+                val batch = firestore.batch()
+                chunk.forEach { doc ->
+                    batch.set(doc.reference, mapOf("groupAvatarUrl" to cleanUrl), SetOptions.merge())
+                }
+                batch.commit().await()
+                updatedChats += chunk.size
+            }
+            if (snap.size() < 200) break
+        }
+        if (updatedChats == 0) {
+            val ownChatId = "${Constants.OFFICIAL_CHAT_PREFIX}${admin.uid}"
+            firestore.collection(Constants.COLLECTION_CHATS).document(ownChatId).set(
+                mapOf(
+                    "chatId" to ownChatId,
+                    "isGroup" to false,
+                    "isOfficialWesalChat" to true,
+                    "groupName" to "WESAL Messenger",
+                    "groupAvatarUrl" to cleanUrl,
+                    "participantIds" to listOf(admin.uid)
+                ),
+                SetOptions.merge()
+            ).await()
+        }
+
+        writeAdminActionLog(
+            action = "OFFICIAL_IDENTITY_PHOTO_UPDATED",
+            details = "تحديث صورة الهوية الرسمية (المحادثة الرسمية + قناة الفريق) على $updatedChats محادثة"
+        )
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeOfficialAnnouncements(): Flow<List<OfficialAnnouncement>> = observeAuthUid().flatMapLatest { uid ->
         if (uid == null) flowOf(emptyList())
@@ -3560,15 +3935,26 @@ class UserRepositoryImpl @Inject constructor(
     @Suppress("UNCHECKED_CAST")
     @OptIn(ExperimentalCoroutinesApi::class)
     override fun observeContactLists(): Flow<List<ContactLabelList>> = observeAuthUid().flatMapLatest { uid ->
-        if (uid == null) flowOf(emptyList())
+        if (uid == null) {
+            contactListsSyncState.value = ChatListSyncState(ChatListSyncStatus.READY)
+            flowOf(emptyList())
+        }
         else callbackFlow {
+            // Spec §13.4 (round 4, P1-10): on listener error this flow used to emit
+            // emptyList() as if it were data, wiping the section. Now the error goes
+            // to observeContactListsSyncState() and the flow keeps its last value.
+            contactListsSyncState.value = ChatListSyncState(ChatListSyncStatus.LOADING)
             val reg = firestore.collection(Constants.COLLECTION_CONTACT_LISTS)
                 .whereEqualTo("ownerUid", uid)
                 .addSnapshotListener { snap, err ->
                     if (err != null) {
-                        trySend(emptyList())
+                        contactListsSyncState.value = ChatListSyncState(
+                            ChatListSyncStatus.ERROR,
+                            err.message ?: "تعذر تحميل القوائم"
+                        )
                         return@addSnapshotListener
                     }
+                    contactListsSyncState.value = ChatListSyncState(ChatListSyncStatus.READY)
                     val list = snap?.documents?.map { d ->
                         ContactLabelList(
                             listId = d.getString("listId") ?: d.id,

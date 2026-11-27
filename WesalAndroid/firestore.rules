@@ -79,9 +79,18 @@ service cloud.firestore {
     //    (chats/calls) while their admin panel kept working.
     //  - The users collection itself is NOT gated by this helper, so a banned user can
     //    still read their own doc and see their ban status/reason in the client.
-    // Remaining limit (documented in FIXLOG_P2): rules cannot revoke an already-issued
-    // Firebase Auth token or set custom claims — that needs a backend (Admin SDK /
-    // Cloud Function), which this repo does not deploy for WESAL yet.
+    // Round-4 (§10.3 closure): revocation/claims are now handled by the
+    // setUserBanState callable in firebase/functions — on ban it stamps a
+    // `banned` custom claim and revokes the target's refresh tokens, on unban it
+    // strips the claim. The gate below therefore ALSO consults the token claim:
+    // a token refreshed after the ban is stopped by the claim arm even where a
+    // surface might not re-read the user doc. The claim arm applies the SAME
+    // positive-ban test as the doc arm (PERMANENT, or a numeric banExpiresAt
+    // still in the future), so a TEMPORARY ban expires at the claim layer too
+    // rather than blocking until a manual unban. Residual platform limit: an ID
+    // token issued BEFORE the ban carries no claim and stays valid until it
+    // refreshes (<= ~1 h) — the doc arm above covers every gated surface in the
+    // meantime.
     function isNumericIdSuperAdmin() {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
@@ -93,13 +102,41 @@ service cloud.firestore {
         !isSuperAdmin() &&
         !isNumericIdSuperAdmin() &&
         !isActiveModerator() &&
-        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isBanned', false) == true &&
         (
-          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banType', '') == 'PERMANENT' ||
+          // §10.3 claim arm (round 4): the ban custom claims stamped by the
+          // setUserBanState function (`banned` / `banType` / `banExpiresAt`,
+          // the latter stamped as a Number of epoch milliseconds — the same
+          // units the doc arm below compares against request.time.toMillis()).
+          // This arm MIRRORS the doc arm's positive-ban semantics exactly
+          // (REVIEW_R4_PASS2 M1): the claim counts only while the ban is
+          // actually active — banType is PERMANENT, or a numeric expiry still
+          // lies in the future — so a TEMPORARY ban stops blocking at expiry
+          // instead of lasting until a manual unban strips the claim.
+          // `.get(key, default)` everywhere means a token with no claims
+          // (every token issued before the ban, and every legitimate user's
+          // token) evaluates to false here, and the `is number` guard means a
+          // missing or mistyped expiry can never error the gate — absent or
+          // malformed claims are simply NOT banned via this arm.
           (
-            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) is number &&
-            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) > request.time.toMillis()
+            request.auth.token.get('banned', false) == true &&
+            (
+              request.auth.token.get('banType', '') == 'PERMANENT' ||
+              (
+                request.auth.token.get('banExpiresAt', 0) is number &&
+                request.auth.token.get('banExpiresAt', 0) > request.time.toMillis()
+              )
+            )
+          ) ||
+          (
+            exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+            get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isBanned', false) == true &&
+            (
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banType', '') == 'PERMANENT' ||
+              (
+                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) is number &&
+                get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('banExpiresAt', 0) > request.time.toMillis()
+              )
+            )
           )
         );
     }
@@ -112,6 +149,31 @@ service cloud.firestore {
     function isGroupAdmin(groupId) {
       return isSignedIn() &&
         request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.adminIds;
+    }
+
+    // Spec §12.5 (round 4): membership ADDITIONS are server-side only. The
+    // changeGroupMembership callable (firebase/functions, Admin SDK — bypasses
+    // rules) verifies each candidate's groupAddPrivacy before adding them, which
+    // rules cannot express (no iteration over a memberIds diff). A direct client
+    // update may therefore only ADD:
+    //   - nobody (pure removals / unrelated field updates), or
+    //   - the caller themself (self-join via an OPEN/INVITE_ONLY invite — the
+    //     joiner consents for themself; the outer update arms still decide who
+    //     may write the group doc at all), or
+    //   - exactly one user holding a PENDING join request, when the caller is a
+    //     group admin approving it (the requester consented by asking to join;
+    //     approveGroupJoinRequest adds one requester per write).
+    // Any other added uid denies the update. Removals are never restricted here.
+    function groupMemberAdditionsAllowed(groupId) {
+      let added = request.resource.data.memberIds.removeAll(resource.data.memberIds);
+      return added.size() == 0 ||
+        added.hasOnly([request.auth.uid]) ||
+        (
+          isGroupAdmin(groupId) &&
+          added.size() == 1 &&
+          exists(/databases/$(database)/documents/groups/$(groupId)/join_requests/$(added[0])) &&
+          get(/databases/$(database)/documents/groups/$(groupId)/join_requests/$(added[0])).data.get('status', '') == 'PENDING'
+        );
     }
 
     function channelData(channelId) {
@@ -195,7 +257,15 @@ service cloud.firestore {
     }
 
     match /banned_identifiers/{idHash} {
-      allow read: if isSignedIn();
+      // Round-4 §10.2 (P2-13): reads split get/list. Every client read of this
+      // collection is a single-doc get by exact identifier-hash doc id (the
+      // sign-in / sign-up / phone-change ban checks in AuthRepositoryImpl and
+      // UserRepositoryImpl) — those keep working unchanged for any signed-in
+      // user. Listing/querying the whole collection (which would enumerate
+      // every banned email/phone hash, target uid and reason) is admin/mod
+      // only. No client flow lists this collection (verified by grep).
+      allow get: if isSignedIn();
+      allow list: if isAdminOrMod();
       allow create, update, delete: if hasModPermission('canManageUsersModeration');
     }
 
@@ -208,6 +278,15 @@ service cloud.firestore {
     match /phone_uniqueness/{pHash} {
       allow read: if isSignedIn();
       allow create, update, delete: if isSignedIn();
+    }
+
+    match /phone_verifications/{phoneHash} {
+      // Phone OTP state (hashed codes, expiry, attempt budget), owned
+      // exclusively by the sendPhoneCode / verifyPhoneCode /
+      // verifyPhoneCodeForCurrentUser callables running on the Admin SDK,
+      // which bypasses rules. Clients must never read or write here: a read
+      // would leak live verification state, and a write could forge one.
+      allow read, write: if false;
     }
 
     // Round-2 §9.4/9.5: moderator writes to a user doc are FIELD-SCOPED. A write is
@@ -389,16 +468,20 @@ service cloud.firestore {
     }
 
     // Contact Requests & Friendship Gating
+    // Round-4 §10.1: the ban gate now covers this block too (read/create/update,
+    // mirroring chats/groups; delete stays ungated like the other gated blocks).
+    // The areContactsAccepted() helper reads these docs via get(), which is not
+    // subject to this read rule, so gating reads cannot break chat creation.
     match /contact_requests/{requestId} {
-      allow read: if isSignedIn() && (
+      allow read: if isSignedIn() && !isCurrentlyBanned() && (
         resource.data.senderUid == request.auth.uid ||
         resource.data.receiverUid == request.auth.uid
       );
-      allow create: if isSignedIn() &&
+      allow create: if isSignedIn() && !isCurrentlyBanned() &&
         request.resource.data.senderUid == request.auth.uid &&
         request.resource.data.receiverUid != request.auth.uid &&
         request.resource.data.status == 'PENDING';
-      allow update: if isSignedIn() && (
+      allow update: if isSignedIn() && !isCurrentlyBanned() && (
         resource.data.senderUid == request.auth.uid ||
         resource.data.receiverUid == request.auth.uid
       );
@@ -470,7 +553,7 @@ service cloud.firestore {
         request.resource.data.creatorId == request.auth.uid &&
         request.auth.uid in request.resource.data.adminIds &&
         request.auth.uid in request.resource.data.memberIds;
-      allow update: if !isCurrentlyBanned() && (isGroupAdmin(groupId) || (
+      allow update: if !isCurrentlyBanned() && groupMemberAdditionsAllowed(groupId) && (isGroupAdmin(groupId) || (
         isSignedIn() &&
         request.auth.uid in resource.data.memberIds &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds', 'adminIds']) &&
@@ -481,12 +564,15 @@ service cloud.firestore {
     }
 
     // Broadcast Channels (Public & Private)
+    // Round-4 §10.1: ban gate extended to this block and its posts/comments/
+    // join_requests subcollections (read/create/update, mirroring chats/groups;
+    // deletes keep their existing conditions, as in the other gated blocks).
     match /channels/{channelId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() &&
+      allow read: if isSignedIn() && !isCurrentlyBanned();
+      allow create: if isSignedIn() && !isCurrentlyBanned() &&
         request.resource.data.ownerUid == request.auth.uid &&
         request.auth.uid in request.resource.data.subscriberIds;
-      allow update: if isAdminOrMod() || (
+      allow update: if !isCurrentlyBanned() && (isAdminOrMod() || (
         isSignedIn() && (
           (
             (resource.data.ownerUid == request.auth.uid || request.auth.uid in resource.data.moderatorIds) &&
@@ -500,22 +586,22 @@ service cloud.firestore {
             request.resource.data.diff(resource.data).affectedKeys().hasOnly(['subscriberIds', 'moderatorIds', 'subscribersCount'])
           )
         )
-      );
+      ));
       allow delete: if isAdminOrMod() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
 
       match /posts/{postId} {
-        allow read: if canReadChannelPosts(channelId);
-        allow create: if isChannelManager(channelId) &&
+        allow read: if !isCurrentlyBanned() && canReadChannelPosts(channelId);
+        allow create: if !isCurrentlyBanned() && isChannelManager(channelId) &&
           request.resource.data.authorUid == request.auth.uid;
-        allow update: if isChannelManager(channelId) || (
+        allow update: if !isCurrentlyBanned() && (isChannelManager(channelId) || (
           canReadChannelPosts(channelId) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactionCounts', 'userReactions', 'commentsCount'])
-        );
+        ));
         allow delete: if isChannelManager(channelId);
 
         match /comments/{commentId} {
-          allow read: if canReadChannelPosts(channelId);
-          allow create: if canReadChannelPosts(channelId) &&
+          allow read: if !isCurrentlyBanned() && canReadChannelPosts(channelId);
+          allow create: if !isCurrentlyBanned() && canReadChannelPosts(channelId) &&
             request.resource.data.authorUid == request.auth.uid;
           allow delete: if isChannelManager(channelId) || (
             isSignedIn() && resource.data.authorUid == request.auth.uid
@@ -525,13 +611,13 @@ service cloud.firestore {
       }
 
       match /join_requests/{requestId} {
-        allow read: if isChannelManager(channelId) || (
+        allow read: if !isCurrentlyBanned() && (isChannelManager(channelId) || (
           isSignedIn() && resource.data.requesterUid == request.auth.uid
-        );
-        allow create: if isSignedIn() &&
+        ));
+        allow create: if isSignedIn() && !isCurrentlyBanned() &&
           request.resource.data.requesterUid == request.auth.uid &&
           request.resource.data.status == 'PENDING';
-        allow update: if isChannelManager(channelId);
+        allow update: if !isCurrentlyBanned() && isChannelManager(channelId);
         allow delete: if isChannelManager(channelId) || (
           isSignedIn() && resource.data.requesterUid == request.auth.uid
         );
@@ -549,8 +635,10 @@ service cloud.firestore {
       allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
 
       match /viewers/{viewerId} {
-        allow read: if isSignedIn();
-        allow create: if isSignedIn() &&
+        // Round-4 §10.1: viewer writes (and reads) join the ban gate — a banned
+        // user must not be able to register story views.
+        allow read: if isSignedIn() && !isCurrentlyBanned();
+        allow create: if isSignedIn() && !isCurrentlyBanned() &&
           request.auth.uid == viewerId &&
           get(/databases/$(database)/documents/stories/$(storyId)).data.ownerUid != request.auth.uid &&
           request.resource.data.uid == request.auth.uid;
@@ -574,6 +662,9 @@ service cloud.firestore {
     }
 
     // Abuse Reports
+    // Deliberately NOT ban-gated (§10.1): a banned user must still be able to
+    // file a report/appeal — gating create here would remove their only
+    // recourse channel.
     match /reports/{reportId} {
       allow create: if isSignedIn() && request.resource.data.reporterUid == request.auth.uid;
       allow read, update: if isSuperAdmin() || hasModPermission('canManageReports');
@@ -588,10 +679,12 @@ service cloud.firestore {
     }
 
     // Events & RSVPs
+    // Round-4 §10.1: ban gate extended here (read/create/update; delete keeps
+    // its existing creator/admin condition, as in the other gated blocks).
     match /events/{eventId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.creatorUid == request.auth.uid;
-      allow update: if isSignedIn() && (
+      allow read: if isSignedIn() && !isCurrentlyBanned();
+      allow create: if isSignedIn() && !isCurrentlyBanned() && request.resource.data.creatorUid == request.auth.uid;
+      allow update: if isSignedIn() && !isCurrentlyBanned() && (
         resource.data.creatorUid == request.auth.uid ||
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participantUids'])
       );
@@ -599,12 +692,19 @@ service cloud.firestore {
     }
 
     // Scheduled Calls
+    // Round-4 §10.1: ban gate extended here. The previously combined
+    // update+delete line is split so delete keeps its exact old condition
+    // (ungated, mirroring the other gated blocks) while update is gated.
     match /scheduled_calls/{scheduleId} {
-      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
-      allow create: if isSignedIn() &&
+      allow read: if isSignedIn() && !isCurrentlyBanned() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn() && !isCurrentlyBanned() &&
         request.resource.data.creatorUid == request.auth.uid &&
         request.auth.uid in request.resource.data.participants;
-      allow update, delete: if isSignedIn() && (
+      allow update: if isSignedIn() && !isCurrentlyBanned() && (
+        resource.data.creatorUid == request.auth.uid ||
+        request.auth.uid in resource.data.participants
+      );
+      allow delete: if isSignedIn() && (
         resource.data.creatorUid == request.auth.uid ||
         request.auth.uid in resource.data.participants
       );
@@ -637,9 +737,13 @@ service cloud.firestore {
     }
 
     // Broadcast Lists (distinct from Groups; sender-only)
+    // Round-4 §10.1: ban gate extended here. The previously combined
+    // read+update+delete line is split so delete keeps its exact old
+    // condition (ungated, mirroring the other gated blocks).
     match /broadcast_lists/{listId} {
-      allow read, update, delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow read, update: if isSignedIn() && !isCurrentlyBanned() && resource.data.ownerUid == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if isSignedIn() && !isCurrentlyBanned() && request.resource.data.ownerUid == request.auth.uid;
     }
   }
 }

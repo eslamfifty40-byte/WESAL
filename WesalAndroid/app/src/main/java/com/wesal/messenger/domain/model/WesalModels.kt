@@ -520,7 +520,16 @@ enum class ChatListSyncStatus { LOADING, READY, ERROR }
 
 data class ChatListSyncState(
     val status: ChatListSyncStatus = ChatListSyncStatus.LOADING,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** True when the latest emission came from the local cache/offline snapshot (spec §13.3 cached-vs-live). */
+    val fromCache: Boolean = false,
+    /**
+     * Owning chat for per-chat states (the messages listener). The repository's
+     * message sync flow is shared across chats, so consumers compare this
+     * against their own chat and ignore stale states stamped for another one
+     * (review MINOR-6). Blank for list-level states (chats / sessions / contact lists).
+     */
+    val chatId: String = ""
 )
 
 data class ChatPreview(

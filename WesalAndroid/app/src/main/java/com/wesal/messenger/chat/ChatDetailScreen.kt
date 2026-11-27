@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -72,6 +73,9 @@ import com.wesal.messenger.media.FullscreenImageViewer
 import com.wesal.messenger.media.VideoPlayerBox
 import com.wesal.messenger.presentation.components.MessageStatusTick
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalMediaKind
+import com.wesal.messenger.presentation.components.rememberSavePermissionGate
+import com.wesal.messenger.presentation.components.saveMediaToGallery
 import com.wesal.messenger.presentation.components.WesalEmojiKeyboard
 import com.wesal.messenger.presentation.components.WesalEmojiUtils
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
@@ -101,6 +105,8 @@ fun ChatDetailScreen(
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val personalWallpaper by viewModel.personalWallpaper.collectAsStateWithLifecycle()
     val messages by viewModel.messages.collectAsStateWithLifecycle()
+    val messageSyncState by viewModel.messageSyncState.collectAsStateWithLifecycle()
+    val hasMoreOlderMessages by viewModel.hasMoreOlderMessages.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val replyingTo by viewModel.replyingTo.collectAsStateWithLifecycle()
     val editingMessage by viewModel.editingMessage.collectAsStateWithLifecycle()
@@ -158,6 +164,8 @@ fun ChatDetailScreen(
 
     val listState = rememberLazyListState()
     val micPermission = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
+    // API ≤ 28 gate for the media savers (no-op on API 29+ scoped storage).
+    val savePermissionGate = rememberSavePermissionGate()
     val locationPermissions = rememberMultiplePermissionsState(
         listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
     )
@@ -286,24 +294,69 @@ fun ChatDetailScreen(
                 if (sourceMsg != null && sourceMsg.isViewOnce && sourceMsg.senderId != viewModel.myUid) {
                     viewModel.markViewOnceOpened(sourceMsg.messageId)
                 }
-            }
+            },
+            // View-once media from other people stays non-saveable; everything
+            // else (including my own view-once) can be saved.
+            canSave = !(sourceMsg != null && sourceMsg.isViewOnce && sourceMsg.senderId != viewModel.myUid)
         )
         return
     }
 
     playingVideoState?.let { (file, sourceMsg) ->
+        val canSaveVideo = !(sourceMsg != null && sourceMsg.isViewOnce && sourceMsg.senderId != viewModel.myUid)
+        var isSavingVideo by remember(sourceMsg?.messageId) { mutableStateOf(false) }
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             VideoPlayerBox(uri = Uri.fromFile(file), modifier = Modifier.fillMaxSize())
-            IconButton(
-                onClick = {
-                    playingVideoState = null
-                    if (sourceMsg != null && sourceMsg.isViewOnce && sourceMsg.senderId != viewModel.myUid) {
-                        viewModel.markViewOnceOpened(sourceMsg.messageId)
-                    }
-                },
-                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)
+            Row(
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Close, contentDescription = strings.close, tint = Color.White)
+                if (canSaveVideo) {
+                    IconButton(
+                        enabled = !isSavingVideo,
+                        onClick = {
+                            savePermissionGate {
+                                isSavingVideo = true
+                                scope.launch {
+                                    saveMediaToGallery(context, file, WesalMediaKind.VIDEO)
+                                        .onSuccess {
+                                            Toast.makeText(
+                                                context,
+                                                if (strings.isEnglish) "Saved to gallery ✓" else "تم حفظ الفيديو في المعرض ✓",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                        .onFailure { err ->
+                                            Toast.makeText(
+                                                context,
+                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر حفظ الفيديو",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    isSavingVideo = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                    ) {
+                        if (isSavingVideo) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Download, contentDescription = if (strings.isEnglish) "Save" else "حفظ الفيديو", tint = Color.White)
+                        }
+                    }
+                }
+                IconButton(
+                    onClick = {
+                        playingVideoState = null
+                        if (sourceMsg != null && sourceMsg.isViewOnce && sourceMsg.senderId != viewModel.myUid) {
+                            viewModel.markViewOnceOpened(sourceMsg.messageId)
+                        }
+                    }
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = strings.close, tint = Color.White)
+                }
             }
         }
         return
@@ -672,6 +725,44 @@ fun ChatDetailScreen(
                     )
                 }
 
+                // Spec §§1.2/13.3/13.4: messages sync banner — a listener error
+                // surfaces with retry instead of a silently frozen chat, and
+                // cache-served messages are labelled as such.
+                if (messageSyncState.status == com.wesal.messenger.domain.model.ChatListSyncStatus.ERROR) {
+                    Surface(
+                        color = palette.error.copy(alpha = 0.12f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = messageSyncState.errorMessage
+                                    ?: if (strings.isEnglish) "Couldn't sync messages" else "تعذر مزامنة الرسائل",
+                                color = palette.error,
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { viewModel.retryMessageSync() }) {
+                                Text(
+                                    text = if (strings.isEnglish) "Retry" else "إعادة المحاولة",
+                                    color = palette.error
+                                )
+                            }
+                        }
+                    }
+                } else if (messageSyncState.fromCache) {
+                    Text(
+                        text = if (strings.isEnglish) "Offline — showing saved messages" else "غير متصل — يتم عرض الرسائل المحفوظة",
+                        color = palette.textMuted,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp)
+                    )
+                }
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -681,6 +772,23 @@ fun ChatDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     contentPadding = PaddingValues(vertical = 12.dp)
                 ) {
+                    // Spec §13.3: the live listener streams only the newest page;
+                    // older pages load on demand.
+                    if (hasMoreOlderMessages && messages.isNotEmpty()) {
+                        item(key = "load_older_messages") {
+                            TextButton(
+                                onClick = { viewModel.loadOlderMessages() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = if (strings.isEnglish) "Load older messages" else "تحميل رسائل أقدم",
+                                    color = palette.turquoise,
+                                    style = MaterialTheme.typography.labelLarge
+                                )
+                            }
+                        }
+                    }
+
                     items(messages, key = { it.messageId }) { msg ->
                         val isMine = msg.senderId == viewModel.myUid
                         MessageBubble(
@@ -706,7 +814,8 @@ fun ChatDetailScreen(
                             onToggleVoice = { viewModel.toggleVoicePlayback(msg) },
                             onSeekAudio = { posMs -> viewModel.seekAudio(posMs) },
                             onSetVolume = { vol -> viewModel.setAudioVolume(vol) },
-                            onSaveAudio = { viewModel.saveAudioToDownloads(msg, strings.isEnglish) },
+                            onSaveAudio = { savePermissionGate { viewModel.saveAudioToDownloads(msg, strings.isEnglish) } },
+                            onSaveDocument = { savePermissionGate { viewModel.saveDocumentToDownloads(msg, strings.isEnglish) } },
                             onOpenDocument = {
                                 viewModel.resolveMediaFile(msg) { file ->
                                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -1434,7 +1543,18 @@ fun ChatDetailScreen(
                             leadingContent = { Icon(Icons.Default.Download, contentDescription = null, tint = palette.emerald) },
                             colors = actionItemColors,
                             modifier = Modifier.clickable {
-                                viewModel.saveAudioToDownloads(msg, strings.isEnglish)
+                                savePermissionGate { viewModel.saveAudioToDownloads(msg, strings.isEnglish) }
+                                selectedMessageForActions = null
+                            }
+                        )
+                    }
+                    if (msg.type == MessageType.DOCUMENT && !msg.isViewOnce) {
+                        ListItem(
+                            headlineContent = { Text(strings.saveAudioToDevice) },
+                            leadingContent = { Icon(Icons.Default.Download, contentDescription = null, tint = palette.emerald) },
+                            colors = actionItemColors,
+                            modifier = Modifier.clickable {
+                                savePermissionGate { viewModel.saveDocumentToDownloads(msg, strings.isEnglish) }
                                 selectedMessageForActions = null
                             }
                         )
@@ -1810,6 +1930,7 @@ private fun MessageBubble(
     onSetVolume: (Float) -> Unit,
     onSaveAudio: () -> Unit,
     onOpenDocument: () -> Unit,
+    onSaveDocument: () -> Unit = {},
     onOpenLocation: () -> Unit,
     onRetryFailed: () -> Unit = {},
     onDismissFailed: () -> Unit = {},
@@ -2142,7 +2263,17 @@ private fun MessageBubble(
                                         Text(message.mediaFileName.ifBlank { "Document" }, color = palette.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text("${(message.mediaSizeBytes / 1024L).coerceAtLeast(1)} KB", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
                                     }
-                                    Icon(Icons.Default.Download, contentDescription = null, tint = palette.emerald)
+                                    // Round-4: this download icon used to be decorative —
+                                    // it is now a real save-to-Downloads action (the row
+                                    // itself still opens the document).
+                                    IconButton(onClick = onSaveDocument, modifier = Modifier.size(28.dp)) {
+                                        Icon(
+                                            Icons.Default.Download,
+                                            contentDescription = strings.saveAudioToDevice,
+                                            tint = palette.emerald,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                                 if (message.text.isNotBlank()) {
                                     Text(message.text, style = MaterialTheme.typography.bodyMedium, color = palette.textPrimary)

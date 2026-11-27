@@ -593,6 +593,24 @@ class UserPreferencesDataStore @Inject constructor(
         return prefs[strKey(uid, "call_ringtone_uri")].orEmpty()
     }
 
+    // §2.4: per-account dismissal of the one-time battery-exemption card
+    // (notifications/BatteryExemptionCard). Same per-account boolKey pattern as
+    // the other boolean preferences above; additive key only.
+    fun batteryExemptionCardDismissedFlow(): Flow<Boolean> = combine(
+        context.wesalDataStore.data,
+        _activeUidFlow
+    ) { prefs, _ ->
+        val uid = resolveActiveUid(prefs)
+        prefs[boolKey(uid, "battery_exemption_card_dismissed")] ?: false
+    }
+
+    suspend fun setBatteryExemptionCardDismissed(dismissed: Boolean) {
+        context.wesalDataStore.edit { prefs ->
+            val uid = resolveActiveUid(prefs)
+            prefs[boolKey(uid, "battery_exemption_card_dismissed")] = dismissed
+        }
+    }
+
     suspend fun setWelcomeConfig(enabled: Boolean, text: String) {
         context.wesalDataStore.edit { prefs ->
             val uid = resolveActiveUid(prefs)

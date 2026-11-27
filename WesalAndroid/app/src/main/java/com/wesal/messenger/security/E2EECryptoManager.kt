@@ -67,8 +67,32 @@ class E2EECryptoManager @Inject constructor(
             KEY_PUBLIC to KEY_PRIVATE
         }
 
+    /**
+     * Spec §3.3: one-time migrate-or-delete of the legacy UNSCOPED identity key pair.
+     * Older builds kept a fallback pair under the bare key names, shared by every
+     * account on the device. On the first run under a known account, the pair is
+     * copied to that account's scoped names (so the published public key / identity
+     * is preserved) and the unscoped entries are deleted; nothing reads them after.
+     */
+    private fun migrateLegacyUnscopedKeys(uid: String?) {
+        if (uid.isNullOrBlank()) return
+        val legacyPub = encryptedPrefs.getString(KEY_PUBLIC, null)
+        val legacyPriv = encryptedPrefs.getString(KEY_PRIVATE, null)
+        if (legacyPub.isNullOrBlank() && legacyPriv.isNullOrBlank()) return
+        val (pubKeyName, privKeyName) = keyNames(uid)
+        val editor = encryptedPrefs.edit()
+        if (!legacyPub.isNullOrBlank() && encryptedPrefs.getString(pubKeyName, null).isNullOrBlank()) {
+            editor.putString(pubKeyName, legacyPub)
+        }
+        if (!legacyPriv.isNullOrBlank() && encryptedPrefs.getString(privKeyName, null).isNullOrBlank()) {
+            editor.putString(privKeyName, legacyPriv)
+        }
+        editor.remove(KEY_PUBLIC).remove(KEY_PRIVATE).apply()
+    }
+
     fun getOrCreateIdentityPublicKeyBase64(uid: String? = null): String {
         val resolvedUid = resolveActiveUid(uid)
+        migrateLegacyUnscopedKeys(resolvedUid)
         val (pubKeyName, privKeyName) = keyNames(resolvedUid)
         val existingPub = encryptedPrefs.getString(pubKeyName, null)
         val existingPriv = encryptedPrefs.getString(privKeyName, null)
@@ -186,9 +210,11 @@ class E2EECryptoManager @Inject constructor(
     private fun deriveSharedAesKey(peerPublicKeyBase64: String, infoContext: String): SecretKey {
         val resolvedUid = resolveActiveUid(null)
         getOrCreateIdentityPublicKeyBase64(resolvedUid)
+        migrateLegacyUnscopedKeys(resolvedUid)
         val (_, privKeyName) = keyNames(resolvedUid)
+        // Spec §3.3: the legacy unscoped fallback read is gone — after the one-time
+        // migration above, only the account-scoped private key is ever used.
         val privB64 = encryptedPrefs.getString(privKeyName, null)
-            ?: encryptedPrefs.getString(KEY_PRIVATE, null)
             ?: error("Missing identity private key")
         val privBytes = Base64.decode(privB64, Base64.NO_WRAP)
         val pubBytes = Base64.decode(peerPublicKeyBase64, Base64.NO_WRAP)

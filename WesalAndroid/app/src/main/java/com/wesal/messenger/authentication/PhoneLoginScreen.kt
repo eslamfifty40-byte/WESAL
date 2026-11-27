@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -599,9 +600,13 @@ fun PhoneLoginScreen(
                 )
             ) {
                 if (state.isLoading) {
+                    // White, not the near-black 0xFF041014: while loading the button is
+                    // disabled, so it renders on the dark LoginElevated container and a
+                    // near-black spinner was effectively invisible — the button just
+                    // looked like a dark, empty, stuck rectangle.
                     CircularProgressIndicator(
                         modifier = Modifier.size(22.dp),
-                        color = Color(0xFF041014),
+                        color = Color.White,
                         strokeWidth = 2.5.dp
                     )
                 } else {
@@ -669,6 +674,159 @@ fun PhoneLoginScreen(
                         fontWeight = FontWeight.Bold,
                         color = Color.White
                     )
+                }
+            }
+
+            // Phone sign-in option (phone phase): number → OTP code delivered via
+            // WhatsApp/SMS by the server (Zavu transport). Gmail/email above stays
+            // untouched; this is an additional door into the same accounts system.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                HorizontalDivider(modifier = Modifier.weight(1f), color = LoginBorder)
+                Text(
+                    text = if (strings.isEnglish) "Or with your phone number" else "أو برقم الهاتف",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = LoginTextSecondary
+                )
+                HorizontalDivider(modifier = Modifier.weight(1f), color = LoginBorder)
+            }
+
+            if (state.phoneAuthStep == 0) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    OutlinedTextField(
+                        value = state.phoneNumberInput,
+                        onValueChange = viewModel::updatePhoneInput,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(if (strings.isEnglish) "Phone Number" else "رقم الهاتف") },
+                        placeholder = { Text("010xxxxxxxx") },
+                        leadingIcon = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(start = 10.dp)
+                            ) {
+                                Icon(Icons.Default.Phone, contentDescription = null, tint = LoginCyan)
+                                Text(
+                                    text = "${state.selectedCountry.flagEmoji} ${state.selectedCountry.dialCode}",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = inputColors
+                    )
+                }
+                Button(
+                    onClick = viewModel::sendPhoneOtp,
+                    enabled = !state.isLoading && !state.isPhoneBusy && !googleLaunching,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = LoginCyan,
+                        contentColor = Color(0xFF041014),
+                        disabledContainerColor = LoginElevated,
+                        disabledContentColor = LoginTextSecondary
+                    )
+                ) {
+                    if (state.isPhoneBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White,
+                            strokeWidth = 2.5.dp
+                        )
+                    } else {
+                        Text(
+                            text = if (strings.isEnglish) "Send the Code" else "ابعت الكود",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            } else {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    OutlinedTextField(
+                        value = state.phoneOtpInput,
+                        onValueChange = viewModel::updatePhoneOtpInput,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(if (strings.isEnglish) "Verification Code" else "كود التحقق") },
+                        placeholder = { Text("••••••") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = LoginCyan)
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = inputColors
+                    )
+                }
+                Button(
+                    onClick = viewModel::verifyPhoneOtp,
+                    enabled = !state.isLoading && !state.isPhoneBusy && !googleLaunching,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = LoginCyan,
+                        contentColor = Color(0xFF041014),
+                        disabledContainerColor = LoginElevated,
+                        disabledContentColor = LoginTextSecondary
+                    )
+                ) {
+                    if (state.isPhoneBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White,
+                            strokeWidth = 2.5.dp
+                        )
+                    } else {
+                        Text(
+                            text = if (strings.isEnglish) "Confirm" else "تأكيد",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    TextButton(
+                        onClick = viewModel::resendPhoneOtp,
+                        enabled = state.phoneResendSecondsLeft == 0 && !state.isPhoneBusy
+                    ) {
+                        Text(
+                            text = if (state.phoneResendSecondsLeft > 0) {
+                                if (strings.isEnglish) {
+                                    "Resend code (${state.phoneResendSecondsLeft}s)"
+                                } else {
+                                    "إعادة إرسال الكود (${state.phoneResendSecondsLeft} ث)"
+                                }
+                            } else {
+                                if (strings.isEnglish) "Resend code" else "إعادة إرسال الكود"
+                            },
+                            color = if (state.phoneResendSecondsLeft > 0) LoginTextSecondary else LoginCyan,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                    TextButton(
+                        onClick = viewModel::cancelPhoneOtp,
+                        enabled = !state.isPhoneBusy
+                    ) {
+                        Text(
+                            text = if (strings.isEnglish) "Change number" else "تغيير الرقم",
+                            color = LoginTextSecondary,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             }
 

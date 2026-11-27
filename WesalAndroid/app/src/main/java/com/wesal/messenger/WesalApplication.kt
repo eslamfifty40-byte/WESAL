@@ -3,6 +3,7 @@ package com.wesal.messenger
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.os.StrictMode
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -29,6 +30,7 @@ import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.PersistentCacheSettings
 import com.google.firebase.firestore.SetOptions
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.PerfTrace
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 import javax.inject.Provider
@@ -51,7 +53,27 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     )
 
     override fun onCreate() {
+        // §13.2 measurement: cold-start timing origin + DEBUG-only StrictMode.
+        // PerfTrace is a no-op in release; StrictMode is installed only under
+        // BuildConfig.DEBUG and only logs (penaltyLog) — never crashes.
+        PerfTrace.mark("app_oncreate_start")
         super<Application>.onCreate()
+        if (BuildConfig.DEBUG) {
+            StrictMode.setThreadPolicy(
+                StrictMode.ThreadPolicy.Builder()
+                    .detectDiskReads()
+                    .detectDiskWrites()
+                    .detectNetwork()
+                    .penaltyLog()
+                    .build()
+            )
+            StrictMode.setVmPolicy(
+                StrictMode.VmPolicy.Builder()
+                    .detectLeakedClosableObjects()
+                    .penaltyLog()
+                    .build()
+            )
+        }
         FirebaseApp.initializeApp(this)
         configureFirestoreOfflinePersistence()
         configureAppCheck()
@@ -173,6 +195,11 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                         wesalDaoProvider.get().clearAllMessages()
                     }
                     runCatching { coil.Coil.imageLoader(this@WesalApplication).memoryCache?.clear() }
+                    // §3.3 remainder: the Coil disk cache is global (no per-account
+                    // partitioning), so clear it on a uid→uid switch too — otherwise
+                    // the previous account's cached images survive on disk and can
+                    // be served into the new account's UI.
+                    runCatching { coil.Coil.imageLoader(this@WesalApplication).diskCache?.clear() }
                 }
             }
             lastKnownSignedInUid = u.uid

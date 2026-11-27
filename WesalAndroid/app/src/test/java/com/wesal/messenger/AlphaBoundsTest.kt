@@ -111,15 +111,54 @@ class AlphaBoundsTest {
     }
 
     @Test
-    fun verdictThresholds_rejectMarginalTransparencyAndOversizedBoxes() {
+    fun verdictThresholds_rejectMarginalTransparencyAndFullBleedBoxes() {
         // Transparency below 2% -> not a cutout.
         assertFalse(isCutoutBounds(AlphaBounds(0f, 0f, 1f, 1f, 0.019f)))
-        // Box area above 92% -> not a cutout even with plenty of transparency.
-        assertFalse(isCutoutBounds(AlphaBounds(0.02f, 0.02f, 0.98f, 0.98f, 0.5f)))
+        // Round-4 gate: a box near-full on BOTH axes (> 97%) is a full-bleed photo
+        // with incidental alpha, not a cutout — even with plenty of transparency.
+        assertFalse(isCutoutBounds(AlphaBounds(0.01f, 0.01f, 0.99f, 0.99f, 0.5f)))
         // The negative-result sentinel is never a cutout.
         assertFalse(isCutoutBounds(AlphaBounds.NOT_A_CUTOUT))
         // A genuine cutout passes.
         assertTrue(isCutoutBounds(AlphaBounds(0.25f, 0.10f, 0.75f, 0.90f, 0.6f)))
+        // A margin on ONE axis is enough (the other axis may span the full canvas).
+        assertTrue(isCutoutBounds(AlphaBounds(0.02f, 0.02f, 0.98f, 0.98f, 0.5f)))
+    }
+
+    @Test
+    fun tightCutout_areaAboveOldGateStillCutout() {
+        // Round-4 regression (the owner's photo): a tight head-and-shoulders cutout
+        // trimmed to bbox + ~3% measures ~0.94 of the canvas AREA — the round-3
+        // total-area gate (<= 0.92) rejected it and the head strip never engaged.
+        // Box 0.94 wide x 1.00 tall: width leaves a real margin, so it IS a cutout.
+        val tight = AlphaBounds(0.03f, 0f, 0.97f, 1f, 0.06f)
+        assertEquals(0.94f, tight.area, 0.001f)
+        assertTrue(isCutoutBounds(tight))
+        // Same story transposed: full width, margin on the height axis.
+        assertTrue(isCutoutBounds(AlphaBounds(0f, 0.03f, 1f, 0.97f, 0.06f)))
+    }
+
+    @Test
+    fun tightCutoutMeasuredFromPixels_passesVerdict() {
+        // 100x100 canvas, person x 3..96 (94% wide), full height: measured area 0.94.
+        val px = grid(100, 100, 3..96, 0..99)
+        val b = analyzeAlphaBounds(px, 100, 100)!!
+        assertEquals(0.94f, b.width, 0.001f)
+        assertEquals(1f, b.height, 0.001f)
+        assertEquals(0.06f, b.transparentFraction, 0.001f)
+        assertTrue(isCutoutBounds(b))
+    }
+
+    @Test
+    fun nearFullBleedMeasuredFromPixels_rejectedByVerdict() {
+        // Opaque x/y 1..98: box is 98% on BOTH axes; transparency (3.96%) comes only
+        // from the 1px frame — a full-bleed photo with incidental alpha, not a cutout.
+        val px = grid(100, 100, 1..98, 1..98)
+        val b = analyzeAlphaBounds(px, 100, 100)!!
+        assertEquals(0.98f, b.width, 0.001f)
+        assertEquals(0.98f, b.height, 0.001f)
+        assertTrue(b.transparentFraction >= 0.02f)
+        assertFalse(isCutoutBounds(b))
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.wesal.messenger.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.core.util.PerfTrace
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.ChatListSyncState
@@ -55,10 +56,31 @@ class ChatsListViewModel @Inject constructor(
     // Firestore dropped the listener on error (spec §13.3: loading stops, error + retry).
     private val _chatsRetryKey = MutableStateFlow(0)
 
+    private val firstChatsSnapshotMarked = java.util.concurrent.atomic.AtomicBoolean(false)
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private val allChatsSource: StateFlow<List<ChatPreview>> = _chatsRetryKey
         .flatMapLatest { chatRepository.observeChats() }
+        .onEach { list ->
+            // Spec §13.2: first-snapshot timing mark (DEBUG logcat only).
+            if (list.isNotEmpty() && firstChatsSnapshotMarked.compareAndSet(false, true)) {
+                PerfTrace.mark("chats_first_snapshot")
+            }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** Spec §13.3: grow the paged chats listener by one page. */
+    fun loadMoreChats() {
+        chatRepository.requestMoreChats()
+    }
+
+    /**
+     * Review MINOR-4: whether the repository's paged listener has more chats
+     * to load. The load-more footer keys off THIS — the unfiltered page
+     * state — not the filtered list size, which changes with the search query.
+     */
+    val hasMoreChats: StateFlow<Boolean> = chatRepository.observeChatsHasMore()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
     val chatListState: StateFlow<ChatListSyncState> = chatRepository.observeChatListState()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ChatListSyncState())
@@ -159,6 +181,7 @@ class ChatsListViewModel @Inject constructor(
         viewModelScope.launch {
             if (!pendingHideChatId.isNullOrBlank()) {
                 prefs.toggleHiddenChat(pendingHideChatId, true)
+                chatRepository.purgeHiddenChatCache(pendingHideChatId)
                 _toastMessage.value = "تم تعيين كلمة المرور وإخفاء المحادثة"
             } else {
                 _toastMessage.value = "تم حفظ كلمة مرور المحادثات المخفية"
@@ -193,6 +216,11 @@ class ChatsListViewModel @Inject constructor(
     fun hideOrUnhideChat(chat: ChatPreview, hide: Boolean) {
         viewModelScope.launch {
             prefs.toggleHiddenChat(chat.chatId, hide)
+            if (hide) {
+                // Spec §8.3: a hidden chat keeps no cached rows on disk; unhiding
+                // re-syncs from Firestore on the next snapshot/open.
+                chatRepository.purgeHiddenChatCache(chat.chatId)
+            }
             _toastMessage.value = if (hide) "تم نقل المحادثة إلى المحادثات المخفية" else "تمت إعادة المحادثة إلى القائمة الرئيسية"
         }
     }

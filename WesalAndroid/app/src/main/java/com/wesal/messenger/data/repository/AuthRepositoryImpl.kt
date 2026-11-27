@@ -20,6 +20,8 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctions
+import com.google.firebase.functions.FirebaseFunctionsException
 import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
@@ -39,6 +41,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
@@ -62,6 +66,7 @@ class AuthRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
+    private val functions: FirebaseFunctions,
     private val messaging: FirebaseMessaging,
     private val prefs: UserPreferencesDataStore,
     private val database: WesalDatabase,
@@ -104,6 +109,9 @@ class AuthRepositoryImpl @Inject constructor(
     override val currentUserEmail: String?
         get() = auth.currentUser?.email
 
+    override val currentUserPhoneNumber: String?
+        get() = auth.currentUser?.phoneNumber
+
     override fun observeAuthState(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
             trySend(firebaseAuth.currentUser?.uid)
@@ -120,11 +128,20 @@ class AuthRepositoryImpl @Inject constructor(
         val col = firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
         // Bounded reads (awaitBounded): these run BEFORE the password is even checked, so a
         // stalled stream must fail open (not banned) instead of freezing the login spinner.
-        val snap = runCatching { col.document(canonicalId).get().awaitBounded() }.getOrNull()
-            ?.takeIf { it.exists() }
-            ?: runCatching { col.document(legacyId).get().awaitBounded() }.getOrNull()
-                ?.takeIf { it.exists() }
-            ?: return false to ""
+        // Round 4: the canonical and legacy identifier reads are independent, so they run
+        // in PARALLEL, and each cap dropped from 12s to 4s — sequential 12s bounds here
+        // used to stack into most of the sign-in spinner's 20s life on a wedged stream.
+        val snap = coroutineScope {
+            val canonical = async {
+                runCatching { col.document(canonicalId).get().awaitBounded(4_000L) }.getOrNull()
+                    ?.takeIf { it.exists() }
+            }
+            val legacy = async {
+                runCatching { col.document(legacyId).get().awaitBounded(4_000L) }.getOrNull()
+                    ?.takeIf { it.exists() }
+            }
+            canonical.await() ?: legacy.await()
+        } ?: return false to ""
         val type = snap.getString("type").orEmpty()
         val expiresAt = snap.getLong("expiresAt") ?: 0L
         val permanent = snap.getBoolean("permanent") ?: (expiresAt == 0L)
@@ -142,8 +159,10 @@ class AuthRepositoryImpl @Inject constructor(
 
     private suspend fun assertUserNotBannedOrSignOut(uid: String) {
         // Bounded read: on timeout/failure this check is skipped rather than hanging sign-in.
+        // Round 4: cap dropped from 12s to 4s so a wedged stream fails fast (the check is
+        // skipped, sign-in proceeds) instead of stacking onto the spinner's ceiling.
         val snap = runCatching {
-            firestore.collection(Constants.COLLECTION_USERS).document(uid).get().awaitBounded()
+            firestore.collection(Constants.COLLECTION_USERS).document(uid).get().awaitBounded(4_000L)
         }.getOrNull() ?: return
         val deletedAt = snap.getLong("deletedAt") ?: 0L
         val deletedPermanent = snap.getBoolean("deletedPermanent") ?: false
@@ -317,6 +336,155 @@ class AuthRepositoryImpl @Inject constructor(
         } catch (e: Exception) {
             Result.failure(Exception(mapSparkAuthMessage(e, "تعذر إرسال رابط استعادة كلمة المرور"), e))
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Phone phase (round 4): OTP registration + mandatory verification gate.
+    // The server (sendPhoneCode / verifyPhoneCode / verifyPhoneCodeForCurrentUser
+    // callables) generates, delivers (Zavu), expires and verifies the codes;
+    // the client only shapes the calls. The callables' Arabic HttpsError
+    // messages are user-facing by design and are surfaced verbatim.
+    // ---------------------------------------------------------------------
+
+    /** Generous bound: the server may try WhatsApp delivery, then SMS. */
+    private suspend fun <T> phoneFunctionCall(block: suspend () -> T): T =
+        withTimeoutOrNull(50_000L) { block() }
+            ?: throw IllegalStateException("انتهت مهلة الاتصال بخادم التحقق، تحقق من الإنترنت وحاول مرة أخرى")
+
+    private fun mapPhoneFunctionError(e: Exception, fallback: String): String {
+        if (e is FirebaseFunctionsException) {
+            val serverMessage = e.message?.trim().orEmpty()
+            // Callable errors carry the server's Arabic message; a bare code
+            // name (e.g. functions not deployed yet) is not user-facing.
+            return if (serverMessage.isNotBlank() &&
+                serverMessage != e.code.name &&
+                !serverMessage.startsWith("UNKNOWN")
+            ) {
+                serverMessage
+            } else {
+                fallback
+            }
+        }
+        if (e is IllegalStateException && !e.message.isNullOrBlank()) return e.message!!
+        return e.localizedMessage?.takeIf { it.isNotBlank() } ?: fallback
+    }
+
+    override suspend fun sendPhoneOtp(phoneE164: String): Result<String> {
+        return try {
+            val normalized = PhoneUtils.normalizeToE164(phoneE164)
+                ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
+            val result = phoneFunctionCall {
+                functions.getHttpsCallable("sendPhoneCode")
+                    .call(mapOf("phone" to normalized))
+                    .await()
+            }
+            val channel = (result.data as? Map<*, *>)?.get("channel")?.toString()
+                ?.takeIf { it.isNotBlank() } ?: "sms"
+            Result.success(channel)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(Exception(mapPhoneFunctionError(e, "تعذر إرسال كود التحقق، حاول مرة أخرى"), e))
+        }
+    }
+
+    override suspend fun verifyPhoneOtpAndSignIn(phoneE164: String, code: String): Result<Boolean> {
+        return try {
+            val normalized = PhoneUtils.normalizeToE164(phoneE164)
+                ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
+            val verifyResult = phoneFunctionCall {
+                functions.getHttpsCallable("verifyPhoneCode")
+                    .call(mapOf("phone" to normalized, "code" to code.trim()))
+                    .await()
+            }
+            val data = verifyResult.data as? Map<*, *>
+            val customToken = data?.get("customToken")?.toString()?.takeIf { it.isNotBlank() }
+                ?: error("تعذر إتمام تسجيل الدخول بالرقم، حاول مرة أخرى")
+
+            val previousUid = auth.currentUser?.uid
+            val authResult = auth.signInWithCustomToken(customToken).await()
+            val firebaseUser = authResult.user ?: error("تعذر تسجيل الدخول بالرقم")
+
+            // Same ban gates as the other sign-in paths: a banned phone
+            // identifier (deleted/banned account) or a banned user doc stops
+            // the sign-in here too.
+            val phoneBannedReason = bannedPhoneIdentifierReason(normalized)
+            if (phoneBannedReason != null) {
+                auth.signOut()
+                error(
+                    if (phoneBannedReason.isNotBlank()) "هذا الرقم محظور من استخدام WESAL: $phoneBannedReason"
+                    else "هذا الرقم محظور من استخدام WESAL"
+                )
+            }
+            assertUserNotBannedOrSignOut(firebaseUser.uid)
+
+            if (previousUid != null && previousUid != firebaseUser.uid) {
+                clearActiveSessionForSwitch(previousUid)
+            }
+            // The Auth user was created/found BY PHONE (verifyPhoneCode), so the
+            // number is OTP-verified by construction: the skeleton stamps
+            // phone + isPhoneVerified + phoneHash + the uniqueness lock.
+            val needsSetup = ensureUserSkeletonExists(
+                uid = firebaseUser.uid,
+                phone = normalized,
+                email = firebaseUser.email.orEmpty(),
+                suggestedName = firebaseUser.displayName.orEmpty(),
+                suggestedPhoto = firebaseUser.photoUrl?.toString().orEmpty(),
+                phoneVerified = true,
+                provider = "phone"
+            )
+            prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
+            launchPostAuthTail(firebaseUser.uid, firebaseUser.displayName.orEmpty(), needsSetup)
+            Result.success(needsSetup)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(Exception(mapPhoneFunctionError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
+        }
+    }
+
+    override suspend fun verifyPhoneOtpForCurrentUser(phoneE164: String, code: String): Result<Unit> {
+        return try {
+            val normalized = PhoneUtils.normalizeToE164(phoneE164)
+                ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
+            phoneFunctionCall {
+                functions.getHttpsCallable("verifyPhoneCodeForCurrentUser")
+                    .call(mapOf("phone" to normalized, "code" to code.trim()))
+                    .await()
+            }
+            // The function stamped phone/isPhoneVerified/phoneHash server-side.
+            // No local-cache mirror is needed here: the mandatory gate observes
+            // the user doc live and lifts itself as soon as the stamp lands.
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(Exception(mapPhoneFunctionError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
+        }
+    }
+
+    /**
+     * banned_identifiers check for a phone number (doc id "phone_<sha256>"),
+     * mirroring reserveUniquePhone's ban read. Returns the ban reason ("" when
+     * the doc carries none), or null when the number is not actively banned.
+     * Fail-open on read errors, like the email identifier check: a stalled
+     * stream must not freeze sign-in.
+     */
+    private suspend fun bannedPhoneIdentifierReason(e164Phone: String): String? {
+        val hash = PhoneUtils.sha256Hash(e164Phone)
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
+                .document("phone_$hash")
+                .get()
+                .awaitBounded(4_000L)
+        }.getOrNull() ?: return null
+        if (!snap.exists()) return null
+        val expiresAt = snap.getLong("expiresAt") ?: 0L
+        val permanent = snap.getBoolean("permanent") ?: (expiresAt == 0L)
+        if (!permanent && expiresAt > 0L && System.currentTimeMillis() > expiresAt) {
+            return null
+        }
+        return snap.getString("reason").orEmpty()
     }
 
     override suspend fun signInGuestForSupport(): Result<String> {
@@ -539,6 +707,104 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 
+    /** Uid whose blank frameId this process has already tried to self-heal. */
+    @Volatile
+    private var frameHealAttemptedUid: String? = null
+
+    /**
+     * Round 4 frame self-heal for the "new users' frames are not saved" reports.
+     * The registration/profile-completion stamps write frameId inside one atomic
+     * set() with ~13–24 other fields, and awaitQueued hides a server denial — so
+     * under the pre-round-3 rules (which protected frameId on owner updates) the
+     * stamp could be lost invisibly, and no later sign-in ever retried it (the
+     * existing-doc branch below never touched frameId). When a sign-in finds the
+     * user's own doc with a BLANK frameId, re-stamp the CURRENT global default
+     * with a small dedicated update containing frameId only: under the round-3
+     * rules that write is allowed by the self-pick/global-default carve-out, and
+     * standing alone it cannot be dragged down by an unrelated field. Fire-and-
+     * forget in appScope, at most once per session per user, and it never
+     * overwrites a non-blank frame.
+     */
+    private fun healMissingFrameStamp(uid: String) {
+        if (uid.isBlank() || frameHealAttemptedUid == uid) return
+        frameHealAttemptedUid = uid
+        appScope.launch {
+            runCatching {
+                val defaults = readGlobalCustomerDefaults()
+                if (!defaults.enabled || defaults.frameId.isBlank()) return@runCatching
+                firestore.collection(Constants.COLLECTION_USERS).document(uid)
+                    .set(mapOf("frameId" to defaults.frameId), SetOptions.merge())
+                    .awaitQueued(8_000L)
+            }.onFailure { Log.w(TAG, "frame self-heal failed: ${it.message}") }
+        }
+    }
+
+    /** Uid whose blank phoneHash this process has already tried to self-heal. */
+    @Volatile
+    private var phoneHashHealAttemptedUid: String? = null
+
+    /**
+     * Round 4 phoneHash self-heal (contacts M1 — the dominant cause of registered
+     * friends not appearing in contacts). Accounts that registered via Google/email
+     * were created with phoneHash = "" and only ever got a hash at profile
+     * completion; grandfathered accounts skipped completion, and the sign-in
+     * re-stamp was gated on phone verification they never had (see the note in the
+     * existing-doc branch below), so their stored hash stayed blank and the
+     * contacts whereIn("phoneHash", …) query could never match them. When a
+     * sign-in finds the user's own doc with a BLANK phoneHash but a stored phone
+     * number, repair it with a dedicated merge update containing phoneHash ONLY —
+     * standing alone it cannot be dragged down by an unrelated denied field in
+     * the batched sign-in update. The hash uses the same canonical path as the
+     * profile-completion stamp (normalizeToE164 → sha256Hash of the E.164 string),
+     * so the value is identical to what completion would have written; if the
+     * stored number cannot be normalized there is no canonical hash and the heal
+     * skips rather than writing a hash no lookup candidate can equal. The
+     * phone_uniqueness lock doc is mirrored from reserveUniquePhone so the
+     * contacts fallback lookup can find the account too — but a lock already
+     * owned by a different uid is never stolen. Fire-and-forget in appScope, at
+     * most once per session per user, never overwriting a non-blank hash.
+     *
+     * Phone phase (owner rule, 2026-11-27): the heal is now GATED on the number
+     * being VERIFIED ([verified] = this sign-in's phoneVerified flag or the
+     * doc's stored isPhoneVerified). Contacts discoverability requires a
+     * verified phone — an unverified number stays on the profile with NO
+     * phoneHash, which also stops number spoofing in contacts. Unverified
+     * accounts get their hash from the mandatory verification gate instead:
+     * verifyPhoneCodeForCurrentUser stamps it server-side the moment the OTP
+     * checks out.
+     */
+    private fun healMissingPhoneHash(uid: String, rawPhone: String, verified: Boolean) {
+        if (!verified) return
+        if (uid.isBlank() || rawPhone.isBlank() || phoneHashHealAttemptedUid == uid) return
+        phoneHashHealAttemptedUid = uid
+        appScope.launch {
+            runCatching {
+                val normalizedPhone = PhoneUtils.normalizeToE164(rawPhone) ?: return@runCatching
+                val hash = PhoneUtils.sha256Hash(normalizedPhone)
+                firestore.collection(Constants.COLLECTION_USERS).document(uid)
+                    .set(mapOf("phoneHash" to hash), SetOptions.merge())
+                    .awaitQueued(8_000L)
+                val lockRef = firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                    .document(hash)
+                runCatching {
+                    firestore.runTransaction { tx ->
+                        val lockSnap = tx.get(lockRef)
+                        val ownerUid = lockSnap.getString("uid").orEmpty()
+                        if (!lockSnap.exists() || ownerUid.isBlank() || ownerUid == uid) {
+                            tx.set(
+                                lockRef,
+                                mapOf(
+                                    "uid" to uid,
+                                    "updatedAt" to System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    }.await()
+                }
+            }.onFailure { Log.w(TAG, "phoneHash self-heal failed: ${it.message}") }
+        }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private suspend fun ensureUserSkeletonExists(
         uid: String,
@@ -550,7 +816,10 @@ class AuthRepositoryImpl @Inject constructor(
         provider: String = "email"
     ): Boolean {
         val userRef = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-        val snapshot = userRef.get().awaitBounded()
+        // Round 4: cap dropped from 12s to 4s — on a healthy connection this read is
+        // sub-second; on a wedged stream it now fails fast with the honest timeout
+        // error instead of burning most of the sign-in ceiling before failing.
+        val snapshot = userRef.get().awaitBounded(4_000L)
         val pubKey = cryptoManager.getOrCreateIdentityPublicKeyBase64(uid)
         val normalizedPhone = if (phone.isNotBlank()) PhoneUtils.normalizeToE164(phone) ?: phone else ""
         val verifiedPhoneHash = if (phoneVerified && normalizedPhone.isNotBlank()) {
@@ -603,7 +872,36 @@ class AuthRepositoryImpl @Inject constructor(
                 )
             )
             userRef.set(newUserMap, SetOptions.merge()).awaitQueued()
-            val assignedNumericId = kotlinx.coroutines.withTimeoutOrNull(8_000L) { allocateUniqueNumericId(uid, email) }.orEmpty()
+            // Phone phase: a phone-registered account (OTP-verified by
+            // construction — verifyPhoneCode created/found the Auth user by
+            // number) also gets its phone_uniqueness lock at skeleton time, so
+            // the number is claimed from day one and not only at profile
+            // completion. Same no-steal rule as the heal: a lock already owned
+            // by a different uid is never taken over. Bounded + fail-silent —
+            // reserveUniquePhone at profile completion re-checks ownership.
+            if (phoneVerified && normalizedPhone.isNotBlank()) {
+                val lockHash = PhoneUtils.sha256Hash(normalizedPhone)
+                runCatching {
+                    withTimeoutOrNull(5_000L) {
+                        val lockRef = firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                            .document(lockHash)
+                        firestore.runTransaction { tx ->
+                            val lockSnap = tx.get(lockRef)
+                            val ownerUid = lockSnap.getString("uid").orEmpty()
+                            if (!lockSnap.exists() || ownerUid.isBlank() || ownerUid == uid) {
+                                tx.set(
+                                    lockRef,
+                                    mapOf(
+                                        "uid" to uid,
+                                        "updatedAt" to System.currentTimeMillis()
+                                    )
+                                )
+                            }
+                        }.await()
+                    }
+                }
+            }
+            val assignedNumericId = kotlinx.coroutines.withTimeoutOrNull(5_000L) { allocateUniqueNumericId(uid, email) }.orEmpty()
             prefs.upsertSavedAccount(
                 SavedWesalAccount(
                     uid = uid,
@@ -639,9 +937,11 @@ class AuthRepositoryImpl @Inject constructor(
             }
             val existingName = snapshot.getString("displayName").orEmpty()
             val existingPhoto = snapshot.getString("photoUrl").orEmpty()
+            val existingFrameId = snapshot.getString("frameId").orEmpty()
             val existingPublicId = snapshot.getString("publicId").orEmpty()
             val existingNumericId = snapshot.getString("numericId").orEmpty()
             val existingPhone = snapshot.getString("phoneNumber").orEmpty()
+            val existingPhoneHash = snapshot.getString("phoneHash").orEmpty()
             val existingEmail = snapshot.getString("email").orEmpty()
             val existingBirthDate = snapshot.getString("birthDate").orEmpty()
             val existingCompleted = snapshot.getBoolean("profileCompleted")
@@ -649,7 +949,7 @@ class AuthRepositoryImpl @Inject constructor(
                 ?: (existingPhone.isNotBlank() && existingEmail.isBlank())
 
             val privSnap = runCatching {
-                withTimeoutOrNull(8_000L) {
+                withTimeoutOrNull(5_000L) {
                     userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info").get().await()
                 }
             }.getOrNull()
@@ -682,12 +982,35 @@ class AuthRepositoryImpl @Inject constructor(
             }
             if (phoneVerified || existingVerified) {
                 updateMap["isPhoneVerified"] = true
-                if (!hidePhone && effectivePhone.isNotBlank()) {
-                    val norm = PhoneUtils.normalizeToE164(effectivePhone) ?: effectivePhone
-                    updateMap["phoneHash"] = PhoneUtils.sha256Hash(norm)
-                }
             } else if (snapshot.getBoolean("isPhoneVerified") == null) {
                 updateMap["isPhoneVerified"] = false
+            }
+            // Round 4 (contacts M1) originally UNGATED this re-stamp (any stored
+            // phone + blank hash) so Google/email accounts became discoverable.
+            // Phone phase (owner rule, 2026-11-27) supersedes that: contacts
+            // discoverability now REQUIRES the number to be verified — only a
+            // verified account may carry a phoneHash, and an unverified number
+            // stays on the profile with NO hash (this also prevents number
+            // spoofing in contacts). The re-stamp is therefore gated again on
+            // verification provenance (this sign-in's verified Auth phone, or
+            // the doc's stored isPhoneVerified). Unverified accounts are routed
+            // through the mandatory verification gate, whose callable stamps
+            // the hash server-side at OTP success; verified accounts whose hash
+            // was lost are still repaired by healMissingPhoneHash below.
+            if (!hidePhone && effectivePhone.isNotBlank() &&
+                (phoneVerified || existingVerified)
+            ) {
+                // Review MINOR-8: stamp ONLY the canonical hash space —
+                // sha256 of the normalized E.164 number, the exact value the
+                // contacts lookup hashes device numbers into. The old fallback
+                // hashed the RAW string when normalization failed, a value no
+                // lookup can ever reproduce (and inconsistent with
+                // healMissingPhoneHash, which skips such numbers). An
+                // un-normalizable number simply gets no stamp here; the heal
+                // applies the same rule.
+                PhoneUtils.normalizeToE164(effectivePhone)?.let { norm ->
+                    updateMap["phoneHash"] = PhoneUtils.sha256Hash(norm)
+                }
             }
 
             val resolvedEmail = existingEmail.ifBlank { email.trim() }
@@ -702,13 +1025,30 @@ class AuthRepositoryImpl @Inject constructor(
                 }
             }
             userRef.set(updateMap, SetOptions.merge()).awaitQueued()
+            // Round 4: a blank frameId on an existing doc means the registration
+            // stamp was lost (see healMissingFrameStamp) — heal it fire-and-forget.
+            if (existingFrameId.isBlank()) {
+                healMissingFrameStamp(uid)
+            }
+            // Round 4 (contacts M1): a blank phoneHash with a stored phone number
+            // means this account is invisible to contacts discovery (see
+            // healMissingPhoneHash) — heal it fire-and-forget. Skipped when the
+            // user hides their number: the completion/update paths deliberately
+            // blank the hash in that state and that privacy choice wins. Phone
+            // phase: also skipped for UNVERIFIED numbers (owner rule — only
+            // verified accounts get a phoneHash; the gate stamps it instead).
+            if (existingPhoneHash.isBlank() && effectivePhone.isNotBlank() && !hidePhone &&
+                (phoneVerified || existingVerified)
+            ) {
+                healMissingPhoneHash(uid, effectivePhone, verified = true)
+            }
             val finalNumericId = when {
                 Constants.SECONDARY_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.SECONDARY_ADMIN_NUMERIC_ID
                 Constants.SUPER_ADMIN_EMAIL.equals(resolvedEmail, ignoreCase = true) -> Constants.OWNER_ADMIN_NUMERIC_ID
                 WesalIdUtils.isValidNumericId(existingNumericId) -> existingNumericId
                 // Bounded: numeric-id allocation is retryable on a later sign-in and must
-                // never hold the current sign-in hostage.
-                else -> withTimeoutOrNull(8_000L) { allocateUniqueNumericId(uid, resolvedEmail) }
+                // never hold the current sign-in hostage. Round 4: cap 8s → 5s.
+                else -> withTimeoutOrNull(5_000L) { allocateUniqueNumericId(uid, resolvedEmail) }
                     ?: existingNumericId
             }
             prefs.upsertSavedAccount(
@@ -855,13 +1195,43 @@ class AuthRepositoryImpl @Inject constructor(
             val hidePhone = (existingPrivacy["hidePhoneNumber"] as? Boolean) ?: false
             existingPrivacy["hideBirthDate"] = hideBirthDate
 
+            // Phone phase (owner rule, 2026-11-27): the completion phoneHash
+            // stamp is VERIFIED-ONLY. The number being completed counts as
+            // verified only when it IS the account's already-verified number —
+            // the Auth phone number (phone-registered accounts, OTP-verified
+            // by construction) or the number the user doc already carries as
+            // isPhoneVerified. Any other typed number is stored on the profile
+            // with NO phoneHash and isPhoneVerified=false; the mandatory gate
+            // then OTP-verifies it before the app opens, and the callable
+            // stamps the hash at success. (reserveUniquePhone above still
+            // claims the uniqueness lock for the typed number — duplicate
+            // prevention is unchanged, and the gate's lock check accepts a
+            // lock owned by this same uid.)
+            val authVerifiedPhone = auth.currentUser?.phoneNumber
+                ?.takeIf { it.isNotBlank() }
+                ?.let { PhoneUtils.normalizeToE164(it) }
+            val docVerifiedPhone = if (existingSnap.getBoolean("isPhoneVerified") == true) {
+                existingSnap.getString("phoneNumber")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { PhoneUtils.normalizeToE164(it) }
+            } else {
+                null
+            }
+            val completedPhoneVerified =
+                normalizedPhone == authVerifiedPhone || normalizedPhone == docVerifiedPhone
+
             val updates = hashMapOf<String, Any>(
                 "displayName" to cleanName,
                 "bio" to bio.trim().ifBlank { "أستخدم تطبيق WESAL" },
                 "privacySettings" to existingPrivacy,
                 "birthDate" to if (hideBirthDate) "" else validDob,
                 "phoneNumber" to if (hidePhone) "" else normalizedPhone,
-                "phoneHash" to if (hidePhone) "" else PhoneUtils.sha256Hash(normalizedPhone),
+                "phoneHash" to if (!hidePhone && completedPhoneVerified) {
+                    PhoneUtils.sha256Hash(normalizedPhone)
+                } else {
+                    ""
+                },
+                "isPhoneVerified" to completedPhoneVerified,
                 "locationGranted" to locationGranted,
                 "locationFallbackStartedAt" to locationGraceStartedAt,
                 "profileCompleted" to true,

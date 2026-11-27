@@ -66,7 +66,10 @@ class InviteLandingViewModel @Inject constructor(
     fun loadInviter(inviteId: String) {
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true, error = null) }
-            val user = runCatching { userRepository.findUserByPublicIdOrUid(inviteId) }.getOrNull()
+            // Invite/referral resolution must find the inviter even when their
+            // account is hidden from search (e.g. admin 10002) — the guarded
+            // resolver would report a valid invite as not found.
+            val user = runCatching { userRepository.findUserByPublicIdOrUidUnfiltered(inviteId) }.getOrNull()
             _state.update {
                 it.copy(
                     isLoading = false,

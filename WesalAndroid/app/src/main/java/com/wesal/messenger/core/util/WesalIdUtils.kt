@@ -85,6 +85,19 @@ object WesalIdUtils {
         return "wesal_${prefix}_$suffix"
     }
 
+    /**
+     * Spec §4.4 (round 4, P2-1): the canonical key stored on the user doc as
+     * `nameSearchKey` and used for the Firestore prefix query in
+     * UserRepositoryImpl.searchUsers (orderBy("nameSearchKey").startAt(q).endAt(q+"\uf8ff")).
+     * It deliberately reuses [normalizeSearchText], which already performs every
+     * required folding: lowercase, Arabic diacritic/tashkeel stripping
+     * (U+064B..U+065F, U+0670, tatweel U+0640), ة→ه, ى→ي, أ/إ/آ/ٱ→ا (plus ؤ→و, ئ→ي),
+     * Arabic-Indic digit normalization and whitespace collapsing. Writers (profile
+     * create/update) and the search query MUST both go through this single function
+     * so stored keys and query prefixes always agree.
+     */
+    fun normalizeNameSearchKey(raw: String): String = normalizeSearchText(raw)
+
     fun normalizeSearchText(raw: String): String {
         val digitsFixed = normalizeDigits(raw.trim()).lowercase()
         val sb = StringBuilder(digitsFixed.length)

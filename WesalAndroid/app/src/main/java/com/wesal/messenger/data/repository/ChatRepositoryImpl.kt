@@ -6,11 +6,14 @@ import android.util.Base64
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.data.local.dao.WesalDao
 import com.wesal.messenger.data.local.entity.CachedChatEntity
 import com.wesal.messenger.data.local.entity.CachedMessageEntity
@@ -18,8 +21,13 @@ import com.wesal.messenger.domain.model.*
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.security.E2EECryptoManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
@@ -29,6 +37,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -47,13 +57,29 @@ import javax.inject.Singleton
 /** Max time a message write may wait for the Firestore SDK before the REST fallback takes over. */
 private const val SEND_WRITE_TIMEOUT_MS = 15_000L
 
+/** Spec §13.3 pagination: live listeners page instead of streaming whole collections. */
+private const val CHAT_PAGE_SIZE = 100
+private const val MESSAGE_PAGE_SIZE = 60
+
+/** Hard ceiling for the paged chats listener (FIXLOG_R4_F's claimed cap, now enforced). */
+private const val CHAT_PAGE_MAX = 1000
+
+/**
+ * Spec §1.4: resumable-upload session URIs, persisted per (account, message) so a media
+ * retry — in this process or after process death — resumes the same Firebase Storage
+ * session instead of restarting from byte 0. Separate store: the text outbox has no
+ * media entries, and a session URI is not sensitive data.
+ */
+private val Context.uploadSessionDataStore by preferencesDataStore(name = "wesal_upload_sessions")
+
 @Singleton
 class ChatRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
     private val wesalDao: WesalDao,
-    private val cryptoManager: E2EECryptoManager
+    private val cryptoManager: E2EECryptoManager,
+    private val prefs: UserPreferencesDataStore
 ) : ChatRepository {
 
     private data class CachedUserEntry(val user: WesalUser, val fetchedAtMs: Long)
@@ -65,6 +91,65 @@ class ChatRepositoryImpl @Inject constructor(
     private val chatListStateFlow: StateFlow<ChatListSyncState> = _chatListState.asStateFlow()
 
     override fun observeChatListState(): Flow<ChatListSyncState> = chatListStateFlow
+
+    // Messages sync state (spec §§1.2/13.4): the per-chat messages listener used to
+    // swallow its errors entirely, so a dead listener looked like an empty chat. One
+    // chat detail screen is open at a time, so a single shared state is sufficient;
+    // it also carries the cached-vs-live flag (§13.3) from snapshot metadata.
+    private val _messageSyncState = MutableStateFlow(ChatListSyncState())
+    private val messageSyncStateFlow: StateFlow<ChatListSyncState> = _messageSyncState.asStateFlow()
+
+    override fun observeMessageSyncState(): Flow<ChatListSyncState> = messageSyncStateFlow
+
+    // Chats pagination (spec §13.3): the live listener pages at this size; the list UI
+    // asks for more via requestMoreChats() instead of the whole collection streaming.
+    private val _chatLimit = MutableStateFlow(CHAT_PAGE_SIZE)
+
+    override fun requestMoreChats() {
+        // Review MINOR-3: FIXLOG_R4_F claimed a 1000 cap that the code did not
+        // enforce — the limit grew without bound. Enforce it: past the cap the
+        // listener cost defeats the point of paging.
+        _chatLimit.value = (_chatLimit.value + CHAT_PAGE_SIZE).coerceAtMost(CHAT_PAGE_MAX)
+    }
+
+    // Whether the latest PAGED chats snapshot came back full, i.e. more chats
+    // may exist beyond the current page. Drives the list's load-more footer
+    // from repository page state rather than the filtered UI list (MINOR-4).
+    private val _chatsHasMore = MutableStateFlow(false)
+    private val chatsHasMoreFlow: StateFlow<Boolean> = _chatsHasMore.asStateFlow()
+
+    override fun observeChatsHasMore(): Flow<Boolean> = chatsHasMoreFlow
+
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Hidden-chat ids of the ACTIVE account (spec §8.3 cache exclusion reads this). */
+    private suspend fun hiddenChatIdsForActiveAccount(): Set<String> =
+        runCatching { prefs.settingsFlow.firstOrNull()?.hiddenChatIds }.getOrNull().orEmpty()
+
+    // --- Resumable-upload session persistence (spec §1.4) ---
+    private fun uploadSessionKey(uid: String, messageId: String) =
+        stringPreferencesKey("session_${uid}_$messageId")
+
+    private suspend fun storedUploadSession(uid: String, messageId: String): Uri? =
+        runCatching {
+            context.uploadSessionDataStore.data.first()[uploadSessionKey(uid, messageId)]
+        }.getOrNull()?.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+
+    private fun persistUploadSession(uid: String, messageId: String, sessionUri: Uri) {
+        ioScope.launch {
+            runCatching {
+                context.uploadSessionDataStore.edit {
+                    it[uploadSessionKey(uid, messageId)] = sessionUri.toString()
+                }
+            }
+        }
+    }
+
+    private suspend fun clearUploadSession(uid: String, messageId: String) {
+        runCatching {
+            context.uploadSessionDataStore.edit { it.remove(uploadSessionKey(uid, messageId)) }
+        }
+    }
 
     private val userCache = ConcurrentHashMap<String, CachedUserEntry>()
     private val userCacheTtlMs = 20_000L
@@ -94,18 +179,37 @@ class ChatRepositoryImpl @Inject constructor(
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
-    override fun observeChats(): Flow<List<ChatPreview>> = observeAuthUid().flatMapLatest { uid ->
+    override fun observeChats(): Flow<List<ChatPreview>> =
+        combine(observeAuthUid(), _chatLimit) { uid, limit -> uid to limit }
+            .flatMapLatest { (uid, chatLimit) ->
+                chatsFlow(uid, limit = chatLimit.toLong(), paged = true)
+            }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeAllChats(): Flow<List<ChatPreview>> =
+        observeAuthUid().flatMapLatest { uid -> chatsFlow(uid, limit = null, paged = false) }
+
+    /**
+     * Shared chats-listener body behind [observeChats] / [observeAllChats].
+     * The paged form (the main list, spec §13.3) limits the query to [limit]
+     * and drives the shared list sync state + has-more flag. The unpaged form
+     * (review M-3) serves picker/lookup consumers — forward targets, camera
+     * share targets, profile direct-chat / mutual-groups lookups — restoring
+     * their pre-paging behaviour (the whole list) without un-paging the main
+     * list, and leaves the main list's state untouched.
+     */
+    private fun chatsFlow(uid: String?, limit: Long?, paged: Boolean): Flow<List<ChatPreview>> {
         userCache.clear()
         deliveredThrottleMs.clear()
         if (uid == null) {
-            _chatListState.value = ChatListSyncState(ChatListSyncStatus.READY)
-            flowOf(emptyList())
-        } else {
-            callbackFlow {
-                _chatListState.value = ChatListSyncState(ChatListSyncStatus.LOADING)
+            if (paged) _chatListState.value = ChatListSyncState(ChatListSyncStatus.READY)
+            return flowOf(emptyList())
+        }
+        return callbackFlow {
+            if (paged) _chatListState.value = ChatListSyncState(ChatListSyncStatus.LOADING)
                 val hasRemoteEmission = AtomicBoolean(false)
                 launch(Dispatchers.IO) {
-                    val cached = runCatching { wesalDao.observeChats().firstOrNull() }.getOrNull()
+                    val cached = runCatching { wesalDao.observeChats(uid).firstOrNull() }.getOrNull()
                     if (!hasRemoteEmission.get() && !cached.isNullOrEmpty()) {
                         trySend(
                             cached.map {
@@ -128,21 +232,52 @@ class ChatRepositoryImpl @Inject constructor(
                     }
                 }
 
-                val registration = firestore.collection(Constants.COLLECTION_CHATS)
-                    .whereArrayContains("participantIds", uid)
-                    .addSnapshotListener { snapshot, error ->
+                // Spec §13.3: page the listener (newest first). The ordered+limited
+                // form needs a composite index (participantIds array-contains +
+                // lastMessageTime); if the backend reports FAILED_PRECONDITION the
+                // subscription falls back to the plain form so the list never dies.
+                var registration: ListenerRegistration? = null
+                fun subscribeChats(ordered: Boolean) {
+                    val baseQuery = firestore.collection(Constants.COLLECTION_CHATS)
+                        .whereArrayContains("participantIds", uid)
+                    val orderedQuery = baseQuery.orderBy("lastMessageTime", Query.Direction.DESCENDING)
+                    val query = if (ordered) {
+                        if (limit != null) orderedQuery.limit(limit) else orderedQuery
+                    } else {
+                        baseQuery
+                    }
+                    registration = query.addSnapshotListener { snapshot, error ->
                         if (error != null || snapshot == null) {
+                            if (ordered &&
+                                error?.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION
+                            ) {
+                                subscribeChats(ordered = false)
+                                return@addSnapshotListener
+                            }
                             // Surface the failure instead of swallowing it: the chats UI
                             // shows an error state with retry (Firestore drops the listener
                             // after an error, so retry re-subscribes via a fresh collection).
-                            _chatListState.value = ChatListSyncState(
-                                status = ChatListSyncStatus.ERROR,
-                                errorMessage = error?.message ?: "تعذر تحميل المحادثات"
-                            )
+                            if (paged) {
+                                _chatListState.value = ChatListSyncState(
+                                    status = ChatListSyncStatus.ERROR,
+                                    errorMessage = error?.message ?: "تعذر تحميل المحادثات"
+                                )
+                            }
                             return@addSnapshotListener
                         }
                         hasRemoteEmission.set(true)
-                        _chatListState.value = ChatListSyncState(ChatListSyncStatus.READY)
+                        if (paged) {
+                            _chatListState.value = ChatListSyncState(
+                                status = ChatListSyncStatus.READY,
+                                fromCache = snapshot.metadata.isFromCache
+                            )
+                            // Review MINOR-4: a full ordered page means more
+                            // chats may exist beyond it — the load-more footer
+                            // reads this flag, not the filtered UI list. The
+                            // unordered fallback is unpaged, so it ends paging.
+                            _chatsHasMore.value = ordered && limit != null &&
+                                snapshot.size().toLong() >= limit
+                        }
                         launch(Dispatchers.IO) {
                             val now = System.currentTimeMillis()
                             val missingPeerUids = snapshot.documents
@@ -174,7 +309,18 @@ class ChatRepositoryImpl @Inject constructor(
                                     .thenByDescending { it.isPinned }
                                     .thenByDescending { it.lastMessageTime }
                             )
-                            wesalDao.upsertChats(previews.map {
+                            // Spec §8.3: hidden chats are never written to the Room
+                            // cache and any earlier rows of theirs are purged — the
+                            // previews still emit (the UI filters hidden chats itself).
+                            // Spec §3.3: rows are stamped with the owning account.
+                            val hiddenIds = hiddenChatIdsForActiveAccount()
+                            if (hiddenIds.isNotEmpty()) {
+                                previews.filter { it.chatId in hiddenIds }.forEach { hidden ->
+                                    wesalDao.deleteChat(hidden.chatId)
+                                    wesalDao.deleteMessagesForChat(hidden.chatId)
+                                }
+                            }
+                            wesalDao.upsertChats(previews.filter { it.chatId !in hiddenIds }.map {
                                 CachedChatEntity(
                                     chatId = it.chatId,
                                     isGroup = it.isGroup,
@@ -186,15 +332,17 @@ class ChatRepositoryImpl @Inject constructor(
                                     unreadCount = it.unreadCount,
                                     isPinned = it.isPinned,
                                     isArchived = it.isArchived,
-                                    isMuted = it.isMuted
+                                    isMuted = it.isMuted,
+                                    ownerUid = uid
                                 )
                             })
                             trySend(previews)
                         }
                     }
+                }
+                subscribeChats(ordered = true)
 
-                awaitClose { registration.remove() }
-            }
+                awaitClose { registration?.remove() }
         }
     }
 
@@ -456,7 +604,7 @@ class ChatRepositoryImpl @Inject constructor(
             callbackFlow {
                 val hasRemoteMessages = AtomicBoolean(false)
                 launch(Dispatchers.IO) {
-                    val cachedMsgs = runCatching { wesalDao.observeMessages(chatId).firstOrNull() }.getOrNull()
+                    val cachedMsgs = runCatching { wesalDao.observeMessages(chatId, myUid).firstOrNull() }.getOrNull()
                     if (!hasRemoteMessages.get() && !cachedMsgs.isNullOrEmpty()) {
                         trySend(
                             cachedMsgs.map {
@@ -481,58 +629,62 @@ class ChatRepositoryImpl @Inject constructor(
                     }
                 }
 
-                val chatDoc = runCatching {
-                    firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
-                }.getOrNull()
-                val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
-                val isGroup = chatDoc?.getBoolean("isGroup") ?: false
+                val (isGroup, peerPubKeyCache) = loadPeerPubKeyCache(chatId, myUid)
 
-                val peerPubKeyCache = ConcurrentHashMap<String, String>()
-                val peerUids = participantIds.filter { it != myUid }.distinct()
-                if (peerUids.isNotEmpty()) {
-                    coroutineScope {
-                        peerUids.map { uid ->
-                            async(Dispatchers.IO) {
-                                runCatching {
-                                    fetchUserCached(uid)?.publicKey?.let { key ->
-                                        if (key.isNotBlank()) peerPubKeyCache[uid] = key
-                                    }
-                                }
-                            }
-                        }.awaitAll()
-                    }
-                }
-
+                _messageSyncState.value = ChatListSyncState(ChatListSyncStatus.LOADING, chatId = chatId)
                 val registration = firestore.collection(Constants.COLLECTION_CHATS)
                     .document(chatId)
                     .collection(Constants.COLLECTION_MESSAGES)
                     .orderBy("timestamp", Query.Direction.ASCENDING)
+                    .limitToLast(MESSAGE_PAGE_SIZE.toLong())
                     .addSnapshotListener { snapshot, error ->
-                        if (error != null || snapshot == null) return@addSnapshotListener
+                        if (error != null || snapshot == null) {
+                            // Spec §§1.2/13.4: surface the failure (the chat screen
+                            // renders it with retry) instead of silently freezing.
+                            _messageSyncState.value = ChatListSyncState(
+                                status = ChatListSyncStatus.ERROR,
+                                errorMessage = error?.message ?: "تعذر مزامنة الرسائل",
+                                chatId = chatId
+                            )
+                            return@addSnapshotListener
+                        }
                         hasRemoteMessages.set(true)
+                        _messageSyncState.value = ChatListSyncState(
+                            status = ChatListSyncStatus.READY,
+                            fromCache = snapshot.metadata.isFromCache,
+                            chatId = chatId
+                        )
                         launch(Dispatchers.Default) {
                             val messages = snapshot.documents.mapNotNull { doc ->
                                 mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
                             }
                             withContext(Dispatchers.IO) {
-                                wesalDao.upsertMessages(messages.map {
-                                    CachedMessageEntity(
-                                        messageId = it.messageId,
-                                        chatId = it.chatId,
-                                        senderId = it.senderId,
-                                        senderName = it.senderName,
-                                        type = it.type.raw,
-                                        text = it.text,
-                                        mediaUrl = it.mediaUrl,
-                                        mediaLocalPath = it.mediaLocalPath,
-                                        mediaMimeType = it.mediaMimeType,
-                                        mediaFileName = it.mediaFileName,
-                                        mediaSizeBytes = it.mediaSizeBytes,
-                                        mediaDurationMs = it.mediaDurationMs,
-                                        status = it.status.raw,
-                                        timestamp = it.timestamp
-                                    )
-                                })
+                                // Spec §8.3: a hidden chat's messages are never
+                                // written to the Room cache (existing rows purged).
+                                // Spec §3.3: rows are stamped with the owning account.
+                                if (chatId in hiddenChatIdsForActiveAccount()) {
+                                    wesalDao.deleteMessagesForChat(chatId)
+                                } else {
+                                    wesalDao.upsertMessages(messages.map {
+                                        CachedMessageEntity(
+                                            messageId = it.messageId,
+                                            chatId = it.chatId,
+                                            senderId = it.senderId,
+                                            senderName = it.senderName,
+                                            type = it.type.raw,
+                                            text = it.text,
+                                            mediaUrl = it.mediaUrl,
+                                            mediaLocalPath = it.mediaLocalPath,
+                                            mediaMimeType = it.mediaMimeType,
+                                            mediaFileName = it.mediaFileName,
+                                            mediaSizeBytes = it.mediaSizeBytes,
+                                            mediaDurationMs = it.mediaDurationMs,
+                                            status = it.status.raw,
+                                            timestamp = it.timestamp,
+                                            ownerUid = myUid
+                                        )
+                                    })
+                                }
                             }
                             trySend(messages)
                         }
@@ -540,6 +692,141 @@ class ChatRepositoryImpl @Inject constructor(
 
                 awaitClose { registration.remove() }
             }
+        }
+    }
+
+    /**
+     * Loads the chat document once and pre-fetches the peers' E2EE public keys.
+     * Shared by the live messages listener and the older-messages backfill fetch.
+     * Returns (isGroup, peerUid → publicKey).
+     */
+    private suspend fun loadPeerPubKeyCache(
+        chatId: String,
+        myUid: String
+    ): Pair<Boolean, ConcurrentHashMap<String, String>> {
+        val chatDoc = runCatching {
+            firestore.collection(Constants.COLLECTION_CHATS).document(chatId).get().await()
+        }.getOrNull()
+        @Suppress("UNCHECKED_CAST")
+        val participantIds = (chatDoc?.get("participantIds") as? List<String>).orEmpty()
+        val isGroup = chatDoc?.getBoolean("isGroup") ?: false
+        val peerPubKeyCache = ConcurrentHashMap<String, String>()
+        val peerUids = participantIds.filter { it != myUid }.distinct()
+        if (peerUids.isNotEmpty()) {
+            coroutineScope {
+                peerUids.map { uid ->
+                    async(Dispatchers.IO) {
+                        runCatching {
+                            fetchUserCached(uid)?.publicKey?.let { key ->
+                                if (key.isNotBlank()) peerPubKeyCache[uid] = key
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+        }
+        return isGroup to peerPubKeyCache
+    }
+
+    /**
+     * Spec §13.3: one-shot backfill of one page of older messages (the live listener
+     * only streams the newest [MESSAGE_PAGE_SIZE]). Fetched messages are decrypted
+     * with the same mapper as the live path and merged into the Room cache (unless
+     * the chat is hidden — §8.3). Returns the page in ascending timestamp order;
+     * a short page (< [pageSize]) means the beginning of the chat was reached.
+     */
+    override suspend fun fetchOlderMessages(
+        chatId: String,
+        beforeTimestamp: Long,
+        pageSize: Int
+    ): List<WesalMessage> {
+        val myUid = auth.currentUser?.uid ?: return emptyList()
+        val (isGroup, peerPubKeyCache) = loadPeerPubKeyCache(chatId, myUid)
+        val snap = runCatching {
+            firestore.collection(Constants.COLLECTION_CHATS)
+                .document(chatId)
+                .collection(Constants.COLLECTION_MESSAGES)
+                // The field holds Firestore Timestamps — the bound must be one too
+                // (a raw Long never matches: numbers sort before timestamps).
+                .whereLessThan(
+                    "timestamp",
+                    com.google.firebase.Timestamp(java.util.Date(beforeTimestamp))
+                )
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(pageSize.toLong())
+                .get()
+                .await()
+        }.getOrNull() ?: return emptyList()
+        val messages = snap.documents.mapNotNull { doc ->
+            mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
+        }.reversed()
+        if (messages.isNotEmpty() && chatId !in hiddenChatIdsForActiveAccount()) {
+            withContext(Dispatchers.IO) {
+                wesalDao.upsertMessages(messages.map {
+                    CachedMessageEntity(
+                        messageId = it.messageId,
+                        chatId = it.chatId,
+                        senderId = it.senderId,
+                        senderName = it.senderName,
+                        type = it.type.raw,
+                        text = it.text,
+                        mediaUrl = it.mediaUrl,
+                        mediaLocalPath = it.mediaLocalPath,
+                        mediaMimeType = it.mediaMimeType,
+                        mediaFileName = it.mediaFileName,
+                        mediaSizeBytes = it.mediaSizeBytes,
+                        mediaDurationMs = it.mediaDurationMs,
+                        status = it.status.raw,
+                        timestamp = it.timestamp,
+                        ownerUid = myUid
+                    )
+                })
+            }
+        }
+        return messages
+    }
+
+    /**
+     * Review M-3: the profile shared-media gallery needs the chat's whole
+     * history, but [observeMessages] now streams only the newest page. This
+     * one-shot walks the full subcollection with DOCUMENT cursors — a snapshot
+     * cursor is type-exact, so the Long/Timestamp mix stored in `timestamp`
+     * cannot break the walk the way a value bound could — decrypting with the
+     * same mapper as the live path. Bounded by [maxMessages] to cap the cost.
+     * Returns ascending timestamp order.
+     */
+    override suspend fun fetchChatMessagesForGallery(
+        chatId: String,
+        maxMessages: Int
+    ): List<WesalMessage> {
+        val myUid = auth.currentUser?.uid ?: return emptyList()
+        val (isGroup, peerPubKeyCache) = loadPeerPubKeyCache(chatId, myUid)
+        val collected = ArrayList<WesalMessage>()
+        var cursor: DocumentSnapshot? = null
+        while (collected.size < maxMessages) {
+            val pageLimit = minOf(200, maxMessages - collected.size)
+            var query = firestore.collection(Constants.COLLECTION_CHATS)
+                .document(chatId)
+                .collection(Constants.COLLECTION_MESSAGES)
+                .orderBy("timestamp", Query.Direction.DESCENDING)
+                .limit(pageLimit.toLong())
+            cursor?.let { query = query.startAfter(it) }
+            val snap = runCatching { query.get().await() }.getOrNull() ?: break
+            if (snap.isEmpty) break
+            cursor = snap.documents.last()
+            collected += snap.documents.mapNotNull { doc ->
+                mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
+            }
+            if (snap.size() < pageLimit) break
+        }
+        return collected.reversed()
+    }
+
+    /** Spec §8.3: drop every cached row of a chat (used when the chat becomes hidden). */
+    override suspend fun purgeHiddenChatCache(chatId: String) {
+        runCatching {
+            wesalDao.deleteChat(chatId)
+            wesalDao.deleteMessagesForChat(chatId)
         }
     }
 
@@ -664,7 +951,18 @@ class ChatRepositoryImpl @Inject constructor(
             isDeletedForEveryone = isDeletedForEveryone,
             deletedForUsers = deletedFor,
             status = rawStatus,
-            timestamp = doc.getLong("timestamp") ?: System.currentTimeMillis()
+            // Spec §1.2 + review B-1: sends now write `timestamp` as a server
+            // timestamp, but the entire pre-round-4 corpus stores it as a Long —
+            // and Firestore's typed getters do NOT coerce across stored types
+            // (getTimestamp() on a number-typed field throws inside the snapshot
+            // mapping). Read the RAW value and coerce it (Number / Timestamp /
+            // Date / String — the coerceEpochMillis pattern), falling back to
+            // the sender's clientTimestamp (also the value visible while a
+            // serverTimestamp write is still pending, when the raw field reads
+            // as null), then to now.
+            timestamp = coerceEpochMillis(doc.get("timestamp"))
+                ?: coerceEpochMillis(doc.get("clientTimestamp"))
+                ?: System.currentTimeMillis()
         )
     }
 
@@ -1010,7 +1308,8 @@ class ChatRepositoryImpl @Inject constructor(
             "isDeletedForEveryone" to false,
             "deletedForUsers" to emptyList<String>(),
             "status" to MessageStatus.SENT.raw,
-            "timestamp" to now
+            "timestamp" to now,
+            "clientTimestamp" to now
         )
 
         val preview = cleanText.take(80)
@@ -1030,8 +1329,14 @@ class ChatRepositoryImpl @Inject constructor(
         // a duplicate message with a fresh id). Bounded by a timeout: the Firestore gRPC write
         // stream can stall silently, and an unbounded await left the send hanging forever.
         val messageRef = chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId)
+        // Spec §1.2: the SDK batch writes the authoritative server timestamp (the
+        // REST fallback below cannot encode FieldValue, so it keeps the client value;
+        // both paths carry clientTimestamp).
+        val sdkMessageData = HashMap(messageData).apply {
+            put("timestamp", FieldValue.serverTimestamp())
+        }
         val batch = firestore.batch()
-        batch.set(messageRef, messageData)
+        batch.set(messageRef, sdkMessageData)
         batch.update(chatRef, chatUpdates)
         var sdkError: Throwable? = null
         val sdkCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
@@ -1097,7 +1402,8 @@ class ChatRepositoryImpl @Inject constructor(
         durationMs: Long,
         waveform: List<Int>,
         caption: String,
-        isViewOnce: Boolean
+        isViewOnce: Boolean,
+        clientMessageId: String? = null
     ): Flow<Result<Float>> = callbackFlow {
         val myUid = auth.currentUser?.uid
         if (myUid == null) {
@@ -1123,7 +1429,10 @@ class ChatRepositoryImpl @Inject constructor(
                 @Suppress("UNCHECKED_CAST")
                 val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
                 val disappearingSec = chatSnap.getLong("disappearingDurationSec") ?: 0L
-                val messageId = UUID.randomUUID().toString()
+                // A caller-supplied id (pending-upload retry) keeps the message id —
+                // and therefore the storage path — stable across attempts (§1.4).
+                val messageId = clientMessageId?.takeIf { it.isNotBlank() }
+                    ?: UUID.randomUUID().toString()
 
                 trySend(Result.success(0.08f))
                 var resolvedSizeBytes = sizeBytes
@@ -1142,13 +1451,46 @@ class ChatRepositoryImpl @Inject constructor(
                 }
                 val safeExt = fileName.substringAfterLast('.', "").take(8).let { if (it.isNotBlank()) ".$it" else "" }
                 val storagePath = "$storageFolder/$chatId/$messageId$safeExt"
-                val downloadUrl = uploadFileToFirebaseStorage(
+                // Spec §1.4: on a retry with the same message id, resume the
+                // persisted Storage session instead of restarting from byte 0; the
+                // session URI is persisted as soon as the upload task exposes one
+                // and cleared once the upload completes.
+                val resumeSessionUri = clientMessageId?.let { storedUploadSession(myUid, it) }
+                val uploadProgress: (Float) -> Unit = { frac ->
+                    trySend(Result.success((0.08f + frac * 0.84f).coerceIn(0.08f, 0.94f)))
+                }
+                val uploadSessionSink: (Uri) -> Unit = { sessionUri ->
+                    clientMessageId?.let { persistUploadSession(myUid, it, sessionUri) }
+                }
+                var uploadResult = uploadFileToFirebaseStorage(
                     storagePath = storagePath,
                     uri = uri,
-                    onProgress = { frac ->
-                        trySend(Result.success((0.08f + frac * 0.84f).coerceIn(0.08f, 0.94f)))
-                    }
-                ).getOrThrow()
+                    onProgress = uploadProgress,
+                    resumeSessionUri = resumeSessionUri,
+                    onSessionUri = uploadSessionSink
+                )
+                if (uploadResult.isFailure && resumeSessionUri != null && clientMessageId != null) {
+                    // Review M-1: a stored session URI the server no longer
+                    // honours (expired, or the upload already finalised) used
+                    // to brick this pending message permanently — the session
+                    // was cleared only on success, so every retry resumed the
+                    // same dead session and failed again. Drop it and retry
+                    // ONCE with a fresh session before surfacing the failure.
+                    // A still-valid session never reaches this branch: the
+                    // resumed upload above succeeds.
+                    clearUploadSession(myUid, clientMessageId)
+                    uploadResult = uploadFileToFirebaseStorage(
+                        storagePath = storagePath,
+                        uri = uri,
+                        onProgress = uploadProgress,
+                        resumeSessionUri = null,
+                        onSessionUri = uploadSessionSink
+                    )
+                }
+                val downloadUrl = uploadResult.getOrThrow()
+                if (clientMessageId != null) {
+                    clearUploadSession(myUid, clientMessageId)
+                }
                 trySend(Result.success(0.95f))
 
                 val now = System.currentTimeMillis()
@@ -1177,7 +1519,10 @@ class ChatRepositoryImpl @Inject constructor(
                     "isDeletedForEveryone" to false,
                     "deletedForUsers" to emptyList<String>(),
                     "status" to MessageStatus.SENT.raw,
-                    "timestamp" to now
+                    // Spec §1.2: authoritative server timestamp + client clock kept
+                    // alongside for optimistic ordering/diagnostics.
+                    "timestamp" to FieldValue.serverTimestamp(),
+                    "clientTimestamp" to now
                 )
                 chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId).set(msgData).await()
 
@@ -1355,7 +1700,8 @@ class ChatRepositoryImpl @Inject constructor(
             "disappearingExpiresAt" to disappearingExpiresAt,
             "isEncrypted" to false,
             "status" to MessageStatus.SENT.raw,
-            "timestamp" to now
+            "timestamp" to now,
+            "clientTimestamp" to now
         )
         val chatUpdates = hashMapOf<String, Any>(
             "lastMessagePreview" to if (isLive) "موقع مباشر ($liveDurationMinutes د)" else "موقع جغرافي",
@@ -1368,8 +1714,12 @@ class ChatRepositoryImpl @Inject constructor(
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
         }
         // Same atomic + timeout + REST-fallback pattern as sendTextMessage.
+        // Spec §1.2: server timestamp on the SDK batch; REST keeps the client value.
+        val sdkMsg = msg.toMutableMap().apply {
+            put("timestamp", FieldValue.serverTimestamp())
+        }
         val locationBatch = firestore.batch()
-        locationBatch.set(chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId), msg)
+        locationBatch.set(chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId), sdkMsg)
         locationBatch.update(chatRef, chatUpdates)
         var locationSdkError: Throwable? = null
         val locationCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
@@ -1513,24 +1863,41 @@ class ChatRepositoryImpl @Inject constructor(
                 return@runCatching
             }
 
-            val unreadSnap = chatRef.collection(Constants.COLLECTION_MESSAGES)
-                .whereIn("status", listOf(MessageStatus.SENT.raw, MessageStatus.DELIVERED.raw))
-                .get()
-                .await()
-            val batch = firestore.batch()
+            // Spec §13.1: page the unread fetch (450/batch, Firestore's batch cap is
+            // 500) instead of pulling the whole SENT/DELIVERED set in one get().
             var anyUpdated = false
-            unreadSnap.documents.forEach { doc ->
-                if (doc.getString("senderId") != myUid) {
-                    batch.update(doc.reference, "status", MessageStatus.READ.raw)
+            var roundsLeft = 20
+            var pageCursor: DocumentSnapshot? = null
+            while (roundsLeft-- > 0) {
+                var unreadQuery = chatRef.collection(Constants.COLLECTION_MESSAGES)
+                    .whereIn("status", listOf(MessageStatus.SENT.raw, MessageStatus.DELIVERED.raw))
+                    .limit(450)
+                pageCursor?.let { unreadQuery = unreadQuery.startAfter(it) }
+                val unreadSnap = unreadQuery.get().await()
+                if (unreadSnap.isEmpty) break
+                pageCursor = unreadSnap.documents.last()
+                val batch = firestore.batch()
+                var pageUpdated = false
+                unreadSnap.documents.forEach { doc ->
+                    if (doc.getString("senderId") != myUid) {
+                        batch.update(doc.reference, "status", MessageStatus.READ.raw)
+                        pageUpdated = true
+                    }
+                }
+                if (pageUpdated) {
+                    batch.commit().await()
                     anyUpdated = true
                 }
+                // Review MINOR-5: the walk is cursor-based, so a full page of
+                // only my own messages (which stay SENT/DELIVERED for the peer
+                // and are never updatable here) no longer stalls it — the
+                // cursor steps over them and later pages holding the peer's
+                // unread messages are still reached.
+                if (unreadSnap.size() < 450) break
             }
             if (chatSnap.getString("lastMessageSenderId") != myUid) {
-                batch.update(chatRef, "lastMessageStatus", MessageStatus.READ.raw)
+                chatRef.update("lastMessageStatus", MessageStatus.READ.raw)
                 anyUpdated = true
-            }
-            if (anyUpdated) {
-                batch.commit().await()
             }
         }
     }
@@ -1543,7 +1910,14 @@ class ChatRepositoryImpl @Inject constructor(
             .document(messageId)
         val snap = msgRef.get().await()
         require(snap.getString("senderId") == myUid) { "لا يمكنك تعديل رسالة شخص آخر" }
-        val ts = snap.getLong("timestamp") ?: 0L
+        // Review M-2: raw coercion, same hazard as B-1 — new messages store
+        // `timestamp` as a Firestore Timestamp (serverTimestamp), legacy ones
+        // as a Long; the typed getLong() cannot read the Timestamp form, so
+        // every edit of a new message was rejected as window-expired.
+        // clientTimestamp (always written by the new send paths) is the fallback.
+        val ts = coerceEpochMillis(snap.get("timestamp"))
+            ?: coerceEpochMillis(snap.get("clientTimestamp"))
+            ?: 0L
         require(System.currentTimeMillis() - ts <= Constants.MESSAGE_EDIT_WINDOW_MS) {
             "انتهت مهلة تعديل الرسالة (15 دقيقة)"
         }
@@ -1637,6 +2011,7 @@ class ChatRepositoryImpl @Inject constructor(
             chatRef.update("deletedForUsers", FieldValue.arrayUnion(myUid)).await()
         }
         wesalDao.deleteChat(chatId)
+        wesalDao.deleteMessagesForChat(chatId)
     }
 
     override suspend fun clearChatMessagesForMe(chatId: String): Result<Unit> = runCatching {

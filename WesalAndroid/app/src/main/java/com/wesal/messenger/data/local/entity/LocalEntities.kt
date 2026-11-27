@@ -3,6 +3,13 @@ package com.wesal.messenger.data.local.entity
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+/**
+ * Per-account local cache (spec §3.3): every row is stamped with the owning account's
+ * [ownerUid] and every read is filtered by it, so switching accounts can never surface
+ * another account's cached chats/messages even if a clear-on-switch is missed.
+ * Rows written before the owner column existed carry ownerUid = "" and are simply
+ * never read back (they are re-fetched from Firestore under the active account).
+ */
 @Entity(tableName = "cached_chats")
 data class CachedChatEntity(
     @PrimaryKey val chatId: String,
@@ -15,7 +22,8 @@ data class CachedChatEntity(
     val unreadCount: Int,
     val isPinned: Boolean,
     val isArchived: Boolean,
-    val isMuted: Boolean
+    val isMuted: Boolean,
+    val ownerUid: String = ""
 )
 
 @Entity(tableName = "cached_messages")
@@ -33,5 +41,6 @@ data class CachedMessageEntity(
     val mediaSizeBytes: Long,
     val mediaDurationMs: Long,
     val status: String,
-    val timestamp: Long
+    val timestamp: Long,
+    val ownerUid: String = ""
 )

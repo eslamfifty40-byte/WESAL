@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.util.Base64
 import android.view.WindowManager
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -67,7 +68,10 @@ import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.media.CameraCaptureScreen
 import com.wesal.messenger.media.VideoPlayerBox
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WesalMediaKind
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.rememberSavePermissionGate
+import com.wesal.messenger.presentation.components.saveMediaToGallery
 import com.wesal.messenger.presentation.components.wesalImageModel
 import com.wesal.messenger.voice.VoicePlaybackState
 import com.wesal.messenger.voice.VoicePlayerManager
@@ -398,8 +402,11 @@ class StoriesViewModel @Inject constructor(
     }
 
     fun toggleAudioPlayback(storyId: String, mediaUrl: String) {
+        // A fresh attempt clears the previous playback error so a stale message
+        // never sits inside the viewer.
+        _uploadState.update { it.copy(errorMessage = null) }
         val existing = cachedAudioFiles[storyId]
-        if (existing != null && existing.exists()) {
+        if (existing != null && existing.exists() && existing.length() > 0L) {
             voicePlayer.togglePlay(storyId, existing)
             return
         }
@@ -407,12 +414,16 @@ class StoriesViewModel @Inject constructor(
             val file = withContext(Dispatchers.IO) {
                 runCatching {
                     val out = File(context.cacheDir, "story_audio_$storyId.m4a")
-                    if (mediaUrl.startsWith("data:audio", ignoreCase = true)) {
-                        val idx = mediaUrl.indexOf("base64,")
-                        if (idx >= 0) {
-                            val bytes = Base64.decode(mediaUrl.substring(idx + 7), Base64.DEFAULT)
-                            out.writeBytes(bytes)
-                        }
+                    if (mediaUrl.startsWith("data:", ignoreCase = true)) {
+                        // Same decode the chat voice-note path uses
+                        // (ChatRepositoryImpl.decryptMediaToCache): ANY data: URL,
+                        // whatever MIME it declares. Stories published while
+                        // Storage was unreachable carry the upload fallback's
+                        // data:application/octet-stream payloads — the old
+                        // data:audio-only check rejected those outright, no bytes
+                        // were written, and the tap did nothing at all.
+                        val raw = Base64.decode(mediaUrl.substringAfter("base64,"), Base64.NO_WRAP)
+                        out.writeBytes(raw)
                     } else if (mediaUrl.startsWith("wesal-plain://", ignoreCase = true)) {
                         val bytes = Base64.decode(mediaUrl.removePrefix("wesal-plain://"), Base64.DEFAULT)
                         out.writeBytes(bytes)
@@ -496,6 +507,8 @@ fun StoriesScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val context = LocalContext.current
+    val storySaveScope = rememberCoroutineScope()
+    val savePermissionGate = rememberSavePermissionGate()
     val activity = context as? Activity
     val myUid by viewModel.myUidFlow.collectAsStateWithLifecycle()
     val stories by viewModel.stories.collectAsStateWithLifecycle()
@@ -885,6 +898,21 @@ fun StoriesScreen(
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
+                                // Playback failures surface HERE, inside the viewer: the
+                                // decode error lives in uploadState.errorMessage, which
+                                // otherwise renders only in the stories list BEHIND this
+                                // fullscreen viewer, and player failures (prepare()
+                                // throwing) live in playbackState.error — previously the
+                                // tap simply did nothing and the user saw neither.
+                                val playbackError = playbackState.error ?: uploadState.errorMessage
+                                if (playbackError != null) {
+                                    Text(
+                                        text = playbackError,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = WesalError,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
                         }
                     }
@@ -948,6 +976,38 @@ fun StoriesScreen(
                 Row {
                     // Only the owner can promote, archive, or delete; viewers NEVER see download/save/share/forward
                     if (isOwner) {
+                        // Round-4: the owner can save their OWN story media to the
+                        // gallery (viewers still never get a save action).
+                        if (story.type != StoryType.TEXT && story.mediaUrl.isNotBlank()) {
+                            IconButton(onClick = {
+                                savePermissionGate {
+                                    storySaveScope.launch {
+                                        val kind = when (story.type) {
+                                            StoryType.VIDEO -> WesalMediaKind.VIDEO
+                                            StoryType.AUDIO -> WesalMediaKind.AUDIO
+                                            else -> WesalMediaKind.IMAGE
+                                        }
+                                        saveMediaToGallery(context, story.mediaUrl, kind)
+                                            .onSuccess {
+                                                Toast.makeText(
+                                                    context,
+                                                    if (strings.isEnglish) "Saved to gallery ✓" else "تم الحفظ في المعرض ✓",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                            .onFailure { err ->
+                                                Toast.makeText(
+                                                    context,
+                                                    err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر الحفظ",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                    }
+                                }
+                            }) {
+                                Icon(Icons.Default.Download, contentDescription = if (strings.isEnglish) "Save" else "حفظ", tint = Color.White)
+                            }
+                        }
                         IconButton(onClick = { promoteTargetStory = story }) {
                             Icon(Icons.Default.Campaign, contentDescription = if (strings.isEnglish) "Promote" else "ترويج", tint = WesalTurquoise)
                         }
@@ -1907,7 +1967,18 @@ fun StoryContactsPickerDialog(
                                         selected = if (checked) selected + user.uid else selected - user.uid
                                     }
                                 )
-                                WesalAvatar(imageUrl = user.photoUrl, name = user.displayName, size = 38.dp)
+                                WesalAvatar(
+                                    imageUrl = user.photoUrl,
+                                    name = user.displayName,
+                                    size = 38.dp,
+                                    frameId = user.frameId,
+                                    frameExpiresAt = user.frameExpiresAt,
+                                    isCutout = user.photoRemovedBg,
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
+                                    neonColor = if (user.neonEnabled) user.neonColor else "",
+                                    neonGlowIntensity = user.neonGlowIntensity,
+                                    fitInsideBounds = true
+                                )
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(user.displayName.ifBlank { "@${user.publicId}" }, color = palette.textPrimary)
                                     if (user.numericId.isNotBlank()) {
@@ -2258,7 +2329,18 @@ private fun PromoteStoryDialog(
                                         selectedIds = if (isChecked) selectedIds + user.uid else selectedIds - user.uid
                                     }
                                 )
-                                WesalAvatar(imageUrl = user.photoUrl, name = user.displayName, size = 34.dp)
+                                WesalAvatar(
+                                    imageUrl = user.photoUrl,
+                                    name = user.displayName,
+                                    size = 34.dp,
+                                    frameId = user.frameId,
+                                    frameExpiresAt = user.frameExpiresAt,
+                                    isCutout = user.photoRemovedBg,
+                                    iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
+                                    neonColor = if (user.neonEnabled) user.neonColor else "",
+                                    neonGlowIntensity = user.neonGlowIntensity,
+                                    fitInsideBounds = true
+                                )
                                 WesalNameWithBadge(
                                     name = user.displayName.ifBlank { "@${user.publicId}" },
                                     isVerified = user.isVerified,

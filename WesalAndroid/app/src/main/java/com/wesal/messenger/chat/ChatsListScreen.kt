@@ -48,6 +48,7 @@ fun ChatsListScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val chats by viewModel.chats.collectAsStateWithLifecycle()
+    val hasMoreChats by viewModel.hasMoreChats.collectAsStateWithLifecycle()
     val chatListState by viewModel.chatListState.collectAsStateWithLifecycle()
     val messageRequestChats by viewModel.messageRequestChats.collectAsStateWithLifecycle()
     val incomingContactRequests by viewModel.incomingContactRequests.collectAsStateWithLifecycle()
@@ -367,6 +368,15 @@ fun ChatsListScreen(
                     }
                 }
             } else {
+                // Spec §13.3: label cache-served data as cached, not live.
+                if (chatListState.fromCache) {
+                    Text(
+                        text = if (strings.isEnglish) "Offline — showing saved chats" else "غير متصل — يتم عرض المحادثات المحفوظة",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textMuted,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                    )
+                }
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(chats, key = { it.chatId }) { chat ->
                         val isLocked = chat.chatId in lockedIds
@@ -383,6 +393,24 @@ fun ChatsListScreen(
                             },
                             onLongClick = { selectedChatForMenu = chat }
                         )
+                    }
+
+                    // Spec §13.3: the chats listener is paged (100 at a time) —
+                    // offer the next page while the repository's page state says
+                    // more exist (review MINOR-4: not keyed off the filtered
+                    // list size, which shrinks/grows with the search query).
+                    if (hasMoreChats) {
+                        item(key = "chats_load_more") {
+                            TextButton(
+                                onClick = { viewModel.loadMoreChats() },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = if (strings.isEnglish) "Load more chats" else "تحميل المزيد من المحادثات",
+                                    color = palette.turquoise
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1029,6 +1057,7 @@ private fun ChatRowItem(
             iconUrl = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerIconUrl else "",
             neonColor = if (!chat.isGroup && !chat.isOfficialWesalChat && chat.peerNeonEnabled) chat.peerNeonColor else "",
             neonGlowIntensity = chat.peerNeonGlowIntensity,
+            fitInsideBounds = true,
             fallbackResId = if (chat.isOfficialWesalChat || chat.isSupportChat) com.wesal.messenger.R.drawable.wesal_brand_logo else null
         )
 

@@ -42,6 +42,7 @@ import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.core.util.WesalShareUtils
+import com.wesal.messenger.domain.model.ChatListSyncStatus
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.ContactRequestStatus
 import com.wesal.messenger.domain.model.WesalUser
@@ -65,6 +66,7 @@ fun NewChatContactsScreen(
     val requests by viewModel.contactRequests.collectAsStateWithLifecycle()
     val myReferrals by viewModel.myReferrals.collectAsStateWithLifecycle()
     val contactLists by viewModel.contactLists.collectAsStateWithLifecycle()
+    val contactListsSyncState by viewModel.contactListsSyncState.collectAsStateWithLifecycle()
     val appEvents by viewModel.appEvents.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val contactsPermission = rememberPermissionState(Manifest.permission.READ_CONTACTS)
@@ -327,6 +329,27 @@ fun NewChatContactsScreen(
                             Text(if (strings.isEnglish) "New List" else "قائمة جديدة")
                         }
                     }
+                    // Review MINOR-2: surface a dead contact-lists listener
+                    // (P1-10 state, previously unconsumed) with a working retry
+                    // instead of a silently stale/empty section.
+                    if (contactListsSyncState.status == ChatListSyncStatus.ERROR) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                contactListsSyncState.errorMessage?.takeIf { it.isNotBlank() }
+                                    ?: if (strings.isEnglish) "Could not load your lists" else "تعذر تحميل القوائم",
+                                color = palette.error,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { viewModel.retryContactLists() }) {
+                                Text(if (strings.isEnglish) "Retry" else "إعادة المحاولة", color = palette.turquoise)
+                            }
+                        }
+                    }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (contactLists.isEmpty()) {
                             item {
@@ -548,11 +571,25 @@ fun NewChatContactsScreen(
                                     Checkbox(checked = checked, onCheckedChange = {
                                         selectedBroadcastUids = if (checked) selectedBroadcastUids - user.uid else selectedBroadcastUids + user.uid
                                     })
-                                    WesalAvatar(imageUrl = user.photoUrl, name = user.displayName, size = 38.dp)
+                                    WesalAvatar(
+                                        imageUrl = user.photoUrl,
+                                        name = user.displayName,
+                                        size = 38.dp,
+                                        frameId = user.frameId,
+                                        frameExpiresAt = user.frameExpiresAt,
+                                        isCutout = user.photoRemovedBg,
+                                        iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
+                                        neonColor = if (user.neonEnabled) user.neonColor else "",
+                                        neonGlowIntensity = user.neonGlowIntensity,
+                                        fitInsideBounds = true
+                                    )
                                     WesalNameWithBadge(
                                         name = user.displayName.ifBlank { "@${user.publicId}" },
                                         isVerified = user.isVerified,
                                         verificationType = user.verificationType,
+                                        neonColor = user.neonColor,
+                                        neonEnabled = user.neonEnabled,
+                                        neonGlowIntensity = user.neonGlowIntensity,
                                         verificationGlowColor = user.verificationGlowColor,
                                         verificationGlowEnabled = user.verificationGlowEnabled,
                                         verificationGlowIntensity = user.verificationGlowIntensity,
@@ -1153,7 +1190,8 @@ private fun WesalContactDirectoryRow(
                 isCutout = user.photoRemovedBg,
                 iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
                 neonColor = if (user.neonEnabled) user.neonColor else "",
-                neonGlowIntensity = user.neonGlowIntensity
+                neonGlowIntensity = user.neonGlowIntensity,
+                fitInsideBounds = true
             )
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {

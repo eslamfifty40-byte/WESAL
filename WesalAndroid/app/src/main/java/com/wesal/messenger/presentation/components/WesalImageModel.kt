@@ -2,15 +2,24 @@ package com.wesal.messenger.presentation.components
 
 import android.graphics.Bitmap
 import android.util.Base64
+import android.util.Log
 import android.util.LruCache
 import coil.size.Size
 import coil.transform.Transformation
+import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.AlphaBounds
 import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.analyzeAlphaBounds
 import com.wesal.messenger.core.util.isCutoutBounds
 import kotlin.math.max
 import kotlin.math.roundToInt
+
+/** DEBUG-only diagnostics for the framed-avatar alpha pipeline (round-4). */
+private const val WESAL_ALPHA_TAG = "WesalAlpha"
+
+private fun logAlphaDecision(message: String) {
+    if (BuildConfig.DEBUG) Log.d(WESAL_ALPHA_TAG, message)
+}
 
 private val decodedDataUriCache = object : LruCache<String, ByteArray>(16 * 1024 * 1024) {
     override fun sizeOf(key: String, value: ByteArray): Int = value.size.coerceAtLeast(1)
@@ -33,18 +42,32 @@ fun putCachedCutoutAlpha(cacheKey: String?, isCutout: Boolean) {
 // Negative results are stored as AlphaBounds.NOT_A_CUTOUT so each URL is
 // analysed at most once per process. Keyed by wesalImageCacheKey(url), the
 // same key the boolean cutout cache above uses.
+//
+// Round-4: the cached record also carries the SOURCE bitmap's pixel dimensions,
+// published by AlphaBoundsTransformation from its input bitmap. The layout math
+// must convert normalised bounds with the source's own aspect — round 3 read the
+// DELIVERED drawable's intrinsic size instead, which for the legacy pop-out
+// request was the non-square request box (aspect 0.832 for a square source),
+// stretching the rendered person ~1.20x vertically.
 // ---------------------------------------------------------------------------
 
-private val alphaBoundsCache = LruCache<String, AlphaBounds>(512)
+/** Measured alpha bounds plus the pixel dimensions of the bitmap they were measured on. */
+data class CachedAlphaBounds(
+    val bounds: AlphaBounds,
+    val sourceWidthPx: Int,
+    val sourceHeightPx: Int
+)
 
-fun getCachedAlphaBounds(cacheKey: String?): AlphaBounds? {
+private val alphaBoundsCache = LruCache<String, CachedAlphaBounds>(512)
+
+fun getCachedAlphaBounds(cacheKey: String?): CachedAlphaBounds? {
     if (cacheKey.isNullOrBlank()) return null
     return alphaBoundsCache.get(cacheKey)
 }
 
-fun putCachedAlphaBounds(cacheKey: String?, bounds: AlphaBounds) {
+fun putCachedAlphaBounds(cacheKey: String?, record: CachedAlphaBounds) {
     if (cacheKey.isNullOrBlank()) return
-    alphaBoundsCache.put(cacheKey, bounds)
+    alphaBoundsCache.put(cacheKey, record)
 }
 
 /** Side length of the downsampled bitmap the alpha analysis runs on (<= 16K px reads). */
@@ -55,10 +78,17 @@ private const val ALPHA_ANALYSIS_MAX_SIDE = 128
  * DEFINITIVE answer for the bounds cache: the measured [AlphaBounds] when it is a
  * verified cutout, otherwise [AlphaBounds.NOT_A_CUTOUT]. Fractions are normalised, so
  * the downsample does not distort the result.
+ *
+ * Round-4: the downsample is UNFILTERED (filter = false). Bilinear filtering averages
+ * edge alpha toward the threshold and grows the measured box by ~1 sample px per side
+ * (~+3% area at 128px) — enough to push a tight cutout past the verdict gate.
  */
 fun computeBitmapAlphaBounds(bitmap: Bitmap): AlphaBounds {
     val maxSide = max(bitmap.width, bitmap.height)
-    if (maxSide <= 0) return AlphaBounds.NOT_A_CUTOUT
+    if (maxSide <= 0) {
+        logAlphaDecision("verdict=NOT_A_CUTOUT reason=empty-bitmap")
+        return AlphaBounds.NOT_A_CUTOUT
+    }
     val small = if (maxSide <= ALPHA_ANALYSIS_MAX_SIDE) {
         bitmap
     } else {
@@ -67,17 +97,33 @@ fun computeBitmapAlphaBounds(bitmap: Bitmap): AlphaBounds {
             bitmap,
             (bitmap.width * scale).roundToInt().coerceAtLeast(1),
             (bitmap.height * scale).roundToInt().coerceAtLeast(1),
-            true
+            false
         )
     }
     return try {
         if (!small.hasAlpha()) {
+            logAlphaDecision("verdict=NOT_A_CUTOUT reason=no-alpha-channel src=${bitmap.width}x${bitmap.height}")
             AlphaBounds.NOT_A_CUTOUT
         } else {
             val pixels = IntArray(small.width * small.height)
             small.getPixels(pixels, 0, small.width, 0, 0, small.width, small.height)
             val bounds = analyzeAlphaBounds(pixels, small.width, small.height)
-            if (isCutoutBounds(bounds)) bounds!! else AlphaBounds.NOT_A_CUTOUT
+            if (isCutoutBounds(bounds)) {
+                val b = bounds!!
+                logAlphaDecision(
+                    "verdict=CUTOUT bounds=[${b.left},${b.top},${b.right},${b.bottom}] " +
+                        "transparentFraction=${b.transparentFraction} src=${bitmap.width}x${bitmap.height}"
+                )
+                b
+            } else {
+                logAlphaDecision(
+                    "verdict=NOT_A_CUTOUT reason=gate-rejected bounds=" +
+                        (bounds?.let { "[${it.left},${it.top},${it.right},${it.bottom}] tf=${it.transparentFraction}" }
+                            ?: "null(fully-transparent)") +
+                        " src=${bitmap.width}x${bitmap.height}"
+                )
+                AlphaBounds.NOT_A_CUTOUT
+            }
         }
     } finally {
         if (small !== bitmap) small.recycle()
@@ -86,15 +132,26 @@ fun computeBitmapAlphaBounds(bitmap: Bitmap): AlphaBounds {
 
 /**
  * Analyses [bitmap] (once) and publishes the verdict into the bounds cache under
- * [cacheKey]. Returns the cached/published value, or null when analysis was impossible
- * (blank key, unreadable bitmap) — callers then simply keep the legacy rendering.
+ * [cacheKey], together with [bitmap]'s own pixel dimensions (the source aspect the
+ * layout math must use). Returns the cached/published record, or null when analysis
+ * was impossible (blank key, unreadable bitmap) — callers then simply keep the legacy
+ * rendering.
  */
-fun analyzeAndPublishBitmapBounds(bitmap: Bitmap, cacheKey: String?): AlphaBounds? {
+fun analyzeAndPublishBitmapBounds(bitmap: Bitmap, cacheKey: String?): CachedAlphaBounds? {
     if (cacheKey.isNullOrBlank()) return null
     getCachedAlphaBounds(cacheKey)?.let { return it }
-    val bounds = runCatching { computeBitmapAlphaBounds(bitmap) }.getOrNull() ?: return null
-    putCachedAlphaBounds(cacheKey, bounds)
-    return bounds
+    val bounds = runCatching { computeBitmapAlphaBounds(bitmap) }.getOrNull()
+    if (bounds == null) {
+        logAlphaDecision("verdict=NONE reason=analysis-failed key=$cacheKey")
+        return null
+    }
+    val record = CachedAlphaBounds(
+        bounds = bounds,
+        sourceWidthPx = bitmap.width.coerceAtLeast(1),
+        sourceHeightPx = bitmap.height.coerceAtLeast(1)
+    )
+    putCachedAlphaBounds(cacheKey, record)
+    return record
 }
 
 /**
@@ -109,10 +166,15 @@ fun analyzeAndPublishBitmapBounds(bitmap: Bitmap, cacheKey: String?): AlphaBound
  */
 class AlphaBoundsTransformation(private val boundsCacheKey: String?) : Transformation {
 
-    override val cacheKey: String = "wesal_alpha_bounds:v1"
+    // v2 (round-4): the published record now also carries the input bitmap's pixel
+    // dimensions (source aspect for the layout), and the analysis/verdict changed
+    // (unfiltered downsample, per-axis margin gate).
+    override val cacheKey: String = "wesal_alpha_bounds:v2"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         if (!boundsCacheKey.isNullOrBlank() && getCachedAlphaBounds(boundsCacheKey) == null) {
+            // `input` is the decoded source bitmap: its dimensions ARE the source
+            // aspect the layout must use (round-4 aspect fix — see alphaBoundsCache).
             analyzeAndPublishBitmapBounds(input, boundsCacheKey)
         }
         return input

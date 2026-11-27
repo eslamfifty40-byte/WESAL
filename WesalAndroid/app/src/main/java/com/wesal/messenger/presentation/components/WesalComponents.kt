@@ -58,13 +58,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.drawable.Drawable
+import android.util.Log
 import android.widget.Toast
+import com.wesal.messenger.BuildConfig
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.filled.ContentCopy
@@ -73,6 +74,7 @@ import coil.request.ImageRequest
 import kotlin.math.roundToInt
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
+import com.wesal.messenger.core.util.AlphaBounds
 import com.wesal.messenger.core.util.FrameGlowDisc
 import com.wesal.messenger.core.util.FramedCutoutLayout
 import com.wesal.messenger.core.util.FramedCutoutTransform
@@ -124,6 +126,7 @@ fun WesalAvatar(
     iconUrl: String = "",
     neonColor: String = "",
     neonGlowIntensity: Float = 0.7f,
+    fitInsideBounds: Boolean = false,
     @DrawableRes fallbackResId: Int? = null
 ) {
     val context = LocalContext.current
@@ -139,10 +142,14 @@ fun WesalAvatar(
     // into the bounds cache, or analysed in onSuccess as a fallback). A VERIFIED cutout
     // verdict here — not the stored flag — is what unlocks the bounds-driven fit and the
     // over-frame head strip, so a false positive can never paint a rectangle over a crest.
-    val cachedBounds = remember(imageCacheKey) { getCachedAlphaBounds(imageCacheKey) }
-    var detectedBounds by remember(imageUrl, cachedBounds) { mutableStateOf(cachedBounds) }
-    // Pixel size of the decoded photo bitmap; the cutout layout math needs its aspect.
-    var photoBitmapSize by remember(imageUrl) { mutableStateOf<IntSize?>(null) }
+    // Round-4: the cached record also carries the SOURCE bitmap's pixel dimensions,
+    // published by the transformation from its input bitmap. Round 3 read the aspect
+    // from the delivered drawable instead — the legacy request's non-square box
+    // (aspect 0.832 for a square source), which stretched the person ~1.20x vertically.
+    val cachedBoundsRecord = remember(imageCacheKey) { getCachedAlphaBounds(imageCacheKey) }
+    var detectedBoundsRecord by remember(imageUrl, cachedBoundsRecord) {
+        mutableStateOf(cachedBoundsRecord)
+    }
     val activeFrame = remember(frameId, frameExpiresAt, WesalFrameLibrary.docs) {
         WesalFrameLibrary.resolve(frameId, frameExpiresAt)
     }
@@ -201,13 +208,21 @@ fun WesalAvatar(
         label = "rotate"
     ) ?: remember { mutableStateOf(0f) })
 
-    val containerSize = if (activeFrame != null) size * 1.38f else size
+    // §5.9 (round-4 P2-8): a framed avatar's container is 1.38x the nominal size, so
+    // in list rows a framed avatar used to occupy more layout space than an unframed
+    // one (taller rows, crowding). Callers in fixed slots pass fitInsideBounds = true:
+    // the base size is pre-shrunk by the same factor so the whole framed container —
+    // frame, aperture photo, glow, pop-out geometry (all derived from containerSize /
+    // innerAvatarSize below) — fits exactly inside the nominal `size` footprint.
+    // Unframed avatars are unaffected either way (footprintBaseSize == size).
+    val footprintBaseSize = if (fitInsideBounds && activeFrame != null) size / 1.38f else size
+    val containerSize = if (activeFrame != null) footprintBaseSize * 1.38f else footprintBaseSize
     // Measured aperture used verbatim (spec §5.5): the old x1.07 inflation is gone — the frame
     // artwork is drawn OVER the photo, so a photo disc of exactly the aperture size meets the
     // artwork's ring cleanly, matching the measured reference geometry.
     val effectiveAperture = activeFrame?.apertureDiameterFraction ?: 0.62f
     val innerAvatarSize = if (activeFrame == null) {
-        size
+        footprintBaseSize
     } else {
         containerSize * effectiveAperture.coerceIn(0.46f, 0.80f)
     }
@@ -228,10 +243,13 @@ fun WesalAvatar(
     val effectiveCutout = detectedCutout && activeFrame == null
     // Verified alpha bounds for this photo (round-3): the ONLY evidence allowed to drive
     // the bounds fit and the over-frame head strip.
-    val verifiedBounds = detectedBounds?.takeIf { isCutoutBounds(it) }
+    val verifiedBounds = detectedBoundsRecord?.bounds?.takeIf { isCutoutBounds(it) }
     // Owner's pop-out geometry (definitive spec): a framed CUTOUT photo is rendered in a
-    // virtual box taller than the aperture by a strip of 10% of the container height, so
-    // the head can rise above the aperture's top edge over the frame's upper ring.
+    // virtual box taller than the aperture by a head strip, so the head can rise above
+    // the aperture's top edge over the frame's upper ring. Round-4: the strip height is
+    // derived from the measured bounds inside FramedCutoutLayout (head + neck = 30% of
+    // the rendered person height) — the round-3 fixed 10%-of-container strip was only
+    // 56-71% of a head, so the ring still crossed the face.
     // The aperture window opens for a verified cutout OR the legacy flag; the head strip
     // (below) opens for verified bounds ONLY.
     val framedCutout = activeFrame != null && (verifiedBounds != null || detectedCutout)
@@ -243,38 +261,61 @@ fun WesalAvatar(
     val apertureRadiusPx = innerPx / 2f
     // Bounds-driven placement of the PERSON (not the padded canvas) inside the aperture:
     // person width == aperture diameter, head at the strip's top, tall cutouts height-capped.
-    // Null until verified bounds AND the decoded bitmap's aspect are both known; the legacy
-    // full-canvas rendering covers the first frame(s) until then (bounds cache makes later
-    // binds synchronous).
+    // The aspect comes from the bounds record's SOURCE dimensions (published by
+    // AlphaBoundsTransformation from its input bitmap), never from a delivered drawable.
+    // Null until verified bounds are known; the legacy full-canvas rendering covers the
+    // first frame(s) until then (bounds cache makes later binds synchronous).
     val cutoutTransform: FramedCutoutTransform? = if (verifiedBounds != null && activeFrame != null) {
-        photoBitmapSize?.let { bmpSize ->
+        detectedBoundsRecord?.let { record ->
             FramedCutoutLayout.compute(
                 containerPx = containerPx.toFloat(),
                 apertureCenterYFraction = activeFrame.apertureCenterYFraction,
                 apertureDiameterFraction = effectiveAperture,
-                stripFraction = 0.10f,
                 bounds = verifiedBounds,
-                imageWidthPx = bmpSize.width,
-                imageHeightPx = bmpSize.height
+                imageWidthPx = record.sourceWidthPx,
+                imageHeightPx = record.sourceHeightPx
             )
         }
     } else null
 
-    // Shared success handling for every framed photo request: record the decoded bitmap's
-    // size (the layout math needs its aspect) and pick up the alpha bounds — published by
-    // AlphaBoundsTransformation during the load, or analysed here from the delivered
-    // bitmap when the cache has no entry yet (e.g. first load raced the transformation).
-    fun onPhotoLoaded(drawable: Drawable) {
-        if (drawable.intrinsicWidth > 0 && drawable.intrinsicHeight > 0) {
-            photoBitmapSize = IntSize(drawable.intrinsicWidth, drawable.intrinsicHeight)
+    // Round-4 observability (DEBUG only): every round-3 fallback was silent, which made
+    // on-device failures indistinguishable. Log the decision once per (url, record,
+    // path) change so logcat shows WHY an avatar took the legacy path.
+    remember(imageCacheKey, detectedBoundsRecord, cutoutTransform != null) {
+        if (BuildConfig.DEBUG && activeFrame != null && imageUrl.isNotBlank()) {
+            val record = detectedBoundsRecord
+            val reason = when {
+                cutoutTransform != null ->
+                    "path=BOUNDS bounds=[${verifiedBounds?.left},${verifiedBounds?.top}," +
+                        "${verifiedBounds?.right},${verifiedBounds?.bottom}] " +
+                        "src=${record?.sourceWidthPx}x${record?.sourceHeightPx} " +
+                        "stripPx=${cutoutTransform.stripPx} scale=${cutoutTransform.scale}"
+                record == null ->
+                    "path=LEGACY reason=no-bounds-record (not yet analysed, or analysis failed)"
+                record.bounds === AlphaBounds.NOT_A_CUTOUT ->
+                    "path=LEGACY reason=verdict-not-a-cutout (cached NOT_A_CUTOUT)"
+                verifiedBounds == null ->
+                    "path=LEGACY reason=gate-rejected bounds=[${record.bounds.left},${record.bounds.top}," +
+                        "${record.bounds.right},${record.bounds.bottom}] tf=${record.bounds.transparentFraction}"
+                else ->
+                    "path=LEGACY reason=verified-bounds-but-no-transform"
+            }
+            Log.d("WesalAvatar", "key=$imageCacheKey $reason")
         }
+    }
+
+    // Shared success handling for every framed photo request: pick up the alpha-bounds
+    // record — published by AlphaBoundsTransformation during the load, or analysed here
+    // from the delivered bitmap when the cache has no entry yet (e.g. first load raced
+    // the transformation).
+    fun onPhotoLoaded(drawable: Drawable) {
         val fromCache = getCachedAlphaBounds(imageCacheKey)
         if (fromCache != null) {
-            if (detectedBounds != fromCache) detectedBounds = fromCache
+            if (detectedBoundsRecord != fromCache) detectedBoundsRecord = fromCache
         } else if (activeFrame != null) {
             val bmp = (drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
             if (bmp != null) {
-                analyzeAndPublishBitmapBounds(bmp, imageCacheKey)?.let { detectedBounds = it }
+                analyzeAndPublishBitmapBounds(bmp, imageCacheKey)?.let { detectedBoundsRecord = it }
             }
         }
     }
@@ -409,10 +450,15 @@ fun WesalAvatar(
         val cy = size.height / 2f + apertureOffsetYPx
         addOval(Rect(cx - apertureRadiusPx, cy - apertureRadiusPx, cx + apertureRadiusPx, cy + apertureRadiusPx))
     }
+    // Round-4: the strip window's height comes from the bounds transform itself
+    // (person-derived strip + crown margin), so the window matches the placement —
+    // the round-3 fixed 10% window was shorter than a head. This shape is only used
+    // when a transform exists; the fixed-strip fallback is never actually rendered.
+    val stripWindowPx = cutoutTransform?.stripPx ?: popOutStripPx.toFloat()
     val popOutStripClipShape = GenericShape { size, _ ->
         val left = (size.width - innerPx) / 2f
         val apertureTop = size.height / 2f + apertureOffsetYPx - apertureRadiusPx
-        addRect(Rect(left, apertureTop - popOutStripPx, left + innerPx, apertureTop))
+        addRect(Rect(left, apertureTop - stripWindowPx, left + innerPx, apertureTop))
     }
 
     @Composable
@@ -430,7 +476,13 @@ fun WesalAvatar(
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(imageModel)
-                        .size(innerPx, innerPx + popOutStripPx)
+                        // Round-4: SQUARE request. The round-3 non-square size
+                        // (innerPx x innerPx+strip) forced the decode into the
+                        // aperture-box aspect (0.832 for a square source), which the
+                        // old code then mistook for the source aspect. A square box
+                        // keeps the decoded bitmap at the source's natural aspect;
+                        // ContentScale.Crop below does the window fitting.
+                        .size(innerPx + popOutStripPx)
                         // Suffixed key: the pop-out request must not collide with the
                         // square request of the normal branch (cross-size resampling).
                         .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey + "#popout") }

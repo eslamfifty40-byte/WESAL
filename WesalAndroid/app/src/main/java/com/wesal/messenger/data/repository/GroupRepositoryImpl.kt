@@ -6,6 +6,8 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.functions.FirebaseFunctions
+import com.google.firebase.functions.FirebaseFunctionsException
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.GroupAddPrivacy
 import com.wesal.messenger.domain.model.GroupInfo
@@ -34,6 +36,7 @@ class GroupRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore,
+    private val functions: FirebaseFunctions,
     private val userRepository: UserRepository
 ) : GroupRepository {
 
@@ -435,14 +438,15 @@ class GroupRepositoryImpl @Inject constructor(
             .await()
     }
 
-    override suspend fun addMembers(groupId: String, newMemberIds: List<String>): Result<Unit> = runCatching {
-        val uid = auth.currentUser?.uid ?: error("Not authenticated")
-        val cleanIds = newMemberIds.filter { it.isNotBlank() && it != uid }.distinct()
-        if (cleanIds.isEmpty()) return@runCatching
-        val (allowedIds, rejectedNames) = filterAllowedGroupMembers(cleanIds, uid)
-        if (allowedIds.isEmpty()) {
-            error("لا يمكن إضافة الأعضاء المحددين (${rejectedNames.joinToString("، ")}) بسبب إعدادات خصوصية المجموعات لديهم")
-        }
+    /**
+     * The pre-§12.5 direct write: group memberIds + linked chat participants,
+     * using the client privacy pre-filter's verdict. Kept ONLY as the
+     * not-yet-deployed fallback for addMembers (see below) — once the
+     * changeGroupMembership function is live and the hardened groups rule is
+     * deployed, direct client adds are denied by rules and this path can no
+     * longer write anything.
+     */
+    private suspend fun writeMembersDirectly(groupId: String, allowedIds: List<String>) {
         val groupRef = firestore.collection(Constants.COLLECTION_GROUPS).document(groupId)
         val chatId = groupRef.get().await().getString("chatId").orEmpty()
         groupRef.update("memberIds", FieldValue.arrayUnion(*allowedIds.toTypedArray())).await()
@@ -456,6 +460,63 @@ class GroupRepositoryImpl @Inject constructor(
             firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
                 .update(chatUpdates)
                 .await()
+        }
+    }
+
+    override suspend fun addMembers(groupId: String, newMemberIds: List<String>): Result<Unit> = runCatching {
+        val uid = auth.currentUser?.uid ?: error("Not authenticated")
+        val cleanIds = newMemberIds.filter { it.isNotBlank() && it != uid }.distinct()
+        if (cleanIds.isEmpty()) return@runCatching
+        // Client-side pre-filter stays as the UX layer (fast, friendly names).
+        // It is NOT the enforcement: the callable re-checks every candidate
+        // server-side and its verdict is authoritative (§12.5).
+        val (allowedIds, rejectedNames) = filterAllowedGroupMembers(cleanIds, uid)
+        if (allowedIds.isEmpty()) {
+            error("لا يمكن إضافة الأعضاء المحددين (${rejectedNames.joinToString("، ")}) بسبب إعدادات خصوصية المجموعات لديهم")
+        }
+
+        // §12.5: membership additions are performed by the changeGroupMembership
+        // callable (Admin SDK), which enforces each candidate's groupAddPrivacy.
+        // Degrade-safely contract (deploy ordering):
+        //  - UNAVAILABLE / NOT_FOUND / UNIMPLEMENTED mean the function is not
+        //    deployed yet -> fall back to the existing client path above
+        //    (pre-filter + direct write, still permitted by the not-yet-hardened
+        //    groups rule; the hardened rule ships only after the function is
+        //    live, so this fallback can never bypass server enforcement once
+        //    both are deployed — a late fallback write is simply denied).
+        //  - A definitive answer FROM the function (its added/rejected verdict,
+        //    or a PERMISSION_DENIED / any other error) is honored as-is and
+        //    surfaced — NEVER retried through the client path.
+        val resultData = try {
+            functions.getHttpsCallable("changeGroupMembership")
+                .call(mapOf("groupId" to groupId, "memberIds" to allowedIds))
+                .await()
+                .data as? Map<*, *>
+        } catch (e: FirebaseFunctionsException) {
+            when (e.code) {
+                FirebaseFunctionsException.Code.UNAVAILABLE,
+                FirebaseFunctionsException.Code.NOT_FOUND,
+                FirebaseFunctionsException.Code.UNIMPLEMENTED -> {
+                    writeMembersDirectly(groupId, allowedIds)
+                    return@runCatching
+                }
+                FirebaseFunctionsException.Code.PERMISSION_DENIED ->
+                    throw IllegalStateException("فقط مشرف المجموعة يمكنه إضافة أعضاء", e)
+                FirebaseFunctionsException.Code.UNAUTHENTICATED ->
+                    throw IllegalStateException("يلزم تسجيل الدخول أولاً", e)
+                else ->
+                    throw IllegalStateException("تعذر إضافة الأعضاء عبر الخادم — حاول مرة أخرى لاحقاً", e)
+            }
+        } ?: throw IllegalStateException("تعذر إضافة الأعضاء: رد غير متوقع من الخادم")
+
+        val serverAdded = (resultData["added"] as? List<*>)?.filterIsInstance<String>().orEmpty()
+        val serverRejected = (resultData["rejected"] as? List<*>).orEmpty()
+        if (serverAdded.isEmpty() && serverRejected.isNotEmpty()) {
+            val names = serverRejected.mapNotNull { entry ->
+                (entry as? Map<*, *>)?.get("name") as? String
+            }
+            val label = names.joinToString("، ").ifBlank { rejectedNames.joinToString("، ") }
+            error("لا يمكن إضافة الأعضاء المحددين ($label) بسبب إعدادات خصوصية المجموعات لديهم")
         }
     }
 

@@ -1281,7 +1281,8 @@ fun GroupInfoScreen(
                             isCutout = member.photoRemovedBg,
                             iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(member.iconId, member.iconUrl),
                             neonColor = if (member.neonEnabled) member.neonColor else "",
-                            neonGlowIntensity = member.neonGlowIntensity
+                            neonGlowIntensity = member.neonGlowIntensity,
+                            fitInsideBounds = true
                         )
                         Column(modifier = Modifier.weight(1f)) {
                             WesalNameWithBadge(
