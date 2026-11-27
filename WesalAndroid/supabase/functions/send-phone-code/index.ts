@@ -8,10 +8,17 @@
 //
 // Zavu is TRANSPORT ONLY (same assumption as the Firebase version):
 // POST https://api.zavu.dev/v1/messages with a Bearer key held in the
-// ZAVU_API_KEY function secret, body { to, channel, text }. The project's
-// default sender (created 2026-11-27) supports only the "sms_oneway"
-// channel, so that is the only channel attempted; WhatsApp would need a
-// linked WhatsApp Business number on the sender first.
+// ZAVU_API_KEY function secret, body { to, channel, text }.
+//
+// Channel order (owner decision 2026-11-27, after live device testing):
+// WhatsApp FIRST, SMS as fallback. Rationale, all measured the same day:
+// (a) Egyptian carriers filter/delay international A2P SMS — of 3 codes
+// sent to the owner's numbers, 2 sat at "accepted by carrier" unconfirmed
+// while WhatsApp has no such grey-route problem; (b) Zavu charges $0.2799
+// per Egypt SMS, so the free plan's $2 monthly credit buys ~7 SMS total,
+// versus 2,000 free WhatsApp/app messages a month. The WESAL WhatsApp
+// sender (registered 2026-11-27, WABA-linked) is selected explicitly via
+// the Zavu-Sender header; the SMS attempt keeps the default SMS sender.
 
 import {
   jsonError,
@@ -27,6 +34,10 @@ import {
   verifyFirebaseIdToken,
 } from "../_shared/phone.ts";
 
+// The WESAL WhatsApp sender in Zavu (an identifier, not a credential —
+// the API key stays in the ZAVU_API_KEY secret).
+const ZAVU_WHATSAPP_SENDER_ID = "kd73bkrwc88xf1w7r5q3myfp918k00jt";
+
 async function sendCodeViaZavu(
   phone: string,
   code: string,
@@ -35,17 +46,23 @@ async function sendCodeViaZavu(
   if (!apiKey) return null;
   const text =
     `كود التحقق بتاعك في وصال: ${code} — صالح ١٠ دقايق. ما تشاركهوش مع حد.`;
-  for (const channel of ["sms_oneway"]) {
+  const attempts: { channel: string; senderId?: string }[] = [
+    { channel: "whatsapp", senderId: ZAVU_WHATSAPP_SENDER_ID },
+    { channel: "sms_oneway" },
+  ];
+  for (const attempt of attempts) {
     try {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      };
+      if (attempt.senderId) headers["Zavu-Sender"] = attempt.senderId;
       const res = await fetch("https://api.zavu.dev/v1/messages", {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ to: phone, channel, text }),
+        headers,
+        body: JSON.stringify({ to: phone, channel: attempt.channel, text }),
       });
-      if (res.ok) return channel;
+      if (res.ok) return attempt.channel;
       await res.text().catch(() => "");
     } catch {
       // Fall through to the next channel.
