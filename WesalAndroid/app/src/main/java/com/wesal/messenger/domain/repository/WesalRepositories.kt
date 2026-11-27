@@ -497,7 +497,10 @@ interface StoryRepository {
         visibility: PrivacyVisibility,
         audienceMode: StoryAudienceMode = StoryAudienceMode.CONTACTS,
         allowedViewerIds: List<String> = emptyList(),
-        excludedViewerIds: List<String> = emptyList()
+        excludedViewerIds: List<String> = emptyList(),
+        // Round 12 (addendum 2): official announcements — stamped on the
+        // doc, bypass the contacts filter, pin above contact stories.
+        isOfficial: Boolean = false
     ): Result<Unit>
     fun publishMediaStory(
         uri: Uri,
@@ -507,7 +510,8 @@ interface StoryRepository {
         audienceMode: StoryAudienceMode = StoryAudienceMode.CONTACTS,
         allowedViewerIds: List<String> = emptyList(),
         excludedViewerIds: List<String> = emptyList(),
-        backgroundColorHex: Long = 0xFF064E3B
+        backgroundColorHex: Long = 0xFF064E3B,
+        isOfficial: Boolean = false
     ): Flow<StoryPublishEvent>
     fun publishAudioStory(
         audioUri: Uri,
@@ -517,7 +521,8 @@ interface StoryRepository {
         audienceMode: StoryAudienceMode = StoryAudienceMode.CONTACTS,
         allowedViewerIds: List<String> = emptyList(),
         excludedViewerIds: List<String> = emptyList(),
-        backgroundColorHex: Long = 0xFF064E3B
+        backgroundColorHex: Long = 0xFF064E3B,
+        isOfficial: Boolean = false
     ): Flow<StoryPublishEvent>
     suspend fun markStoryViewed(storyId: String)
     suspend fun deleteStory(storyId: String): Result<Unit>

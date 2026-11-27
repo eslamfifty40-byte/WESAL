@@ -10,6 +10,7 @@ import com.google.firebase.firestore.Query
 import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.OfficialStoryLogic
 import com.wesal.messenger.domain.model.PrivacyVisibility
 import com.wesal.messenger.domain.model.StoryAudienceMode
 import com.wesal.messenger.domain.model.StoryItem
@@ -103,6 +104,7 @@ class StoryRepositoryImpl @Inject constructor(
                             ownerNeonColor = doc.getString("ownerNeonColor").orEmpty(),
                             ownerNeonEnabled = doc.getBoolean("ownerNeonEnabled") ?: false,
                             ownerNeonGlowIntensity = doc.getDouble("ownerNeonGlowIntensity")?.toFloat() ?: 0.7f,
+                            isOfficial = doc.getBoolean("isOfficial") ?: false,
                             type = StoryType.fromRaw(doc.getString("type")),
                             textContent = doc.getString("textContent").orEmpty(),
                             backgroundColorHex = doc.getLong("backgroundColorHex") ?: 0xFF064E3B,
@@ -121,6 +123,12 @@ class StoryRepositoryImpl @Inject constructor(
                             if (story.expiresAt <= System.currentTimeMillis()) return@filter false
                             if (story.ownerUid == myUid) return@filter true
                             if (story.ownerUid in myBlocked) return@filter false
+                            // Round 12 (addendum 2): official announcements
+                            // bypass the contacts/audience filter — every
+                            // signed-in user sees them (the Firestore read
+                            // rule already allows this; the restriction was
+                            // always client-side).
+                            if (OfficialStoryLogic.bypassesAudienceFilter(story.isOfficial)) return@filter true
                             if (story.visibility == PrivacyVisibility.NOBODY) return@filter false
                             when (story.audienceMode) {
                                 StoryAudienceMode.ONLY_WITH -> myUid in story.allowedViewerIds
@@ -132,7 +140,13 @@ class StoryRepositoryImpl @Inject constructor(
                                     story.ownerUid in myContacts || story.visibility == PrivacyVisibility.EVERYONE
                             }
                         }
-                        .sortedByDescending { it.createdAt }
+                        .let { filtered ->
+                            // Official stories pin above contact stories;
+                            // newest-first inside each group (a list with
+                            // no official stories is purely newest-first,
+                            // exactly as before).
+                            OfficialStoryLogic.pinOfficialFirst(filtered, { it.isOfficial }, { it.createdAt })
+                        }
                     trySend(list)
                 }
             }
@@ -187,7 +201,8 @@ class StoryRepositoryImpl @Inject constructor(
         visibility: PrivacyVisibility,
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
-        excludedViewerIds: List<String>
+        excludedViewerIds: List<String>,
+        isOfficial: Boolean
     ): Result<Unit> = runCatching {
         if (!networkMonitor.isCurrentlyConnected()) {
             error("لا يوجد اتصال بالإنترنت، تحقق من الشبكة وحاول مجدداً")
@@ -210,6 +225,7 @@ class StoryRepositoryImpl @Inject constructor(
             "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
             "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
             "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
+            "isOfficial" to isOfficial,
             "type" to StoryType.TEXT.raw,
             "textContent" to text.trim(),
             "backgroundColorHex" to backgroundColorHex,
@@ -234,7 +250,8 @@ class StoryRepositoryImpl @Inject constructor(
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
         excludedViewerIds: List<String>,
-        backgroundColorHex: Long
+        backgroundColorHex: Long,
+        isOfficial: Boolean
     ): Flow<StoryPublishEvent> = callbackFlow {
         val uid = auth.currentUser?.uid
         if (uid == null) {
@@ -280,6 +297,7 @@ class StoryRepositoryImpl @Inject constructor(
                     "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
                     "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
                     "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
+                    "isOfficial" to isOfficial,
                     "type" to if (isVideo) StoryType.VIDEO.raw else StoryType.IMAGE.raw,
                     "textContent" to "",
                     "backgroundColorHex" to backgroundColorHex,
@@ -313,7 +331,8 @@ class StoryRepositoryImpl @Inject constructor(
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
         excludedViewerIds: List<String>,
-        backgroundColorHex: Long
+        backgroundColorHex: Long,
+        isOfficial: Boolean
     ): Flow<StoryPublishEvent> = callbackFlow {
         val uid = auth.currentUser?.uid
         if (uid == null) {
@@ -359,6 +378,7 @@ class StoryRepositoryImpl @Inject constructor(
                     "ownerNeonColor" to (userSnap.getString("neonColor") ?: ""),
                     "ownerNeonEnabled" to (userSnap.getBoolean("neonEnabled") ?: userSnap.getString("neonColor").orEmpty().isNotBlank()),
                     "ownerNeonGlowIntensity" to (userSnap.getDouble("neonGlowIntensity")?.toFloat() ?: 0.7f),
+                    "isOfficial" to isOfficial,
                     "type" to StoryType.AUDIO.raw,
                     "textContent" to "",
                     "backgroundColorHex" to backgroundColorHex,

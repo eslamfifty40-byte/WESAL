@@ -2,6 +2,7 @@ package com.wesal.messenger
 
 import com.wesal.messenger.core.util.CallRingLogic
 import com.wesal.messenger.core.util.CameraSwitchStateMachine
+import com.wesal.messenger.core.util.OfficialStoryLogic
 import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -258,6 +259,44 @@ class R12LogicTest {
         assertTrue(machine.isFrontCamera)
         assertFalse(machine.switchInFlight)
         assertTrue(machine.tryBegin())
+    }
+
+    // ---------------------------------------------------------------
+    // Addendum 2: official stories — visibility + pinned ordering
+    // ---------------------------------------------------------------
+
+    private data class FeedEntry(val id: String, val official: Boolean, val createdAt: Long)
+
+    @Test
+    fun officialStory_bypassesAudienceFilter_regularDoesNot() {
+        assertTrue(OfficialStoryLogic.bypassesAudienceFilter(isOfficial = true))
+        assertFalse(OfficialStoryLogic.bypassesAudienceFilter(isOfficial = false))
+    }
+
+    @Test
+    fun feedOrder_officialPinsAboveNewerContactStories() {
+        val entries = listOf(
+            FeedEntry("contact_new", official = false, createdAt = 300L),
+            FeedEntry("official_old", official = true, createdAt = 100L),
+            FeedEntry("contact_mid", official = false, createdAt = 200L),
+            FeedEntry("official_new", official = true, createdAt = 400L)
+        )
+        val ordered = OfficialStoryLogic.pinOfficialFirst(entries, { it.official }, { it.createdAt })
+        assertEquals(
+            listOf("official_new", "official_old", "contact_new", "contact_mid"),
+            ordered.map { it.id }
+        )
+    }
+
+    @Test
+    fun feedOrder_regularOnlyList_isPurelyNewestFirst_unchanged() {
+        val entries = listOf(
+            FeedEntry("a", official = false, createdAt = 100L),
+            FeedEntry("b", official = false, createdAt = 300L),
+            FeedEntry("c", official = false, createdAt = 200L)
+        )
+        val ordered = OfficialStoryLogic.pinOfficialFirst(entries, { it.official }, { it.createdAt })
+        assertEquals(listOf("b", "c", "a"), ordered.map { it.id })
     }
 
     @Test

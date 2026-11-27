@@ -114,7 +114,10 @@ data class PendingStoryMedia(
     val audienceMode: StoryAudienceMode,
     val allowedViewerIds: List<String>,
     val excludedViewerIds: List<String>,
-    val backgroundColorHex: Long = 0xFF064E3BL
+    val backgroundColorHex: Long = 0xFF064E3BL,
+    // Round 12 (addendum 2): kept on the pending request so a retry of a
+    // failed official media story stays official.
+    val isOfficial: Boolean = false
 )
 
 data class StoriesUploadUiState(
@@ -314,15 +317,21 @@ class StoriesViewModel @Inject constructor(
         bgHex: Long,
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
-        excludedViewerIds: List<String>
+        excludedViewerIds: List<String>,
+        isOfficial: Boolean = false
     ) {
         if (text.isBlank()) return
-        val visibility = if (audienceMode == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
+        // Round 12 (addendum 2): an official story ignores the personal
+        // audience picker — it goes to everyone.
+        val effectiveAudience = if (isOfficial) StoryAudienceMode.ALL_CONTACTS else audienceMode
+        val visibility = if (effectiveAudience == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
         viewModelScope.launch {
             _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = 0.5f)
-            storyRepository.publishTextStory(text, bgHex, visibility, audienceMode, allowedViewerIds, excludedViewerIds)
+            storyRepository.publishTextStory(text, bgHex, visibility, effectiveAudience, allowedViewerIds, excludedViewerIds, isOfficial)
                 .onSuccess {
-                    _uploadState.value = StoriesUploadUiState(statusBanner = "تم نشر الحالة النصية بنجاح")
+                    _uploadState.value = StoriesUploadUiState(
+                        statusBanner = if (isOfficial) "تم نشر الحالة الرسمية بنجاح" else "تم نشر الحالة النصية بنجاح"
+                    )
                 }
                 .onFailure { err ->
                     _uploadState.value = StoriesUploadUiState(
@@ -339,10 +348,13 @@ class StoriesViewModel @Inject constructor(
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
         excludedViewerIds: List<String>,
-        backgroundColorHex: Long = 0xFF064E3BL
+        backgroundColorHex: Long = 0xFF064E3BL,
+        isOfficial: Boolean = false
     ) {
-        val visibility = if (audienceMode == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
-        val request = PendingStoryMedia(uri, isVideo, caption, visibility, audienceMode, allowedViewerIds, excludedViewerIds, backgroundColorHex)
+        // Round 12 (addendum 2): official stories go to everyone.
+        val effectiveAudience = if (isOfficial) StoryAudienceMode.ALL_CONTACTS else audienceMode
+        val visibility = if (effectiveAudience == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
+        val request = PendingStoryMedia(uri, isVideo, caption, visibility, effectiveAudience, allowedViewerIds, excludedViewerIds, backgroundColorHex, isOfficial)
         viewModelScope.launch {
             _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = 0.02f)
             storyRepository.publishMediaStory(
@@ -350,10 +362,11 @@ class StoriesViewModel @Inject constructor(
                 isVideo = isVideo,
                 caption = caption,
                 visibility = visibility,
-                audienceMode = audienceMode,
+                audienceMode = effectiveAudience,
                 allowedViewerIds = allowedViewerIds,
                 excludedViewerIds = excludedViewerIds,
-                backgroundColorHex = backgroundColorHex
+                backgroundColorHex = backgroundColorHex,
+                isOfficial = isOfficial
             ).catch { err ->
                 _uploadState.value = StoriesUploadUiState(
                     errorMessage = err.localizedMessage ?: "تعذر نشر الحالة",
@@ -365,7 +378,9 @@ class StoriesViewModel @Inject constructor(
                         _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = event.fraction)
                     }
                     is StoryPublishEvent.Success -> {
-                        _uploadState.value = StoriesUploadUiState(statusBanner = "تم نشر الحالة بنجاح")
+                        _uploadState.value = StoriesUploadUiState(
+                            statusBanner = if (isOfficial) "تم نشر الحالة الرسمية بنجاح" else "تم نشر الحالة بنجاح"
+                        )
                     }
                     is StoryPublishEvent.Failure -> {
                         _uploadState.value = StoriesUploadUiState(
@@ -403,9 +418,12 @@ class StoriesViewModel @Inject constructor(
         audienceMode: StoryAudienceMode,
         allowedViewerIds: List<String>,
         excludedViewerIds: List<String>,
-        backgroundColorHex: Long = 0xFF064E3BL
+        backgroundColorHex: Long = 0xFF064E3BL,
+        isOfficial: Boolean = false
     ) {
-        val visibility = if (audienceMode == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
+        // Round 12 (addendum 2): official stories go to everyone.
+        val effectiveAudience = if (isOfficial) StoryAudienceMode.ALL_CONTACTS else audienceMode
+        val visibility = if (effectiveAudience == StoryAudienceMode.ALL_CONTACTS) PrivacyVisibility.EVERYONE else PrivacyVisibility.CONTACTS
         viewModelScope.launch {
             _uploadState.value = StoriesUploadUiState(isPublishing = true, uploadProgress = 0.08f)
             storyRepository.publishAudioStory(
@@ -413,10 +431,11 @@ class StoriesViewModel @Inject constructor(
                 durationMs = durationMs,
                 caption = caption,
                 visibility = visibility,
-                audienceMode = audienceMode,
+                audienceMode = effectiveAudience,
                 allowedViewerIds = allowedViewerIds,
                 excludedViewerIds = excludedViewerIds,
-                backgroundColorHex = backgroundColorHex
+                backgroundColorHex = backgroundColorHex,
+                isOfficial = isOfficial
             ).catch { err ->
                 _uploadState.value = StoriesUploadUiState(
                     errorMessage = err.localizedMessage ?: "تعذر نشر الحالة الصوتية"
@@ -493,7 +512,8 @@ class StoriesViewModel @Inject constructor(
             req.audienceMode,
             req.allowedViewerIds,
             req.excludedViewerIds,
-            req.backgroundColorHex
+            req.backgroundColorHex,
+            req.isOfficial
         )
     }
 
@@ -537,6 +557,10 @@ class StoriesViewModel @Inject constructor(
 fun StoriesScreen(
     onOpenChannel: (String) -> Unit = {},
     onOpenChat: (String) -> Unit = {},
+    // Round 12 (addendum 2): bumped by HomeScreen when an admin taps
+    // «نشر حالة رسمية» in Settings — switches the composer into
+    // official mode (the story then reaches every user).
+    officialComposerRequest: Int = 0,
     viewModel: StoriesViewModel = hiltViewModel(),
     channelsViewModel: ChannelsViewModel = hiltViewModel()
 ) {
@@ -562,6 +586,15 @@ fun StoriesScreen(
     val publicChannels by channelsViewModel.publicChannels.collectAsStateWithLifecycle()
     val channelSearchQuery by channelsViewModel.searchQuery.collectAsStateWithLifecycle()
     val channelMessage by channelsViewModel.message.collectAsStateWithLifecycle()
+
+    // Round 12 (addendum 2): official-publishing mode. Entered from the
+    // admin-only Settings row; while on, every publish from this screen
+    // is stamped official (all users, pinned) and the create card shows
+    // a banner saying so, with a way back to normal mode.
+    var officialMode by remember { mutableStateOf(false) }
+    LaunchedEffect(officialComposerRequest) {
+        if (officialComposerRequest > 0) officialMode = true
+    }
 
     var showTextDialog by remember { mutableStateOf(false) }
     var showAudioDialog by remember { mutableStateOf(false) }
@@ -770,8 +803,10 @@ fun StoriesScreen(
                                     audienceMode = selectedAudience,
                                     allowedViewerIds = allowed,
                                     excludedViewerIds = excluded,
-                                    backgroundColorHex = draftBgHex
+                                    backgroundColorHex = draftBgHex,
+                                    isOfficial = officialMode
                                 )
+                                officialMode = false
                                 draftMedia = null
                                 draftCaption = ""
                             },
@@ -1226,7 +1261,12 @@ fun StoriesScreen(
 
     val myStories = stories.filter { it.ownerUid == myUid && it.storyId !in archivedStoryIds }
     val archivedMyStories = stories.filter { it.ownerUid == myUid && it.storyId in archivedStoryIds }
-    val friendsStories = stories.filter { it.ownerUid != myUid }
+    // Round 12 (addendum 2): official announcements render in their own
+    // pinned section above contact stories (the repository already
+    // ordered them first); an admin's own official story also appears
+    // in "my stories" like any own story.
+    val officialStories = stories.filter { it.ownerUid != myUid && it.isOfficial }
+    val friendsStories = stories.filter { it.ownerUid != myUid && !it.isOfficial }
 
     Box(modifier = Modifier.fillMaxSize().background(palette.background)) {
         LazyColumn(
@@ -1415,6 +1455,38 @@ fun StoriesScreen(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
+                        if (officialMode) {
+                            // Round 12 (addendum 2): unmissable official-mode
+                            // banner — while it shows, anything published
+                            // from this card reaches ALL users as an
+                            // official story; tapping it exits the mode.
+                            Surface(
+                                color = palette.verifiedBlue.copy(alpha = 0.14f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, palette.verifiedBlue.copy(alpha = 0.5f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { officialMode = false }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Default.Verified, contentDescription = null, tint = palette.verifiedBlue, modifier = Modifier.size(18.dp))
+                                    Text(
+                                        text = if (strings.isEnglish) {
+                                            "Official mode: this story reaches ALL WESAL users. Tap to exit."
+                                        } else {
+                                            "وضع النشر الرسمي: الحالة ستصل لكل مستخدمي وِصال. اضغط للخروج."
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = palette.textPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1535,6 +1607,28 @@ fun StoriesScreen(
                         onPromote = { promoteTargetStory = story },
                         onArchive = { viewModel.toggleArchiveStory(story.storyId, true) }
                     )
+                }
+            }
+
+            if (officialStories.isNotEmpty()) {
+                item(key = "official_stories_header") {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.Verified, contentDescription = null, tint = palette.verifiedBlue, modifier = Modifier.size(18.dp))
+                        Text(
+                            text = if (strings.isEnglish) "Official Updates" else "تحديثات رسمية",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+                items(officialStories, key = { "official_story_${it.storyId}" }) { story ->
+                    StoryRowCard(story = story, isMine = false, onClick = { activeStory = story })
                 }
             }
 
@@ -1751,9 +1845,11 @@ fun StoriesScreen(
                                 audienceMode = selectedAudience,
                                 allowedViewerIds = allowed,
                                 excludedViewerIds = excluded,
-                                backgroundColorHex = audioBgHex
+                                backgroundColorHex = audioBgHex,
+                                isOfficial = officialMode
                             )
                         }
+                        officialMode = false
                         recordedAudioDraft = null
                         showAudioDialog = false
                     },
@@ -1819,7 +1915,8 @@ fun StoriesScreen(
                     onClick = {
                         val allowed = if (selectedAudience == StoryAudienceMode.ONLY_WITH) selectedContactIds.toList() else emptyList()
                         val excluded = if (selectedAudience == StoryAudienceMode.CONTACTS_EXCEPT) selectedContactIds.toList() else emptyList()
-                        viewModel.publishTextStory(storyText, bgHex, selectedAudience, allowed, excluded)
+                        viewModel.publishTextStory(storyText, bgHex, selectedAudience, allowed, excluded, isOfficial = officialMode)
+                        officialMode = false
                         showTextDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent)
@@ -2284,7 +2381,9 @@ private fun StoryRowCard(
         Column(modifier = Modifier.weight(1f)) {
             WesalNameWithBadge(
                 name = if (isMine) (if (strings.isEnglish) "My Story" else "حالتي") else story.ownerName,
-                isVerified = !isMine && story.ownerVerified,
+                // Round 12 (addendum 2): official rows always carry the
+                // verified badge, even if the snapshot flag lagged.
+                isVerified = !isMine && (story.ownerVerified || story.isOfficial),
                 verificationType = story.ownerVerificationType,
                 neonColor = if (isMine) "" else story.ownerNeonColor,
                 neonGlowIntensity = story.ownerNeonGlowIntensity,
@@ -2293,6 +2392,32 @@ private fun StoryRowCard(
                 color = palette.textPrimary,
                 iconUrl = if (isMine) "" else com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(story.ownerIconId, story.ownerIconUrl)
             )
+            if (story.isOfficial) {
+                // Round 12 (addendum 2): the «رسمي» chip sits on its OWN
+                // line under the name — it never squeezes the name row.
+                Surface(
+                    color = palette.verifiedBlue.copy(alpha = 0.14f),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(1.dp, palette.verifiedBlue.copy(alpha = 0.45f)),
+                    modifier = Modifier.padding(top = 3.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Icon(Icons.Default.Verified, contentDescription = null, tint = palette.verifiedBlue, modifier = Modifier.size(11.dp))
+                        Text(
+                            text = if (strings.isEnglish) "Official" else "رسمي",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.verifiedBlue,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+                }
+            }
             val typeTag = when (story.type) {
                 StoryType.AUDIO -> if (strings.isEnglish) "Voice • " else "صوتية • "
                 StoryType.VIDEO -> if (strings.isEnglish) "Video • " else "فيديو • "

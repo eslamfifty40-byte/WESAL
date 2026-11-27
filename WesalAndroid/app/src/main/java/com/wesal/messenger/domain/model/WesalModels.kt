@@ -783,6 +783,10 @@ data class StoryItem(
     val ownerNeonColor: String = "",
     val ownerNeonEnabled: Boolean = false,
     val ownerNeonGlowIntensity: Float = 0.7f,
+    // Round 12 (addendum 2): official announcements — published by an
+    // admin account, visible to EVERY signed-in user regardless of
+    // contacts, pinned above contact stories in the Status tab.
+    val isOfficial: Boolean = false,
     val type: StoryType = StoryType.TEXT,
     val textContent: String = "",
     val backgroundColorHex: Long = 0xFF064E3B,

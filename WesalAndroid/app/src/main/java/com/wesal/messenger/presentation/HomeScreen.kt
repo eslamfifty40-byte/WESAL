@@ -79,6 +79,10 @@ fun HomeScreen(
     val hasAdminAccess by homeViewModel.hasAdminAccess.collectAsStateWithLifecycle()
 
     var selectedTab by rememberSaveable { mutableStateOf(HomeTab.CHATS) }
+    // Round 12 (addendum 2): one-shot request token from the admin-only
+    // Settings row «نشر حالة رسمية» — switching to the Status tab bumps
+    // it, and StoriesScreen turns its composer to official mode.
+    var officialStoryRequest by remember { mutableStateOf(0) }
     var menuOpen by remember { mutableStateOf(false) }
     var showSupportDialog by remember { mutableStateOf(false) }
     val ctxHome = LocalContext.current
@@ -192,7 +196,8 @@ fun HomeScreen(
                 )
                 HomeTab.STORIES -> StoriesScreen(
                     onOpenChannel = onOpenChannel,
-                    onOpenChat = onOpenChat
+                    onOpenChat = onOpenChat,
+                    officialComposerRequest = officialStoryRequest
                 )
                 HomeTab.CALLS -> CallHistoryScreen()
                 HomeTab.GROUPS -> GroupsScreen(
@@ -204,6 +209,10 @@ fun HomeScreen(
                     onOpenAccountShare = onOpenAccountShare,
                     onOpenAdminPanel = onOpenAdminVerification,
                     onOpenChat = onOpenChat,
+                    onPublishOfficialStory = {
+                        officialStoryRequest += 1
+                        selectedTab = HomeTab.STORIES
+                    },
                     onOpenHiddenChatsTab = { selectedTab = HomeTab.CHATS },
                     onSignedOut = onSignedOut,
                     onOpenAddAccount = onOpenAddAccount,

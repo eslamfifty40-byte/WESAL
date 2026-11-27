@@ -1528,8 +1528,8 @@ class AuthRepositoryImpl @Inject constructor(
                         )
                     }
                 }.getOrNull()
-                if (uploadedPhotoUrl.isNotBlank()) {
-                    updates["photoUrl"] = uploadedPhotoUrl
+                uploadedPhotoUrl?.takeIf { it.isNotBlank() }?.let { uploadedUrl ->
+                    updates["photoUrl"] = uploadedUrl
                 }
             }
 

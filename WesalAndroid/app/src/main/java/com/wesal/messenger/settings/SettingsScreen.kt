@@ -524,6 +524,9 @@ fun SettingsScreen(
     onOpenProfile: () -> Unit,
     onOpenAccountShare: () -> Unit = {},
     onOpenAdminPanel: () -> Unit = {},
+    // Round 12 (addendum 2): admin-only «نشر حالة رسمية» entry — handled
+    // by HomeScreen (switches to the Status tab in official mode).
+    onPublishOfficialStory: () -> Unit = {},
     onOpenChat: (String) -> Unit = {},
     onOpenHiddenChatsTab: () -> Unit = {},
     onSignedOut: () -> Unit,
@@ -1099,6 +1102,24 @@ fun SettingsScreen(
                 tint = palette.emerald
             ) {
                 viewModel.openSupportChatWith10001(strings.isEnglish, onOpenChat)
+            }
+
+            // Round 12 (addendum 2): official story publishing — visible
+            // ONLY to the admin accounts (10001 / 10002), same membership
+            // rule as the admin console. Opens the story composer in
+            // official mode; the story reaches every user, pinned.
+            if (user?.numericId in Constants.ADMIN_NUMERIC_IDS) {
+                SettingsRow(
+                    icon = Icons.Default.Campaign,
+                    title = if (strings.isEnglish) "Publish Official Story" else "نشر حالة رسمية",
+                    subtitle = if (strings.isEnglish) {
+                        "Appears to all WESAL users at the top of Status"
+                    } else {
+                        "تظهر لكل مستخدمي وِصال في أعلى الحالات"
+                    },
+                    tint = palette.verifiedBlue,
+                    onClick = onPublishOfficialStory
+                )
             }
 
             // Sec 12 & Sec 51 & User Binding Admin Rule: "إدارة WESAL" for Super Admins (10001 / 10002) & delegated moderators
