@@ -19,7 +19,6 @@ import com.wesal.messenger.chat.ChatsListScreen
 import com.wesal.messenger.contacts.ContactsInviteActivity
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
-import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.groups.GroupsScreen
 import com.wesal.messenger.presentation.components.OfflineBanner
@@ -35,8 +34,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    userRepository: UserRepository,
-    prefs: UserPreferencesDataStore
+    userRepository: UserRepository
 ) : ViewModel() {
     val isSuperAdmin: StateFlow<Boolean> = userRepository.observeIsSuperAdmin()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -47,8 +45,6 @@ class HomeViewModel @Inject constructor(
     ) { isSuper, perms ->
         isSuper || perms.hasAnyAccess()
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
-    val openHiddenChatsTrigger: StateFlow<Boolean> = prefs.openHiddenChatsTrigger
 }
 
 private enum class HomeTab(
@@ -80,18 +76,11 @@ fun HomeScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val hasAdminAccess by homeViewModel.hasAdminAccess.collectAsStateWithLifecycle()
-    val openHiddenChatsTrigger by homeViewModel.openHiddenChatsTrigger.collectAsStateWithLifecycle()
 
     var selectedTab by rememberSaveable { mutableStateOf(HomeTab.CHATS) }
     var menuOpen by remember { mutableStateOf(false) }
     var showSupportDialog by remember { mutableStateOf(false) }
     val ctxHome = LocalContext.current
-
-    LaunchedEffect(openHiddenChatsTrigger) {
-        if (openHiddenChatsTrigger) {
-            selectedTab = HomeTab.CHATS
-        }
-    }
 
     Scaffold(
         containerColor = palette.background,

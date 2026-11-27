@@ -59,6 +59,8 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.wesal.messenger.R
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.settings.SessionRevokeNotice
+import com.wesal.messenger.settings.WesalCredentialVault
 import kotlinx.coroutines.launch
 
 private val LoginBg = Color(0xFF070B0D)
@@ -96,6 +98,12 @@ fun PhoneLoginScreen(
             viewModel.updateEmailInput(prefillEmail)
             viewModel.toggleSignUpMode(false)
         }
+    }
+
+    // §3.5: if this device's session was revoked from another device, the repository
+    // signed us out locally and left a one-shot explanation — show it exactly once.
+    LaunchedEffect(Unit) {
+        SessionRevokeNotice.consume(context)?.let { viewModel.setAuthError(it) }
     }
 
     LaunchedEffect(state.navigateToSupportChatId) {
@@ -488,6 +496,38 @@ fun PhoneLoginScreen(
                 }
             }
 
+            // 5b. "حفظ الدخول" — remember me (§3.1), default ON. When ON and email
+            // sign-in/sign-up succeeds, the credential is kept in the encrypted vault
+            // so this account can later be fast-switched from the saved accounts list.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { viewModel.toggleRememberMe(!state.rememberMe) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = state.rememberMe,
+                    onCheckedChange = viewModel::toggleRememberMe,
+                    colors = CheckboxDefaults.colors(
+                        checkedColor = LoginCyan,
+                        uncheckedColor = LoginTextSecondary,
+                        checkmarkColor = Color(0xFF041014)
+                    )
+                )
+                Text(
+                    text = if (strings.isEnglish) {
+                        "Keep me signed in (save login on this device)"
+                    } else {
+                        "حفظ الدخول على هذا الجهاز"
+                    },
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
             state.errorMessage?.let { err ->
                 Surface(
                     color = LoginError.copy(alpha = 0.14f),
@@ -679,8 +719,15 @@ fun PhoneLoginScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
+                                if (state.isLoading) return@clickable
                                 if (acc.provider == "google") {
                                     launchGooglePicker()
+                                } else if (acc.email.isNotBlank() &&
+                                    WesalCredentialVault.hasCredential(context, acc.email)
+                                ) {
+                                    // §3.2 fast switch: a stored credential exists, so
+                                    // sign in directly instead of only prefilling.
+                                    viewModel.switchToSavedAccount(acc)
                                 } else if (acc.email.isNotBlank()) {
                                     viewModel.toggleSignUpMode(false)
                                     viewModel.updateEmailInput(acc.email)

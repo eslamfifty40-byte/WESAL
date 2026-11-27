@@ -61,6 +61,19 @@ jobs:
         working-directory: ${{ steps.project.outputs.dir }}
         run: chmod +x gradlew
 
+      - name: Check TURN configuration (warning only, never fails the build)
+        env:
+          WESAL_TURN_URL: ${{ secrets.WESAL_TURN_URL }}
+          WESAL_TURN_USERNAME: ${{ secrets.WESAL_TURN_USERNAME }}
+          WESAL_TURN_CREDENTIAL: ${{ secrets.WESAL_TURN_CREDENTIAL }}
+        run: |
+          if [ -z "$WESAL_TURN_URL" ]; then
+            echo "::warning title=TURN is not configured::The WESAL_TURN_URL repository secret is empty, so this build is STUN-only: voice/video calls may fail on mobile data (carrier NAT blocks STUN-only WebRTC). Add the WESAL_TURN_URL, WESAL_TURN_USERNAME and WESAL_TURN_CREDENTIAL secrets in the repository settings to enable TURN."
+            echo "تنبيه: خدمة TURN غير مضبوطة في هذه النسخة — سرّ WESAL_TURN_URL فارغ، لذلك ستعتمد المكالمات على STUN فقط وقد لا يعمل الصوت أو الفيديو عبر بيانات الهاتف. أضف الأسرار WESAL_TURN_URL وWESAL_TURN_USERNAME وWESAL_TURN_CREDENTIAL في إعدادات المستودع لتفعيل TURN."
+          else
+            echo "TURN is configured for this build (secret values are never printed)."
+          fi
+
       - name: Clean Gradle project
         working-directory: ${{ steps.project.outputs.dir }}
         run: ./gradlew :app:clean --no-daemon --max-workers=1

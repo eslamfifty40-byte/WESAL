@@ -187,6 +187,23 @@ data class GlobalAppearanceConfig(
     val updatedByUid: String = ""
 )
 
+/**
+ * Forced/soft app-update policy, read live from `system_config/app_update`
+ * (written only from the admin panel). Defaults are fail-open: a missing doc,
+ * a listener error or `enabled = false` means no update UI is ever shown.
+ */
+data class AppUpdateConfig(
+    val enabled: Boolean = false,
+    val latestVersionCode: Int = 0,
+    val minSupportedVersionCode: Int = 0,
+    val apkUrl: String = "",
+    val messageAr: String = "",
+    val messageEn: String = "",
+    val mandatory: Boolean = false,
+    val updatedAt: Long = 0L,
+    val updatedByUid: String = ""
+)
+
 data class SubscriptionRequest(
     val requestId: String = "",
     val userUid: String = "",
@@ -245,6 +262,9 @@ data class WesalUser(
     val frameId: String = "",
     val frameUrl: String = "",
     val frameExpiresAt: Long = 0L, // 0 = permanent
+    // Frames an admin has granted this account over time. The owner may re-apply any of
+    // these (or no frame) from the profile picker; firestore.rules enforces the same list.
+    val grantedFrameIds: List<String> = emptyList(),
     val iconId: String = "",
     val iconUrl: String = "",
     val photoRemovedBg: Boolean = false,

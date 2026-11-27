@@ -4,6 +4,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import com.google.firebase.FirebaseNetworkException
 import com.google.firebase.FirebaseTooManyRequestsException
 import com.google.firebase.auth.EmailAuthProvider
@@ -32,9 +33,18 @@ import com.wesal.messenger.domain.model.SystemWelcomeConfig
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.security.E2EECryptoManager
+import com.wesal.messenger.settings.SessionRevokeNotice
+import com.wesal.messenger.settings.WesalCredentialVault
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.tasks.await
@@ -56,6 +66,30 @@ class AuthRepositoryImpl @Inject constructor(
     private val database: WesalDatabase,
     private val cryptoManager: E2EECryptoManager
 ) : AuthRepository {
+
+    private companion object {
+        const val TAG = "AuthRepository"
+        const val SESSION_HEARTBEAT_MS = 5 * 60_000L
+        const val LEGACY_SESSION_STALE_MS = 7 * 24 * 60 * 60_000L
+    }
+
+    /**
+     * Application-scope for post-auth side effects. Sign-in must return as soon as the
+     * user is authenticated and the skeleton exists; everything else (session
+     * registration, FCM token, welcome chat, session guard) runs here, bounded,
+     * fire-and-forget — never on the spinner's critical path.
+     */
+    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** True while THIS device is signing out on purpose, so the session self-check
+     *  does not mistake our own sign-out cleanup for a remote revocation (§3.5). */
+    @Volatile
+    private var manualSignOutInProgress = false
+
+    @Volatile
+    private var sessionGuardUid: String? = null
+    private var sessionGuardJob: Job? = null
+    private var sessionDocRegistration: com.google.firebase.firestore.ListenerRegistration? = null
 
     override val currentUserId: String?
         get() = auth.currentUser?.uid
@@ -83,9 +117,11 @@ class AuthRepositoryImpl @Inject constructor(
         val canonicalId = "email_${PhoneUtils.sha256Hash(clean)}"
         val legacyId = PhoneUtils.sha256Hash("email:$clean")
         val col = firestore.collection(Constants.COLLECTION_BANNED_IDENTIFIERS)
-        val snap = runCatching { col.document(canonicalId).get().await() }.getOrNull()
+        // Bounded reads (awaitBounded): these run BEFORE the password is even checked, so a
+        // stalled stream must fail open (not banned) instead of freezing the login spinner.
+        val snap = runCatching { col.document(canonicalId).get().awaitBounded() }.getOrNull()
             ?.takeIf { it.exists() }
-            ?: runCatching { col.document(legacyId).get().await() }.getOrNull()
+            ?: runCatching { col.document(legacyId).get().awaitBounded() }.getOrNull()
                 ?.takeIf { it.exists() }
             ?: return false to ""
         val type = snap.getString("type").orEmpty()
@@ -104,8 +140,9 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     private suspend fun assertUserNotBannedOrSignOut(uid: String) {
+        // Bounded read: on timeout/failure this check is skipped rather than hanging sign-in.
         val snap = runCatching {
-            firestore.collection(Constants.COLLECTION_USERS).document(uid).get().await()
+            firestore.collection(Constants.COLLECTION_USERS).document(uid).get().awaitBounded()
         }.getOrNull() ?: return
         val deletedAt = snap.getLong("deletedAt") ?: 0L
         val deletedPermanent = snap.getBoolean("deletedPermanent") ?: false
@@ -128,7 +165,7 @@ class AuthRepositoryImpl @Inject constructor(
                             "banExpiresAt" to 0L
                         ),
                         SetOptions.merge()
-                    ).await()
+                    ).awaitQueued()
                 }
             } else {
                 auth.signOut()
@@ -171,12 +208,13 @@ class AuthRepositoryImpl @Inject constructor(
                 provider = "google"
             )
             prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
-            registerDeviceSession(firebaseUser.uid)
-            syncFcmToken()
-            if (!needsSetup) {
-                runCatching { sendSingleOfficialWelcomeIfNeeded(firebaseUser.uid, firebaseUser.displayName.orEmpty()) }
-            }
+            // Success returns NOW. Session registration, FCM token sync and the official
+            // welcome chat moved to bounded fire-and-forget (launchPostAuthTail): they used
+            // raw unbounded awaits and froze the spinner long after the user was signed in.
+            launchPostAuthTail(firebaseUser.uid, firebaseUser.displayName.orEmpty(), needsSetup)
             Result.success(needsSetup)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(Exception(mapSparkAuthMessage(e, "تعذر تسجيل الدخول عبر Google"), e))
         }
@@ -210,12 +248,11 @@ class AuthRepositoryImpl @Inject constructor(
                 provider = "email"
             )
             prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
-            registerDeviceSession(firebaseUser.uid)
-            syncFcmToken()
-            if (!needsSetup) {
-                runCatching { sendSingleOfficialWelcomeIfNeeded(firebaseUser.uid, firebaseUser.displayName.orEmpty()) }
-            }
+            // Success returns NOW — see launchPostAuthTail (bounded fire-and-forget tail).
+            launchPostAuthTail(firebaseUser.uid, firebaseUser.displayName.orEmpty(), needsSetup)
             Result.success(needsSetup)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(Exception(mapSparkAuthMessage(e, "فشل تسجيل الدخول بالبريد الإلكتروني"), e))
         }
@@ -238,13 +275,17 @@ class AuthRepositoryImpl @Inject constructor(
             if (previousUid != null && previousUid != firebaseUser.uid) {
                 clearActiveSessionForSwitch(previousUid)
             }
-            runCatching { firebaseUser.sendEmailVerification().await() }
+            // Bounded: verification email + auth profile update are best-effort and must
+            // never hold account creation hostage on a slow connection.
+            withTimeoutOrNull(5_000L) { runCatching { firebaseUser.sendEmailVerification().await() } }
             if (fullName.isNotBlank()) {
-                runCatching {
-                    val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
-                        .setDisplayName(fullName.trim())
-                        .build()
-                    firebaseUser.updateProfile(profileUpdates).await()
+                withTimeoutOrNull(5_000L) {
+                    runCatching {
+                        val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                            .setDisplayName(fullName.trim())
+                            .build()
+                        firebaseUser.updateProfile(profileUpdates).await()
+                    }
                 }
             }
             val needsSetup = ensureUserSkeletonExists(
@@ -257,9 +298,12 @@ class AuthRepositoryImpl @Inject constructor(
                 provider = "email"
             )
             prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
-            registerDeviceSession(firebaseUser.uid)
-            syncFcmToken()
+            // Success returns NOW — session/FCM run in the bounded fire-and-forget tail.
+            // (No welcome here: completeUserProfile delivers it, as before.)
+            launchPostAuthTail(firebaseUser.uid, fullName.trim(), needsSetup, includeWelcome = false)
             Result.success(needsSetup)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.failure(Exception(mapSparkAuthMessage(e, "تعذر إنشاء الحساب"), e))
         }
@@ -293,18 +337,52 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 
-    private suspend fun isGlobalCustomerFrameEnabled(): Boolean {
-        // Bounded: this fetch sits on the registration path and must never stall sign-in;
-        // on timeout/failure the historical default (enabled) applies.
+    private data class GlobalCustomerDefaults(
+        val enabled: Boolean,
+        val frameId: String,
+        val iconId: String,
+        val iconUrl: String
+    )
+
+    /**
+     * Single reader for the admin-configured customer defaults, from
+     * `system_config/global_appearance` — the document the admin panel actually
+     * writes (setGlobalCustomerDefaults / setGlobalCustomerFrameEnabled) and that
+     * UserRepositoryImpl observes. This replaces the old reader of
+     * `system_config/admin_settings`, a document NOTHING in the codebase ever
+     * writes, which made the toggle silently default to ON forever and ignored
+     * the admin's chosen default frame/icon at registration/profile completion.
+     *
+     * Bounded: this fetch sits on the registration path and must never stall
+     * sign-in; on timeout/failure the historical default (enabled, default
+     * all-customers frame, no icon) applies.
+     */
+    private suspend fun readGlobalCustomerDefaults(): GlobalCustomerDefaults {
         val snap = withTimeoutOrNull(5_000L) {
             runCatching {
                 firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
-                    .document("admin_settings")
+                    .document("global_appearance")
                     .get()
                     .await()
             }.getOrNull()
         }
-        return snap?.getBoolean("globalCustomerFrameEnabled") ?: true
+        if (snap == null || !snap.exists()) {
+            return GlobalCustomerDefaults(
+                enabled = true,
+                frameId = WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID,
+                iconId = "",
+                iconUrl = ""
+            )
+        }
+        val frameId = snap.getString("defaultFrameId").orEmpty()
+            .ifBlank { snap.getString("defaultCustomerFrameId").orEmpty() }
+            .ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID }
+        return GlobalCustomerDefaults(
+            enabled = snap.getBoolean("globalCustomerFrameEnabled") ?: true,
+            frameId = frameId,
+            iconId = snap.getString("defaultCustomerIconId").orEmpty(),
+            iconUrl = snap.getString("defaultCustomerIconUrl").orEmpty()
+        )
     }
 
     private suspend fun allocateUniqueNumericId(uid: String, email: String = auth.currentUser?.email.orEmpty()): String {
@@ -412,8 +490,8 @@ class AuthRepositoryImpl @Inject constructor(
 
         if (!snapshot.exists()) {
             val uniquePublicId = WesalIdUtils.generateDefault(uid)
-            val applyGlobalFrame = isGlobalCustomerFrameEnabled()
-            val initialFrame = if (applyGlobalFrame) WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID else ""
+            val globalDefaults = readGlobalCustomerDefaults()
+            val initialFrame = if (globalDefaults.enabled) globalDefaults.frameId else ""
             val isSecondaryAdmin = Constants.SECONDARY_ADMIN_EMAIL.equals(email.trim(), ignoreCase = true)
             val newUserMap = hashMapOf(
                 "uid" to uid,
@@ -431,6 +509,8 @@ class AuthRepositoryImpl @Inject constructor(
                 "birthDate" to "",
                 "frameId" to initialFrame,
                 "frameExpiresAt" to 0L,
+                "iconId" to if (globalDefaults.enabled) globalDefaults.iconId else "",
+                "iconUrl" to if (globalDefaults.enabled) globalDefaults.iconUrl else "",
                 "hiddenFromSearch" to isSecondaryAdmin,
                 "profileCompleted" to false,
                 "welcomeSent" to false,
@@ -567,7 +647,8 @@ class AuthRepositoryImpl @Inject constructor(
                     val req = com.google.firebase.auth.UserProfileChangeRequest.Builder()
                         .setDisplayName(resolvedName)
                         .build()
-                    auth.currentUser?.updateProfile(req)?.await()
+                    // Bounded (awaitQueued): cosmetic profile sync must not stall sign-in.
+                    auth.currentUser?.updateProfile(req)?.awaitQueued(4_000L)
                 }
             }
             // Grandfathered existing completed accounts stay logged in if they already completed onboarding or have mandatory fields filled
@@ -706,11 +787,22 @@ class AuthRepositoryImpl @Inject constructor(
                 "lastHeartbeatAt" to System.currentTimeMillis()
             )
 
-            // Assign default global customer frame if user has none and global option enabled
+            // Assign the admin-configured global customer frame/icon if the user has
+            // none and the global option is enabled (single global_appearance reader).
             val currentFrameId = existingSnap.getString("frameId").orEmpty()
-            if (currentFrameId.isBlank() && isGlobalCustomerFrameEnabled()) {
-                updates["frameId"] = WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID
-                updates["frameExpiresAt"] = 0L
+            val currentIconId = existingSnap.getString("iconId").orEmpty()
+            if (currentFrameId.isBlank() || currentIconId.isBlank()) {
+                val globalDefaults = readGlobalCustomerDefaults()
+                if (globalDefaults.enabled) {
+                    if (currentFrameId.isBlank()) {
+                        updates["frameId"] = globalDefaults.frameId
+                        updates["frameExpiresAt"] = 0L
+                    }
+                    if (currentIconId.isBlank() && globalDefaults.iconId.isNotBlank()) {
+                        updates["iconId"] = globalDefaults.iconId
+                        updates["iconUrl"] = globalDefaults.iconUrl
+                    }
+                }
             }
 
             if (!wesalId.isNullOrBlank()) {
@@ -771,6 +863,7 @@ class AuthRepositoryImpl @Inject constructor(
             prefs.setLocationState(locationGranted, locationGraceStartedAt)
             // Side effects (token + session registration) are bounded and best-effort here:
             // they must never block profile completion.
+            startSessionGuard(uid)
             withTimeoutOrNull(8_000L) { runCatching { syncFcmToken() } }
             withTimeoutOrNull(8_000L) { runCatching { registerDeviceSession(uid) } }
 
@@ -914,8 +1007,26 @@ class AuthRepositoryImpl @Inject constructor(
                 .document(uid)
                 .collection(Constants.COLLECTION_SESSIONS)
             sessionsCol.document(sessionId).set(sessionData, SetOptions.merge()).awaitQueued()
+            // §3.5: prune LEGACY duplicate session docs for this device (older builds used
+            // non-stable ids, so one phone could appear several times). Conservative on
+            // purpose: only same-device-name docs with a legacy (non "dev_") id that have
+            // been inactive for over a week — never the current doc, never link tokens,
+            // never another (possibly identical-model) phone's live session.
+            runCatching {
+                val staleBefore = System.currentTimeMillis() - LEGACY_SESSION_STALE_MS
+                sessionsCol.get().awaitBounded(8_000L).documents
+                    .filter { doc ->
+                        doc.id != sessionId &&
+                            !doc.id.startsWith("link_") &&
+                            !doc.id.startsWith("dev_") &&
+                            (doc.getString("deviceName") ?: "") == deviceName &&
+                            (doc.getLong("lastActiveAt") ?: 0L) < staleBefore
+                    }
+                    .take(5)
+                    .forEach { doc -> runCatching { doc.reference.delete().awaitQueued() } }
+            }
             val activeCount = runCatching {
-                sessionsCol.get().await().documents.count { !it.id.startsWith("link_") }
+                sessionsCol.get().awaitBounded(8_000L).documents.count { !it.id.startsWith("link_") }
             }.getOrDefault(1).coerceAtLeast(1)
             firestore.collection(Constants.COLLECTION_USERS)
                 .document(uid)
@@ -926,11 +1037,132 @@ class AuthRepositoryImpl @Inject constructor(
                         "activeSessionsCount" to activeCount
                     ),
                     SetOptions.merge()
-                ).await()
+                ).awaitQueued()
+        }
+    }
+
+    /**
+     * Bounded fire-and-forget tail for a successful sign-in/sign-up. The caller returns
+     * Result.success immediately; these side effects (session registration, FCM token,
+     * official welcome chat) each run in the app scope with their own timeout and only
+     * ever log failures. This is the fix for the round-1 miss: the tail used to run
+     * BEFORE success was returned, with raw unbounded awaits (PERF_AUTH §D2 #3/#4/#5).
+     */
+    private fun launchPostAuthTail(
+        uid: String,
+        displayName: String,
+        needsSetup: Boolean,
+        includeWelcome: Boolean = true
+    ) {
+        manualSignOutInProgress = false
+        startSessionGuard(uid)
+        runTailBounded(12_000L) { registerDeviceSession(uid) }
+        runTailBounded(10_000L) { syncFcmToken() }
+        if (includeWelcome && !needsSetup) {
+            runTailBounded(15_000L) { sendSingleOfficialWelcomeIfNeeded(uid, displayName) }
+        }
+    }
+
+    private fun runTailBounded(timeoutMs: Long, block: suspend () -> Unit) {
+        appScope.launch {
+            withTimeoutOrNull(timeoutMs) {
+                try {
+                    block()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "post-auth side effect failed: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Session guard for the signed-in device (§3.5), started after every sign-in:
+     * (a) a throttled heartbeat keeps THIS session doc's lastActiveAt fresh — the
+     *     presence heartbeat only touches the user doc, so session activity went stale;
+     * (b) a revocation self-check: if our own session doc disappears while we are
+     *     signed in and did NOT sign out manually, the session was ended from another
+     *     device — sign out locally and leave a one-shot message for the login screen.
+     */
+    private fun startSessionGuard(uid: String) {
+        if (uid.isBlank()) return
+        if (sessionGuardUid == uid && sessionGuardJob?.isActive == true) return
+        stopSessionGuard()
+        sessionGuardUid = uid
+        sessionGuardJob = appScope.launch {
+            val sessionId = runCatching { prefs.getOrCreateDeviceSessionId() }.getOrNull().orEmpty()
+            if (sessionId.isBlank()) return@launch
+            val sessionRef = firestore.collection(Constants.COLLECTION_USERS)
+                .document(uid)
+                .collection(Constants.COLLECTION_SESSIONS)
+                .document(sessionId)
+            val seenExisting = java.util.concurrent.atomic.AtomicBoolean(false)
+            sessionDocRegistration = sessionRef.addSnapshotListener { snap, _ ->
+                if (snap == null) return@addSnapshotListener
+                if (snap.exists()) {
+                    seenExisting.set(true)
+                } else if (seenExisting.get() && !manualSignOutInProgress &&
+                    auth.currentUser?.uid == uid
+                ) {
+                    onOwnSessionRevoked(uid)
+                }
+            }
+            try {
+                while (isActive) {
+                    delay(SESSION_HEARTBEAT_MS)
+                    if (auth.currentUser?.uid != uid) break
+                    runCatching {
+                        sessionRef.set(
+                            mapOf(
+                                "sessionId" to sessionId,
+                                "lastActiveAt" to System.currentTimeMillis()
+                            ),
+                            SetOptions.merge()
+                        ).awaitQueued(10_000L)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            }
+        }
+    }
+
+    private fun stopSessionGuard() {
+        sessionDocRegistration?.remove()
+        sessionDocRegistration = null
+        sessionGuardJob?.cancel()
+        sessionGuardJob = null
+        sessionGuardUid = null
+    }
+
+    private fun onOwnSessionRevoked(uid: String) {
+        if (manualSignOutInProgress) return
+        manualSignOutInProgress = true
+        stopSessionGuard()
+        SessionRevokeNotice.stash(
+            context,
+            "تم إنهاء جلسة هذا الجهاز من جهاز آخر، سجّل الدخول مرة أخرى للمتابعة"
+        )
+        appScope.launch {
+            // Local-only sign-out: the session doc is already gone server-side, so skip
+            // the server cleanup and just drop local state, mirroring signOut()'s local half.
+            runCatching { prefs.clearUserSessionState() }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    database.wesalDao().clearAllChats()
+                    database.wesalDao().clearAllMessages()
+                }
+            }
+            runCatching { auth.signOut() }
         }
     }
 
     override suspend fun signOut(): Result<Unit> {
+        // Mark FIRST: sign-out cleanup deletes our own session doc, and the §3.5
+        // self-check must not read that as a remote revocation.
+        manualSignOutInProgress = true
+        stopSessionGuard()
         return try {
             val uid = currentUserId
             if (uid != null) {
@@ -962,7 +1194,8 @@ class AuthRepositoryImpl @Inject constructor(
                 }
             }
 
-            runCatching { messaging.deleteToken().await() }
+            // Bounded: FCM token deletion is best-effort and must never delay local sign-out.
+            runCatching { withTimeoutOrNull(3_000L) { messaging.deleteToken().await() } }
             runCatching {
                 androidx.credentials.CredentialManager.create(context)
                     .clearCredentialState(androidx.credentials.ClearCredentialStateRequest())
@@ -980,6 +1213,8 @@ class AuthRepositoryImpl @Inject constructor(
 
             auth.signOut()
             Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             runCatching { prefs.clearUserSessionState() }
             runCatching {
@@ -1194,16 +1429,21 @@ class AuthRepositoryImpl @Inject constructor(
 
     override suspend fun removeSavedAccount(uid: String) {
         prefs.removeSavedAccount(uid)
+        // Removing a saved account also deletes its stored login credential (§3.2),
+        // so a removed account can never be fast-switched back in.
+        WesalCredentialVault.removeByUid(context, uid)
     }
 
     override suspend fun clearActiveSessionForSwitch(previousUid: String?) {
         val uid = previousUid ?: currentUserId
         if (uid != null) {
             runCatching {
+                // Bounded (awaitQueued): presence-off for the previous account is
+                // best-effort and must not stall the incoming sign-in during a switch.
                 firestore.collection(Constants.COLLECTION_USERS)
                     .document(uid)
                     .update(mapOf("isOnline" to false, "lastSeen" to FieldValue.serverTimestamp()))
-                    .await()
+                    .awaitQueued()
             }
         }
         runCatching {

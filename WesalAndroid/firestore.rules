@@ -69,6 +69,11 @@ service cloud.firestore {
     function isCurrentlyBanned() {
       return isSignedIn() &&
         !isSuperAdmin() &&
+        // Active moderators are exempt too (round-2 fix): the staff system already
+        // forbids banning them in the client, and without this exemption a stale
+        // isBanned flag on a moderator doc silently killed every moderated surface
+        // (chats/calls) while their admin panel kept working.
+        !isActiveModerator() &&
         exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('isBanned', false) == true &&
         (
@@ -183,6 +188,36 @@ service cloud.firestore {
       allow create, update, delete: if isSignedIn();
     }
 
+    // Round-2 §9.4/9.5: moderator writes to a user doc are FIELD-SCOPED. A write is
+    // allowed only when EVERY changed key belongs to the field set of at least one
+    // permission the moderator actually holds. The sets mirror exactly what the
+    // client moderator flows write (UserRepositoryImpl: verification grant/revoke,
+    // setAccountFrame/setAccountIcon/setAccountNeonStyle/setAccountNameplateColor,
+    // banUser/warnUser/setAccountHiddenFromSearch/adminDeleteUser soft path, and
+    // the setGlobalCustomerDefaults batch for theme-delegated moderators).
+    // Previously ANY active moderator could rewrite ANY field of any
+    // non-protected user document.
+    function moderatorUserUpdateAllowed() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return (
+        (hasModPermission('canManageVerification') && changed.hasOnly([
+          'isVerified', 'verifiedByUid', 'verifiedAt', 'verificationNote',
+          'verificationType', 'verificationGlowColor', 'verificationGlowEnabled',
+          'verificationGlowIntensity', 'verificationExpiresAt'
+        ])) ||
+        ((hasModPermission('canManageFramesAndNeon') || hasModPermission('canCustomizeGlobalTheme')) && changed.hasOnly([
+          'frameId', 'frameUrl', 'frameExpiresAt', 'grantedFrameIds',
+          'iconId', 'iconUrl',
+          'neonEnabled', 'neonColor', 'neonGlowIntensity', 'nameplateColor'
+        ])) ||
+        (hasModPermission('canManageUsersModeration') && changed.hasOnly([
+          'isBanned', 'banType', 'banReason', 'banExpiresAt', 'warningsCount',
+          'hiddenFromSearch', 'hideFromSearchReason', 'hiddenAt', 'hiddenByUid',
+          'deletedAt', 'deletedPermanent', 'isOnline'
+        ]))
+      );
+    }
+
     // Users collection
     match /users/{userId} {
       allow read: if isSignedIn();
@@ -195,44 +230,76 @@ service cloud.firestore {
         isOwner(userId) &&
         (
           isSuperAdmin() ||
-          !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-            'isVerified',
-            'verifiedByUid',
-            'verifiedAt',
-            'verificationNote',
-            'verificationType',
-            'verificationGlowColor',
-            'verificationGlowEnabled',
-            'verificationGlowIntensity',
-            'verificationExpiresAt',
-            'frameId',
-            'frameUrl',
-            'frameExpiresAt',
-            'neonEnabled',
-            'neonColor',
-            'neonGlowIntensity',
-            'adminPermissions',
-            'isBanned',
-            'banType',
-            'banReason',
-            'banExpiresAt',
-            'warningsCount',
-            'hiddenFromSearch',
-            'hideFromSearchReason',
-            'hiddenAt',
-            'hiddenByUid'
-          ])
+          (
+            // The owner may not touch any admin-managed field. grantedFrameIds is
+            // protected outright: only admin/mod grant flows may extend it.
+            !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+              'isVerified',
+              'verifiedByUid',
+              'verifiedAt',
+              'verificationNote',
+              'verificationType',
+              'verificationGlowColor',
+              'verificationGlowEnabled',
+              'verificationGlowIntensity',
+              'verificationExpiresAt',
+              'frameUrl',
+              'neonEnabled',
+              'neonColor',
+              'neonGlowIntensity',
+              'adminPermissions',
+              'isBanned',
+              'banType',
+              'banReason',
+              'banExpiresAt',
+              'warningsCount',
+              'hiddenFromSearch',
+              'hideFromSearchReason',
+              'hiddenAt',
+              'hiddenByUid',
+              'grantedFrameIds'
+            ]) &&
+            // Frame self-pick carve-out (round 2): frameId/frameExpiresAt are NOT
+            // in the protected list above; instead the owner may change them ONLY
+            // to clear the frame, or to (re)apply a frame an admin granted them
+            // (present in the doc's grantedFrameIds), or to keep the frame already
+            // worn (legacy grants predate the list). Any other frame stays
+            // admin-only, exactly like the client-side setOwnFrame() check.
+            (
+              !request.resource.data.diff(resource.data).affectedKeys().hasAny(['frameId', 'frameExpiresAt']) ||
+              request.resource.data.get('frameId', '') == '' ||
+              request.resource.data.get('frameId', '') in resource.data.get('grantedFrameIds', []) ||
+              request.resource.data.get('frameId', '') == resource.data.get('frameId', '') ||
+              // The built-in all-customers default frame id: it is BY DESIGN the
+              // frame every customer may wear (and the client reader's fallback
+              // when the config doc was never written), so wearing it is never
+              // a self-grant of a restricted frame.
+              request.resource.data.get('frameId', '') == 'all_customers' ||
+              // Review fix (round-2 pass 1): completeUserProfile() stamps the
+              // admin-configured GLOBAL default frame into the same owner update
+              // when the worn frame is blank. That default is neither granted
+              // nor previously worn, so without this arm the whole profile
+              // update was denied for blank-frame users. The arm only ever
+              // allows the exact configured default (never an arbitrary frame)
+              // and only while the global toggle is enabled in the config doc
+              // the admin panel writes.
+              (
+                exists(/databases/$(database)/documents/system_config/global_appearance) &&
+                get(/databases/$(database)/documents/system_config/global_appearance).data.get('globalCustomerFrameEnabled', false) == true &&
+                (
+                  request.resource.data.get('frameId', '') == get(/databases/$(database)/documents/system_config/global_appearance).data.get('defaultCustomerFrameId', '') ||
+                  request.resource.data.get('frameId', '') == get(/databases/$(database)/documents/system_config/global_appearance).data.get('defaultFrameId', '')
+                )
+              )
+            )
+          )
         )
       ) || (
         isSuperAdmin()
       ) || (
         !isProtectedAdminTarget(userId) &&
-        isActiveModerator() && (
-          hasModPermission('canManageVerification') ||
-          hasModPermission('canManageFramesAndNeon') ||
-          hasModPermission('canManageUsersModeration') ||
-          hasModPermission('canManageReports')
-        )
+        isActiveModerator() &&
+        moderatorUserUpdateAllowed()
       );
       allow delete: if isSuperAdmin() && !isProtectedAdminTarget(userId);
 
@@ -243,6 +310,20 @@ service cloud.firestore {
       match /private/{docId} {
         allow read, write, delete: if isOwner(userId) || isSuperAdmin() || hasModPermission('canInspectPrivateData');
       }
+    }
+
+    // Deleted-account tombstones (spec §10.2): deleteAccountPermanently() writes one
+    // doc per permanently deleted account (uid, numericId, publicId, deletedBy,
+    // deletedAt, reason) so a deletion stays auditable after the user doc is gone.
+    // The client write happens in the deleting admin's auth context (super admin —
+    // the repository flow is super-admin-only), so create mirrors that; moderators
+    // with user-moderation permission may also create/read for their flows.
+    // Tombstones are immutable for everyone except the super admin.
+    match /deleted_accounts/{docId} {
+      allow read: if isSuperAdmin() || hasModPermission('canManageUsersModeration');
+      allow create: if isSuperAdmin() || hasModPermission('canManageUsersModeration');
+      allow update: if false;
+      allow delete: if isSuperAdmin();
     }
 
     // Contact Requests & Friendship Gating

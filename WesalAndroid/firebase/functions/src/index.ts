@@ -1,9 +1,17 @@
 import * as admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 
 admin.initializeApp();
-const db = admin.firestore();
+
+// The Android app uses this NAMED Firestore database (AppDiModule.kt / firebase.json),
+// NOT the (default) database. Every Firestore trigger below must pass it via the
+// `database` option — without it, v2 triggers bind to the (default) database only and
+// never fire for real app data (this is why killed-app callees got no call push and
+// admins got no request alerts). Handler reads/writes must use the same database.
+const FIRESTORE_DATABASE_ID = "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424";
+const db = getFirestore(admin.app(), FIRESTORE_DATABASE_ID);
 
 const SUPER_ADMIN_EMAIL = "eslamfifty40@gmail.com";
 const OWNER_NUMERIC_ID = "10001";
@@ -22,7 +30,7 @@ async function verifyOwnerSuperAdmin(uid: string, tokenEmail?: string): Promise<
 }
 
 export const onNewMessagePush = onDocumentCreated(
-  "chats/{chatId}/messages/{messageId}",
+  { document: "chats/{chatId}/messages/{messageId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const msg = event.data?.data();
     if (!msg) return;
@@ -73,7 +81,7 @@ export const onNewMessagePush = onDocumentCreated(
 );
 
 export const onIncomingCallPush = onDocumentCreated(
-  "calls/{callId}",
+  { document: "calls/{callId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const call = event.data?.data();
     if (!call || (call.status !== "CONNECTING" && call.status !== "RINGING")) return;
@@ -105,7 +113,7 @@ export const onIncomingCallPush = onDocumentCreated(
 );
 
 export const onCallStateChanged = onDocumentUpdated(
-  "calls/{callId}",
+  { document: "calls/{callId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const before = event.data?.before.data();
     const after = event.data?.after.data();
@@ -118,7 +126,7 @@ export const onCallStateChanged = onDocumentUpdated(
 );
 
 export const onNewStoryPush = onDocumentCreated(
-  "stories/{storyId}",
+  { document: "stories/{storyId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const story = event.data?.data();
     if (!story) return;
@@ -166,7 +174,7 @@ export const onNewStoryPush = onDocumentCreated(
 );
 
 export const onNewChannelPostPush = onDocumentCreated(
-  "channels/{channelId}/posts/{postId}",
+  { document: "channels/{channelId}/posts/{postId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const post = event.data?.data();
     if (!post) return;
@@ -332,7 +340,7 @@ async function notifyAdmins(
 }
 
 export const onSubscriptionRequestCreated = onDocumentCreated(
-  "subscription_requests/{reqId}",
+  { document: "subscription_requests/{reqId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const req = event.data?.data();
     if (!req) return;
@@ -350,7 +358,7 @@ export const onSubscriptionRequestCreated = onDocumentCreated(
 );
 
 export const onReportCreated = onDocumentCreated(
-  "reports/{reportId}",
+  { document: "reports/{reportId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const rep = event.data?.data();
     if (!rep) return;
@@ -368,7 +376,7 @@ export const onReportCreated = onDocumentCreated(
 );
 
 export const onSupportTicketCreated = onDocumentCreated(
-  "support_tickets/{ticketId}",
+  { document: "support_tickets/{ticketId}", database: FIRESTORE_DATABASE_ID },
   async (event) => {
     const ticket = event.data?.data();
     if (!ticket) return;

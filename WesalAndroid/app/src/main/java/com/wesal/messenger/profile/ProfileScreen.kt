@@ -169,6 +169,38 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
+    /**
+     * §5.6 within the owner's admin-grant model: the user may re-apply any frame an
+     * admin already granted them, or remove it ("بدون إطار"). The write goes through
+     * setOwnFrame, which (like firestore.rules) only accepts a blank id or an id in
+     * the caller's grantedFrameIds; the picker never offers the wider library.
+     */
+    fun applyMyFrame(frameId: String, isEn: Boolean) {
+        if (currentUser.value == null) return
+        viewModelScope.launch {
+            _uiStatus.value = ProfileUiStatus(isSaving = true)
+            userRepository.setOwnFrame(frameId)
+                .onSuccess {
+                    _uiStatus.value = ProfileUiStatus(
+                        message = if (frameId.isBlank()) {
+                            if (isEn) "Frame removed" else "تمت إزالة الإطار"
+                        } else {
+                            if (isEn) "Frame applied" else "تم تطبيق الإطار"
+                        },
+                        isError = false,
+                        navigateBackOnSuccess = false
+                    )
+                }
+                .onFailure { err ->
+                    _uiStatus.value = ProfileUiStatus(
+                        message = err.localizedMessage ?: if (isEn) "Failed to update the frame" else "تعذر تحديث الإطار",
+                        isError = true,
+                        navigateBackOnSuccess = false
+                    )
+                }
+        }
+    }
+
     fun saveImages(photoUri: Uri?, coverUri: Uri?, isEn: Boolean) {
         if (!networkMonitor.isCurrentlyConnected()) {
             _uiStatus.value = ProfileUiStatus(
@@ -409,6 +441,7 @@ fun ProfileScreen(
     var showDeleteAvatarConfirm by remember { mutableStateOf(false) }
     var showDeleteCoverConfirm by remember { mutableStateOf(false) }
     var showCountryPicker by remember { mutableStateOf(false) }
+    var showMyFramePicker by remember { mutableStateOf(false) }
     var showBusinessHoursEditor by remember { mutableStateOf(false) }
     var showVisitorsSheet by remember { mutableStateOf(false) }
 
@@ -658,7 +691,11 @@ fun ProfileScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(64.dp))
+                    // §5.1: the framed avatar's real footprint is 1.38x its nominal size
+                    // (118dp -> ~163dp). A 160dp spacer below the cover leaves only a small
+                    // deliberate overlap at the cover's bottom edge, so the cover photo
+                    // stays clearly visible behind/above the framed avatar.
+                    Spacer(Modifier.height(160.dp))
                 }
 
                 Box(
@@ -673,7 +710,7 @@ fun ProfileScreen(
                     WesalAvatar(
                         imageUrl = selectedAvatarUri?.toString() ?: user?.photoUrl.orEmpty(),
                         name = name.ifBlank { "WESAL" },
-                        size = 136.dp,
+                        size = 118.dp,
                         frameId = user?.frameId.orEmpty(),
                         frameExpiresAt = user?.frameExpiresAt ?: 0L,
                         isCutout = user?.photoRemovedBg == true,
@@ -845,6 +882,31 @@ fun ProfileScreen(
                 Text(strings.shareAccountQr, color = palette.turquoise, fontWeight = FontWeight.Bold)
             }
 
+            // §5.6: "My Frame" — re-apply a granted frame or remove it (admin-grant model:
+            // frames themselves are granted from the admin panel only).
+            if (user != null) {
+                OutlinedButton(
+                    onClick = { showMyFramePicker = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, palette.border)
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = null, tint = palette.turquoise, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (strings.isEnglish) "My Frame" else "إطاري", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = if (user?.frameId.isNullOrBlank()) {
+                            if (strings.isEnglish) "(none)" else "(بدون إطار)"
+                        } else {
+                            if (strings.isEnglish) "(active)" else "(مفعّل)"
+                        },
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+
             // Basic Profile Fields
             OutlinedTextField(
                 colors = inputColors,
@@ -876,8 +938,19 @@ fun ProfileScreen(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = {
-                            clipboard.setText(AnnotatedString("@${publicId.trim()}"))
-                            Toast.makeText(context, "@${publicId.trim()}", Toast.LENGTH_SHORT).show()
+                            // §6.4: the "Copy ID" button copies the NUMERIC WESAL ID only.
+                            // (Copying the @username lives on the @handle row itself.)
+                            val numericId = user?.numericId.orEmpty().trim()
+                            if (numericId.isNotBlank()) {
+                                clipboard.setText(AnnotatedString(numericId))
+                                Toast.makeText(context, "ID: $numericId", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    if (strings.isEnglish) "Numeric ID is not available yet" else "المعرف الرقمي غير متاح بعد",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                         },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp)
@@ -1288,6 +1361,96 @@ fun ProfileScreen(
                 pendingRawUri?.let { raw -> launchCropFor(activeCropKind, raw) }
             },
             onCancel = { pendingPreviewUri = null }
+        )
+    }
+
+    if (showMyFramePicker) {
+        val myUser = user
+        val currentFrameId = myUser?.frameId.orEmpty()
+        // Granted frames ONLY (owner's admin-grant model): every frame an admin has
+        // ever granted this account (grantedFrameIds on the user doc) plus the frame
+        // currently worn, plus "no frame" below — never the whole library.
+        val grantedFrameIds = buildList {
+            myUser?.grantedFrameIds?.forEach { fid ->
+                if (fid.isNotBlank() && fid !in this) add(fid)
+            }
+            if (currentFrameId.isNotBlank() && currentFrameId !in this) add(currentFrameId)
+        }
+        AlertDialog(
+            onDismissRequest = { showMyFramePicker = false },
+            containerColor = palette.surface,
+            title = { Text(if (strings.isEnglish) "My Frame" else "إطاري", color = palette.textPrimary, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "Frames are granted by WESAL admins. You can re-apply your granted frame or remove it."
+                        } else {
+                            "الإطارات تمنحها إدارة WESAL. يمكنك إعادة تطبيق إطارك الممنوح أو إزالته."
+                        },
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    grantedFrameIds.forEach { fid ->
+                        val title = WesalFrameLibrary.docs[fid]?.titleAr?.takeIf { it.isNotBlank() }
+                            ?: WesalFrameCatalog.allFrames.firstOrNull { it.id == fid }?.titleAr
+                            ?: fid
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(palette.surfaceElevated)
+                                .clickable {
+                                    showMyFramePicker = false
+                                    viewModel.applyMyFrame(fid, strings.isEnglish)
+                                }
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            WesalAvatar(
+                                imageUrl = myUser?.photoUrl.orEmpty(),
+                                name = myUser?.displayName.orEmpty(),
+                                size = 44.dp,
+                                frameId = fid,
+                                frameExpiresAt = myUser?.frameExpiresAt ?: 0L
+                            )
+                            Text(title, color = palette.textPrimary, modifier = Modifier.weight(1f))
+                            if (fid == currentFrameId) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(20.dp))
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(palette.surfaceElevated)
+                            .clickable {
+                                showMyFramePicker = false
+                                viewModel.applyMyFrame("", strings.isEnglish)
+                            }
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        WesalAvatar(
+                            imageUrl = myUser?.photoUrl.orEmpty(),
+                            name = myUser?.displayName.orEmpty(),
+                            size = 44.dp,
+                            frameId = ""
+                        )
+                        Text(if (strings.isEnglish) "No frame" else "بدون إطار", color = palette.textPrimary, modifier = Modifier.weight(1f))
+                        if (currentFrameId.isBlank()) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showMyFramePicker = false }) { Text(strings.cancel) }
+            }
         )
     }
 

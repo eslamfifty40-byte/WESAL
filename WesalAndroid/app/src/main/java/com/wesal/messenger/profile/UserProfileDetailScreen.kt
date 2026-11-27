@@ -604,14 +604,17 @@ fun UserProfileDetailScreen(
                                 }
                             }
                         }
-                        Spacer(Modifier.height(64.dp))
+                        // §5.1: same geometry as the own-profile header — 160dp spacer
+                        // and a 118dp avatar (framed footprint ~163dp) so the cover stays
+                        // clearly visible with only a small overlap at its bottom edge.
+                        Spacer(Modifier.height(160.dp))
                     }
 
                     Box(modifier = Modifier.clickable(enabled = showAvatar) { fullscreenMediaUrl = target.photoUrl }) {
                         WesalAvatar(
                             imageUrl = if (showAvatar) target.photoUrl else "",
                             name = target.displayName.ifBlank { target.publicId },
-                            size = 136.dp,
+                            size = 118.dp,
                             isOnline = canSeeOnline && target.isOnline,
                             frameId = target.frameId,
                             frameExpiresAt = target.frameExpiresAt,

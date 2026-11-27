@@ -101,6 +101,23 @@ class UserPreferencesDataStore @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    @Volatile
+    private var secureVaultFailed = false
+
+    /**
+     * True only while the Keystore-backed EncryptedSharedPreferences is the live
+     * store. When vault creation fails, [secureVaultAvailable] is false and the
+     * store degrades to process memory only (see below) — callers that persist
+     * secrets (hidden-chats password setup) check this and fail closed with a
+     * visible error instead of storing anything unencrypted.
+     */
+    val secureVaultAvailable: Boolean
+        get() {
+            // Force the lazy store to initialise so a creation failure is reflected.
+            runCatching { encryptedPrefs }
+            return !secureVaultFailed
+        }
+
     private val encryptedPrefs: SharedPreferences by lazy {
         runCatching {
             val masterKey = MasterKey.Builder(context)
@@ -114,7 +131,15 @@ class UserPreferencesDataStore @Inject constructor(
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
         }.getOrElse {
-            context.getSharedPreferences("wesal_secure_vault_fallback", Context.MODE_PRIVATE)
+            // FAIL CLOSED (spec §8.4): the previous fallback persisted the PBKDF2
+            // hash + salt to a plain MODE_PRIVATE file ("wesal_secure_vault_fallback").
+            // That file is no longer read or written. Instead the vault degrades to
+            // a process-memory-only store: nothing sensitive ever touches disk
+            // unencrypted, hasHiddenChatsPassword() is false again after any process
+            // restart (hidden chats simply stay locked), and the Settings UI
+            // surfaces secureVaultAvailable == false when saving a password.
+            secureVaultFailed = true
+            InMemorySharedPreferences()
         }
     }
 
@@ -239,20 +264,14 @@ class UserPreferencesDataStore @Inject constructor(
     private val _hiddenChatsUnlockedSession = MutableStateFlow(false)
     val hiddenChatsUnlockedSession: StateFlow<Boolean> = _hiddenChatsUnlockedSession.asStateFlow()
 
-    private val _openHiddenChatsTrigger = MutableStateFlow(false)
-    val openHiddenChatsTrigger: StateFlow<Boolean> = _openHiddenChatsTrigger.asStateFlow()
-
     fun setHiddenChatsUnlockedSession(unlocked: Boolean) {
         _hiddenChatsUnlockedSession.value = unlocked
     }
 
-    fun requestOpenHiddenChats() {
-        _openHiddenChatsTrigger.value = true
-    }
-
-    fun consumeOpenHiddenChats() {
-        _openHiddenChatsTrigger.value = false
-    }
+    // Spec §8.2: there is intentionally NO "open hidden chats" trigger anymore.
+    // The only unlock path is typing the password into the chats search box
+    // (ChatsListViewModel.updateSearchQuery); the old Settings -> trigger ->
+    // unlock-dialog chain was removed with all of its consumers.
 
     fun normalizeHiddenPinInput(raw: String): String {
         val trimmed = raw.trim()
@@ -856,6 +875,78 @@ class UserPreferencesDataStore @Inject constructor(
         context.wesalDataStore.edit { prefs ->
             val uid = resolveActiveUid(prefs)
             prefs[strKey(uid, "personal_surface_preset")] = presetKey.ifBlank { "DEFAULT" }
+        }
+    }
+}
+
+/**
+ * Process-memory-only [SharedPreferences] used ONLY as the fail-closed degrade
+ * path when the Keystore-backed encrypted vault cannot be created (spec §8.4).
+ * Values live in a plain in-process map and vanish with the process — nothing is
+ * ever written to disk unencrypted. Change listeners are not supported (no
+ * caller of the vault relies on them).
+ */
+private class InMemorySharedPreferences : SharedPreferences {
+    private val map = mutableMapOf<String, Any?>()
+
+    override fun getAll(): Map<String, *> = map.toMap()
+    override fun getString(key: String, defValue: String?): String? = map[key] as? String ?: defValue
+
+    @Suppress("UNCHECKED_CAST")
+    override fun getStringSet(key: String, defValues: Set<String>?): Set<String>? =
+        (map[key] as? Set<String>) ?: defValues
+
+    override fun getInt(key: String, defValue: Int): Int = map[key] as? Int ?: defValue
+    override fun getLong(key: String, defValue: Long): Long = map[key] as? Long ?: defValue
+    override fun getFloat(key: String, defValue: Float): Float = map[key] as? Float ?: defValue
+    override fun getBoolean(key: String, defValue: Boolean): Boolean = map[key] as? Boolean ?: defValue
+    override fun contains(key: String): Boolean = map.containsKey(key)
+    override fun edit(): SharedPreferences.Editor = Editor()
+    override fun registerOnSharedPreferenceChangeListener(
+        listener: SharedPreferences.OnSharedPreferenceChangeListener?
+    ) = Unit
+
+    override fun unregisterOnSharedPreferenceChangeListener(
+        listener: SharedPreferences.OnSharedPreferenceChangeListener?
+    ) = Unit
+
+    private inner class Editor : SharedPreferences.Editor {
+        private val pending = mutableMapOf<String, Any?>()
+        private val removals = mutableSetOf<String>()
+        private var clearAll = false
+
+        override fun putString(key: String, value: String?): SharedPreferences.Editor =
+            apply { pending[key] = value; removals.remove(key) }
+
+        override fun putStringSet(key: String, values: Set<String>?): SharedPreferences.Editor =
+            apply { pending[key] = values?.toSet(); removals.remove(key) }
+
+        override fun putInt(key: String, value: Int): SharedPreferences.Editor =
+            apply { pending[key] = value; removals.remove(key) }
+
+        override fun putLong(key: String, value: Long): SharedPreferences.Editor =
+            apply { pending[key] = value; removals.remove(key) }
+
+        override fun putFloat(key: String, value: Float): SharedPreferences.Editor =
+            apply { pending[key] = value; removals.remove(key) }
+
+        override fun putBoolean(key: String, value: Boolean): SharedPreferences.Editor =
+            apply { pending[key] = value; removals.remove(key) }
+
+        override fun remove(key: String): SharedPreferences.Editor =
+            apply { removals.add(key); pending.remove(key) }
+
+        override fun clear(): SharedPreferences.Editor = apply { clearAll = true }
+
+        override fun commit(): Boolean {
+            apply()
+            return true
+        }
+
+        override fun apply() {
+            if (clearAll) map.clear()
+            removals.forEach { map.remove(it) }
+            pending.forEach { (k, v) -> if (v == null) map.remove(k) else map[k] = v }
         }
     }
 }

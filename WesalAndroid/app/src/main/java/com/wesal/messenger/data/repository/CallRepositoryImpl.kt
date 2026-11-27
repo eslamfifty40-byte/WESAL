@@ -1,9 +1,11 @@
 package com.wesal.messenger.data.repository
 
+import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentChange
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.domain.model.CallRecord
@@ -16,6 +18,9 @@ import com.wesal.messenger.domain.repository.CallRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -24,11 +29,43 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * UI-visible signaling error state for the call path.
+ *
+ * Firestore listener/write failures in call signaling used to be swallowed silently, which
+ * turned every server-side problem (rules denial, wrong database, offline) into a wordless
+ * "connecting…" hang. Failures are now logged AND posted here; CallActivity collects this
+ * flow and shows the message as the call status instead of hanging.
+ */
+object CallSignalingErrors {
+    const val SERVER_ERROR_MESSAGE = "حدثت مشكلة في الاتصال بالخادم…"
+
+    private val _error = MutableStateFlow<String?>(null)
+    val error: StateFlow<String?> = _error.asStateFlow()
+
+    fun report(message: String = SERVER_ERROR_MESSAGE) {
+        _error.value = message
+    }
+
+    fun clear() {
+        _error.value = null
+    }
+}
+
 @Singleton
 class CallRepositoryImpl @Inject constructor(
     private val auth: FirebaseAuth,
     private val firestore: FirebaseFirestore
 ) : CallRepository {
+
+    /**
+     * Signaling listener failures must never be silent: log them and surface a visible
+     * error state to the call UI (see [CallSignalingErrors]).
+     */
+    private fun onListenerError(where: String, err: FirebaseFirestoreException) {
+        Log.e(TAG, "Firestore listener error in $where: ${err.message}", err)
+        CallSignalingErrors.report()
+    }
 
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
@@ -46,7 +83,10 @@ class CallRepositoryImpl @Inject constructor(
                 val reg = firestore.collection(Constants.COLLECTION_CALLS)
                     .whereArrayContains("participants", uid)
                     .addSnapshotListener { snap, err ->
-                        if (err != null) return@addSnapshotListener
+                        if (err != null) {
+                            onListenerError("observeCallHistory", err)
+                            return@addSnapshotListener
+                        }
                         val list = snap?.documents?.mapNotNull { doc ->
                             val deletedFor = (doc.get("deletedForUsers") as? List<String>).orEmpty()
                             if (deletedFor.contains(uid)) return@mapNotNull null
@@ -87,7 +127,10 @@ class CallRepositoryImpl @Inject constructor(
                     .whereEqualTo("calleeId", uid)
                     .whereIn("status", listOf(CallStatus.CONNECTING.raw, CallStatus.RINGING.raw))
                     .addSnapshotListener { snap, err ->
-                        if (err != null) return@addSnapshotListener
+                        if (err != null) {
+                            onListenerError("observeIncomingCalls", err)
+                            return@addSnapshotListener
+                        }
                         val cutoff = System.currentTimeMillis() - 90_000L
                         val activeRing = snap?.documents
                             ?.mapNotNull { doc ->
@@ -126,7 +169,10 @@ class CallRepositoryImpl @Inject constructor(
         val reg = firestore.collection(Constants.COLLECTION_CALLS)
             .document(callId)
             .addSnapshotListener { doc, err ->
-                if (err != null) return@addSnapshotListener
+                if (err != null) {
+                    onListenerError("observeCall", err)
+                    return@addSnapshotListener
+                }
                 if (doc == null || !doc.exists()) {
                     trySend(null)
                     return@addSnapshotListener
@@ -284,7 +330,9 @@ class CallRepositoryImpl @Inject constructor(
         candidate: String,
         fromCaller: Boolean
     ) {
-        runCatching {
+        // The result must be checked: a silently dropped candidate write (rules denial,
+        // offline) makes ICE fail with no trace anywhere. Log every failure.
+        val result = runCatching {
             val data = mapOf(
                 "sdpMid" to sdpMid,
                 "sdpMLineIndex" to sdpMLineIndex,
@@ -298,6 +346,9 @@ class CallRepositoryImpl @Inject constructor(
                 .add(data)
                 .await()
         }
+        result.onFailure { e ->
+            Log.e(TAG, "addIceCandidate failed for call $callId (fromCaller=$fromCaller): ${e.message}", e)
+        }
     }
 
     override fun observeRemoteIceCandidates(callId: String, listenForCaller: Boolean): Flow<Triple<String, Int, String>> = callbackFlow {
@@ -305,7 +356,11 @@ class CallRepositoryImpl @Inject constructor(
             .document(callId)
             .collection(Constants.SUBCOLLECTION_CANDIDATES)
             .whereEqualTo("fromCaller", listenForCaller)
-            .addSnapshotListener { snap, _ ->
+            .addSnapshotListener { snap, err ->
+                if (err != null) {
+                    onListenerError("observeRemoteIceCandidates", err)
+                    return@addSnapshotListener
+                }
                 snap?.documentChanges?.forEach { change ->
                     if (change.type == DocumentChange.Type.ADDED) {
                         val doc = change.document
@@ -479,7 +534,10 @@ class CallRepositoryImpl @Inject constructor(
                 val reg = firestore.collection(Constants.COLLECTION_SCHEDULED_CALLS)
                     .whereArrayContains("participants", uid)
                     .addSnapshotListener { snap, err ->
-                        if (err != null) return@addSnapshotListener
+                        if (err != null) {
+                            onListenerError("observeScheduledCalls", err)
+                            return@addSnapshotListener
+                        }
                         val list = snap?.documents?.map { d ->
                             ScheduledCallRecord(
                                 scheduleId = d.getString("scheduleId") ?: d.id,
@@ -551,5 +609,9 @@ class CallRepositoryImpl @Inject constructor(
             "لا تملك صلاحية حذف هذه المكالمة المجدولة"
         }
         ref.delete().await()
+    }
+
+    companion object {
+        private const val TAG = "WesalCalls"
     }
 }

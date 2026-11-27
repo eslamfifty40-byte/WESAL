@@ -105,6 +105,8 @@ interface UserRepository {
     suspend fun setModeratorPermissions(targetUid: String, permissions: AdminPermissions?): Result<Unit>
     fun observeGlobalAppearance(): Flow<GlobalAppearanceConfig>
     suspend fun updateGlobalAppearance(config: GlobalAppearanceConfig): Result<Unit>
+    fun observeAppUpdateConfig(): Flow<AppUpdateConfig>
+    suspend fun updateAppUpdateConfig(config: AppUpdateConfig): Result<Unit>
     fun observeSubscriptionRequests(): Flow<List<SubscriptionRequest>>
     fun observeMySubscriptionRequests(): Flow<List<SubscriptionRequest>>
     suspend fun submitSubscriptionRequest(
@@ -141,6 +143,9 @@ interface UserRepository {
         expiresAt: Long = 0L,
         durationLabel: String = ""
     ): Result<Unit>
+    // Self-service frame choice: succeeds only for a blank frameId, a frameId in the
+    // caller's grantedFrameIds, or an admin caller (mirrored by firestore.rules).
+    suspend fun setOwnFrame(frameId: String): Result<Unit>
     suspend fun setAccountIcon(targetUid: String, iconId: String, iconUrl: String): Result<Unit>
     suspend fun setAccountNameplateColor(targetUid: String, colorKey: String): Result<Unit>
     suspend fun setGlobalCustomerFrameEnabled(enabled: Boolean): Result<Int>

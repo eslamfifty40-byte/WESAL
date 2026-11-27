@@ -33,6 +33,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.presentation.components.MessageStatusTick
 import com.wesal.messenger.presentation.components.WesalAvatar
@@ -57,7 +58,6 @@ fun ChatsListScreen(
     val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
     val hiddenIds by viewModel.hiddenChatIds.collectAsStateWithLifecycle()
     val lockedIds by viewModel.lockedChatIds.collectAsStateWithLifecycle()
-    val openHiddenTrigger by viewModel.openHiddenChatsTrigger.collectAsStateWithLifecycle()
     val toastMsg by viewModel.toastMessage.collectAsStateWithLifecycle()
 
     // Spec §8.3: while the hidden-chats list is unlocked and visible, FLAG_SECURE keeps it
@@ -78,9 +78,7 @@ fun ChatsListScreen(
 
     var selectedChatForMenu by remember { mutableStateOf<ChatPreview?>(null) }
     var deleteConfirmChat by remember { mutableStateOf<ChatPreview?>(null) }
-    var showUnlockDialog by remember { mutableStateOf(false) }
     var showSetupPasswordForChatId by remember { mutableStateOf<String?>(null) }
-    var showRecoveryDialog by remember { mutableStateOf(false) }
     var showRequestsDialog by remember { mutableStateOf(false) }
     var pendingLockedChat by remember { mutableStateOf<ChatPreview?>(null) }
     var reportRequestTarget by remember { mutableStateOf<Pair<String, String?>?>(null) }
@@ -102,19 +100,6 @@ fun ChatsListScreen(
         toastMsg?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearToast()
-        }
-    }
-
-    LaunchedEffect(openHiddenTrigger) {
-        if (openHiddenTrigger) {
-            viewModel.consumeOpenHiddenChatsTrigger()
-            if (!showHiddenChats) {
-                if (viewModel.hasHiddenPassword()) {
-                    showUnlockDialog = true
-                } else {
-                    viewModel.setShowingHiddenChats(true)
-                }
-            }
         }
     }
 
@@ -647,174 +632,11 @@ fun ChatsListScreen(
         )
     }
 
-    if (showUnlockDialog) {
-        var passInput by remember { mutableStateOf("") }
-        var passVisible by remember { mutableStateOf(false) }
-        var passError by remember { mutableStateOf<String?>(null) }
-        AlertDialog(
-            onDismissRequest = { showUnlockDialog = false },
-            containerColor = palette.surface,
-            title = {
-                Text(
-                    if (strings.isEnglish) "Unlock Hidden Chats" else "فتح المحادثات المخفية",
-                    color = palette.textPrimary,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = passInput,
-                        onValueChange = { passInput = it; passError = null },
-                        label = { Text(if (strings.isEnglish) "Hidden Chats Password" else "كلمة مرور المحادثات المخفية") },
-                        visualTransformation = if (passVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                        trailingIcon = {
-                            IconButton(onClick = { passVisible = !passVisible }) {
-                                Icon(
-                                    if (passVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = null,
-                                    tint = palette.textSecondary
-                                )
-                            }
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    passError?.let {
-                        Text(it, color = palette.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                    TextButton(onClick = {
-                        showUnlockDialog = false
-                        showRecoveryDialog = true
-                    }) {
-                        Text(
-                            if (strings.isEnglish) "Forgot password?" else "نسيت كلمة المرور؟",
-                            color = palette.turquoise
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (viewModel.verifyHiddenPassword(passInput)) {
-                            showUnlockDialog = false
-                            viewModel.setShowingHiddenChats(true)
-                        } else {
-                            passError = if (strings.isEnglish) "Incorrect password" else "كلمة المرور غير صحيحة"
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
-                ) {
-                    Text(if (strings.isEnglish) "Unlock" else "فتح")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showUnlockDialog = false }) { Text(strings.cancel) }
-            }
-        )
-    }
-
-    if (showRecoveryDialog) {
-        val question = remember { viewModel.getHiddenRecoveryQuestion() }
-        var answerInput by remember { mutableStateOf("") }
-        var newPass by remember { mutableStateOf("") }
-        var newPassVisible by remember { mutableStateOf(false) }
-        var recError by remember { mutableStateOf<String?>(null) }
-        AlertDialog(
-            onDismissRequest = { showRecoveryDialog = false },
-            containerColor = palette.surface,
-            title = {
-                Text(
-                    if (strings.isEnglish) "Recover Hidden Chats" else "استعادة المحادثات المخفية",
-                    color = palette.textPrimary,
-                    fontWeight = FontWeight.Bold
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (question.isNotBlank()) {
-                        Text(
-                            text = if (strings.isEnglish) "Question: $question" else "سؤال الأمان: $question",
-                            color = palette.turquoise,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        OutlinedTextField(
-                            value = answerInput,
-                            onValueChange = { answerInput = it; recError = null },
-                            label = { Text(if (strings.isEnglish) "Recovery answer" else "إجابة الأمان") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = newPass,
-                            onValueChange = { newPass = it; recError = null },
-                            label = { Text(if (strings.isEnglish) "New password (4+ chars)" else "كلمة المرور الجديدة (4 أحرف فأكثر)") },
-                            visualTransformation = if (newPassVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                            trailingIcon = {
-                                IconButton(onClick = { newPassVisible = !newPassVisible }) {
-                                    Icon(
-                                        if (newPassVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = null,
-                                        tint = palette.textSecondary
-                                    )
-                                }
-                            },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
-                        Text(
-                            text = if (strings.isEnglish) {
-                                "No recovery question was configured. Resetting will clear the lock and unhide your chats."
-                            } else {
-                                "لم يتم إعداد سؤال أمان سابقاً. يمكنك مسح القفل وإعادة إظهار جميع المحادثات."
-                            },
-                            color = palette.textSecondary
-                        )
-                    }
-                    recError?.let {
-                        Text(it, color = palette.error, style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-            },
-            confirmButton = {
-                if (question.isNotBlank()) {
-                    Button(
-                        onClick = {
-                            if (!viewModel.verifyHiddenRecoveryAnswer(answerInput)) {
-                                recError = if (strings.isEnglish) "Incorrect answer" else "الإجابة غير صحيحة"
-                            } else if (newPass.trim().length < 4) {
-                                recError = if (strings.isEnglish) "Password must be at least 4 characters" else "كلمة المرور يجب أن تكون 4 أحرف على الأقل"
-                            } else {
-                                viewModel.setupOrResetHiddenPassword(newPass, question, answerInput)
-                                showRecoveryDialog = false
-                                viewModel.setShowingHiddenChats(true)
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary)
-                    ) {
-                        Text(if (strings.isEnglish) "Reset & Unlock" else "تغيير وفتح")
-                    }
-                } else {
-                    Button(
-                        onClick = {
-                            viewModel.resetHiddenLockAndUnhideAll()
-                            showRecoveryDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = palette.error)
-                    ) {
-                        Text(if (strings.isEnglish) "Reset Lock" else "إلغاء القفل وإظهار المحادثات")
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showRecoveryDialog = false }) { Text(strings.cancel) }
-            }
-        )
-    }
+    // Spec §8.2: the unlock AlertDialog and its recovery dialog were removed from
+    // this screen. Hidden chats now unlock ONLY when the password is typed into
+    // the search box above (ChatsListViewModel.updateSearchQuery verifies it);
+    // password recovery/reset lives in Settings. The dialog below is unrelated:
+    // it SETS a first password when the user hides a chat without having one.
 
     showSetupPasswordForChatId?.let { pendingChatId ->
         var pass by remember { mutableStateOf("") }
@@ -1193,7 +1015,15 @@ private fun ChatRowItem(
             name = chat.title,
             size = 54.dp,
             isOnline = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerOnline,
-            frameId = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerFrameId else "",
+            // §5.7: the official WESAL chat renders WITH the official account's frame
+            // (no longer forced frameless). ChatRepositoryImpl does not populate
+            // peerFrameId for official chats, so fall back to the official (owner admin)
+            // account's frame — the royal ADMIN crest it wears everywhere else.
+            frameId = when {
+                chat.isGroup -> ""
+                chat.isOfficialWesalChat -> chat.peerFrameId.ifBlank { WesalFrameLibrary.ADMIN_FRAME_ID }
+                else -> chat.peerFrameId
+            },
             frameExpiresAt = chat.peerFrameExpiresAt,
             isCutout = !chat.isGroup && !chat.isOfficialWesalChat && chat.peerPhotoRemovedBg,
             iconUrl = if (!chat.isGroup && !chat.isOfficialWesalChat) chat.peerIconUrl else "",

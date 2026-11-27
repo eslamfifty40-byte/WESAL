@@ -44,7 +44,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.google.firebase.firestore.FirebaseFirestore
+import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.Constants
@@ -58,6 +60,7 @@ import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.domain.model.AdminDashboardStats
 import com.wesal.messenger.domain.model.AdminPermissions
+import com.wesal.messenger.domain.model.AppUpdateConfig
 import com.wesal.messenger.domain.model.AdminReportRecord
 import com.wesal.messenger.domain.model.ChannelPostType
 import com.wesal.messenger.domain.model.GlobalAppearanceConfig
@@ -198,6 +201,9 @@ class AdminVerificationViewModel @Inject constructor(
 
     val globalAppearance: StateFlow<GlobalAppearanceConfig> = userRepository.observeGlobalAppearance()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), GlobalAppearanceConfig())
+
+    val appUpdateConfig: StateFlow<AppUpdateConfig> = userRepository.observeAppUpdateConfig()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUpdateConfig())
 
     val subscriptionRequests: StateFlow<List<SubscriptionRequest>> = userRepository.observeSubscriptionRequests()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -452,6 +458,22 @@ class AdminVerificationViewModel @Inject constructor(
                     refreshAll()
                 }
                 .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الإطار" }
+            _busy.value = false
+        }
+    }
+
+    fun saveAppUpdateConfig(config: AppUpdateConfig) {
+        viewModelScope.launch {
+            _busy.value = true
+            userRepository.updateAppUpdateConfig(config)
+                .onSuccess {
+                    _statusMessage.value = if (config.enabled) {
+                        "تم حفظ إعدادات تحديث التطبيق (أحدث إصدار: ${config.latestVersionCode}) ✓"
+                    } else {
+                        "تم إيقاف مطالبة تحديث التطبيق ✓"
+                    }
+                }
+                .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ إعدادات التحديث" }
             _busy.value = false
         }
     }
@@ -929,6 +951,7 @@ fun AdminVerificationScreen(
     val adminPermissions by viewModel.adminPermissions.collectAsStateWithLifecycle()
     val moderators by viewModel.moderators.collectAsStateWithLifecycle()
     val globalAppearance by viewModel.globalAppearance.collectAsStateWithLifecycle()
+    val appUpdateConfig by viewModel.appUpdateConfig.collectAsStateWithLifecycle()
     val subscriptionRequests by viewModel.subscriptionRequests.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val users by viewModel.users.collectAsStateWithLifecycle()
@@ -1316,6 +1339,8 @@ fun AdminVerificationScreen(
                 AdminSection.ADMIN_SETTINGS -> AdminSettingsSection(
                     globalFrameEnabled = globalFrameEnabled,
                     onToggleGlobalFrame = viewModel::toggleGlobalCustomerFrame,
+                    appUpdateConfig = appUpdateConfig,
+                    onSaveAppUpdateConfig = viewModel::saveAppUpdateConfig,
                     onRefreshAll = viewModel::refreshAll
                 )
 
@@ -2475,6 +2500,7 @@ private fun AdminVerificationAndAppearanceSection(
     onClearAuditLogs: () -> Unit
 ) {
     val palette = WesalColors.current
+    val localCtx = androidx.compose.ui.platform.LocalContext.current
     var subTab by remember { mutableStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
     var showGlobalPicker by remember { mutableStateOf(false) }
@@ -2491,6 +2517,7 @@ private fun AdminVerificationAndAppearanceSection(
         var draftIconUrl by remember(globalAppearance.defaultCustomerIconUrl) { mutableStateOf(globalAppearance.defaultCustomerIconUrl) }
         val allFrames = WesalFrameLibrary.pickerItems("CUSTOMER", false) + WesalFrameLibrary.pickerItems("ADMIN", false)
         val allIcons = WesalFrameLibrary.pickerItems("ICON", false)
+        val pickerCtx = androidx.compose.ui.platform.LocalContext.current
 
         AlertDialog(
             onDismissRequest = { showGlobalPicker = false },
@@ -2531,21 +2558,20 @@ private fun AdminVerificationAndAppearanceSection(
                                     .clickable { draftFrameId = item.id },
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (item.imageUrl.isNotBlank()) {
-                                    AsyncImage(
-                                        model = wesalImageModel(item.imageUrl),
-                                        contentDescription = item.title,
-                                        modifier = Modifier.fillMaxSize().padding(3.dp),
-                                        contentScale = ContentScale.Fit
-                                    )
-                                } else {
-                                    Image(
-                                        painter = painterResource(id = item.resId),
-                                        contentDescription = item.title,
-                                        modifier = Modifier.fillMaxSize().padding(3.dp),
-                                        contentScale = ContentScale.Fit
-                                    )
+                                // Picker speed (owner P0): 192px Coil decode, never full-size.
+                                val thumbRequest = remember(item.id, item.imageUrl, item.resId) {
+                                    ImageRequest.Builder(pickerCtx)
+                                        .data(if (item.imageUrl.isNotBlank()) wesalImageModel(item.imageUrl) else item.resId)
+                                        .size(192)
+                                        .crossfade(false)
+                                        .build()
                                 }
+                                AsyncImage(
+                                    model = thumbRequest,
+                                    contentDescription = item.title,
+                                    modifier = Modifier.fillMaxSize().padding(3.dp),
+                                    contentScale = ContentScale.Fit
+                                )
                             }
                         }
                     }
@@ -2590,21 +2616,20 @@ private fun AdminVerificationAndAppearanceSection(
                                         },
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (item.imageUrl.isNotBlank()) {
-                                        AsyncImage(
-                                            model = wesalImageModel(item.imageUrl),
-                                            contentDescription = item.title,
-                                            modifier = Modifier.fillMaxSize().padding(3.dp),
-                                            contentScale = ContentScale.Fit
-                                        )
-                                    } else {
-                                        Image(
-                                            painter = painterResource(id = item.resId),
-                                            contentDescription = item.title,
-                                            modifier = Modifier.fillMaxSize().padding(3.dp),
-                                            contentScale = ContentScale.Fit
-                                        )
+                                    // Picker speed (owner P0): 192px Coil decode, never full-size.
+                                    val thumbRequest = remember(item.id, item.imageUrl, item.resId) {
+                                        ImageRequest.Builder(pickerCtx)
+                                            .data(if (item.imageUrl.isNotBlank()) wesalImageModel(item.imageUrl) else item.resId)
+                                            .size(192)
+                                            .crossfade(false)
+                                            .build()
                                     }
+                                    AsyncImage(
+                                        model = thumbRequest,
+                                        contentDescription = item.title,
+                                        modifier = Modifier.fillMaxSize().padding(3.dp),
+                                        contentScale = ContentScale.Fit
+                                    )
                                 }
                             }
                         }
@@ -2638,21 +2663,22 @@ private fun AdminVerificationAndAppearanceSection(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                if (currentDefaultFrame?.imageUrl?.isNotBlank() == true) {
-                    AsyncImage(
-                        model = wesalImageModel(currentDefaultFrame.imageUrl),
-                        contentDescription = null,
-                        modifier = Modifier.size(40.dp).clip(CircleShape),
-                        contentScale = ContentScale.Fit
-                    )
-                } else {
-                    Image(
-                        painter = painterResource(id = currentDefaultFrame?.resId ?: WesalFrameCatalog.defaultCustomerFrame.resId),
-                        contentDescription = null,
-                        modifier = Modifier.size(40.dp).clip(CircleShape),
-                        contentScale = ContentScale.Fit
-                    )
-                }
+                AsyncImage(
+                    model = ImageRequest.Builder(localCtx)
+                        .data(
+                            if (currentDefaultFrame?.imageUrl?.isNotBlank() == true) {
+                                wesalImageModel(currentDefaultFrame.imageUrl)
+                            } else {
+                                currentDefaultFrame?.resId ?: WesalFrameCatalog.defaultCustomerFrame.resId
+                            }
+                        )
+                        .size(128)
+                        .crossfade(false)
+                        .build(),
+                    contentDescription = null,
+                    modifier = Modifier.size(40.dp).clip(CircleShape),
+                    contentScale = ContentScale.Fit
+                )
                 Column(modifier = Modifier.weight(1f)) {
                     Text("إطار لكل العملاء البرنامج (تطبيق جماعي)", color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
                     Text(
@@ -2668,6 +2694,41 @@ private fun AdminVerificationAndAppearanceSection(
                 Switch(
                     checked = globalFrameEnabled,
                     onCheckedChange = onToggleGlobalFrame
+                )
+            }
+        }
+
+        // Master frame-animation switch (owner request): writes `framesAnimationEnabled`
+        // in system_config/global_appearance via WesalFrameLibrary; clients observe it and
+        // render every frame statically while it is off.
+        val animScope = rememberCoroutineScope()
+        Card(
+            colors = CardDefaults.cardColors(containerColor = palette.surfaceElevated),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 2.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("حركة الإطارات المتحركة", color = palette.textPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "مفتاح رئيسي لكل المستخدمين: إيقافه يجعل كل الإطارات ثابتة بدون حركة",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                Switch(
+                    checked = WesalFrameLibrary.framesAnimationEnabled,
+                    onCheckedChange = { enabled ->
+                        animScope.launch {
+                            WesalFrameLibrary.setFramesAnimationEnabled(enabled)
+                        }
+                    }
                 )
             }
         }
@@ -3109,9 +3170,19 @@ private fun AdminAuditLogsListSection(
 private fun AdminSettingsSection(
     globalFrameEnabled: Boolean,
     onToggleGlobalFrame: (Boolean) -> Unit,
+    appUpdateConfig: AppUpdateConfig,
+    onSaveAppUpdateConfig: (AppUpdateConfig) -> Unit,
     onRefreshAll: () -> Unit
 ) {
     val palette = WesalColors.current
+    // Forced-update draft state, re-seeded whenever the saved config changes.
+    var updEnabled by remember(appUpdateConfig) { mutableStateOf(appUpdateConfig.enabled) }
+    var updMandatory by remember(appUpdateConfig) { mutableStateOf(appUpdateConfig.mandatory) }
+    var updLatest by remember(appUpdateConfig) { mutableStateOf(appUpdateConfig.latestVersionCode.toString()) }
+    var updMinSupported by remember(appUpdateConfig) { mutableStateOf(appUpdateConfig.minSupportedVersionCode.toString()) }
+    var updApkUrl by remember(appUpdateConfig) { mutableStateOf(appUpdateConfig.apkUrl) }
+    var updMessageAr by remember(appUpdateConfig) { mutableStateOf(appUpdateConfig.messageAr) }
+    var updMessageEn by remember(appUpdateConfig) { mutableStateOf(appUpdateConfig.messageEn) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(14.dp),
@@ -3139,6 +3210,89 @@ private fun AdminSettingsSection(
                 ) {
                     Text("الإطار الافتراضي التلقائي للعملاء الجدد", color = palette.textPrimary, modifier = Modifier.weight(1f))
                     Switch(checked = globalFrameEnabled, onCheckedChange = onToggleGlobalFrame)
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("تحديث التطبيق", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                    AdminInfoLine("إصدار هذا الجهاز (versionCode)", BuildConfig.VERSION_CODE.toString())
+                    AdminInfoLine("اسم الإصدار", BuildConfig.VERSION_NAME)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("تفعيل مطالبة التحديث", color = palette.textPrimary, modifier = Modifier.weight(1f))
+                        Switch(checked = updEnabled, onCheckedChange = { updEnabled = it })
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("تحديث إجباري (لا يمكن التخطي)", color = palette.textPrimary, modifier = Modifier.weight(1f))
+                        Switch(checked = updMandatory, onCheckedChange = { updMandatory = it })
+                    }
+                    OutlinedTextField(
+                        value = updLatest,
+                        onValueChange = { updLatest = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("أحدث إصدار متاح (latestVersionCode)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = updMinSupported,
+                        onValueChange = { updMinSupported = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("أدنى إصدار مدعوم (minSupportedVersionCode)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = updApkUrl,
+                        onValueChange = { updApkUrl = it },
+                        label = { Text("رابط تحميل الـ APK (فارغ = الرابط الرسمي الافتراضي)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = updMessageAr,
+                        onValueChange = { updMessageAr = it },
+                        label = { Text("رسالة التحديث (عربي)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = updMessageEn,
+                        onValueChange = { updMessageEn = it },
+                        label = { Text("Update message (English)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Button(
+                        onClick = {
+                            onSaveAppUpdateConfig(
+                                appUpdateConfig.copy(
+                                    enabled = updEnabled,
+                                    mandatory = updMandatory,
+                                    latestVersionCode = updLatest.toIntOrNull() ?: 0,
+                                    minSupportedVersionCode = updMinSupported.toIntOrNull() ?: 0,
+                                    apkUrl = updApkUrl.trim(),
+                                    messageAr = updMessageAr.trim(),
+                                    messageEn = updMessageEn.trim()
+                                )
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("حفظ إعدادات التحديث")
+                    }
+                    Text(
+                        "عند التفعيل: أي جهاز بإصدار أقدم من «أحدث إصدار» يرى نافذة تحديث. «إجباري» أو إصدار أقدم من «أدنى مدعوم» = لا يمكن إغلاق النافذة. الأجهزة المحدّثة لا ترى شيئاً.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
                 }
             }
         }
@@ -3436,7 +3590,7 @@ private fun AdminFrameAndNeonDialog(
     onApplyNameplateColor: (String) -> Unit
 ) {
     val palette = WesalColors.current
-    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon, 4 = Nameplate colour
+    var modeTab by remember { mutableStateOf(0) } // 0 = Customer frames, 1 = Admin frames, 2 = Icons, 3 = Neon, 4 = Nameplate colour, 5 = Official frames
     var selectedFrameId by remember(user.uid) { mutableStateOf(user.frameId) }
     var selectedNameplateKey by remember(user.uid) { mutableStateOf(user.nameplateColor) }
     var selectedIconId by remember(user.uid) { mutableStateOf(user.iconId) }
@@ -3470,6 +3624,7 @@ private fun AdminFrameAndNeonDialog(
                     val cat = when (modeTab) {
                         1 -> "ADMIN"
                         2 -> "ICON"
+                        5 -> "OFFICIAL"
                         else -> "CUSTOMER"
                     }
                     val kind = if (modeTab == 2) "ICON" else "FRAME"
@@ -3579,6 +3734,30 @@ private fun AdminFrameAndNeonDialog(
                             menuFor = null
                         }) { Text("إيقاف الحركة (ثابت بدون حركة)") }
                     }
+                    if (!isIconItem) {
+                        // §5.8: per-frame glow intensity + animation/glow speed.
+                        var glowI by remember(item.id) { mutableStateOf(item.glowIntensity) }
+                        var glowS by remember(item.id) { mutableStateOf(item.glowSpeed) }
+                        Text(
+                            "شدة توهج الإطار: ${(glowI * 100).toInt()}%",
+                            color = palette.textPrimary,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Slider(value = glowI, onValueChange = { glowI = it }, valueRange = 0f..1f)
+                        Text(
+                            "سرعة الحركة والتوهج: ${(glowS * 10).toInt() / 10f}x",
+                            color = palette.textPrimary,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Slider(value = glowS, onValueChange = { glowS = it }, valueRange = 0.5f..2f)
+                        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+                            runOp(
+                                { WesalFrameLibrary.setGlow(item.id, glowI, glowS) },
+                                "تم حفظ شدة التوهج والسرعة ✓"
+                            )
+                            menuFor = null
+                        }) { Text("حفظ التوهج والسرعة") }
+                    }
                     OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
                         runOp({ WesalFrameLibrary.setHidden(item.id, !item.hidden) }, if (item.hidden) "تم الإظهار" else "تم الإخفاء")
                         menuFor = null
@@ -3681,15 +3860,17 @@ private fun AdminFrameAndNeonDialog(
                 ) {
                     Tab(selected = modeTab == 0, onClick = { modeTab = 0 }, text = { Text("العملاء (${WesalFrameLibrary.pickerItems("CUSTOMER", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 1, onClick = { modeTab = 1 }, text = { Text("الإدارة (${WesalFrameLibrary.pickerItems("ADMIN", false).size})", maxLines = 1) })
+                    Tab(selected = modeTab == 5, onClick = { modeTab = 5 }, text = { Text("الرسمية (${WesalFrameLibrary.pickerItems("OFFICIAL", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 2, onClick = { modeTab = 2 }, text = { Text("الأيقونات (${WesalFrameLibrary.pickerItems("ICON", false).size})", maxLines = 1) })
                     Tab(selected = modeTab == 3, onClick = { modeTab = 3 }, text = { Text("النيون", maxLines = 1) })
                     Tab(selected = modeTab == 4, onClick = { modeTab = 4 }, text = { Text("لون الاسم", maxLines = 1) })
                 }
 
-                if (modeTab in 0..2) {
+                if (modeTab in 0..2 || modeTab == 5) {
                     val categoryKey = when (modeTab) {
                         1 -> "ADMIN"
                         2 -> "ICON"
+                        5 -> "OFFICIAL"
                         else -> "CUSTOMER"
                     }
                     val libraryItems = WesalFrameLibrary.pickerItems(categoryKey, manageMode)
@@ -3755,21 +3936,22 @@ private fun AdminFrameAndNeonDialog(
                                     contentAlignment = Alignment.Center
                                 ) {
                                     val dim = if (item.hidden || item.deleted) 0.35f else 1f
-                                    if (item.imageUrl.isNotBlank()) {
-                                        AsyncImage(
-                                            model = wesalImageModel(item.imageUrl),
-                                            contentDescription = item.title,
-                                            modifier = Modifier.fillMaxSize().padding(3.dp).alpha(dim),
-                                            contentScale = ContentScale.Fit
-                                        )
-                                    } else {
-                                        Image(
-                                            painter = painterResource(id = item.resId),
-                                            contentDescription = item.title,
-                                            modifier = Modifier.fillMaxSize().padding(3.dp).alpha(dim),
-                                            contentScale = ContentScale.Fit
-                                        )
+                                    // Picker speed (owner P0): thumbnails are decoded at
+                                    // 192px via Coil — never full-size (the royal artwork
+                                    // is 1536x1536) and never via painterResource.
+                                    val thumbRequest = remember(item.id, item.imageUrl, item.resId) {
+                                        ImageRequest.Builder(ctx)
+                                            .data(if (item.imageUrl.isNotBlank()) wesalImageModel(item.imageUrl) else item.resId)
+                                            .size(192)
+                                            .crossfade(false)
+                                            .build()
                                     }
+                                    AsyncImage(
+                                        model = thumbRequest,
+                                        contentDescription = item.title,
+                                        modifier = Modifier.fillMaxSize().padding(3.dp).alpha(dim),
+                                        contentScale = ContentScale.Fit
+                                    )
                                     if (item.deleted) {
                                         Text("محذوف", color = palette.error, style = MaterialTheme.typography.labelSmall)
                                     } else if (item.hidden) {
@@ -3793,7 +3975,7 @@ private fun AdminFrameAndNeonDialog(
                         }
                     }
 
-                    if (modeTab == 0 || modeTab == 1) {
+                    if (modeTab == 0 || modeTab == 1 || modeTab == 5) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
                             listOf(
                                 VerificationDurationOption.PERMANENT,

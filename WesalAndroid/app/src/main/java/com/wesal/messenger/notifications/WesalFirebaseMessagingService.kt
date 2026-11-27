@@ -93,11 +93,15 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
                 }
                 "STORY" -> {
                     if (!userSettings.notificationsStories) return@launch
-                    showStandardNotification(Constants.CHANNEL_STORIES, "", rawTitle, rawBody, null, null, dedupId)
+                    // User's chosen tone channel, like every other content type (was
+                    // the fixed silent CHANNEL_STORIES — spec §2.5).
+                    showStandardNotification(messageChannelId, customToneUri, rawTitle, rawBody, null, null, dedupId)
                 }
                 "CHANNEL_POST" -> {
                     if (!userSettings.notificationsMessages) return@launch
-                    showStandardNotification(Constants.CHANNEL_CHANNELS, "", rawTitle, rawBody, null, data["channelId"], dedupId)
+                    // User's chosen tone channel (was the fixed CHANNEL_CHANNELS with
+                    // no sound, ignoring the picked tone — spec §2.5).
+                    showStandardNotification(messageChannelId, customToneUri, rawTitle, rawBody, null, data["channelId"], dedupId)
                 }
                 "SYSTEM", "ADMIN_ALERT", "ADMIN_SUBSCRIPTION", "ADMIN_REPORT", "ADMIN_SUPPORT" -> {
                     showStandardNotification(messageChannelId, customToneUri, rawTitle, rawBody, chatId, null, dedupId)

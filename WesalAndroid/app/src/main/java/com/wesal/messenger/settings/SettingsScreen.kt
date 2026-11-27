@@ -118,6 +118,20 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUserSettings())
 
     val sessions: StateFlow<List<DeviceSession>> = userRepository.observeSessions()
+        // §3.5 dedupe: legacy builds created duplicate session docs for one physical
+        // device (pre stable-ID). Group by device identity (deviceName — the only
+        // device key the session model carries) and keep the most recently active
+        // entry per device, preferring the current session when present.
+        .map { list ->
+            list.groupBy { it.deviceName.trim().lowercase() }
+                .values
+                .map { group ->
+                    group.firstOrNull { it.isCurrent }
+                        ?: group.maxByOrNull { it.lastActiveAt }
+                        ?: group.first()
+                }
+                .sortedByDescending { it.lastActiveAt }
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val savedAccounts: StateFlow<List<SavedWesalAccount>> = authRepository.observeSavedAccounts()
@@ -176,11 +190,6 @@ class SettingsViewModel @Inject constructor(
         return prefs.getHiddenChatsRecoveryQuestion(uid)
     }
 
-    fun openHiddenChatsFromSettings(onOpenHiddenChatsTab: () -> Unit) {
-        prefs.requestOpenHiddenChats()
-        onOpenHiddenChatsTab()
-    }
-
     fun setupHiddenChatsPassword(
         currentPassword: String,
         newPassword: String,
@@ -190,6 +199,16 @@ class SettingsViewModel @Inject constructor(
     ): Boolean {
         val uid = authRepository.currentUserId.orEmpty()
         if (uid.isBlank()) return false
+        if (!prefs.secureVaultAvailable) {
+            // Fail closed: without the Keystore-backed encrypted store the password
+            // hash is never persisted (spec §8.4) — say so instead of pretending.
+            statusMessage.value = if (isEn) {
+                "Secure storage is unavailable on this device, so the hidden-chats password cannot be saved safely"
+            } else {
+                "التخزين الآمن غير متاح على هذا الجهاز، لذا لا يمكن حفظ كلمة مرور المحادثات المخفية بأمان"
+            }
+            return false
+        }
         val cleanNew = prefs.normalizeHiddenPinInput(newPassword)
         if (prefs.hasHiddenChatsPassword(uid) && !prefs.verifyHiddenChatsPassword(uid, currentPassword)) {
             statusMessage.value = if (isEn) "Current password is incorrect" else "كلمة المرور الحالية غير صحيحة"
@@ -234,7 +253,9 @@ class SettingsViewModel @Inject constructor(
             isSwitchingAccount.value = true
             // Hard ceiling: switching must resolve in place — success, failure, or a timeout
             // message — never the previous endless switching spinner that needed a restart.
-            val result = withTimeoutOrNull(45_000L) {
+            // 20s matches the AuthViewModel ceiling now that sign-in returns right after
+            // authentication + the skeleton check.
+            val result = withTimeoutOrNull(20_000L) {
                 authRepository.signInWithGoogleIdToken(idToken)
             }
             when {
@@ -258,6 +279,51 @@ class SettingsViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Fast email-account switch (§3.2) using the credential kept by "حفظ الدخول".
+     * Returns false when the account has NO stored credential — the caller then falls
+     * back to the add-account/prefill flow. When it returns true the switch runs here:
+     * bounded sign-out of the current account, then sign-in (which now returns right
+     * after authentication + the skeleton check), all under a 20s ceiling.
+     */
+    fun switchToSavedEmailAccount(
+        account: SavedWesalAccount,
+        isEn: Boolean,
+        onComplete: (Boolean) -> Unit
+    ): Boolean {
+        val password = WesalCredentialVault.passwordForEmail(context, account.email)
+        if (password.isNullOrEmpty()) return false
+        viewModelScope.launch {
+            isSwitchingAccount.value = true
+            prefs.setHiddenChatsUnlockedSession(false)
+            val result = withTimeoutOrNull(20_000L) {
+                runCatching { authRepository.signOut() }
+                authRepository.signInWithEmail(account.email, password)
+            }
+            when {
+                result == null -> {
+                    isSwitchingAccount.value = false
+                    statusMessage.value = if (isEn) {
+                        "Switching timed out — check your connection and try again"
+                    } else {
+                        "انتهت مهلة التبديل، تحقق من الاتصال وحاول مرة أخرى"
+                    }
+                }
+                result.isSuccess -> {
+                    isSwitchingAccount.value = false
+                    statusMessage.value = if (isEn) "Account switched successfully" else "تم تبديل الحساب بنجاح"
+                    onComplete(result.getOrNull() ?: false)
+                }
+                else -> {
+                    isSwitchingAccount.value = false
+                    statusMessage.value = result.exceptionOrNull()?.localizedMessage
+                        ?: if (isEn) "Failed to switch account" else "تعذر تبديل الحساب"
+                }
+            }
+        }
+        return true
     }
 
     fun openSupportChatWith10001(isEn: Boolean, onOpenChat: (String) -> Unit) {
@@ -381,8 +447,9 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             prefs.setHiddenChatsUnlockedSession(false)
             // Bounded (the repository also bounds its server cleanup): signing out locally
-            // must always complete and navigate away.
-            withTimeoutOrNull(15_000L) { authRepository.signOut() }
+            // must always complete and navigate away. 8s is generous now that the
+            // repository's own cleanup caps at 6s and its token delete at 3s.
+            withTimeoutOrNull(8_000L) { authRepository.signOut() }
             onSignedOut()
         }
     }
@@ -561,9 +628,13 @@ fun SettingsScreen(
                                 .background(
                                     Brush.verticalGradient(
                                         colors = listOf(
-                                            palette.surface.copy(alpha = 0.42f),
-                                            palette.surface.copy(alpha = 0.84f),
-                                            palette.surface.copy(alpha = 0.96f)
+                                            // Lightened (was 0.42 → 0.84 → 0.96): the cover
+                                            // photo must read clearly behind the account
+                                            // card; only the bottom keeps enough scrim for
+                                            // the name/ID text to stay legible.
+                                            palette.surface.copy(alpha = 0.18f),
+                                            palette.surface.copy(alpha = 0.45f),
+                                            palette.surface.copy(alpha = 0.72f)
                                         )
                                     )
                                 )
@@ -857,68 +928,11 @@ fun SettingsScreen(
                     }
                 }
             }
-            val toneCtx = LocalContext.current
-            var toneTick by remember { mutableStateOf(0) }
-            var tonePickCall by remember { mutableStateOf(false) }
-            var tonePreview by remember { mutableStateOf<android.media.Ringtone?>(null) }
-            val tonePicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-                if (res.resultCode == android.app.Activity.RESULT_OK) {
-                    val picked: android.net.Uri? = if (android.os.Build.VERSION.SDK_INT >= 33) {
-                        res.data?.getParcelableExtra(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI, android.net.Uri::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        res.data?.getParcelableExtra(android.media.RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
-                    }
-                    com.wesal.messenger.core.util.WesalTones.set(toneCtx, tonePickCall, picked)
-                    tonePreview?.stop()
-                    tonePreview = com.wesal.messenger.core.util.WesalTones.preview(toneCtx, picked)
-                    toneTick++
-                }
-            }
-            fun launchTonePicker(call: Boolean) {
-                tonePickCall = call
-                val type = if (call) android.media.RingtoneManager.TYPE_RINGTONE else android.media.RingtoneManager.TYPE_NOTIFICATION
-                val intent = android.content.Intent(android.media.RingtoneManager.ACTION_RINGTONE_PICKER).apply {
-                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_TYPE, type)
-                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
-                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, true)
-                    val cur = com.wesal.messenger.core.util.WesalTones.resolve(toneCtx, call)
-                    putExtra(android.media.RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, cur)
-                }
-                tonePicker.launch(intent)
-            }
-            SettingsRow(
-                Icons.Default.Notifications,
-                if (strings.isEnglish) "Notification tone" else "نغمة الإشعارات",
-                toneTick.let { com.wesal.messenger.core.util.WesalTones.title(toneCtx, false) },
-                trailing = {
-                    if (com.wesal.messenger.core.util.WesalTones.hasCustom(toneCtx, false)) {
-                        Text(
-                            if (strings.isEnglish) "Default" else "افتراضي",
-                            color = WesalColors.current.iconTint,
-                            modifier = Modifier.clickable {
-                                com.wesal.messenger.core.util.WesalTones.reset(toneCtx, false); toneTick++
-                            }.padding(8.dp)
-                        )
-                    }
-                }
-            ) { launchTonePicker(false) }
-            SettingsRow(
-                Icons.Default.Notifications,
-                if (strings.isEnglish) "Ringtone" else "نغمة الرنين",
-                toneTick.let { com.wesal.messenger.core.util.WesalTones.title(toneCtx, true) },
-                trailing = {
-                    if (com.wesal.messenger.core.util.WesalTones.hasCustom(toneCtx, true)) {
-                        Text(
-                            if (strings.isEnglish) "Default" else "افتراضي",
-                            color = WesalColors.current.iconTint,
-                            modifier = Modifier.clickable {
-                                com.wesal.messenger.core.util.WesalTones.reset(toneCtx, true); toneTick++
-                            }.padding(8.dp)
-                        )
-                    }
-                }
-            ) { launchTonePicker(true) }
+            // §2.5: the old WesalTones rows that used to live here were DEAD — they wrote
+            // to plain SharedPreferences that nothing in the app reads, so picking a tone
+            // changed nothing audible. They were removed; the one live picker is the
+            // per-account DataStore "Notification Preferences" dialog (SoundPickerCards
+            // backed by setNotificationToneUri/setCallRingtoneUri) in this same screen.
             SettingsRow(
                 Icons.Default.Storage,
                 if (strings.isEnglish) "Build version" else "نسخة التطبيق",
@@ -1175,21 +1189,19 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = palette.textSecondary
                     )
-                    OutlinedButton(
-                        onClick = {
-                            showHiddenLockDialog = false
-                            viewModel.openHiddenChatsFromSettings(onOpenHiddenChatsTab)
+                    // Spec §8.2: hidden chats unlock ONLY by typing the password into
+                    // the chats search box. Settings manages the password itself
+                    // (set/change/recovery below) — there is deliberately no
+                    // "open hidden chats" entry point here anymore.
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "To open your hidden chats, type the password in the chats search box."
+                        } else {
+                            "لفتح المحادثات المخفية اكتب كلمة المرور في مربع بحث المحادثات."
                         },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.LockOpen, contentDescription = null, tint = palette.emerald, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            if (strings.isEnglish) "Open Hidden Chats Section" else "فتح قسم المحادثات المخفية",
-                            color = palette.emerald,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.turquoise
+                    )
                     if (!recoveryMode) {
                         if (hasExisting) {
                             OutlinedTextField(
@@ -1297,117 +1309,42 @@ fun SettingsScreen(
     }
 
     if (showAccountsDialog) {
-        AlertDialog(
-            onDismissRequest = { if (!isSwitchingAccount) showAccountsDialog = false },
-            containerColor = palette.surface,
-            title = { Text(strings.switchAccount, color = palette.textPrimary, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (isSwitchingAccount) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = palette.emerald)
-                    }
-                    if (savedAccounts.isEmpty()) {
-                        Text(
-                            text = if (strings.isEnglish) "Add another Google or email account to switch quickly." else "أضف حساب Google أو بريد إلكتروني آخر للتنقل السريع.",
-                            color = palette.textSecondary
-                        )
-                    } else {
-                        LazyColumn(modifier = Modifier.heightIn(max = 260.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(savedAccounts, key = { it.uid }) { acc ->
-                                val isActive = acc.uid == user?.uid
-                                Surface(
-                                    color = if (isActive) palette.emerald.copy(alpha = 0.12f) else palette.background,
-                                    shape = RoundedCornerShape(12.dp),
-                                    border = BorderStroke(1.dp, if (isActive) palette.emerald.copy(alpha = 0.5f) else palette.border),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(enabled = !isActive && !isSwitchingAccount) {
-                                            if (acc.provider == "google") {
-                                                fetchGoogleTokenAndRun(
-                                                    onToken = { token ->
-                                                        showAccountsDialog = false
-                                                        viewModel.switchToGoogleIdToken(token, strings.isEnglish, onAccountSwitched)
-                                                    },
-                                                    onNoCredential = {
-                                                        showAccountsDialog = false
-                                                        onOpenAddAccount(null)
-                                                    }
-                                                )
-                                            } else {
-                                                showAccountsDialog = false
-                                                onOpenAddAccount(acc.email.takeIf { it.isNotBlank() })
-                                            }
-                                        }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        WesalAvatar(
-                                            imageUrl = acc.photoUrl,
-                                            name = acc.displayName.ifBlank { acc.email.ifBlank { "WESAL" } },
-                                            size = 40.dp
-                                        )
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                Text(
-                                                    text = acc.displayName.ifBlank { acc.email.ifBlank { "WESAL" } },
-                                                    color = palette.textPrimary,
-                                                    fontWeight = FontWeight.Bold,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.weight(1f, fill = false)
-                                                )
-                                                if (isActive) {
-                                                    Surface(color = palette.emerald.copy(alpha = 0.2f), shape = RoundedCornerShape(6.dp)) {
-                                                        Text(
-                                                            text = if (strings.isEnglish) "Active ✓" else "نشط ✓",
-                                                            color = palette.emerald,
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            fontWeight = FontWeight.Bold,
-                                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                            val meta = listOfNotNull(
-                                                acc.numericId.takeIf { it.isNotBlank() }?.let { "ID: $it" },
-                                                acc.publicId.takeIf { it.isNotBlank() }?.let { "@$it" },
-                                                acc.email.takeIf { it.isNotBlank() }
-                                            ).joinToString(" • ")
-                                            if (meta.isNotBlank()) {
-                                                Text(meta, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            }
-                                        }
-                                        if (!isActive) {
-                                            IconButton(onClick = { viewModel.removeSavedAccount(acc.uid) }, modifier = Modifier.size(32.dp)) {
-                                                Icon(Icons.Default.Close, contentDescription = strings.delete, tint = palette.textMuted, modifier = Modifier.size(18.dp))
-                                            }
-                                        }
-                                    }
-                                }
+        // Real switcher (§3.2): email accounts with a stored "حفظ الدخول" credential
+        // switch in place; Google accounts re-authenticate; accounts without a stored
+        // credential fall back to the add-account flow with the email prefilled.
+        AccountSwitcherDialog(
+            accounts = savedAccounts,
+            currentUid = user?.uid,
+            isSwitching = isSwitchingAccount,
+            onDismiss = { showAccountsDialog = false },
+            onSwitch = { acc ->
+                when {
+                    acc.provider == "google" -> {
+                        fetchGoogleTokenAndRun(
+                            onToken = { token ->
+                                showAccountsDialog = false
+                                viewModel.switchToGoogleIdToken(token, strings.isEnglish, onAccountSwitched)
+                            },
+                            onNoCredential = {
+                                showAccountsDialog = false
+                                onOpenAddAccount(null)
                             }
-                        }
+                        )
                     }
-
-                    Button(
-                        onClick = {
-                            showAccountsDialog = false
-                            onOpenAddAccount(null)
-                        },
-                        enabled = !isSwitchingAccount,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent),
-                        shape = RoundedCornerShape(10.dp)
-                    ) {
-                        Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(strings.addAccount, fontWeight = FontWeight.Bold)
+                    viewModel.switchToSavedEmailAccount(acc, strings.isEnglish, onAccountSwitched) -> {
+                        showAccountsDialog = false
+                    }
+                    else -> {
+                        showAccountsDialog = false
+                        onOpenAddAccount(acc.email.takeIf { it.isNotBlank() })
                     }
                 }
             },
-            confirmButton = { TextButton(enabled = !isSwitchingAccount, onClick = { showAccountsDialog = false }) { Text(strings.close, color = palette.turquoise) } }
+            onAddAccount = {
+                showAccountsDialog = false
+                onOpenAddAccount(null)
+            },
+            onRemove = { acc -> viewModel.removeSavedAccount(acc.uid) }
         )
     }
 

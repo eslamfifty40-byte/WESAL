@@ -18,7 +18,11 @@ android {
         applicationId = "com.wesal.messenger"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        // Monotonic per CI build: run number + 100 stays above every already-shipped
+        // build (all previous builds had the hard-coded versionCode 1), so Android
+        // accepts install-over-install and the forced-update check has a real signal.
+        // Local builds fall back to 101.
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1) + 100
         val buildSha = (System.getenv("GITHUB_SHA") ?: "local").take(7)
         val buildTime = Instant.now().toString().take(16).replace("T", " ") + " UTC"
         versionName = "1.0.0-$buildSha"
@@ -169,6 +173,9 @@ dependencies {
 
     implementation(libs.coil.compose)
     implementation(libs.coil.video)
+    // GIF decoding so uploaded animated (GIF) frames actually animate; version matches
+    // the project's Coil version (2.7.0 in gradle/libs.versions.toml).
+    implementation("io.coil-kt:coil-gif:2.7.0")
 
     implementation(libs.stream.webrtc.android)
     implementation(libs.google.tink.android)

@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import org.webrtc.*
+import org.webrtc.audio.JavaAudioDeviceModule
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -71,6 +72,15 @@ class WebRtcCallManager @Inject constructor(
     val turnConfigured: StateFlow<Boolean> = _turnConfigured.asStateFlow()
 
     /**
+     * Fatal session-setup error (factory unavailable, createPeerConnection returned null,
+     * SDP creation/apply failed). CallActivity collects this and ends the call with the
+     * message visible, instead of the old behaviour: a silent stall on "connecting…"
+     * until the no-answer timer fired.
+     */
+    private val _sessionError = MutableStateFlow<String?>(null)
+    val sessionError: StateFlow<String?> = _sessionError.asStateFlow()
+
+    /**
      * Set by CallActivity. Invoked when ICE needs a real restart: the caller side must create a
      * restart offer and signal it; the callee side must ask the caller (via the call doc) to do so.
      * Invoked at most once per disconnect episode (see [triggerIceRestart]).
@@ -109,7 +119,16 @@ class WebRtcCallManager @Inject constructor(
         )
         val encoderFactory = DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true)
         val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
+        // Explicit audio device module (previously the library default was used implicitly,
+        // with no control over echo cancellation / noise suppression). Hardware AEC/NS are
+        // requested where the device supports them; the module falls back to software
+        // processing otherwise.
+        val audioDeviceModule = JavaAudioDeviceModule.builder(context)
+            .setUseHardwareAcousticEchoCanceler(true)
+            .setUseHardwareNoiseSuppressor(true)
+            .createAudioDeviceModule()
         peerConnectionFactory = PeerConnectionFactory.builder()
+            .setAudioDeviceModule(audioDeviceModule)
             .setVideoEncoderFactory(encoderFactory)
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
@@ -154,7 +173,14 @@ class WebRtcCallManager @Inject constructor(
         onIceCandidateGenerated: (IceCandidate) -> Unit
     ) {
         ensureFactory()
-        val factory = peerConnectionFactory ?: return
+        _sessionError.value = null
+        val factory = peerConnectionFactory
+        if (factory == null) {
+            // Never hang silently: surface a visible session error that ends the call.
+            Log.e(TAG, "PeerConnectionFactory unavailable — cannot start the call session.")
+            _sessionError.value = SESSION_ERROR_GENERIC
+            return
+        }
         isVideoSession = isVideo
         remoteDescriptionSet = false
         pendingRemoteCandidates.clear()
@@ -166,7 +192,7 @@ class WebRtcCallManager @Inject constructor(
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
         }
 
-        peerConnection = factory.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
+        val peerConnectionObserver = object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 if (state == null) return
@@ -231,7 +257,16 @@ class WebRtcCallManager @Inject constructor(
                     }
                 }
             }
-        })
+        }
+        val createdPeerConnection = factory.createPeerConnection(rtcConfig, peerConnectionObserver)
+        if (createdPeerConnection == null) {
+            // createPeerConnection can return null; without this check the offer callback
+            // never fires and the caller UI hangs on "connecting…" until the 45 s timer.
+            Log.e(TAG, "createPeerConnection returned null — aborting the session visibly.")
+            _sessionError.value = SESSION_ERROR_GENERIC
+            return
+        }
+        peerConnection = createdPeerConnection
 
         // Audio track
         val audioConstraints = MediaConstraints().apply {
@@ -369,7 +404,9 @@ class WebRtcCallManager @Inject constructor(
             override fun onCreateFailure(error: String?) {
                 Log.w(TAG, "ICE restart offer creation failed: $error")
             }
-            override fun onSetFailure(error: String?) {}
+            override fun onSetFailure(error: String?) {
+                Log.w(TAG, "ICE restart offer setLocalDescription failed: $error")
+            }
         }, constraints)
     }
 
@@ -462,13 +499,25 @@ class WebRtcCallManager @Inject constructor(
         }
         peerConnection?.createOffer(object : SdpObserver {
             override fun onCreateSuccess(desc: SessionDescription?) {
-                if (desc == null) return
+                if (desc == null) {
+                    Log.e(TAG, "createOffer succeeded with a null description.")
+                    _sessionError.value = SESSION_ERROR_SDP
+                    return
+                }
                 peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
                 onSdpCreated(desc.description)
             }
             override fun onSetSuccess() {}
-            override fun onCreateFailure(error: String?) {}
-            override fun onSetFailure(error: String?) {}
+            override fun onCreateFailure(error: String?) {
+                // Was an empty callback: an SDP failure looked exactly like a peer who
+                // never answers. Fail visibly and let CallActivity end the call.
+                Log.e(TAG, "createOffer failed: $error")
+                _sessionError.value = SESSION_ERROR_SDP
+            }
+            override fun onSetFailure(error: String?) {
+                Log.e(TAG, "createOffer setLocalDescription failed: $error")
+                _sessionError.value = SESSION_ERROR_SDP
+            }
         }, constraints)
     }
 
@@ -479,18 +528,31 @@ class WebRtcCallManager @Inject constructor(
                 flushPendingRemoteCandidates()
                 peerConnection?.createAnswer(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) {
-                        if (desc == null) return
+                        if (desc == null) {
+                            Log.e(TAG, "createAnswer succeeded with a null description.")
+                            _sessionError.value = SESSION_ERROR_SDP
+                            return
+                        }
                         peerConnection?.setLocalDescription(SimpleSdpObserver(), desc)
                         onAnswerCreated(desc.description)
                     }
                     override fun onSetSuccess() {}
-                    override fun onCreateFailure(error: String?) {}
-                    override fun onSetFailure(error: String?) {}
+                    override fun onCreateFailure(error: String?) {
+                        Log.e(TAG, "createAnswer failed: $error")
+                        _sessionError.value = SESSION_ERROR_SDP
+                    }
+                    override fun onSetFailure(error: String?) {
+                        Log.e(TAG, "createAnswer setLocalDescription failed: $error")
+                        _sessionError.value = SESSION_ERROR_SDP
+                    }
                 }, MediaConstraints())
             }
             override fun onCreateSuccess(desc: SessionDescription?) {}
             override fun onCreateFailure(error: String?) {}
-            override fun onSetFailure(error: String?) {}
+            override fun onSetFailure(error: String?) {
+                Log.e(TAG, "setRemoteDescription(offer) failed: $error")
+                _sessionError.value = SESSION_ERROR_SDP
+            }
         }, remoteDesc)
     }
 
@@ -706,6 +768,7 @@ class WebRtcCallManager @Inject constructor(
 
     fun endSession() {
         stopNetworkMonitoring()
+        _sessionError.value = null
         cancelPendingIceRestart()
         iceRestartSignalledForEpisode = false
         iceRestartAwaitingRenegotiation = false
@@ -769,12 +832,18 @@ class WebRtcCallManager @Inject constructor(
     private open class SimpleSdpObserver : SdpObserver {
         override fun onCreateSuccess(desc: SessionDescription?) {}
         override fun onSetSuccess() {}
-        override fun onCreateFailure(error: String?) {}
-        override fun onSetFailure(error: String?) {}
+        override fun onCreateFailure(error: String?) {
+            Log.e(TAG, "SDP create failure: $error")
+        }
+        override fun onSetFailure(error: String?) {
+            Log.e(TAG, "SDP set failure: $error")
+        }
     }
 
     companion object {
         private const val TAG = "WesalCalls"
+        private const val SESSION_ERROR_GENERIC = "تعذر بدء المكالمة على هذا الجهاز"
+        private const val SESSION_ERROR_SDP = "حدثت مشكلة أثناء إعداد المكالمة"
         private const val ICE_DISCONNECT_GRACE_MS = 3_000L
         private const val ICE_RENEGOTIATION_FALLBACK_MS = 1_200L
 

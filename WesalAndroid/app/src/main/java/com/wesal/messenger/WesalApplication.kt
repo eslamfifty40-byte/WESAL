@@ -13,6 +13,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import coil.ImageLoader
 import coil.ImageLoaderFactory
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import coil.decode.VideoFrameDecoder
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
@@ -56,6 +58,13 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
             .components {
+                // Animated GIF frames (uploaded via the frame library) need a GIF decoder;
+                // without one they rendered as a static first frame.
+                if (android.os.Build.VERSION.SDK_INT >= 28) {
+                    add(ImageDecoderDecoder.Factory())
+                } else {
+                    add(GifDecoder.Factory())
+                }
                 add(VideoFrameDecoder.Factory())
             }
             .memoryCache {

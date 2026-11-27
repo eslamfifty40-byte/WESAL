@@ -1,8 +1,1 @@
-{
-  "firestore": [
-    {
-      "database": "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424",
-      "rules": "firestore.rules"
-    }
-  ]
-}
+{"firestore":[{"database":"ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424","rules":"firestore.rules"}],"functions":[{"codebase":"wesal","predeploy":["npm --prefix \"$RESOURCE_DIR\" run build"],"runtime":"nodejs20","source":"firebase/functions"}]}

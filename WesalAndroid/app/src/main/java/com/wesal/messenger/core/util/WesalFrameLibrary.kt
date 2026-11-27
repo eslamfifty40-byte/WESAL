@@ -35,7 +35,7 @@ import java.util.ArrayDeque
 data class FrameDoc(
     val id: String,
     val titleAr: String = "",
-    val category: String = "CUSTOMER", // CUSTOMER | ADMIN | ICON
+    val category: String = "CUSTOMER", // CUSTOMER | ADMIN | ICON | OFFICIAL
     val kind: String = "FRAME", // FRAME | ICON
     val imageUrl: String = "",
     val glowColor: Long = 0L,
@@ -43,6 +43,10 @@ data class FrameDoc(
     val animationStyle: String = "PULSE_GLOW", // PULSE_GLOW | ROTATE_AURA | SHIMMER | SPARKLE
     val hasAnimatedOverride: Boolean = false,
     val hasAnimationStyleOverride: Boolean = false,
+    val glowIntensity: Float = 1.0f, // §5.8: 0..1, scales the frame glow halo
+    val glowSpeed: Float = 1.0f, // §5.8: 0.5..2, scales animation durations (higher = faster)
+    val hasGlowIntensityOverride: Boolean = false,
+    val hasGlowSpeedOverride: Boolean = false,
     val hidden: Boolean = false,
     val deleted: Boolean = false,
     val builtin: Boolean = false,
@@ -59,7 +63,9 @@ data class ResolvedFrame(
     val animated: Boolean = false,
     val animationStyle: String = "PULSE_GLOW",
     val apertureCenterYFraction: Float = 0.50f,
-    val apertureDiameterFraction: Float = 0.62f
+    val apertureDiameterFraction: Float = 0.62f,
+    val glowIntensity: Float = 1.0f,
+    val glowSpeed: Float = 1.0f
 )
 
 /** One row in an admin/user picker. */
@@ -74,7 +80,9 @@ data class FramePickerItem(
     val builtin: Boolean,
     val kind: String = "FRAME",
     val animated: Boolean = false,
-    val animationStyle: String = "PULSE_GLOW"
+    val animationStyle: String = "PULSE_GLOW",
+    val glowIntensity: Float = 1.0f,
+    val glowSpeed: Float = 1.0f
 )
 
 object WesalFrameLibrary {
@@ -91,7 +99,16 @@ object WesalFrameLibrary {
     var docs: Map<String, FrameDoc> by mutableStateOf(emptyMap())
         private set
 
+    /**
+     * Master switch for ALL frame animation (owner request): stored as `framesAnimationEnabled`
+     * in `system_config/global_appearance` (default true). When off, WesalAvatar renders every
+     * frame statically, whatever the per-frame `animated` flag says.
+     */
+    var framesAnimationEnabled: Boolean by mutableStateOf(true)
+        private set
+
     private var registration: ListenerRegistration? = null
+    private var configRegistration: ListenerRegistration? = null
 
     private var authHooked = false
 
@@ -143,6 +160,10 @@ object WesalFrameLibrary {
                             animationStyle = d.getString("animationStyle") ?: "PULSE_GLOW",
                             hasAnimatedOverride = d.contains("animated"),
                             hasAnimationStyleOverride = !d.getString("animationStyle").isNullOrBlank(),
+                            glowIntensity = (d.getDouble("glowIntensity") ?: 1.0).toFloat().coerceIn(0f, 1f),
+                            glowSpeed = (d.getDouble("glowSpeed") ?: 1.0).toFloat().coerceIn(0.5f, 2f),
+                            hasGlowIntensityOverride = d.contains("glowIntensity"),
+                            hasGlowSpeedOverride = d.contains("glowSpeed"),
                             hidden = d.getBoolean("hidden") ?: false,
                             deleted = d.getBoolean("deleted") ?: false,
                             builtin = d.getBoolean("builtin") ?: false,
@@ -153,12 +174,47 @@ object WesalFrameLibrary {
                     if (map != docs) docs = map
                 }
         }
+        startConfigListener()
+    }
+
+    /** Keeps [framesAnimationEnabled] in sync with `system_config/global_appearance`. */
+    private fun startConfigListener() {
+        if (configRegistration != null) return
+        runCatching {
+            configRegistration = db().collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("global_appearance")
+                .addSnapshotListener { snap, error ->
+                    if (error != null) return@addSnapshotListener
+                    val enabled = if (snap != null && snap.exists()) {
+                        snap.getBoolean("framesAnimationEnabled") ?: true
+                    } else {
+                        true
+                    }
+                    if (enabled != framesAnimationEnabled) framesAnimationEnabled = enabled
+                }
+        }
     }
 
     fun stop() {
         startJob?.cancel()
         runCatching { registration?.remove() }
         registration = null
+        runCatching { configRegistration?.remove() }
+        configRegistration = null
+    }
+
+    /** Admin write path for the master animation switch (merge: never touches other config keys). */
+    suspend fun setFramesAnimationEnabled(enabled: Boolean): Result<Unit> = runCatching {
+        db().collection(Constants.COLLECTION_SYSTEM_CONFIG)
+            .document("global_appearance")
+            .set(
+                mapOf(
+                    "framesAnimationEnabled" to enabled,
+                    "updatedAt" to System.currentTimeMillis()
+                ),
+                SetOptions.merge()
+            ).await()
+        framesAnimationEnabled = enabled
     }
 
     private fun glowOf(builtinId: String, doc: FrameDoc?): Color {
@@ -188,19 +244,38 @@ object WesalFrameLibrary {
     fun resolve(frameId: String?, expiresAt: Long): ResolvedFrame? {
         if (frameId.isNullOrBlank()) return null
         if (frameId == ADMIN_FRAME_ID) {
-            // Same 1536x1536 (1:1) royal artwork every customer gets by default, so an admin
-            // photo and a customer photo render in exactly the same shape and dimensions.
-            // Opening of the artwork (measured from its transparent aperture): centre at
-            // 39.6% of the height, diameter 49.6% of the width.
+            // The royal ADMIN crest (1536x1536). Opening of the artwork (measured from its
+            // transparent aperture): centre at 39.6% of the height, diameter 49.6% of the width.
+            // Routed through the SAME library-override resolution as every other frame, so an
+            // admin can replace its image or turn its animation/glow OFF from the admin panel
+            // (frame_library/wesal_admin_golden). Defaults preserve the historical look:
+            // animated PULSE_GLOW when no override doc exists. Never expires.
+            val doc = docs[frameId]
+            val isAnimated = if (doc != null && doc.hasAnimatedOverride) doc.animated else true
+            val animStyle = if (doc != null && doc.hasAnimationStyleOverride) {
+                doc.animationStyle
+            } else {
+                "PULSE_GLOW"
+            }
+            val glowI = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f
+            val glowS = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
+            val overrideUrl = doc?.imageUrl?.takeIf { it.isNotBlank() }.orEmpty()
             return ResolvedFrame(
                 id = ADMIN_FRAME_ID,
-                resId = com.wesal.messenger.R.drawable.wesal_frame_royal_admin_1536,
-                imageUrl = "",
-                glow = Color(0xFFFF3B1F),
-                animated = true,
-                animationStyle = "PULSE_GLOW",
+                resId = if (overrideUrl.isBlank()) {
+                    com.wesal.messenger.R.drawable.wesal_frame_royal_admin_1536
+                } else {
+                    0
+                },
+                imageUrl = overrideUrl,
+                glow = doc?.glowColor?.takeIf { it != 0L }?.let { Color(it.toInt()) }
+                    ?: Color(0xFFFF3B1F),
+                animated = isAnimated,
+                animationStyle = animStyle,
                 apertureCenterYFraction = 0.396f,
-                apertureDiameterFraction = 0.496f
+                apertureDiameterFraction = 0.496f,
+                glowIntensity = glowI,
+                glowSpeed = glowS
             )
         }
         if (expiresAt > 0L && System.currentTimeMillis() > expiresAt) return null
@@ -216,13 +291,15 @@ object WesalFrameLibrary {
         } else {
             builtin?.defaultAnimationStyle ?: "PULSE_GLOW"
         }
+        val glowI = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f
+        val glowS = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
         val cy = builtin?.apertureCenterYFraction ?: 0.50f
         val dFrac = builtin?.apertureDiameterFraction ?: 0.62f
         if (doc != null && doc.imageUrl.isNotBlank()) {
-            return ResolvedFrame(frameId, 0, doc.imageUrl, glowOf(frameId, doc), isAnimated, animStyle, cy, dFrac)
+            return ResolvedFrame(frameId, 0, doc.imageUrl, glowOf(frameId, doc), isAnimated, animStyle, cy, dFrac, glowI, glowS)
         }
         if (builtin != null) {
-            return ResolvedFrame(frameId, builtin.resId, "", glowOf(frameId, doc), isAnimated, animStyle, cy, dFrac)
+            return ResolvedFrame(frameId, builtin.resId, "", glowOf(frameId, doc), isAnimated, animStyle, cy, dFrac, glowI, glowS)
         }
         return null
     }
@@ -274,7 +351,38 @@ object WesalFrameLibrary {
             return out
         }
 
-        val builtinList = if (category == "ADMIN") WesalFrameCatalog.adminFrames else WesalFrameCatalog.customerFrames
+        if (category == "ADMIN") {
+            // The royal ADMIN crest is not in the bundled catalog, but it MUST be listed here
+            // so the admin dialog can manage it (animation on/off, glow, image replace) —
+            // resolve() reads the same override doc this item's actions write.
+            val doc = docs[ADMIN_FRAME_ID]
+            val hidden = doc?.hidden == true
+            val deleted = doc?.deleted == true
+            if (includeHiddenAndDeleted || !(hidden || deleted)) {
+                out += FramePickerItem(
+                    id = ADMIN_FRAME_ID,
+                    title = doc?.titleAr?.takeIf { it.isNotBlank() } ?: "الإطار الملكي للإدارة (ADMIN)",
+                    resId = com.wesal.messenger.R.drawable.wesal_frame_royal_admin_1536,
+                    imageUrl = doc?.imageUrl.orEmpty(),
+                    glow = doc?.glowColor?.takeIf { it != 0L }?.let { Color(it.toInt()) }
+                        ?: Color(0xFFFF3B1F),
+                    hidden = hidden,
+                    deleted = deleted,
+                    builtin = true,
+                    kind = "FRAME",
+                    animated = if (doc != null && doc.hasAnimatedOverride) doc.animated else true,
+                    animationStyle = if (doc != null && doc.hasAnimationStyleOverride) doc.animationStyle else "PULSE_GLOW",
+                    glowIntensity = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f,
+                    glowSpeed = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
+                )
+            }
+        }
+        // OFFICIAL (§5.7): no bundled artwork — WESAL-team frames live only as library uploads.
+        val builtinList = when (category) {
+            "ADMIN" -> WesalFrameCatalog.adminFrames
+            "OFFICIAL" -> emptyList()
+            else -> WesalFrameCatalog.customerFrames
+        }
         for (spec in builtinList) {
             val doc = docs[spec.id]
             val hidden = doc?.hidden == true
@@ -291,13 +399,16 @@ object WesalFrameLibrary {
                 builtin = true,
                 kind = "FRAME",
                 animated = if (doc != null && doc.hasAnimatedOverride) doc.animated else spec.defaultAnimated,
-                animationStyle = if (doc != null && doc.hasAnimationStyleOverride) doc.animationStyle else spec.defaultAnimationStyle
+                animationStyle = if (doc != null && doc.hasAnimationStyleOverride) doc.animationStyle else spec.defaultAnimationStyle,
+                glowIntensity = if (doc != null && doc.hasGlowIntensityOverride) doc.glowIntensity else 1.0f,
+                glowSpeed = if (doc != null && doc.hasGlowSpeedOverride) doc.glowSpeed else 1.0f
             )
         }
         val builtinIds = WesalFrameCatalog.allFrames.map { it.id }.toSet()
         docs.values
             .filter {
                 it.id !in builtinIds &&
+                    it.id != ADMIN_FRAME_ID &&
                     it.kind != "ICON" &&
                     it.category == category &&
                     it.imageUrl.isNotBlank()
@@ -316,7 +427,9 @@ object WesalFrameLibrary {
                     builtin = false,
                     kind = "FRAME",
                     animated = d.animated,
-                    animationStyle = d.animationStyle
+                    animationStyle = d.animationStyle,
+                    glowIntensity = d.glowIntensity,
+                    glowSpeed = d.glowSpeed
                 )
             }
         return out
@@ -342,6 +455,7 @@ object WesalFrameLibrary {
         val prefix = when {
             isIcon -> "icon_x_"
             category == "ADMIN" -> "admin_x_"
+            category == "OFFICIAL" -> "off_x_"
             else -> "cust_x_"
         }
         val id = prefix + System.currentTimeMillis()
@@ -426,6 +540,36 @@ object WesalFrameLibrary {
         } else if (existingDoc != null) {
             data["kind"] = existingDoc.kind
             data["category"] = existingDoc.category
+        } else if (frameId == ADMIN_FRAME_ID) {
+            // The royal crest has no catalog entry; tag its override doc so it stays
+            // well-formed (resolve() reads it by id regardless).
+            data["builtin"] = true
+            data["category"] = "ADMIN"
+            data["kind"] = "FRAME"
+        }
+        col().document(frameId).set(data, SetOptions.merge()).await()
+    }
+
+    /** §5.8: per-frame glow intensity (0..1) and animation/glow speed (0.5..2) overrides. */
+    suspend fun setGlow(frameId: String, intensity: Float, speed: Float): Result<Unit> = runCatching {
+        val builtin = WesalFrameCatalog.allFrames.firstOrNull { it.id == frameId }
+        val existingDoc = docs[frameId]
+        val data = hashMapOf<String, Any>(
+            "glowIntensity" to intensity.coerceIn(0f, 1f).toDouble(),
+            "glowSpeed" to speed.coerceIn(0.5f, 2f).toDouble(),
+            "updatedAt" to System.currentTimeMillis()
+        )
+        if (builtin != null) {
+            data["builtin"] = true
+            data["category"] = if (builtin.category == FrameCategory.ADMIN) "ADMIN" else "CUSTOMER"
+            data["kind"] = "FRAME"
+        } else if (existingDoc != null) {
+            data["kind"] = existingDoc.kind
+            data["category"] = existingDoc.category
+        } else if (frameId == ADMIN_FRAME_ID) {
+            data["builtin"] = true
+            data["category"] = "ADMIN"
+            data["kind"] = "FRAME"
         }
         col().document(frameId).set(data, SetOptions.merge()).await()
     }

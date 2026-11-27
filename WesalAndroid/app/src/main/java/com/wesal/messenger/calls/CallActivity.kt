@@ -39,6 +39,7 @@ import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
+import com.wesal.messenger.data.repository.CallSignalingErrors
 import com.wesal.messenger.domain.model.CallStatus
 import com.wesal.messenger.domain.model.WesalUser
 import com.wesal.messenger.domain.repository.CallRepository
@@ -50,6 +51,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
 import org.webrtc.SurfaceViewRenderer
@@ -120,6 +122,8 @@ class CallActivity : AppCompatActivity() {
                 val connState by webRtcManager.connectionState.collectAsStateWithLifecycle()
                 val iceState by webRtcManager.iceConnectionState.collectAsStateWithLifecycle()
                 val turnConfigured by webRtcManager.turnConfigured.collectAsStateWithLifecycle()
+                val signalingError by CallSignalingErrors.error.collectAsStateWithLifecycle()
+                val sessionError by webRtcManager.sessionError.collectAsStateWithLifecycle()
                 val remoteVideo by webRtcManager.remoteVideoTrack.collectAsStateWithLifecycle()
                 val localVideo by webRtcManager.localVideoTrackFlow.collectAsStateWithLifecycle()
                 val audioRoute by webRtcManager.audioRoute.collectAsStateWithLifecycle()
@@ -180,6 +184,8 @@ class CallActivity : AppCompatActivity() {
                             }
                         }
                     }
+
+                    CallSignalingErrors.clear()
 
                     webRtcManager.startSession(isVideo) { candidate ->
                         val cid = activeCallId
@@ -243,9 +249,14 @@ class CallActivity : AppCompatActivity() {
                             }
                         }
                     } else {
-                        val callDoc = callRepository.observeCall(initialCallId)
-                            .filter { it != null && it.offerSdp.isNotBlank() }
-                            .firstOrNull()
+                        // Bounded wait for the caller's offer: if the call doc / offer never
+                        // becomes readable (rules denial, caller write failed), fail visibly
+                        // and end instead of waiting forever on this screen.
+                        val callDoc = withTimeoutOrNull(OFFER_WAIT_TIMEOUT_MS) {
+                            callRepository.observeCall(initialCallId)
+                                .filter { it != null && it.offerSdp.isNotBlank() }
+                                .firstOrNull()
+                        }
                         if (callDoc != null) {
                             webRtcManager.setRemoteOfferAndCreateAnswer(callDoc.offerSdp) { answerSdp ->
                                 lifecycleScope.launch {
@@ -263,7 +274,14 @@ class CallActivity : AppCompatActivity() {
                                 }
                             }
                         } else {
-                            callStatusLabel = if (strings.isEnglish) "Unable to connect" else "تعذر الاتصال بالمكالمة"
+                            // Offer never arrived within the timeout: tell the user why and
+                            // end the call (also release the caller from waiting on us).
+                            callStatusLabel = CallSignalingErrors.SERVER_ERROR_MESSAGE
+                            if (initialCallId.isNotBlank()) {
+                                callRepository.updateCallStatus(initialCallId, CallStatus.ENDED, 0L)
+                            }
+                            delay(1800L)
+                            finishCallLocally()
                         }
                     }
                 }
@@ -298,6 +316,30 @@ class CallActivity : AppCompatActivity() {
                             else ->
                                 if (strings.isEnglish) "Connection lost — retrying..." else "انقطع الاتصال — جاري إعادة المحاولة..."
                         }
+                    }
+                }
+
+                // Fatal WebRTC session-setup failure (factory/PeerConnection/SDP): show the
+                // error and end the call instead of hanging wordlessly on "connecting…".
+                LaunchedEffect(sessionError) {
+                    val error = sessionError
+                    if (error != null && !isFinishingCall) {
+                        isFinishingCall = true
+                        callStatusLabel = error
+                        delay(1800L)
+                        finishCallLocally()
+                    }
+                }
+
+                // Signaling (Firestore) failure surfaced by CallRepositoryImpl: show it as
+                // the call status while the call is not yet connected, instead of a hang.
+                LaunchedEffect(signalingError) {
+                    val error = signalingError
+                    if (error != null &&
+                        connState != PeerConnection.PeerConnectionState.CONNECTED &&
+                        !isFinishingCall
+                    ) {
+                        callStatusLabel = error
                     }
                 }
 
@@ -384,6 +426,9 @@ class CallActivity : AppCompatActivity() {
                                     color = Color.White
                                 )
                                 Text(callStatusLabel, style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
+                                if (!turnConfigured && connState != PeerConnection.PeerConnectionState.CONNECTED) {
+                                    TurnNotConfiguredHint(isEnglish = strings.isEnglish)
+                                }
                             }
                         }
                     } else {
@@ -400,6 +445,9 @@ class CallActivity : AppCompatActivity() {
                                 color = palette.textPrimary
                             )
                             Text(callStatusLabel, style = MaterialTheme.typography.titleMedium, color = palette.turquoise)
+                            if (!turnConfigured && connState != PeerConnection.PeerConnectionState.CONNECTED) {
+                                TurnNotConfiguredHint(isEnglish = strings.isEnglish)
+                            }
                         }
                     }
 
@@ -609,6 +657,7 @@ class CallActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val OFFER_WAIT_TIMEOUT_MS = 30_000L
         private const val EXTRA_IS_INCOMING = "is_incoming"
         private const val EXTRA_CALL_ID = "call_id"
         private const val EXTRA_PEER_UID = "peer_uid"
@@ -650,6 +699,25 @@ class CallActivity : AppCompatActivity() {
             putExtra(EXTRA_IS_VIDEO, isVideo)
         }
     }
+}
+
+/**
+ * Persistent pre-call hint shown from the moment a call starts while no TURN server is
+ * configured in this build (previously the missing TURN was only mentioned after ICE had
+ * already FAILED). Disappears once the call actually connects.
+ */
+@Composable
+private fun TurnNotConfiguredHint(isEnglish: Boolean) {
+    val palette = WesalColors.current
+    Text(
+        text = if (isEnglish) {
+            "TURN service is not configured — audio may not work over mobile data"
+        } else {
+            "خدمة TURN غير مضبوطة — قد لا يعمل الصوت عبر بيانات الهاتف"
+        },
+        style = MaterialTheme.typography.labelSmall,
+        color = palette.warning
+    )
 }
 
 @Composable

@@ -283,7 +283,8 @@ data class WesalBuiltinIconSpec(
 enum class FrameCategory {
     DEFAULT_ALL_CUSTOMERS,
     CUSTOMER,
-    ADMIN
+    ADMIN,
+    OFFICIAL
 }
 
 data class WesalFrameSpec(
@@ -303,20 +304,21 @@ data class WesalFrameSpec(
 object WesalFrameCatalog {
     const val DEFAULT_ALL_CUSTOMERS_FRAME_ID = "all_customers"
 
-    // Default frame for EVERY customer: the royal lion ADMIN crest from the reference artwork.
-    // The asset is a 1536x1536 (1:1) transparent square; the user's photo shows through the
-    // circular opening (centre at 39.6% of the height, diameter 49.6% of the width, measured
-    // from the artwork's transparent aperture) and the crest is drawn over it.
+    // Default frame for EVERY customer: a BASIC customer ring (cust_01 artwork), deliberately
+    // distinct from the royal lion ADMIN crest. The royal 1536x1536 artwork is reserved for
+    // the ADMIN frame (WesalFrameLibrary.ADMIN_FRAME_ID = "wesal_admin_golden"), which
+    // toWesalUser forces onto the admin accounts (numeric IDs 10001/10002) only.
+    // Zero-write migration: existing user docs already carry frameId = "all_customers";
+    // re-pointing this spec's artwork changes what every one of them renders at once,
+    // without touching any stored data.
     val defaultCustomerFrame = WesalFrameSpec(
         id = DEFAULT_ALL_CUSTOMERS_FRAME_ID,
-        titleAr = "إطار WESAL الملكي الافتراضي لكل العملاء",
-        titleEn = "Default WESAL Royal Frame (All Customers)",
+        titleAr = "إطار العملاء الأساسي الافتراضي",
+        titleEn = "Basic Default Customer Frame (All Customers)",
         category = FrameCategory.DEFAULT_ALL_CUSTOMERS,
-        resId = R.drawable.wesal_frame_royal_admin_1536,
+        resId = R.drawable.wesal_frame_cust_01,
         overlayOnTop = true,
-        accentColorHex = 0xFFFF3B1FL,
-        apertureCenterYFraction = 0.396f,
-        apertureDiameterFraction = 0.496f
+        accentColorHex = 0xFFFFD54FL
     )
 
     val customerFrames: List<WesalFrameSpec> = listOf(

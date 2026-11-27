@@ -7,6 +7,7 @@ import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
+import com.wesal.messenger.domain.model.AppUpdateConfig
 import com.wesal.messenger.domain.model.CallRecord
 import com.wesal.messenger.domain.model.GlobalAppearanceConfig
 import com.wesal.messenger.domain.repository.AuthRepository
@@ -43,6 +44,12 @@ class MainViewModel @Inject constructor(
 
     val globalAppearance: StateFlow<GlobalAppearanceConfig> = userRepository.observeGlobalAppearance()
         .stateIn(viewModelScope, SharingStarted.Eagerly, GlobalAppearanceConfig())
+
+    // Forced/soft update policy (system_config/app_update). Fail-open: the default
+    // config is disabled, and the repository emits it on any error/missing doc, so
+    // MainActivity shows an update dialog only on a positive, loaded policy.
+    val appUpdateConfig: StateFlow<AppUpdateConfig> = userRepository.observeAppUpdateConfig()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AppUpdateConfig())
 
     val isOnline: StateFlow<Boolean> = networkMonitor.isOnline
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)

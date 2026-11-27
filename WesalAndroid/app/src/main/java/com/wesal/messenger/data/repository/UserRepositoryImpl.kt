@@ -169,6 +169,7 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         birthDate = birthDate,
         frameId = activeFrameId,
         frameExpiresAt = if (isAdminAccount) 0L else frameExpiresAt,
+        grantedFrameIds = (get("grantedFrameIds") as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
         iconId = rawIconId,
         iconUrl = resolvedIconUrl,
         photoRemovedBg = getBoolean("photoRemovedBg") ?: false,
@@ -1633,6 +1634,16 @@ class UserRepositoryImpl @Inject constructor(
         val perms = getCurrentAdminPermissions()
         require(perms.isFullSuperAdmin || perms.canCustomizeGlobalTheme) { "صلاحية تخصيص المظهر العام مطلوبة" }
         val now = System.currentTimeMillis()
+        // IMPORTANT (round-2 fix): the frame/icon default keys (globalCustomerFrameEnabled,
+        // defaultFrameId, defaultCustomerFrameId, defaultCustomerIconId/Url) are deliberately
+        // NOT written here. This theme save used to copy them from the passed config object —
+        // whose frame fields can be stale or factory defaults (e.g. the section's "reset"
+        // button builds a fresh GlobalAppearanceConfig) — silently changing the stored
+        // default WITHOUT running the user batch. That corrupted setGlobalCustomerDefaults'
+        // prevFrameId/prevIconId tracking: users still wearing the older default no longer
+        // matched "previous default" and were skipped by every later apply. Frame/icon
+        // defaults are owned exclusively by setGlobalCustomerDefaults /
+        // setGlobalCustomerFrameEnabled; merge leaves the stored values untouched here.
         firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
             .document("global_appearance")
             .set(
@@ -1645,11 +1656,6 @@ class UserRepositoryImpl @Inject constructor(
                     "textPrimaryHex" to config.textPrimaryHex,
                     "iconTintHex" to config.iconTintHex,
                     "iconPack" to config.iconPack.ifBlank { "DEFAULT" },
-                    "globalCustomerFrameEnabled" to config.globalCustomerFrameEnabled,
-                    "defaultFrameId" to config.defaultCustomerFrameId.ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID },
-                    "defaultCustomerFrameId" to config.defaultCustomerFrameId.ifBlank { WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID },
-                    "defaultCustomerIconId" to config.defaultCustomerIconId,
-                    "defaultCustomerIconUrl" to config.defaultCustomerIconUrl,
                     "updatedAt" to now,
                     "updatedByUid" to admin.uid
                 ),
@@ -1658,6 +1664,65 @@ class UserRepositoryImpl @Inject constructor(
         writeAdminActionLog(
             action = if (config.enabled) "GLOBAL_THEME_UPDATED" else "GLOBAL_THEME_RESET",
             details = if (config.enabled) "تحديث ألوان ومظهر التطبيق العام" else "استعادة ألوان WESAL الافتراضية"
+        )
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun observeAppUpdateConfig(): Flow<AppUpdateConfig> = observeAuthUid().flatMapLatest { uid ->
+        if (uid == null) flowOf(AppUpdateConfig())
+        else callbackFlow {
+            val reg = firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("app_update")
+                .addSnapshotListener { snap, err ->
+                    // Fail-open by design (same contract as observeGlobalAppearance): a
+                    // missing doc, a listener error or a malformed field must NEVER
+                    // produce a blocking update dialog on users' devices.
+                    if (err != null || snap == null || !snap.exists()) {
+                        trySend(AppUpdateConfig())
+                        return@addSnapshotListener
+                    }
+                    trySend(
+                        AppUpdateConfig(
+                            enabled = snap.getBoolean("enabled") ?: false,
+                            latestVersionCode = (snap.getLong("latestVersionCode") ?: 0L).toInt(),
+                            minSupportedVersionCode = (snap.getLong("minSupportedVersionCode") ?: 0L).toInt(),
+                            apkUrl = snap.getString("apkUrl").orEmpty(),
+                            messageAr = snap.getString("messageAr").orEmpty(),
+                            messageEn = snap.getString("messageEn").orEmpty(),
+                            mandatory = snap.getBoolean("mandatory") ?: false,
+                            updatedAt = snap.getLong("updatedAt") ?: 0L,
+                            updatedByUid = snap.getString("updatedByUid").orEmpty()
+                        )
+                    )
+                }
+            awaitClose { reg.remove() }
+        }
+    }
+
+    override suspend fun updateAppUpdateConfig(config: AppUpdateConfig): Result<Unit> = runCatching {
+        val admin = auth.currentUser ?: error("Not authenticated")
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin || perms.canCustomizeGlobalTheme) { "صلاحية إدارة تحديث التطبيق مطلوبة" }
+        val now = System.currentTimeMillis()
+        firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+            .document("app_update")
+            .set(
+                mapOf(
+                    "enabled" to config.enabled,
+                    "latestVersionCode" to config.latestVersionCode,
+                    "minSupportedVersionCode" to config.minSupportedVersionCode,
+                    "apkUrl" to config.apkUrl.trim(),
+                    "messageAr" to config.messageAr.trim(),
+                    "messageEn" to config.messageEn.trim(),
+                    "mandatory" to config.mandatory,
+                    "updatedAt" to now,
+                    "updatedByUid" to admin.uid
+                ),
+                SetOptions.merge()
+            ).await()
+        writeAdminActionLog(
+            action = "APP_UPDATE_CONFIG_UPDATED",
+            details = "تحديث سياسة تحديث التطبيق: مفعّل=${config.enabled}، أحدث نسخة=${config.latestVersionCode}، حد أدنى مدعوم=${config.minSupportedVersionCode}، إجباري=${config.mandatory}"
         )
     }
 
@@ -2107,13 +2172,16 @@ class UserRepositoryImpl @Inject constructor(
             }
         }
 
-        targetRef.set(
-            mapOf(
-                "frameId" to frameId.trim(),
-                "frameExpiresAt" to if (frameId.isBlank()) 0L else expiresAt
-            ),
-            SetOptions.merge()
-        ).await()
+        val framePatch = mutableMapOf<String, Any>(
+            "frameId" to frameId.trim(),
+            "frameExpiresAt" to if (frameId.isBlank()) 0L else expiresAt
+        )
+        // Remember every granted frame on the user doc: the profile picker may later
+        // re-apply any of them via setOwnFrame, and firestore.rules checks the same list.
+        if (frameId.isNotBlank()) {
+            framePatch["grantedFrameIds"] = FieldValue.arrayUnion(frameId.trim())
+        }
+        targetRef.set(framePatch, SetOptions.merge()).await()
 
         val opId = "frame_${targetUid}_${frameId}_${expiresAt}_${System.currentTimeMillis() / 5000L}"
         writeAdminActionLog(
@@ -2128,6 +2196,38 @@ class UserRepositoryImpl @Inject constructor(
             operationId = opId,
             collectionName = Constants.COLLECTION_VERIFICATION_LOGS
         )
+    }
+
+    override suspend fun setOwnFrame(frameId: String): Result<Unit> = runCatching {
+        val me = auth.currentUser ?: error("Not authenticated")
+        val clean = frameId.trim()
+        val myRef = firestore.collection(Constants.COLLECTION_USERS).document(me.uid)
+        if (clean.isNotBlank()) {
+            // Self-pick is limited to frames an admin already granted this account
+            // (grantedFrameIds on the user doc). Admin callers are exempt. The same
+            // rule is enforced server-side in firestore.rules, so a modified client
+            // cannot wear an ungranted frame either.
+            val perms = getCurrentAdminPermissions()
+            val callerIsAdmin = perms.isFullSuperAdmin || perms.hasAnyAccess()
+            if (!callerIsAdmin) {
+                val snap = myRef.get().await()
+                require(snap.exists()) { "الحساب غير موجود" }
+                val isAdminAccount = snap.getString("numericId").orEmpty() in Constants.ADMIN_NUMERIC_IDS
+                val granted = (snap.get("grantedFrameIds") as? List<*>)
+                    ?.mapNotNull { it as? String } ?: emptyList()
+                // Re-applying the frame already on the doc is always allowed (covers
+                // grants made before grantedFrameIds existed — nothing is lost).
+                val currentFrame = snap.getString("frameId").orEmpty()
+                require(isAdminAccount || clean in granted || clean == currentFrame) { "هذا الإطار غير ممنوح لحسابك" }
+            }
+        }
+        myRef.set(
+            mapOf(
+                "frameId" to clean,
+                "frameExpiresAt" to 0L
+            ),
+            SetOptions.merge()
+        ).await()
     }
 
     override suspend fun setAccountIcon(targetUid: String, iconId: String, iconUrl: String): Result<Unit> = runCatching {
@@ -2234,6 +2334,78 @@ class UserRepositoryImpl @Inject constructor(
         val chosenIconId = iconId.trim()
         val chosenIconUrl = if (chosenIconId.isBlank()) "" else iconUrl.trim().ifBlank { WesalFrameLibrary.resolveIconUrl(chosenIconId) }
 
+        // Round-2 rewrite of the propagation batch:
+        // 1) NO 500-user cap: the users collection is paged with startAfter until exhausted,
+        //    so the apply genuinely reaches every account.
+        // 2) The config doc is written LAST. It used to be written first, so a batch that
+        //    failed midway left the stored "previous default" pointing at the NEW frame —
+        //    users still wearing the older default then matched nothing on the next run and
+        //    were silently skipped forever (the prevFrameId/prevIconId tracking corruption).
+        // 3) Semantics: a user is patched when their frame/icon is blank or equals the
+        //    previous default (or the "all_customers" default id for frames). Individually
+        //    granted frames/icons (any other value) are never stomped. When the admin clears
+        //    the global icon while enabling, users still wearing the previous global icon
+        //    are cleared too — symmetric with the frame rule.
+        var updatedCount = 0
+        var lastDoc: com.google.firebase.firestore.DocumentSnapshot? = null
+        val pageSize = 400L
+        while (true) {
+            val baseQuery = firestore.collection(Constants.COLLECTION_USERS).limit(pageSize)
+            val pageSnap = if (lastDoc != null) {
+                baseQuery.startAfter(lastDoc).get().await()
+            } else {
+                baseQuery.get().await()
+            }
+            if (pageSnap.isEmpty) break
+            for (chunk in pageSnap.documents.chunked(380)) {
+                val batch = firestore.batch()
+                var chunkWrites = 0
+                for (doc in chunk) {
+                    val numId = doc.getString("numericId").orEmpty()
+                    if (Constants.isProtectedAdminNumericId(numId)) continue
+                    val currentFrame = doc.getString("frameId").orEmpty()
+                    val currentIcon = doc.getString("iconId").orEmpty()
+                    val patch = hashMapOf<String, Any>()
+
+                    if (enabled) {
+                        if (currentFrame.isBlank() || currentFrame == prevFrameId || currentFrame == WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID) {
+                            patch["frameId"] = chosenFrame
+                            patch["frameExpiresAt"] = 0L
+                        }
+                        if (chosenIconId.isNotBlank()) {
+                            if (currentIcon.isBlank() || currentIcon == prevIconId) {
+                                patch["iconId"] = chosenIconId
+                                patch["iconUrl"] = chosenIconUrl
+                            }
+                        } else if (prevIconId.isNotBlank() && currentIcon == prevIconId) {
+                            patch["iconId"] = ""
+                            patch["iconUrl"] = ""
+                        }
+                    } else {
+                        if (currentFrame == prevFrameId || currentFrame == chosenFrame || currentFrame == WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID) {
+                            patch["frameId"] = ""
+                            patch["frameExpiresAt"] = 0L
+                        }
+                        if (prevIconId.isNotBlank() && currentIcon == prevIconId) {
+                            patch["iconId"] = ""
+                            patch["iconUrl"] = ""
+                        }
+                    }
+
+                    if (patch.isNotEmpty()) {
+                        batch.set(doc.reference, patch, SetOptions.merge())
+                        chunkWrites++
+                    }
+                }
+                if (chunkWrites > 0) {
+                    batch.commit().await()
+                    updatedCount += chunkWrites
+                }
+            }
+            lastDoc = pageSnap.documents.last()
+            if (pageSnap.size() < pageSize) break
+        }
+
         configDocRef.set(
             mapOf(
                 "globalCustomerFrameEnabled" to enabled,
@@ -2245,46 +2417,6 @@ class UserRepositoryImpl @Inject constructor(
             ),
             SetOptions.merge()
         ).await()
-
-        val usersSnap = firestore.collection(Constants.COLLECTION_USERS).limit(500).get().await()
-        var updatedCount = 0
-        val chunks = usersSnap.documents.chunked(380)
-        for (chunk in chunks) {
-            val batch = firestore.batch()
-            for (doc in chunk) {
-                val numId = doc.getString("numericId").orEmpty()
-                if (Constants.isProtectedAdminNumericId(numId)) continue
-                val currentFrame = doc.getString("frameId").orEmpty()
-                val currentIcon = doc.getString("iconId").orEmpty()
-                val patch = hashMapOf<String, Any>()
-
-                if (enabled) {
-                    if (currentFrame.isBlank() || currentFrame == prevFrameId || currentFrame == WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID) {
-                        patch["frameId"] = chosenFrame
-                        patch["frameExpiresAt"] = 0L
-                    }
-                    if (chosenIconId.isNotBlank() && (currentIcon.isBlank() || currentIcon == prevIconId)) {
-                        patch["iconId"] = chosenIconId
-                        patch["iconUrl"] = chosenIconUrl
-                    }
-                } else {
-                    if (currentFrame == prevFrameId || currentFrame == chosenFrame || currentFrame == WesalFrameCatalog.DEFAULT_ALL_CUSTOMERS_FRAME_ID) {
-                        patch["frameId"] = ""
-                        patch["frameExpiresAt"] = 0L
-                    }
-                    if (prevIconId.isNotBlank() && currentIcon == prevIconId) {
-                        patch["iconId"] = ""
-                        patch["iconUrl"] = ""
-                    }
-                }
-
-                if (patch.isNotEmpty()) {
-                    batch.set(doc.reference, patch, SetOptions.merge())
-                    updatedCount++
-                }
-            }
-            batch.commit().await()
-        }
 
         writeAdminActionLog(
             action = if (enabled) "GLOBAL_FRAME_ENABLED" else "GLOBAL_FRAME_DISABLED",
@@ -2707,6 +2839,27 @@ class UserRepositoryImpl @Inject constructor(
             ),
             SetOptions.merge()
         ).await()
+
+        // Spec §10.2: dedicated deleted-accounts log — one tombstone doc per deleted
+        // account (doc id = uid), separate from the audit logs so the record survives
+        // audit-log clearing/rotation. Rules: readable by super admins and moderators
+        // with canManageUsersModeration; creatable only by this admin flow's auth
+        // context; deletable only by a super admin. Best-effort: the deletion itself
+        // above is the primary operation and must not fail because the log write did.
+        runCatching {
+            firestore.collection(Constants.COLLECTION_DELETED_ACCOUNTS)
+                .document(targetUid)
+                .set(
+                    mapOf(
+                        "uid" to targetUid,
+                        "numericId" to user.numericId,
+                        "publicId" to user.publicId,
+                        "deletedBy" to (auth.currentUser?.uid.orEmpty()),
+                        "deletedAt" to now,
+                        "reason" to cleanReason
+                    )
+                ).await()
+        }
 
         writeAdminActionLog(
             action = "USER_DELETED_PERMANENT",

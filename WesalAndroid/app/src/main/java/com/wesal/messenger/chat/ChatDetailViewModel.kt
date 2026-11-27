@@ -123,8 +123,17 @@ class ChatDetailViewModel @Inject constructor(
     private val _peerUser = MutableStateFlow<WesalUser?>(null)
     val peerUser: StateFlow<WesalUser?> = _peerUser.asStateFlow()
 
+    /**
+     * ONE shared subscription to the chats list for this screen. Previously
+     * chatPreview and allChatsForForward each called observeChats(), running two
+     * Firestore snapshot listeners over the same collection for the life of the
+     * screen (spec §13 duplication); both now derive from this single flow.
+     */
+    private val sharedChats: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    val chatPreview: StateFlow<ChatPreview?> = chatRepository.observeChats()
+    val chatPreview: StateFlow<ChatPreview?> = sharedChats
         .map { list -> list.firstOrNull { it.chatId == chatId } }
         .flatMapLatest { preview ->
             if (preview != null && !preview.isGroup && !preview.isOfficialWesalChat && preview.peerUid.isNotBlank()) {
@@ -180,7 +189,7 @@ class ChatDetailViewModel @Inject constructor(
     val recordingState: StateFlow<VoiceRecordingState> = voiceRecorder.state
     val playbackState: StateFlow<VoicePlaybackState> = voicePlayer.playbackState
 
-    val allChatsForForward: StateFlow<List<ChatPreview>> = chatRepository.observeChats()
+    val allChatsForForward: StateFlow<List<ChatPreview>> = sharedChats
         .map { list -> list.filterNot { it.isOfficialWesalChat } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 

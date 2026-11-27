@@ -1,5 +1,6 @@
 package com.wesal.messenger.authentication
 
+import android.content.Context
 import android.net.Uri
 import android.util.Patterns
 import androidx.lifecycle.ViewModel
@@ -13,7 +14,9 @@ import com.wesal.messenger.domain.model.CountryCode
 import com.wesal.messenger.domain.model.SavedWesalAccount
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
+import com.wesal.messenger.settings.WesalCredentialVault
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +35,9 @@ data class AuthUiState(
     val passwordInput: String = "",
     val confirmPasswordInput: String = "",
     val termsAccepted: Boolean = false,
+    /** "حفظ الدخول" (remember me, §3.1): ON by default; when ON the email/password are
+     *  kept in the encrypted vault so this account can be fast-switched later (§3.2). */
+    val rememberMe: Boolean = true,
     val isSignUpMode: Boolean = false,
     val selectedCountry: CountryCode = CountryCatalog.defaultEgypt,
     val phoneNumberInput: String = "",
@@ -47,6 +53,7 @@ data class AuthUiState(
 
 @HiltViewModel
 class AuthViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val authRepository: AuthRepository,
     private val chatRepository: ChatRepository,
     private val prefs: UserPreferencesDataStore,
@@ -68,7 +75,10 @@ class AuthViewModel @Inject constructor(
             )
 
     private companion object {
-        const val AUTH_TIMEOUT_MS = 45_000L
+        // 20s: the repository now returns success right after authentication + the
+        // skeleton check (side effects are fire-and-forget), so the old 45s ceiling
+        // only ever masked a stalled stream.
+        const val AUTH_TIMEOUT_MS = 20_000L
     }
 
     val savedAccounts: StateFlow<List<SavedWesalAccount>> = authRepository.observeSavedAccounts()
@@ -101,6 +111,10 @@ class AuthViewModel @Inject constructor(
         _uiState.update { it.copy(termsAccepted = accepted, errorMessage = null) }
     }
 
+    fun toggleRememberMe(remember: Boolean) {
+        _uiState.update { it.copy(rememberMe = remember, errorMessage = null) }
+    }
+
     fun toggleSignUpMode(signUp: Boolean) {
         _uiState.update {
             it.copy(
@@ -130,7 +144,63 @@ class AuthViewModel @Inject constructor(
     }
 
     fun removeSavedAccount(uid: String) {
+        // The repository also deletes the account's stored credential (§3.2).
         viewModelScope.launch { authRepository.removeSavedAccount(uid) }
+    }
+
+    /**
+     * Fast account switch from the login screen (§3.2). If the account has a stored
+     * credential (remember-me was ON), switch in place: bounded sign-out of the current
+     * account (if any) then sign-in — the repository returns right after authentication
+     * + skeleton check, so this resolves in seconds, not the old sign-out(15s) +
+     * sign-in(45s) chain. Without a stored credential, fall back to prefilling the
+     * email so the user only types the password.
+     */
+    fun switchToSavedAccount(account: SavedWesalAccount) {
+        val password = WesalCredentialVault.passwordForEmail(context, account.email)
+        if (password.isNullOrEmpty()) {
+            _uiState.update {
+                it.copy(
+                    isSignUpMode = false,
+                    emailInput = account.email,
+                    passwordInput = "",
+                    errorMessage = null,
+                    infoMessage = "أدخل كلمة المرور لإتمام تسجيل الدخول بهذا الحساب"
+                )
+            }
+            return
+        }
+        if (!networkMonitor.isCurrentlyConnected()) {
+            _uiState.update { it.copy(errorMessage = "لا يوجد اتصال بالإنترنت، تحقق من الشبكة") }
+            return
+        }
+        _uiState.update { it.copy(isLoading = true, errorMessage = null, infoMessage = null) }
+        viewModelScope.launch {
+            val result = authCall {
+                val currentUid = authRepository.currentUserId
+                if (currentUid != null && currentUid != account.uid) {
+                    // Bounded inside the repository; local sign-out always completes.
+                    authRepository.signOut()
+                }
+                authRepository.signInWithEmail(account.email, password)
+            }
+            result.onSuccess { needsSetup ->
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        navigateToProfileSetup = needsSetup,
+                        navigateToHome = !needsSetup
+                    )
+                }
+            }.onFailure { err ->
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = err.localizedMessage ?: "تعذر تبديل الحساب"
+                    )
+                }
+            }
+        }
     }
 
     fun signInWithGoogleIdToken(idToken: String) {
@@ -224,6 +294,17 @@ class AuthViewModel @Inject constructor(
                 }
             }
             result.onSuccess { needsSetup ->
+                // "حفظ الدخول" (§3.1): honour the checkbox only AFTER a successful auth.
+                // ON  -> keep the credential in the encrypted vault for fast switching.
+                // OFF -> make sure no stored credential remains for this account.
+                val signedInUid = authRepository.currentUserId.orEmpty()
+                if (state.rememberMe) {
+                    if (signedInUid.isNotBlank()) {
+                        WesalCredentialVault.save(context, signedInUid, email, password)
+                    }
+                } else {
+                    WesalCredentialVault.removeByEmail(context, email)
+                }
                 if (openSupport) {
                     val supportRes = chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
                     val chatId = supportRes.getOrNull()

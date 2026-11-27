@@ -34,7 +34,8 @@ class ChatsListViewModel @Inject constructor(
     val showArchivedOnly: StateFlow<Boolean> = _showArchivedOnly.asStateFlow()
 
     val showHiddenChats: StateFlow<Boolean> = prefs.hiddenChatsUnlockedSession
-    val openHiddenChatsTrigger: StateFlow<Boolean> = prefs.openHiddenChatsTrigger
+    // Spec §8.2: no external "open hidden chats" trigger exists anymore — the ONLY
+    // unlock path is updateSearchQuery() verifying the typed password below.
 
     private var unlockedViaSearchBar: Boolean = false
 
@@ -146,10 +147,6 @@ class ChatsListViewModel @Inject constructor(
 
     fun verifyHiddenRecoveryAnswer(answer: String): Boolean =
         prefs.verifyHiddenChatsRecoveryAnswer(currentUid, answer)
-
-    fun consumeOpenHiddenChatsTrigger() {
-        prefs.consumeOpenHiddenChats()
-    }
 
     fun setupOrResetHiddenPassword(
         password: String,

@@ -39,6 +39,7 @@ object Constants {
     const val COLLECTION_SCHEDULED_CALLS = "scheduled_calls"
     const val COLLECTION_SUPPORT_TICKETS = "support_tickets"
     const val COLLECTION_BROADCAST_LISTS = "broadcast_lists"
+    const val COLLECTION_DELETED_ACCOUNTS = "deleted_accounts"
     const val SUBCOLLECTION_MESSAGES = "messages"
 
     const val CHANNEL_MESSAGES = "wesal_messages"
