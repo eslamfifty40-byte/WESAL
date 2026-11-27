@@ -149,12 +149,6 @@ fun AssistantChatScreen(
     // dead button.
     var dictationPermissionPending by remember { mutableStateOf(false) }
     var dictationRequestedOnce by remember { mutableStateOf(false) }
-    LaunchedEffect(micPermission.status.isGranted) {
-        if (dictationPermissionPending && micPermission.status.isGranted) {
-            dictationPermissionPending = false
-            startDictation()
-        }
-    }
     var dictationBase by remember { mutableStateOf("") }
     val inputTextState = rememberUpdatedState(inputText)
     val speechRecognizer = remember(dictationContext) {
@@ -257,6 +251,15 @@ fun AssistantChatScreen(
                 "تعذر بدء الإملاء الصوتي",
                 "Could not start voice dictation"
             )
+        }
+    }
+    // Permission hand-off (declared after startDictation — a local function
+    // must be declared before a LaunchedEffect lambda references it): when
+    // the system permission request returns granted, start listening at once.
+    LaunchedEffect(micPermission.status.isGranted) {
+        if (dictationPermissionPending && micPermission.status.isGranted) {
+            dictationPermissionPending = false
+            startDictation()
         }
     }
 

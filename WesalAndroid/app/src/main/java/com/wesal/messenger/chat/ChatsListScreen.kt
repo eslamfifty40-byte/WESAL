@@ -1256,7 +1256,6 @@ fun ChatsListScreen(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 /**
  * Round 10 (item 6): «مساعد وِصال» as a normal conversation row — same
  * geometry as [ChatRowItem] (54dp avatar, name + time line, preview line),
@@ -1328,6 +1327,7 @@ private fun AssistantChatRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatRowItem(
     chat: ChatPreview,
