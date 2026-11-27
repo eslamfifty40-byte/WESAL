@@ -47,6 +47,7 @@ import com.wesal.messenger.domain.model.ChatListSyncStatus
 import com.wesal.messenger.domain.model.ContactRequest
 import com.wesal.messenger.domain.model.ContactRequestStatus
 import com.wesal.messenger.domain.model.WesalUser
+import com.wesal.messenger.presentation.components.PhoneNumberText
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 
@@ -186,6 +187,21 @@ fun NewChatContactsScreen(
                                     "$total contacts (${state.wesalContacts.size} on WESAL)"
                                 } else {
                                     "$total جهة اتصال (${state.wesalContacts.size} على وصال)"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textSecondary
+                            )
+                        }
+                        // Round 10 (item 4): truthful sync status — when the
+                        // phone book was last matched against the verified
+                        // registry, so "0 على وصال" is diagnosable (never
+                        // synced vs synced-now-with-no-matches) at a glance.
+                        if (state.lastSyncAtMs > 0L) {
+                            Text(
+                                text = if (strings.isEnglish) {
+                                    "On WESAL: ${state.wesalContacts.size} • Last sync ${DateTimeUtils.formatMessageTime(state.lastSyncAtMs)}"
+                                } else {
+                                    "على وصال: ${state.wesalContacts.size} • آخر مزامنة ${DateTimeUtils.formatMessageTime(state.lastSyncAtMs)}"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = palette.textSecondary
@@ -1042,7 +1058,10 @@ fun NewChatContactsScreen(
                                     WesalAvatar(imageUrl = "", name = contact.displayName, size = 44.dp)
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(contact.displayName, style = MaterialTheme.typography.titleMedium, color = palette.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text(contact.e164Phone ?: contact.rawPhone, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                                        // Round 10 (item 4): LTR-pinned — the raw
+                                        // number used to render bidi-reversed
+                                        // ("201013521019+") in the RTL layout.
+                                        PhoneNumberText(contact.e164Phone ?: contact.rawPhone, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
                                         if (isInvited) {
                                             Text(
                                                 text = if (strings.isEnglish) "Invited ✓" else "تمت دعوته ✓",

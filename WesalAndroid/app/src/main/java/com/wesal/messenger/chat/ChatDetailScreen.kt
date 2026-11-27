@@ -92,6 +92,10 @@ fun ChatDetailScreen(
     onBack: () -> Unit,
     onOpenGroupInfo: (String) -> Unit,
     onOpenUserProfile: (String) -> Unit = {},
+    // Round 10 (item 1): real connectivity (MainViewModel/NetworkMonitor via
+    // WesalNavHost). The in-chat «غير متصل» line renders only while the
+    // device is actually offline — never on a healthy network.
+    isOnline: Boolean = true,
     viewModel: ChatDetailViewModel = hiltViewModel()
 ) {
     val palette = WesalColors.current
@@ -824,7 +828,7 @@ fun ChatDetailScreen(
                             }
                         }
                     }
-                } else if (messageSyncState.fromCache) {
+                } else if (messageSyncState.fromCache && !isOnline) {
                     Text(
                         text = if (strings.isEnglish) "Offline — showing saved messages" else "غير متصل — يتم عرض الرسائل المحفوظة",
                         color = palette.textMuted,

@@ -51,6 +51,9 @@ import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalQrCodeBox
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -168,8 +171,16 @@ class GroupsViewModel @Inject constructor(
     fun observeJoinRequests(groupId: String): Flow<List<GroupJoinRequest>> =
         groupRepository.observeGroupJoinRequests(groupId)
 
-    suspend fun loadUsersByIds(uids: List<String>): List<WesalUser> =
-        uids.mapNotNull { userRepository.getUserOnce(it) }
+    // Round 10 (item 12): members load in parallel waves of 25 instead of
+    // one awaited read after another — a large group's member list used to
+    // cost N sequential round trips (getUserOnce is cache-first, so repeat
+    // opens are cheap; the first open of a big group was the slow one).
+    // Order is preserved: waves complete in uid order.
+    suspend fun loadUsersByIds(uids: List<String>): List<WesalUser> = coroutineScope {
+        uids.chunked(25).flatMap { wave ->
+            wave.map { uid -> async { userRepository.getUserOnce(uid) } }.awaitAll()
+        }.filterNotNull()
+    }
 
     fun updateGroupInfo(groupId: String, name: String, desc: String, avatarUri: Uri?) {
         viewModelScope.launch {

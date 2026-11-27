@@ -187,7 +187,8 @@ fun HomeScreen(
                 HomeTab.CHATS -> ChatsListScreen(
                     onOpenChat = onOpenChat,
                     onNewChat = onOpenNewChat,
-                    onOpenAssistant = onOpenAssistant
+                    onOpenAssistant = onOpenAssistant,
+                    isOnline = isOnline
                 )
                 HomeTab.STORIES -> StoriesScreen(
                     onOpenChannel = onOpenChannel,

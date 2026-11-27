@@ -8,6 +8,7 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.MetadataChanges
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
@@ -246,7 +247,16 @@ class ChatRepositoryImpl @Inject constructor(
                     } else {
                         baseQuery
                     }
-                    registration = query.addSnapshotListener { snapshot, error ->
+                    // Round 10 (item 1, second root cause): MetadataChanges.INCLUDE is
+                    // load-bearing for the sync state. With the default (EXCLUDE), the
+                    // listener fires for the initial CACHE snapshot (isFromCache=true)
+                    // and then NEVER fires again for the server's confirmation when the
+                    // documents are unchanged — a pure metadata transition raises no
+                    // event — so ChatListSyncState.fromCache latched true forever and
+                    // the chats list showed «غير متصل» permanently on a healthy
+                    // network (owner screenshot 168803, r9). INCLUDE delivers the
+                    // cache→server transition, so fromCache tracks reality.
+                    registration = query.addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                         if (error != null || snapshot == null) {
                             if (ordered &&
                                 error?.code == FirebaseFirestoreException.Code.FAILED_PRECONDITION
@@ -656,7 +666,10 @@ class ChatRepositoryImpl @Inject constructor(
                     .collection(Constants.COLLECTION_MESSAGES)
                     .orderBy("timestamp", Query.Direction.ASCENDING)
                     .limitToLast(MESSAGE_PAGE_SIZE.toLong())
-                    .addSnapshotListener { snapshot, error ->
+                    // Round 10 (item 1): INCLUDE, same latch as the chats-list
+                    // listener above — without it the in-chat «غير متصل» line
+                    // (messageSyncState.fromCache) also never cleared.
+                    .addSnapshotListener(MetadataChanges.INCLUDE) { snapshot, error ->
                         if (error != null || snapshot == null) {
                             // Spec §§1.2/13.4: surface the failure (the chat screen
                             // renders it with retry) instead of silently freezing.

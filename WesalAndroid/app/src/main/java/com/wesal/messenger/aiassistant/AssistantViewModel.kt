@@ -93,6 +93,10 @@ class AssistantViewModel @Inject constructor(
     private fun loadHistory(forUid: String) {
         historyLoadedForUid = forUid
         viewModelScope.launch {
+            // Round 10 (item 6): opening the assistant un-archives its
+            // chats-list row (owner rule: archive hides the row until the
+            // next assistant activity or an explicit open).
+            historyStore.setArchived(forUid, false)
             val stored = historyStore.load(forUid)
             // Never clobber a conversation the user already started typing
             // into while the (fast, local) load was in flight.
@@ -210,6 +214,11 @@ class AssistantViewModel @Inject constructor(
 
     private fun dispatch(userMessage: AssistantMessage) {
         _messages.update { AssistantLogic.capHistory(it + userMessage) }
+        // Round 10 (item 6): a new exchange un-archives the chats-list row.
+        if (uid.isNotBlank()) {
+            val forUid = uid
+            viewModelScope.launch { historyStore.setArchived(forUid, false) }
+        }
         persist()
         _isSending.value = true
         viewModelScope.launch {

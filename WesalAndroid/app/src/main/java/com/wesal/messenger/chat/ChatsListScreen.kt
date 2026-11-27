@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wesal.messenger.R
+import com.wesal.messenger.aiassistant.AssistantConversationSummary
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
@@ -48,6 +49,11 @@ fun ChatsListScreen(
     onOpenChat: (String) -> Unit,
     onNewChat: () -> Unit,
     onOpenAssistant: () -> Unit = {},
+    // Round 10 (item 1): real connectivity (MainViewModel/NetworkMonitor via
+    // HomeScreen). The «غير متصل» line below may only render while the device
+    // is actually offline — cache-served data on a healthy network is not
+    // "offline", and the owner must never see the banner while online.
+    isOnline: Boolean = true,
     viewModel: ChatsListViewModel = hiltViewModel()
 ) {
     val palette = WesalColors.current
@@ -65,6 +71,16 @@ fun ChatsListScreen(
     val hiddenIds by viewModel.hiddenChatIds.collectAsStateWithLifecycle()
     val lockedIds by viewModel.lockedChatIds.collectAsStateWithLifecycle()
     val toastMsg by viewModel.toastMessage.collectAsStateWithLifecycle()
+    // Round 10 (item 6): «مساعد وِصال» as a normal conversation row — present
+    // once a conversation exists and not archived; behaves like a real row
+    // (tap opens, long-press offers clear/archive). Not shown in hidden /
+    // archived-only / search modes.
+    val assistantSummary by viewModel.assistantSummary.collectAsStateWithLifecycle()
+    var showAssistantMenu by remember { mutableStateOf(false) }
+    var showAssistantClearConfirm by remember { mutableStateOf(false) }
+    val assistantRowVisible = assistantSummary?.let { summary ->
+        !summary.archived && !showHiddenChats && !showArchivedOnly && searchQuery.isBlank()
+    } ?: false
 
     // Spec §8.3: while the hidden-chats list is unlocked and visible, FLAG_SECURE keeps it
     // out of Android Recents thumbnails and screenshots. Cleared as soon as the hidden
@@ -273,7 +289,7 @@ fun ChatsListScreen(
                 HorizontalDivider(color = palette.border, thickness = 0.5.dp)
             }
 
-            if (chats.isEmpty()) {
+            if (chats.isEmpty() && !assistantRowVisible) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -378,8 +394,11 @@ fun ChatsListScreen(
                     }
                 }
             } else {
-                // Spec §13.3: label cache-served data as cached, not live.
-                if (chatListState.fromCache) {
+                // Spec §13.3: label cache-served data as cached, not live —
+                // but ONLY while genuinely offline (round 10, item 1): the
+                // label says «غير متصل», so rendering it on a healthy network
+                // (transient initial cache snapshot) is a false statement.
+                if (chatListState.fromCache && !isOnline) {
                     Text(
                         text = if (strings.isEnglish) "Offline — showing saved chats" else "غير متصل — يتم عرض المحادثات المحفوظة",
                         style = MaterialTheme.typography.labelSmall,
@@ -388,6 +407,20 @@ fun ChatsListScreen(
                     )
                 }
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    // Round 10 (item 6): the assistant conversation row sits
+                    // at the top of the normal list like any conversation —
+                    // it is NOT the old pinned/static row: it exists only
+                    // when a conversation exists, carries the last-message
+                    // preview + time, and archives/clears from its menu.
+                    if (assistantRowVisible) {
+                        item(key = "assistant_conversation_row") {
+                            AssistantChatRow(
+                                summary = assistantSummary!!,
+                                onClick = { onOpenAssistant() },
+                                onLongClick = { showAssistantMenu = true }
+                            )
+                        }
+                    }
                     items(chats, key = { it.chatId }) { chat ->
                         val isLocked = chat.chatId in lockedIds
                         ChatRowItem(
@@ -482,6 +515,107 @@ fun ChatsListScreen(
                 // Round 9: raised from 84.dp so the snackbar clears the taller
                 // FAB stack (16 padding + 56 FAB + 16 gap + 48 assistant).
                 .padding(bottom = 144.dp)
+        )
+    }
+
+    // Round 10 (item 6): assistant row long-press menu — «مسح المحادثة»
+    // (same wipe as the assistant screen, with its own confirmation) and
+    // «أرشفة» (hides the row until the next exchange or an explicit open).
+    if (showAssistantMenu) {
+        AlertDialog(
+            onDismissRequest = { showAssistantMenu = false },
+            containerColor = palette.surface,
+            title = {
+                WesalNameWithBadge(
+                    name = if (strings.isEnglish) "Wesal Assistant" else "مساعد وِصال",
+                    isVerified = true
+                )
+            },
+            text = {
+                Column {
+                    val menuItemColors = ListItemDefaults.colors(
+                        containerColor = palette.surface,
+                        headlineColor = palette.textPrimary,
+                        supportingColor = palette.textSecondary
+                    )
+                    ListItem(
+                        headlineContent = {
+                            Text(if (strings.isEnglish) "Archive" else "أرشفة")
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.Archive, contentDescription = null, tint = palette.turquoise)
+                        },
+                        colors = menuItemColors,
+                        modifier = Modifier.clickable {
+                            viewModel.archiveAssistantConversation()
+                            showAssistantMenu = false
+                        }
+                    )
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                if (strings.isEnglish) "Clear conversation" else "مسح المحادثة",
+                                color = palette.error
+                            )
+                        },
+                        leadingContent = {
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = palette.error)
+                        },
+                        colors = menuItemColors,
+                        modifier = Modifier.clickable {
+                            showAssistantMenu = false
+                            showAssistantClearConfirm = true
+                        }
+                    )
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { showAssistantMenu = false }) {
+                    Text(strings.cancel)
+                }
+            }
+        )
+    }
+
+    if (showAssistantClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showAssistantClearConfirm = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Clear conversation?" else "مسح المحادثة؟",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (strings.isEnglish) {
+                        "All your messages with the assistant will be deleted."
+                    } else {
+                        "سيتم حذف كل الرسائل مع المساعد."
+                    },
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.clearAssistantConversation()
+                    showAssistantClearConfirm = false
+                }) {
+                    Text(
+                        if (strings.isEnglish) "Clear" else "مسح",
+                        color = palette.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAssistantClearConfirm = false }) {
+                    Text(strings.cancel, color = palette.textSecondary)
+                }
+            }
         )
     }
 
@@ -1123,6 +1257,77 @@ fun ChatsListScreen(
 }
 
 @OptIn(ExperimentalFoundationApi::class)
+/**
+ * Round 10 (item 6): «مساعد وِصال» as a normal conversation row — same
+ * geometry as [ChatRowItem] (54dp avatar, name + time line, preview line),
+ * with the app-icon avatar and verified badge. Tap opens the assistant;
+ * long-press opens its menu (clear / archive).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AssistantChatRow(
+    summary: AssistantConversationSummary,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(modifier = Modifier.size(54.dp)) {
+            Image(
+                // ic_launcher_foreground PNG — never ic_launcher (adaptive
+                // XML crashes painterResource, the r8 lesson).
+                painter = painterResource(id = R.mipmap.ic_launcher_foreground),
+                contentDescription = null,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape)
+            )
+            WesalVerifiedBadge(
+                size = 18.dp,
+                modifier = Modifier.align(Alignment.BottomEnd)
+            )
+        }
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                WesalNameWithBadge(
+                    name = if (strings.isEnglish) "Wesal Assistant" else "مساعد وِصال",
+                    isVerified = true,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (summary.lastAtMs > 0L) {
+                    Text(
+                        text = DateTimeUtils.formatChatListTime(summary.lastAtMs),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textSecondary
+                    )
+                }
+            }
+            Text(
+                text = summary.previewText.ifBlank {
+                    if (strings.isEnglish) "Tap to continue" else "اضغط للمتابعة"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = palette.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
 @Composable
 private fun ChatRowItem(
     chat: ChatPreview,

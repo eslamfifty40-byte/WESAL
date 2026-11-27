@@ -1,6 +1,7 @@
 package com.wesal.messenger.aiassistant
 
 import android.content.Context
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -9,7 +10,10 @@ import com.wesal.messenger.core.util.AssistantMediaKind
 import com.wesal.messenger.core.util.AssistantMessage
 import com.wesal.messenger.core.util.AssistantRole
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -17,6 +21,17 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private val Context.assistantDataStore by preferencesDataStore(name = "wesal_assistant_prefs")
+
+/**
+ * Chats-list summary of the assistant conversation (round 10, item 6): the
+ * last message's clean preview text + time, and whether the owner archived
+ * the conversation row out of the chats list.
+ */
+data class AssistantConversationSummary(
+    val previewText: String,
+    val lastAtMs: Long,
+    val archived: Boolean
+)
 
 /**
  * Local-only persistence for the «مساعد وِصال» conversation (round 8).
@@ -50,6 +65,49 @@ class AssistantHistoryStore @Inject constructor(
 
     private fun historyKey(uid: String) = stringPreferencesKey("u_${uid}_assistant_history_json")
 
+    private fun archivedKey(uid: String) = booleanPreferencesKey("u_${uid}_assistant_archived")
+
+    /**
+     * Round 10 (item 6): live summary for the chats-list row. Emits null
+     * while the conversation is empty (no row is shown before the first
+     * exchange). The preview is the last message's first display line with
+     * Markdown stripped via [AssistantLogic.parseDisplayLines]; media
+     * messages preview as their bracketed placeholders.
+     */
+    fun observeSummary(uid: String): Flow<AssistantConversationSummary?> {
+        if (uid.isBlank()) return flowOf(null)
+        return context.assistantDataStore.data.map { prefs ->
+            val raw = prefs[historyKey(uid)] ?: return@map null
+            val stored = runCatching {
+                json.decodeFromString<List<StoredMessage>>(raw)
+            }.getOrDefault(emptyList())
+            val last = stored.lastOrNull() ?: return@map null
+            val preview = when {
+                last.text.isNotBlank() -> AssistantLogic.parseDisplayLines(last.text)
+                    .firstOrNull { line -> line.spans.any { it.text.isNotBlank() } }
+                    ?.spans?.joinToString("") { it.text }
+                    ?.trim()
+                    .orEmpty()
+                last.mediaKind == AssistantMediaKind.IMAGE.name -> AssistantLogic.IMAGE_PLACEHOLDER
+                last.mediaKind == AssistantMediaKind.VOICE.name -> AssistantLogic.VOICE_PLACEHOLDER
+                else -> ""
+            }
+            AssistantConversationSummary(
+                previewText = preview,
+                lastAtMs = last.createdAtMs,
+                archived = prefs[archivedKey(uid)] ?: false
+            )
+        }
+    }
+
+    /** Round 10 (item 6): archive/un-archive the chats-list row. */
+    suspend fun setArchived(uid: String, archived: Boolean) {
+        if (uid.isBlank()) return
+        runCatching {
+            context.assistantDataStore.edit { prefs -> prefs[archivedKey(uid)] = archived }
+        }
+    }
+
     suspend fun load(uid: String): List<AssistantMessage> {
         if (uid.isBlank()) return emptyList()
         val raw = runCatching {
@@ -73,7 +131,10 @@ class AssistantHistoryStore @Inject constructor(
     suspend fun clear(uid: String) {
         if (uid.isBlank()) return
         runCatching {
-            context.assistantDataStore.edit { prefs -> prefs.remove(historyKey(uid)) }
+            context.assistantDataStore.edit { prefs ->
+                prefs.remove(historyKey(uid))
+                prefs.remove(archivedKey(uid))
+            }
         }
     }
 

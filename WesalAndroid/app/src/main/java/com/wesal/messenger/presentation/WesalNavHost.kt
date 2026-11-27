@@ -333,7 +333,8 @@ fun WesalNavHost(
             ChatDetailScreen(
                 onBack = { navController.popBackStack() },
                 onOpenGroupInfo = { groupId -> navController.navigate("group/$groupId") },
-                onOpenUserProfile = { peerUid -> navController.navigate("user_profile/$peerUid") }
+                onOpenUserProfile = { peerUid -> navController.navigate("user_profile/$peerUid") },
+                isOnline = isOnline
             )
         }
 

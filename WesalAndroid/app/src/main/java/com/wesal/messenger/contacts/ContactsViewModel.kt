@@ -56,7 +56,12 @@ data class ContactsUiState(
     // indistinguishable from a saved contact that never appeared.
     val isSavingDeviceContact: Boolean = false,
     val deviceContactSaveError: String? = null,
-    val deviceContactSaveSucceeded: Boolean = false
+    val deviceContactSaveSucceeded: Boolean = false,
+    // Round 10 (item 4): timestamp of the last SUCCESSFUL phone-book sync —
+    // the contacts screen renders it («على وصال: X • آخر مزامنة …») so an
+    // empty «على وصال» section is diagnosable (never synced / synced just
+    // now with zero matches / stale) instead of silently ambiguous.
+    val lastSyncAtMs: Long = 0L
 )
 
 @HiltViewModel
@@ -198,6 +203,7 @@ class ContactsViewModel @Inject constructor(
                         isLoadingContacts = false,
                         wesalContacts = matched,
                         nonWesalContacts = unmatched,
+                        lastSyncAtMs = System.currentTimeMillis(),
                         // Keep the bulk-invite selection honest across refreshes: drop
                         // keys whose contact no longer exists in the unregistered list.
                         selectedContactKeys = it.selectedContactKeys

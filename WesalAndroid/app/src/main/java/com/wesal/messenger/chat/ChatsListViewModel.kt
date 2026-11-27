@@ -2,6 +2,8 @@ package com.wesal.messenger.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.aiassistant.AssistantConversationSummary
+import com.wesal.messenger.aiassistant.AssistantHistoryStore
 import com.wesal.messenger.core.util.PerfTrace
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -22,11 +24,50 @@ class ChatsListViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val userRepository: UserRepository,
     private val authRepository: AuthRepository,
-    private val prefs: UserPreferencesDataStore
+    private val prefs: UserPreferencesDataStore,
+    private val assistantHistoryStore: AssistantHistoryStore
 ) : ViewModel() {
 
     val currentUid: String
         get() = authRepository.currentUserId.orEmpty()
+
+    /**
+     * Round 10 (item 6): the «مساعد وِصال» conversation as a chats-list row
+     * summary — null until the first exchange exists. The store is local
+     * (per-uid DataStore); the row is hidden while archived.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val assistantSummary: StateFlow<AssistantConversationSummary?> =
+        authRepository.observeAuthState()
+            .map { it.orEmpty() }
+            .distinctUntilChanged()
+            .flatMapLatest { uid -> assistantHistoryStore.observeSummary(uid) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** Round 10 (item 6): hide the assistant row until the next exchange/open. */
+    fun archiveAssistantConversation() {
+        val uid = currentUid
+        if (uid.isBlank()) return
+        viewModelScope.launch { assistantHistoryStore.setArchived(uid, true) }
+    }
+
+    /**
+     * Round 10 (item 6): the same wipe the assistant screen's clear performs
+     * (history + local media files), triggered from the chats-list row menu.
+     */
+    fun clearAssistantConversation() {
+        val uid = currentUid
+        if (uid.isBlank()) return
+        viewModelScope.launch {
+            val mediaPaths = assistantHistoryStore.load(uid)
+                .map { it.mediaPath }
+                .filter { it.isNotBlank() }
+            assistantHistoryStore.clear(uid)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                mediaPaths.forEach { path -> runCatching { java.io.File(path).delete() } }
+            }
+        }
+    }
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()

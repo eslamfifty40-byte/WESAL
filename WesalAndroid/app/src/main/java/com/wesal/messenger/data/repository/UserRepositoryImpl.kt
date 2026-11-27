@@ -885,7 +885,18 @@ class UserRepositoryImpl @Inject constructor(
             if (
                 user.uid != currentUid &&
                 (!requireVerified || user.isPhoneVerified) &&
-                !user.privacySettings.hidePhoneNumber &&
+                // Round 10 (item 4): hidePhoneNumber no longer excludes a user
+                // from phone-hash discovery. The toggle is DISPLAY privacy —
+                // round 9 removed the digits from every surface — but this
+                // filter also made the account undiscoverable by the very
+                // people who already hold its number in their phone book
+                // (the owner's own 10002 runs with the toggle ON, so his
+                // verified number could never match for his 10001 account —
+                // his repeated "سجلت الأرقام وما ظهرتش" report). Hash matching
+                // reveals nothing but "this contact is on WESAL", exactly
+                // like WhatsApp; the number itself is never rendered.
+                // hiddenFromSearch below stays: that toggle is explicitly
+                // about discoverability.
                 !user.hiddenFromSearch &&
                 // Round 9 (item 8): the secondary-admin exclusion that used to
                 // sit here made account 10002 (the owner's own second account)

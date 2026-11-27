@@ -31,6 +31,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,8 +58,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.ScaleFactor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.res.painterResource
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.ResolvedFrame
@@ -783,6 +787,26 @@ fun WesalAvatar(
                 includeBlades = true
             )
         }
+        // Round 10 (item 9): OPAQUE photos in a frame (alpha-bounds verdict
+        // NOT_A_CUTOUT — e.g. the crop editor's glow-background output) get
+        // the reference-composite treatment: Crop fill × 1.22 zoom, anchored
+        // TopCenter by the AsyncImage's alignment, so the figure lands at
+        // the same 1.22×-aperture proportions as a bounds-fitted cutout
+        // instead of shrinking to the plain disc fill. User-framed photos
+        // (photoUserFramed) are EXCLUDED — their saved square already IS
+        // the owner's composition (round-9 WYSIWYG) and must render as-is;
+        // unframed avatars keep plain Crop.
+        val framedOpaqueZoom = activeFrame != null && !isUserFramed && !framedCutout
+        val framedOpaqueContentScale = remember {
+            object : ContentScale {
+                override fun computeScaleFactor(srcSize: Size, dstSize: Size): ScaleFactor {
+                    val factor = FramedCutoutLayout.opaqueScaleFactor(
+                        srcSize.width, srcSize.height, dstSize.width, dstSize.height
+                    )
+                    return ScaleFactor(factor, factor)
+                }
+            }
+        }
         // The framed backing disc takes its colour from the FRAME (ResolvedFrame.glow via
         // resolve()) — never a hardcoded per-frame special case — so changing the frame
         // recolours the glow behind the photo automatically.
@@ -854,7 +878,16 @@ fun WesalAvatar(
                 AsyncImage(
                     model = ImageRequest.Builder(context)
                         .data(imageModel)
-                        .size(innerPx)
+                        // Round 10 (item 9): decode a little larger when the
+                        // reference zoom will upscale the draw, so the 1.22x
+                        // magnification does not soften large avatars.
+                        .size(
+                            if (framedOpaqueZoom) {
+                                (innerPx * FramedCutoutLayout.OPAQUE_REFERENCE_ZOOM).roundToInt().coerceAtLeast(1)
+                            } else {
+                                innerPx
+                            }
+                        )
                         .apply { if (imageCacheKey != null) memoryCacheKey(imageCacheKey) }
                         .crossfade(false)
                         // Round-3: framed requests carry the alpha-bounds transformation,
@@ -898,18 +931,18 @@ fun WesalAvatar(
                     },
                     modifier = Modifier
                         .fillMaxSize()
-                        // No zoom/shrink tricks: ContentScale.Crop + TopCenter fills the
-                        // frame's circular opening exactly, so the whole photo (and the
-                        // face at the top) stays visible inside the opening — for cutout
-                        // photos too, which framed avatars now render as normal opaque
-                        // photos over the opaque disc (see the backdrop above).
+                        // Unframed + user-framed photos: ContentScale.Crop +
+                        // TopCenter fills the circular opening exactly.
+                        // Framed OPAQUE photos (round 10, item 9): the
+                        // reference scale (Crop × 1.22) with the same
+                        // TopCenter anchor — see framedOpaqueContentScale.
                         .clip(CircleShape)
                         .then(
                             if (activeFrame == null) {
                                 Modifier.border(borderWidth, borderColor, CircleShape)
                             } else Modifier
                         ),
-                    contentScale = ContentScale.Crop,
+                    contentScale = if (framedOpaqueZoom) framedOpaqueContentScale else ContentScale.Crop,
                     alignment = Alignment.TopCenter
                 )
             } else if (fallbackResId != null) {
@@ -1352,6 +1385,26 @@ fun OfflineBanner(isOnline: Boolean) {
 }
 
 /**
+ * Round 10 (item 4): a raw phone number rendered inside the app's RTL layout
+ * was bidi-reordered — "+201013521019" showed as "201013521019+" with the
+ * plus sign trailing (owner screenshot 168766). Phone numbers are LTR data;
+ * this wrapper pins the layout direction for the number text only, so the
+ * digits and the leading + always read left-to-right wherever a raw number
+ * is displayed (contacts rows today; any future surface should use this).
+ */
+@Composable
+fun PhoneNumberText(
+    text: String,
+    style: TextStyle,
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Text(text = text, style = style, color = color, modifier = modifier, maxLines = 1)
+    }
+}
+
+/**
  * Round 9 (item 4, owner's own design — revised 2026-11-27 15:16/15:18):
  * the «تأكيد الرقم» press itself carries the hidden «ابدأ».
  *
@@ -1370,33 +1423,87 @@ fun OfflineBanner(isOnline: Boolean) {
  * Returns the handoff trigger for the screen's primary button. The screens
  * add one short hint line under the button plus a manual direct-send
  * fallback ([WhatsAppOtpManualFallback]) for anyone who skips the trip.
+ *
+ * Round 10 hardening (owner device report on r9: "الواتساب ما اشتغلتش"):
+ *  1. The armed flag used to be a plain `remember` — while the user is inside
+ *     WhatsApp, Android routinely kills WESAL's process (especially on
+ *     low-RAM devices), the flag died with it, and returning to the app sent
+ *     nothing. The flag is now persisted in SharedPreferences with a
+ *     timestamp and survives process death; it expires after 10 minutes so a
+ *     stale arm can never fire a surprise send much later.
+ *  2. The intent used to be a bare ACTION_VIEW on wa.me, which can land in a
+ *     browser or a chooser where the «ابدأ» deep-link often stalls. It now
+ *     targets WhatsApp explicitly (com.whatsapp, then com.whatsapp.w4b —
+ *     the owner himself runs the Business app), falling back to the generic
+ *     intent only when neither is installed.
+ *  3. Failures were swallowed by runCatching. Every fallback now shows a
+ *     visible Arabic toast, and when WhatsApp cannot be opened at all the
+ *     code is sent directly instead of stranding the user.
  */
+private const val OTP_HANDOFF_PREFS = "wesal_otp_handoff"
+private const val OTP_HANDOFF_KEY_ARMED_AT = "armed_at"
+private const val OTP_HANDOFF_TTL_MS = 10 * 60 * 1000L
+
 @Composable
 fun rememberWhatsAppOtpHandoff(onSendCode: () -> Unit): () -> Unit {
     val context = LocalContext.current
-    val armed = remember { mutableStateOf(false) }
+    val strings = LocalWesalStrings.current
     val sendState = rememberUpdatedState(onSendCode)
+    val prefs = remember(context) {
+        context.getSharedPreferences(OTP_HANDOFF_PREFS, android.content.Context.MODE_PRIVATE)
+    }
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+    DisposableEffect(lifecycleOwner, prefs) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && armed.value) {
-                armed.value = false
-                sendState.value()
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                val armedAt = prefs.getLong(OTP_HANDOFF_KEY_ARMED_AT, 0L)
+                if (armedAt > 0L) {
+                    // Disarm first, whatever happens next — one shot only.
+                    prefs.edit().remove(OTP_HANDOFF_KEY_ARMED_AT).apply()
+                    if (System.currentTimeMillis() - armedAt <= OTP_HANDOFF_TTL_MS) {
+                        sendState.value()
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    return remember {
+    return remember(context, prefs, strings.isEnglish) {
         {
-            armed.value = true
-            val launched = runCatching {
-                context.startActivity(
+            // Arm BEFORE leaving, persisted — survives process death in WhatsApp.
+            prefs.edit().putLong(OTP_HANDOFF_KEY_ARMED_AT, System.currentTimeMillis()).apply()
+            val baseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(Constants.WHATSAPP_OTP_WINDOW_URL))
+            val pm = context.packageManager
+            val targetPackage = listOf("com.whatsapp", "com.whatsapp.w4b").firstOrNull { pkg ->
+                runCatching {
+                    pm.getPackageInfo(pkg, 0)
                     Intent(Intent.ACTION_VIEW, Uri.parse(Constants.WHATSAPP_OTP_WINDOW_URL))
-                )
+                        .setPackage(pkg)
+                        .resolveActivity(pm) != null
+                }.getOrDefault(false)
+            }
+            val launched = runCatching {
+                val intent = if (targetPackage != null) {
+                    Intent(Intent.ACTION_VIEW, Uri.parse(Constants.WHATSAPP_OTP_WINDOW_URL))
+                        .setPackage(targetPackage)
+                } else {
+                    baseIntent
+                }
+                context.startActivity(intent)
             }.isSuccess
             if (!launched) {
-                armed.value = false
+                // Nothing could open WhatsApp: say so out loud and send directly.
+                prefs.edit().remove(OTP_HANDOFF_KEY_ARMED_AT).apply()
+                android.widget.Toast.makeText(
+                    context,
+                    if (strings.isEnglish) {
+                        "WhatsApp could not be opened — sending the code directly"
+                    } else {
+                        "تعذر فتح واتساب — سيتم إرسال الكود مباشرة"
+                    },
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
                 sendState.value()
             }
         }

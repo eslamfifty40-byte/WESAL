@@ -20,11 +20,37 @@ class NetworkMonitor @Inject constructor(
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
+    /**
+     * Round 10 fix — false-offline root cause.
+     *
+     * The old predicate required [NetworkCapabilities.NET_CAPABILITY_VALIDATED].
+     * VALIDATED is only set after Android's captive-portal probe succeeds against
+     * Google endpoints; on many Egyptian carrier/Wi-Fi networks (and any network
+     * where those probes are blocked, delayed or proxied) the probe never
+     * succeeds even though the internet works perfectly — the status bar shows
+     * live data while the app concluded "offline" and showed the
+     * «غير متصل — يتم عرض المحادثات المحفوظة» banner, hard-blocking OTP sends,
+     * logins, profile saves and story uploads behind the same flag.
+     *
+     * New rule (matches reality): a network with a real transport
+     * (Wi-Fi / cellular / ethernet / VPN) that advertises INTERNET capability
+     * counts as ONLINE. VALIDATED is deliberately NOT required. A genuinely
+     * unvalidated network still routes traffic in the overwhelming majority of
+     * real cases; when it truly cannot, the individual operation fails with its
+     * own error instead of the whole app pre-emptively declaring itself offline.
+     */
+    private fun isUsable(capabilities: NetworkCapabilities?): Boolean {
+        if (capabilities == null) return false
+        if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ||
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) ||
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+    }
+
     fun isCurrentlyConnected(): Boolean {
         val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        return isUsable(connectivityManager.getNetworkCapabilities(network))
     }
 
     val isOnline: Flow<Boolean> = callbackFlow {
@@ -32,7 +58,10 @@ class NetworkMonitor @Inject constructor(
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                trySend(true)
+                // Recompute with the shared predicate instead of blindly sending
+                // true (the old code did), so the flow and the one-shot check
+                // can never disagree.
+                trySend(isCurrentlyConnected())
             }
 
             override fun onLost(network: Network) {
@@ -40,9 +69,14 @@ class NetworkMonitor @Inject constructor(
             }
 
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                val validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                    capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                trySend(validated)
+                // Same predicate as isCurrentlyConnected(): INTERNET + transport.
+                // VALIDATED is ignored on purpose (see isUsable). If this network
+                // is not usable but another one is, the recompute catches it.
+                trySend(isUsable(capabilities) || isCurrentlyConnected())
+            }
+
+            override fun onUnavailable() {
+                trySend(isCurrentlyConnected())
             }
         }
 

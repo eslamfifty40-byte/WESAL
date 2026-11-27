@@ -119,6 +119,40 @@ object FramedCutoutLayout {
      */
     const val CROWN_MARGIN_CONTAINER_FRACTION = 0.02f
 
+    /**
+     * Round 10 (item 9): zoom applied to OPAQUE photos inside a frame's
+     * aperture, on top of the plain Crop fill. An opaque photo (e.g. the
+     * crop editor's glow-background output — alpha-bounds verdict
+     * NOT_A_CUTOUT) used to render with plain Crop/TopCenter: the photo
+     * canvas exactly filled the disc, so the person sat at whatever size
+     * the source framing left — visibly smaller than the reference
+     * composite, whose figure spans 1.22 aperture diameters (the same
+     * total the cutout fit targets: 1 − 0.03 clearance + 0.25 overflow).
+     * An opaque rectangle cannot overflow the ring like a cutout (its
+     * corners would paint over the frame art), so the reference
+     * proportions are reproduced INSIDE the disc instead: the photo is
+     * scaled to 1.22× its Crop fill and anchored TopCenter — the top of
+     * the photo (the head, in any normal portrait/editor output) sits at
+     * the disc's top edge and the torso extends past the disc's bottom
+     * edge, clipped by the circle exactly where the frame's plaque zone
+     * begins. For a square editor output the rendered canvas height is
+     * exactly 1.22× the aperture — the reference split.
+     */
+    const val OPAQUE_REFERENCE_ZOOM = 1.22f
+
+    /**
+     * Round 10 (item 9): the uniform scale factor for an opaque framed
+     * photo — Crop fill of the destination box, multiplied by
+     * [OPAQUE_REFERENCE_ZOOM]. Pure math for the JVM tests; the Compose
+     * side wraps it in a ContentScale.
+     */
+    fun opaqueScaleFactor(srcW: Float, srcH: Float, dstW: Float, dstH: Float): Float {
+        val safeSrcW = srcW.coerceAtLeast(1f)
+        val safeSrcH = srcH.coerceAtLeast(1f)
+        val cropFill = maxOf(dstW / safeSrcW, dstH / safeSrcH)
+        return cropFill * OPAQUE_REFERENCE_ZOOM
+    }
+
     fun compute(
         containerPx: Float,
         apertureCenterYFraction: Float,

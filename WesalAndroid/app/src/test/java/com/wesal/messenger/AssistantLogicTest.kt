@@ -189,4 +189,43 @@ class AssistantLogicTest {
         assertEquals("m6", capped.first().id)
         assertEquals("m105", capped.last().id)
     }
+
+    // ---- Round 10 (item 5): Markdown-lite display parsing ----
+
+    @Test
+    fun displayParserStripsBoldMarkersIntoBoldSpans() {
+        val lines = AssistantLogic.parseDisplayLines("دي أفكار: **متجر أونلاين (E-Commerce):** بيع منتجات")
+        assertEquals(1, lines.size)
+        val spans = lines[0].spans
+        assertTrue(spans.any { it.bold && it.text.contains("متجر أونلاين") })
+        assertTrue(spans.none { it.text.contains("**") })
+    }
+
+    @Test
+    fun displayParserConvertsAsteriskBullets() {
+        val lines = AssistantLogic.parseDisplayLines("* أول فكرة\n* تاني فكرة")
+        assertEquals(2, lines.size)
+        assertTrue(lines.all { it.isBullet })
+        assertEquals("أول فكرة", lines[0].spans.joinToString("") { it.text })
+    }
+
+    @Test
+    fun displayParserStripsHeadingsAndRules() {
+        val lines = AssistantLogic.parseDisplayLines("## عنوان\n---\nنص عادي")
+        assertEquals(2, lines.size)
+        assertTrue(lines[0].isHeading)
+        assertEquals("عنوان", lines[0].spans.joinToString("") { it.text })
+        assertTrue(lines.none { l -> l.spans.any { it.text.contains("#") } })
+    }
+
+    @Test
+    fun displayParserNeverLeavesRawMarkdown() {
+        val raw = "**عريض** و *مائل* و `كود` وبقايا ** ناقصة"
+        val lines = AssistantLogic.parseDisplayLines(raw)
+        val allText = lines.flatMap { it.spans }.joinToString("") { it.text }
+        assertTrue(!allText.contains("*"))
+        assertTrue(!allText.contains("`"))
+        assertTrue(allText.contains("عريض"))
+        assertTrue(allText.contains("كود"))
+    }
 }

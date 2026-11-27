@@ -3043,7 +3043,11 @@ private fun AdminVerificationAndAppearanceSection(
             }
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                // Round 10 (item 10): weight(1f), not fillMaxSize() — inside the
+                // section Column (toggle cards + tab chips + search bar above),
+                // weight is the correct "remaining space" idiom; the list now
+                // reliably scrolls to the last account under the fixed header.
+                modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -3053,53 +3057,77 @@ private fun AdminVerificationAndAppearanceSection(
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth().clickable { onInspect(user) }
                     ) {
-                        Row(
+                        // Round 10 (item 10, owner screenshot 168771): the name
+                        // used to share ONE row with a buttons column holding
+                        // «إطار/أيقونة/نيون» — the name column was squeezed to
+                        // a sliver and "WESALadmin" rendered as "WES...".
+                        // Layout now: identity row (avatar + name/ID/badge
+                        // lines) takes the FULL card width; the two actions
+                        // sit on their own full-width row beneath it, each
+                        // weight(1f) with softWrap off — nothing is squeezed
+                        // into a small box and no label truncates.
+                        Column(
                             modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            WesalAvatar(
-                                imageUrl = user.photoUrl,
-                                name = user.displayName,
-                                size = 44.dp,
-                                frameId = user.frameId,
-                                frameExpiresAt = user.frameExpiresAt,
-                                isCutout = user.photoRemovedBg,
-                            isUserFramed = user.photoUserFramed,
-                                iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
-                                neonColor = if (user.neonEnabled) user.neonColor else "",
-                                neonGlowIntensity = user.neonGlowIntensity
-                            )
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                WesalNameWithBadge(
-                                    name = user.displayName.ifBlank { "@${user.publicId}" },
-                                    isVerified = user.isVerified,
-                                    verificationType = user.verificationType,
-                                    verificationGlowColor = user.verificationGlowColor,
-                                    neonColor = user.neonColor,
-                                    neonGlowIntensity = user.neonGlowIntensity,
-                                    neonEnabled = user.neonEnabled,
-                                    fontWeight = FontWeight.Bold,
-                                    iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                WesalAvatar(
+                                    imageUrl = user.photoUrl,
+                                    name = user.displayName,
+                                    size = 44.dp,
+                                    frameId = user.frameId,
+                                    frameExpiresAt = user.frameExpiresAt,
+                                    isCutout = user.photoRemovedBg,
+                                    isUserFramed = user.photoUserFramed,
+                                    iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
+                                    neonColor = if (user.neonEnabled) user.neonColor else "",
+                                    neonGlowIntensity = user.neonGlowIntensity
                                 )
-                                Text("ID: ${user.numericId} • @${user.publicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
-                                if (user.isVerified) {
-                                    Text(
-                                        "شارة ${user.verificationType} • ${if (user.verificationExpiresAt == 0L) "دائم" else "ينتهي: ${formatAdminTime(user.verificationExpiresAt)}"}",
-                                        color = palette.verifiedBlue,
-                                        style = MaterialTheme.typography.labelSmall
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    WesalNameWithBadge(
+                                        name = user.displayName.ifBlank { "@${user.publicId}" },
+                                        isVerified = user.isVerified,
+                                        verificationType = user.verificationType,
+                                        verificationGlowColor = user.verificationGlowColor,
+                                        neonColor = user.neonColor,
+                                        neonGlowIntensity = user.neonGlowIntensity,
+                                        neonEnabled = user.neonEnabled,
+                                        fontWeight = FontWeight.Bold,
+                                        iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl)
                                     )
-                                }
-                            }
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                if (canVerifyUsers) {
-                                    FilledTonalButton(onClick = { onOpenVerifyDialog(user) }) {
-                                        Text(if (user.isVerified) "تعديل/سحب" else "توثيق", maxLines = 1)
+                                    Text("ID: ${user.numericId} • @${user.publicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                                    if (user.isVerified) {
+                                        Text(
+                                            "شارة ${user.verificationType} • ${if (user.verificationExpiresAt == 0L) "دائم" else "ينتهي: ${formatAdminTime(user.verificationExpiresAt)}"}",
+                                            color = palette.verifiedBlue,
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
                                     }
                                 }
-                                if (canManageFrames) {
-                                    OutlinedButton(onClick = { onOpenFrameNeonDialog(user) }) {
-                                        Text("إطار/أيقونة/نيون", maxLines = 1)
+                            }
+                            if (canVerifyUsers || canManageFrames) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (canVerifyUsers) {
+                                        FilledTonalButton(
+                                            onClick = { onOpenVerifyDialog(user) },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text(if (user.isVerified) "تعديل/سحب" else "توثيق", maxLines = 1, softWrap = false)
+                                        }
+                                    }
+                                    if (canManageFrames) {
+                                        OutlinedButton(
+                                            onClick = { onOpenFrameNeonDialog(user) },
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Text("إطار/أيقونة/نيون", maxLines = 1, softWrap = false)
+                                        }
                                     }
                                 }
                             }

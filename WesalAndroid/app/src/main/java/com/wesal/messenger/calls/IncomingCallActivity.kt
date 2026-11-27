@@ -205,8 +205,26 @@ class IncomingCallActivity : AppCompatActivity() {
                 val defaultUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
                 val targetUri = savedRingtoneUri.takeIf { it.isNotBlank() }?.let { runCatching { Uri.parse(it) }.getOrNull() }
                     ?: defaultUri
+                // Round 10 (item 3): the old chain could resolve to NULL on
+                // devices where the saved tone is a dead SAF uri AND no
+                // default TYPE_RINGTONE is set — the ringing screen then
+                // appeared in complete silence (owner: "الرنين ما اشتغلش").
+                // Fallback chain now guarantees an audible tone whenever the
+                // device has ANY system ringtone/notification sound: saved →
+                // default ringtone → default notification tone → first
+                // ringtone in the system RingtoneManager cursor.
                 val resolvedRingtone = RingtoneManager.getRingtone(this@IncomingCallActivity, targetUri)
                     ?: RingtoneManager.getRingtone(this@IncomingCallActivity, defaultUri)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                        ?.let { RingtoneManager.getRingtone(this@IncomingCallActivity, it) }
+                    ?: runCatching {
+                        val manager = RingtoneManager(this@IncomingCallActivity)
+                        manager.setType(RingtoneManager.TYPE_RINGTONE)
+                        if (manager.cursor.count > 0) manager.getRingtone(0) else null
+                    }.getOrNull()
+                if (resolvedRingtone == null) {
+                    android.util.Log.e("IncomingCall", "No ringtone could be resolved on this device (saved/default/notification/cursor all empty)")
+                }
                 if (!ringingStopped && !isFinishing && !isDestroyed) {
                     ringtone = resolvedRingtone?.apply {
                         audioAttributes = AudioAttributes.Builder()

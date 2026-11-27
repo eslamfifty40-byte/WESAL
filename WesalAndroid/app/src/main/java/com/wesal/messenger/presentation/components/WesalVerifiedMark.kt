@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.unit.Dp
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.VerificationSealShape
@@ -45,6 +46,19 @@ fun WesalVerifiedMark(
     Canvas(modifier.size(badgeSize)) {
         val s = this.size.minDimension
         val c = Offset(s / 2f, s / 2f)
+        // Round 10 (item 8): the badge read as "مقصوصة من تحت" (clipped at
+        // the bottom) in list rows, chips and the settings card. Root cause:
+        // the glow halo was drawn with radius 0.90×size — it reaches 1.4×
+        // the canvas and Compose clips every draw at the canvas bounds, so
+        // the halo was sliced on all four sides (most visible at the
+        // bottom, against the next row), and the seal's own stroke sits
+        // within ~1% of the edge for the starburst/shield shapes. Fix: draw
+        // the whole mark scaled 0.92 about the centre (a real inset margin
+        // for seal + stroke) and cap the glow gradient at 0.54×size so —
+        // after the inset — it fades to transparent BEFORE the edge and can
+        // never be clipped, in any parent (rows, FilterChips, avatar
+        // corners) at any call site.
+        withTransform({ scale(0.92f, 0.92f, c) }) {
         if (glowEnabled) {
             val innerAlpha = ((if (effectiveGlowColor != null) 0.62f else 0.42f) * effectiveGlow).coerceIn(0.1f, 0.92f)
             val midAlpha = ((if (effectiveGlowColor != null) 0.28f else 0.18f) * effectiveGlow).coerceIn(0.05f, 0.50f)
@@ -56,9 +70,9 @@ fun WesalVerifiedMark(
                         Color.Transparent
                     ),
                     center = c,
-                    radius = s * 0.90f
+                    radius = s * 0.54f
                 ),
-                radius = s * 0.90f,
+                radius = s * 0.54f,
                 center = c
             )
         }
@@ -123,5 +137,6 @@ fun WesalVerifiedMark(
             color = checkColor,
             style = Stroke(width = s * 0.105f, cap = StrokeCap.Round, join = StrokeJoin.Round)
         )
+        } // withTransform (round-10 inset)
     }
 }

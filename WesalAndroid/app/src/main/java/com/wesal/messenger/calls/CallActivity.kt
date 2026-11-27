@@ -321,6 +321,41 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
+                // Round 10 (item 3): terminal media-failure watchdog. ICE
+                // restarts retry per disconnect episode with no overall bound,
+                // so a call whose media can never connect (dead TURN
+                // credentials, blocked UDP, hostile NAT) sat forever behind
+                // "انقطع الاتصال — جاري إعادة المحاولة..." looking alive with
+                // no audio (owner: "الاتصال مش شغال"). If ICE stays FAILED —
+                // or DISCONNECTED without recovering — for a continuous grace
+                // window, end the call with the honest human reason instead.
+                // The effect restarts on every ICE state change, so any
+                // recovery cancels the countdown.
+                LaunchedEffect(iceState) {
+                    if (iceState == PeerConnection.IceConnectionState.FAILED ||
+                        iceState == PeerConnection.IceConnectionState.DISCONNECTED
+                    ) {
+                        delay(25_000L)
+                        if (!isFinishingCall) {
+                            isFinishingCall = true
+                            android.util.Log.e(
+                                "CallActivity",
+                                "MEDIA FAILURE terminal: ice=$iceState turnConfigured=$turnConfigured — ending call with user-visible reason"
+                            )
+                            callStatusLabel = if (strings.isEnglish) {
+                                "Could not complete the call — check your internet connection and try again"
+                            } else {
+                                "تعذر إتمام الاتصال — تحقق من الإنترنت وحاول مرة أخرى"
+                            }
+                            if (initialCallId.isNotBlank()) {
+                                callRepository.updateCallStatus(initialCallId, CallStatus.ENDED, 0L)
+                            }
+                            delay(2200L)
+                            finishCallLocally()
+                        }
+                    }
+                }
+
                 // Fatal WebRTC session-setup failure (factory/PeerConnection/SDP): show the
                 // error and end the call instead of hanging wordlessly on "connecting…".
                 LaunchedEffect(sessionError) {

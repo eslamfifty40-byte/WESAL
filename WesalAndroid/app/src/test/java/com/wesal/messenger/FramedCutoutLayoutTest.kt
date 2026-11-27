@@ -206,4 +206,35 @@ class FramedCutoutLayoutTest {
         assertEquals(crown, t.stripPx, 0.5f)
         assertTrue(t.stripPx < 0.05f * s)
     }
+
+    // ---- Round 10 (item 9): opaque-photo reference zoom ----
+
+    @Test
+    fun opaqueZoom_squareEditorOutput_rendersAtReferenceProportions() {
+        // Square source (the crop editor's output shape) into a square
+        // aperture disc: Crop fill is 1:1, so the rendered canvas height is
+        // exactly the reference figure total — 1.22 x aperture, the same
+        // total the bounds-driven cutout fit targets.
+        val factor = FramedCutoutLayout.opaqueScaleFactor(800f, 800f, 200f, 200f)
+        assertEquals(200f * 1.22f, 800f * factor, 0.5f)
+        assertEquals(1.22f, FramedCutoutLayout.OPAQUE_REFERENCE_ZOOM, 0.001f)
+    }
+
+    @Test
+    fun opaqueZoom_isUniformCropFillTimesZoom() {
+        // Portrait source 750x1000 into a 200x200 disc: Crop fill is
+        // width-driven (200/750); the zoom multiplies it uniformly, so the
+        // aspect is preserved and both dimensions exceed the disc (the
+        // overflow is what the circle clips).
+        val factor = FramedCutoutLayout.opaqueScaleFactor(750f, 1000f, 200f, 200f)
+        assertEquals((200f / 750f) * 1.22f, factor, 0.001f)
+        assertTrue(750f * factor >= 200f)
+        assertTrue(1000f * factor >= 200f)
+    }
+
+    @Test
+    fun opaqueZoom_degenerateSource_staysFinite() {
+        val factor = FramedCutoutLayout.opaqueScaleFactor(0f, 0f, 200f, 200f)
+        assertTrue(factor.isFinite() && factor > 0f)
+    }
 }

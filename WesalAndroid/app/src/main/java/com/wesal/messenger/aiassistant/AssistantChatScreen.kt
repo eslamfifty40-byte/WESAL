@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.KeyboardVoice
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
@@ -62,10 +64,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -81,6 +85,7 @@ import coil.compose.AsyncImage
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+import com.google.accompanist.permissions.shouldShowRationale
 import com.wesal.messenger.R
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.AssistantLogic
@@ -128,6 +133,131 @@ fun AssistantChatScreen(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) pendingImageUri = uri
+    }
+
+    // Round 10 (item 7): voice DICTATION — speech-to-text into the input
+    // field (distinct from the voice-NOTE button, which records a message
+    // for the assistant to listen to). Android SpeechRecognizer with ar_EG;
+    // partial results stream into the field and the final text stays for
+    // review/editing before sending. Assistant-screen only: the main chat
+    // input is a separate component and does not share this field.
+    val dictationContext = androidx.compose.ui.platform.LocalContext.current
+    var isDictating by remember { mutableStateOf(false) }
+    // Permission hand-off for dictation: a tap while ungranted launches the
+    // system request; on grant the dictation starts immediately, and a
+    // permanently-denied state gets a clear Arabic explanation instead of a
+    // dead button.
+    var dictationPermissionPending by remember { mutableStateOf(false) }
+    var dictationRequestedOnce by remember { mutableStateOf(false) }
+    LaunchedEffect(micPermission.status.isGranted) {
+        if (dictationPermissionPending && micPermission.status.isGranted) {
+            dictationPermissionPending = false
+            startDictation()
+        }
+    }
+    var dictationBase by remember { mutableStateOf("") }
+    val inputTextState = rememberUpdatedState(inputText)
+    val speechRecognizer = remember(dictationContext) {
+        if (android.speech.SpeechRecognizer.isRecognitionAvailable(dictationContext)) {
+            android.speech.SpeechRecognizer.createSpeechRecognizer(dictationContext)
+        } else {
+            null
+        }
+    }
+    DisposableEffect(speechRecognizer) {
+        onDispose {
+            runCatching { speechRecognizer?.destroy() }
+        }
+    }
+    fun showDictationToast(ar: String, en: String) {
+        android.widget.Toast.makeText(
+            dictationContext,
+            if (strings.isEnglish) en else ar,
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+    }
+    fun startDictation() {
+        val recognizer = speechRecognizer
+        if (recognizer == null) {
+            showDictationToast(
+                "الإملاء الصوتي غير متاح على هذا الجهاز",
+                "Voice dictation is not available on this device"
+            )
+            return
+        }
+        dictationBase = inputTextState.value.trim()
+        recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
+            private fun applyResult(spoken: String) {
+                inputText = if (dictationBase.isBlank()) {
+                    spoken
+                } else {
+                    "$dictationBase $spoken"
+                }
+            }
+            override fun onResults(results: android.os.Bundle?) {
+                val spoken = results
+                    ?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    .orEmpty()
+                if (spoken.isNotBlank()) applyResult(spoken)
+                isDictating = false
+            }
+            override fun onPartialResults(partialResults: android.os.Bundle?) {
+                val spoken = partialResults
+                    ?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    .orEmpty()
+                if (spoken.isNotBlank()) applyResult(spoken)
+            }
+            override fun onError(error: Int) {
+                isDictating = false
+                when (error) {
+                    android.speech.SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                        showDictationToast(
+                            "لازم تسمح بصلاحية الميكروفون عشان الإملاء الصوتي يشتغل",
+                            "Microphone permission is required for voice dictation"
+                        )
+                    android.speech.SpeechRecognizer.ERROR_NO_MATCH,
+                    android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                        showDictationToast(
+                            "لم يتم التعرف على الصوت — اتكلم بوضوح وحاول تاني",
+                            "Speech was not recognized — speak clearly and try again"
+                        )
+                    else ->
+                        showDictationToast(
+                            "حصلت مشكلة في الإملاء الصوتي — حاول تاني",
+                            "Voice dictation ran into a problem — try again"
+                        )
+                }
+            }
+            override fun onReadyForSpeech(params: android.os.Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+        })
+        val intent = android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "ar-EG")
+            putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_PROMPT,
+                if (strings.isEnglish) "Speak now…" else "اتكلم دلوقتي…"
+            )
+        }
+        runCatching {
+            recognizer.startListening(intent)
+            isDictating = true
+        }.onFailure {
+            showDictationToast(
+                "تعذر بدء الإملاء الصوتي",
+                "Could not start voice dictation"
+            )
+        }
     }
 
     val listState = rememberLazyListState()
@@ -273,7 +403,21 @@ fun AssistantChatScreen(
             )
         },
         bottomBar = {
-            Column(modifier = Modifier.background(palette.surface)) {
+            // Round 10 (item 11): imePadding is what lifts this bar above the
+            // keyboard. The app is edge-to-edge (MainActivity enableEdgeToEdge),
+            // so the manifest's adjustResize no longer moves Compose content —
+            // without consuming the IME inset here, the Scaffold pins the
+            // bottomBar to the screen's bottom edge BEHIND the keyboard and
+            // the owner typed blind (his screenshot: keyboard open, no input
+            // bar visible). With imePadding the bar rides directly on top of
+            // the keyboard, the Scaffold re-measures it, and the message list
+            // shrinks above it instead of pushing it off-screen. Keyboard
+            // closed → IME inset is 0 → layout identical to before.
+            Column(
+                modifier = Modifier
+                    .background(palette.surface)
+                    .imePadding()
+            ) {
                 if (recordingState.isRecording) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -382,12 +526,56 @@ fun AssistantChatScreen(
                             onValueChange = { inputText = it },
                             placeholder = {
                                 Text(
-                                    if (strings.isEnglish) {
+                                    if (isDictating) {
+                                        if (strings.isEnglish) "Listening… speak now" else "بيسمعك… اتكلم دلوقتي"
+                                    } else if (strings.isEnglish) {
                                         "Ask Wesal Assistant anything..."
                                     } else {
                                         "اسأل مساعد وِصال أي حاجة..."
                                     }
                                 )
+                            },
+                            // Round 10 (item 7): dictation mic INSIDE the
+                            // field — speech becomes text for review before
+                            // sending (the round button outside the field
+                            // stays the voice-NOTE recorder).
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = {
+                                        if (isDictating) {
+                                            runCatching { speechRecognizer?.stopListening() }
+                                            isDictating = false
+                                        } else if (!micPermission.status.isGranted) {
+                                            if (dictationRequestedOnce &&
+                                                !micPermission.status.shouldShowRationale
+                                            ) {
+                                                // Permanently denied: say so
+                                                // plainly instead of a dead tap.
+                                                showDictationToast(
+                                                    "صلاحية الميكروفون مرفوضة — فعّلها من إعدادات التطبيق عشان الإملاء الصوتي يشتغل",
+                                                    "Microphone permission is denied — enable it in app settings to use voice dictation"
+                                                )
+                                            } else {
+                                                dictationRequestedOnce = true
+                                                dictationPermissionPending = true
+                                                micPermission.launchPermissionRequest()
+                                            }
+                                        } else {
+                                            startDictation()
+                                        }
+                                    },
+                                    enabled = !isSending
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardVoice,
+                                        contentDescription = if (strings.isEnglish) {
+                                            "Voice dictation"
+                                        } else {
+                                            "إملاء صوتي"
+                                        },
+                                        tint = if (isDictating) palette.error else palette.turquoise
+                                    )
+                                }
                             },
                             modifier = Modifier.weight(1f),
                             minLines = 1,
@@ -409,6 +597,13 @@ fun AssistantChatScreen(
                         if (inputText.isNotBlank() || pendingImageUri != null) {
                             FloatingActionButton(
                                 onClick = {
+                                    // Sending ends any live dictation first,
+                                    // so the recognizer cannot keep writing
+                                    // into the cleared field.
+                                    if (isDictating) {
+                                        runCatching { speechRecognizer?.cancel() }
+                                        isDictating = false
+                                    }
                                     // While an ask is in flight the ViewModel
                                     // ignores new sends — keep the draft in
                                     // that case instead of clearing it into
@@ -638,14 +833,63 @@ private fun AssistantBubble(
                         )
                     }
                     if (message.text.isNotBlank()) {
-                        Text(
-                            text = message.text,
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = palette.textPrimary
-                        )
+                        if (isMine) {
+                            Text(
+                                text = message.text,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = palette.textPrimary
+                            )
+                        } else {
+                            // Round 10 (item 5): assistant replies are
+                            // Markdown — render them parsed (bold spans,
+                            // bullets, headings) instead of raw "**"/"*" text.
+                            AssistantFormattedText(text = message.text)
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Round 10 (item 5): renders one assistant reply from
+ * [AssistantLogic.parseDisplayLines] — bold spans via AnnotatedString,
+ * bullet lines with a "• " marker, heading lines bold/larger. Raw Markdown
+ * syntax never reaches the screen.
+ */
+@Composable
+private fun AssistantFormattedText(text: String) {
+    val palette = WesalColors.current
+    val lines = remember(text) { AssistantLogic.parseDisplayLines(text) }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        for (line in lines) {
+            val annotated = remember(line) {
+                androidx.compose.ui.text.buildAnnotatedString {
+                    if (line.isBullet) append("•  ")
+                    for (span in line.spans) {
+                        if (span.bold) {
+                            pushStyle(
+                                androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold)
+                            )
+                            append(span.text)
+                            pop()
+                        } else {
+                            append(span.text)
+                        }
+                    }
+                }
+            }
+            Text(
+                text = annotated,
+                style = if (line.isHeading) {
+                    MaterialTheme.typography.titleMedium
+                } else {
+                    MaterialTheme.typography.bodyLarge
+                },
+                fontWeight = if (line.isHeading) FontWeight.Bold else null,
+                color = palette.textPrimary
+            )
         }
     }
 }
