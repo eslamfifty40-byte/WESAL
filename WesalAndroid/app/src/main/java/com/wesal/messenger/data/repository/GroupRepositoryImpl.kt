@@ -178,16 +178,21 @@ class GroupRepositoryImpl @Inject constructor(
         val chatId = "grp_$groupId"
         val allMembers = (allowedOthers + uid).distinct()
 
+        // Round 12 (sibling of the subscription-request fix): the GROUP is
+        // the primary intent and its avatar is optional — a Storage failure
+        // degrades to "no avatar" instead of aborting the creation write.
         val avatarUrl = if (avatarUri != null) {
-            withContext(Dispatchers.IO) {
-                uploadProfileMediaToStorageOrSmallFallback(
-                    ctx = context,
-                    storagePath = "groups/$groupId/avatar_${System.currentTimeMillis()}.jpg",
-                    uri = avatarUri,
-                    maxSide = 512,
-                    quality = 80
-                )
-            }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    uploadProfileMediaToStorageOrSmallFallback(
+                        ctx = context,
+                        storagePath = "groups/$groupId/avatar_${System.currentTimeMillis()}.jpg",
+                        uri = avatarUri,
+                        maxSide = 512,
+                        quality = 80
+                    )
+                }
+            }.getOrDefault("")
         } else {
             ""
         }
@@ -269,15 +274,19 @@ class GroupRepositoryImpl @Inject constructor(
         val chatUpdates = hashMapOf<String, Any>("groupName" to trimmedName)
 
         if (avatarUri != null) {
-            val url = withContext(Dispatchers.IO) {
-                uploadProfileMediaToStorageOrSmallFallback(
-                    ctx = context,
-                    storagePath = "groups/$groupId/avatar_${System.currentTimeMillis()}.jpg",
-                    uri = avatarUri,
-                    maxSide = 512,
-                    quality = 80
-                )
-            }
+            // Round 12 (sibling fix): a failed avatar upload must not abort
+            // the name/description update — it just keeps the old avatar.
+            val url = runCatching {
+                withContext(Dispatchers.IO) {
+                    uploadProfileMediaToStorageOrSmallFallback(
+                        ctx = context,
+                        storagePath = "groups/$groupId/avatar_${System.currentTimeMillis()}.jpg",
+                        uri = avatarUri,
+                        maxSide = 512,
+                        quality = 80
+                    )
+                }
+            }.getOrDefault("")
             if (url.isNotBlank()) {
                 updates["avatarUrl"] = url
                 chatUpdates["groupAvatarUrl"] = url

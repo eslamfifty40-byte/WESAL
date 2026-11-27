@@ -65,6 +65,7 @@ import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.LocaleManager
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.data.local.AppUserSettings
@@ -204,17 +205,19 @@ class SettingsViewModel @Inject constructor(
             )
                 .onSuccess {
                     isSubmittingSubscription.value = false
-                    statusMessage.value = if (isEn) {
-                        "Request submitted! WESAL Admin will review your ID."
-                    } else {
-                        "تم إرسال طلب الاشتراك والتوثيق بنجاح للمراجعة الإدارية"
-                    }
+                    // Round 12: fixed human strings from the pure logic —
+                    // success states plainly that the request arrived and is
+                    // pending review.
+                    statusMessage.value = SubscriptionRequestLogic.submitSuccessMessage(isEn)
                     onSuccess()
                 }
-                .onFailure { err ->
+                .onFailure {
                     isSubmittingSubscription.value = false
-                    statusMessage.value = err.localizedMessage
-                        ?: if (isEn) "Failed to submit request" else "تعذر إرسال الطلب؛ حاول مجددًا"
+                    // Round 12 (DEVICE-PROVEN): err.localizedMessage surfaced
+                    // the raw English Storage error ("Object does not exist
+                    // at location.") in the Settings banner. This flow NEVER
+                    // shows exception text — one human message for any cause.
+                    statusMessage.value = SubscriptionRequestLogic.submitFailureMessage(isEn)
                 }
         }
     }
@@ -2007,42 +2010,66 @@ fun SettingsScreen(
                         border = BorderStroke(1.dp, palette.border),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
+                        // Round 12 (item 4): the name gets its OWN full-width
+                        // line (the r10 admin-row pattern) — squeezed beside
+                        // the avatar it ellipsized mid-name («اسلام احمد شح...»)
+                        // on the owner's device. The header row now carries
+                        // only the caption + identity line.
+                        Column(
                             modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            WesalAvatar(
-                                imageUrl = user?.photoUrl.orEmpty(),
-                                name = user?.displayName ?: "WESAL",
-                                size = 58.dp,
-                                frameId = selectedFrameId,
-                                frameExpiresAt = 0L,
-                                isCutout = cutoutPreview,
-                                iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
-                                neonColor = selectedGlow.key,
-                                neonGlowIntensity = 0.85f
-                            )
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                WesalNameWithBadge(
-                                    name = user?.displayName?.ifBlank { "WESAL User" } ?: "WESAL User",
-                                    isVerified = true,
-                                    verificationType = selectedSeal.key,
-                                    verificationGlowColor = selectedGlow.key,
-                                    verificationGlowEnabled = true,
-                                    verificationGlowIntensity = 0.85f,
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                WesalAvatar(
+                                    imageUrl = user?.photoUrl.orEmpty(),
+                                    name = user?.displayName ?: "WESAL",
+                                    size = 58.dp,
+                                    frameId = selectedFrameId,
+                                    frameExpiresAt = 0L,
+                                    isCutout = cutoutPreview,
+                                    iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
                                     neonColor = selectedGlow.key,
-                                    neonEnabled = selectedGlow != NeonColorPreset.NONE,
-                                    neonGlowIntensity = 0.85f,
-                                    fontWeight = FontWeight.Bold,
-                                    iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty())
+                                    neonGlowIntensity = 0.85f
                                 )
-                                Text(
-                                    text = if (strings.isEnglish) "Live Preview" else "معاينة حية للطلب",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = palette.turquoise
-                                )
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = if (strings.isEnglish) "Live Preview" else "معاينة حية للطلب",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.turquoise
+                                    )
+                                    val identityLine = listOfNotNull(
+                                        user?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" },
+                                        user?.numericId?.takeIf { it.isNotBlank() }?.let { "ID: $it" }
+                                    ).joinToString(" • ")
+                                    if (identityLine.isNotBlank()) {
+                                        Text(
+                                            text = identityLine,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = palette.textSecondary,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                }
                             }
+                            WesalNameWithBadge(
+                                name = user?.displayName?.ifBlank { "WESAL User" } ?: "WESAL User",
+                                isVerified = true,
+                                verificationType = selectedSeal.key,
+                                verificationGlowColor = selectedGlow.key,
+                                verificationGlowEnabled = true,
+                                verificationGlowIntensity = 0.85f,
+                                neonColor = selectedGlow.key,
+                                neonEnabled = selectedGlow != NeonColorPreset.NONE,
+                                neonGlowIntensity = 0.85f,
+                                fontWeight = FontWeight.Bold,
+                                iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
+                                maxNameLines = 2,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         }
                     }
 

@@ -55,6 +55,7 @@ import com.wesal.messenger.core.util.FrameAnimationPolicy
 import com.wesal.messenger.core.util.FramePickerItem
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import com.wesal.messenger.core.util.VerificationDurationOption
 import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFeatureFlags
@@ -5035,17 +5036,25 @@ private fun AdminSubscriptionRequestsSection(
                         if (req.note.isNotBlank()) {
                             Text("ملاحظة المستخدم: ${req.note}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
                         }
-                        if (req.idDocumentUrl.isNotBlank()) {
+                        // Round 12: the ID image may be a Storage URL
+                        // (legacy + uploaded docs) or an INLINE data string
+                        // stored in the doc when the Storage upload failed —
+                        // wesalImageModel decodes both. No ref at all means
+                        // the request arrived without an image (source NONE).
+                        val idImageRef = SubscriptionRequestLogic.displayImageRef(req.idDocumentUrl, req.idDocumentInline)
+                        if (idImageRef.isNotBlank()) {
                             AsyncImage(
-                                model = wesalImageModel(req.idDocumentUrl),
+                                model = wesalImageModel(idImageRef),
                                 contentDescription = "صورة الهوية",
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(140.dp)
                                     .clip(RoundedCornerShape(10.dp))
-                                    .clickable { previewImageUrl = req.idDocumentUrl },
+                                    .clickable { previewImageUrl = idImageRef },
                                 contentScale = ContentScale.Crop
                             )
+                        } else {
+                            Text("لا توجد صورة هوية مرفقة بهذا الطلب", color = palette.textMuted, style = MaterialTheme.typography.labelSmall)
                         }
                         if (req.adminResponse.isNotBlank()) {
                             Text("الرد الإداري: ${req.adminResponse}", color = palette.turquoise, style = MaterialTheme.typography.labelSmall)

@@ -219,6 +219,12 @@ data class SubscriptionRequest(
     val desiredFrameId: String = "",
     val desiredGlowColor: String = "",
     val idDocumentUrl: String = "",
+    // Round 12: when the Storage upload failed, the ID image rides INSIDE
+    // the doc as a data:image/jpeg;base64 string (idDocumentSource tells
+    // the surfaces which payload exists: STORAGE / INLINE / NONE; blank
+    // on legacy docs, which always carry a Storage URL).
+    val idDocumentInline: String = "",
+    val idDocumentSource: String = "",
     val note: String = "",
     val status: String = "PENDING", // PENDING, APPROVED, REJECTED
     val adminResponse: String = "",

@@ -324,6 +324,14 @@ class WesalFirebaseMessagingService : FirebaseMessagingService() {
             .addAction(android.R.drawable.ic_menu_call, "رد", answerPendingIntent)
             .build()
 
+        if (!fullScreenAvailable) {
+            // Round 12 (addendum A): same one-shot fix as the listener
+            // service — without FLAG_INSISTENT the fallback notification
+            // sound plays a single beep and then stays silent; with it,
+            // the ring loops until answer/reject/timeout.
+            notification.flags = notification.flags or android.app.Notification.FLAG_INSISTENT
+        }
+
         manager.notify(notifId, notification)
     }
 

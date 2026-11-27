@@ -379,7 +379,14 @@ class ChannelRepositoryImpl @Inject constructor(
         require(trimmedTitle.isNotBlank()) { "اسم القناة مطلوب" }
 
         val channelId = UUID.randomUUID().toString()
-        val avatarUrl = if (avatarUri != null) uploadChannelAvatar(channelId, avatarUri) else ""
+        // Round 12 (sibling of the subscription-request fix): the CHANNEL
+        // is the primary intent and its avatar is optional — a Storage
+        // failure degrades to "no avatar" instead of aborting creation.
+        val avatarUrl = if (avatarUri != null) {
+            runCatching { uploadChannelAvatar(channelId, avatarUri) }.getOrDefault("")
+        } else {
+            ""
+        }
         val inviteCode = generateInviteCode()
         val now = System.currentTimeMillis()
         val me = userRepository.getUserOnce(uid)
@@ -452,12 +459,17 @@ class ChannelRepositoryImpl @Inject constructor(
             "isPublic" to isPublic
         )
         if (avatarUri != null) {
-            updates["avatarUrl"] = uploadChannelAvatar(channelId, avatarUri)
-            if (isOfficial) {
-                // Same stickiness as the §9.6 identity editor: an avatar chosen
-                // through this normal channel-edit path must not be overwritten
-                // by the owner-photo auto-sync in ensureOfficialTeamChannel.
-                updates["avatarSetByOfficialEditor"] = true
+            // Round 12 (sibling fix): a failed avatar upload must not abort
+            // the title/description update — it just keeps the old avatar.
+            val newAvatarUrl = runCatching { uploadChannelAvatar(channelId, avatarUri) }.getOrDefault("")
+            if (newAvatarUrl.isNotBlank()) {
+                updates["avatarUrl"] = newAvatarUrl
+                if (isOfficial) {
+                    // Same stickiness as the §9.6 identity editor: an avatar chosen
+                    // through this normal channel-edit path must not be overwritten
+                    // by the owner-photo auto-sync in ensureOfficialTeamChannel.
+                    updates["avatarSetByOfficialEditor"] = true
+                }
             }
         }
         ref.update(updates).await()

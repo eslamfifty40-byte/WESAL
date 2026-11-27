@@ -35,6 +35,7 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalTheme
+import com.wesal.messenger.core.util.CallRingLogic
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.data.local.AppUserSettings
@@ -172,6 +173,21 @@ class CallActivity : AppCompatActivity() {
                 val remoteVideo by webRtcManager.remoteVideoTrack.collectAsStateWithLifecycle()
                 val localVideo by webRtcManager.localVideoTrackFlow.collectAsStateWithLifecycle()
                 val audioRoute by webRtcManager.audioRoute.collectAsStateWithLifecycle()
+                // Round 12 (addendum B): camera-switch state — the count
+                // re-attaches the local renderer after each switch, the
+                // facing drives preview mirroring, and a failed switch
+                // surfaces one short human message.
+                val cameraSwitchCount by webRtcManager.cameraSwitchCount.collectAsStateWithLifecycle()
+                val isFrontCamera by webRtcManager.isFrontCamera.collectAsStateWithLifecycle()
+                val cameraMessage by webRtcManager.cameraMessage.collectAsStateWithLifecycle()
+
+                LaunchedEffect(cameraMessage) {
+                    val msg = cameraMessage
+                    if (msg != null) {
+                        android.widget.Toast.makeText(this@CallActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
+                        webRtcManager.clearCameraMessage()
+                    }
+                }
 
                 BackHandler { hangupCall() }
 
@@ -194,25 +210,67 @@ class CallActivity : AppCompatActivity() {
                 // restarts (a mid-call network blip is not a new ring).
                 var hasConnected by remember { mutableStateOf(false) }
                 LaunchedEffect(isIncoming, coreMediaGranted, hasConnected) {
-                    if (!isIncoming && coreMediaGranted && !hasConnected) {
-                        val toneGen = runCatching {
-                            ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
-                        }.getOrNull()
-                        try {
-                            while (isActive) {
-                                if (webRtcManager.connectionState.value ==
-                                    PeerConnection.PeerConnectionState.CONNECTED
-                                ) {
-                                    break
+                    if (!CallRingLogic.shouldPlayRingback(
+                            isIncoming = isIncoming,
+                            mediaGranted = coreMediaGranted,
+                            hasConnected = hasConnected,
+                            peerConnected = false
+                        )
+                    ) {
+                        return@LaunchedEffect
+                    }
+                    var toneGen = runCatching {
+                        ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+                    }.getOrNull()
+                    try {
+                        while (isActive) {
+                            if (!CallRingLogic.shouldPlayRingback(
+                                    isIncoming = isIncoming,
+                                    mediaGranted = coreMediaGranted,
+                                    hasConnected = hasConnected,
+                                    peerConnected = webRtcManager.connectionState.value ==
+                                        PeerConnection.PeerConnectionState.CONNECTED
+                                )
+                            ) {
+                                break
+                            }
+                            // Round 12 (addendum A): startTone RETURNS false
+                            // when the generator died under an audio
+                            // mode/focus change — and the video session start
+                            // (camera capturer + speakerphone route + WebRTC
+                            // audio init) performs exactly those changes
+                            // right after the first beep, which is why a
+                            // video call rang ONCE and then stayed silent
+                            // while voice kept ringing. The old loop ignored
+                            // the result and kept "playing" into a dead
+                            // generator. Now a failed start recreates the
+                            // generator and retries within the same cycle.
+                            var played = toneGen?.let {
+                                runCatching {
+                                    it.startTone(ToneGenerator.TONE_SUP_RINGTONE, CallRingLogic.RINGBACK_TONE_DURATION_MS)
+                                }.getOrDefault(false)
+                            } ?: false
+                            if (!played) {
+                                runCatching { toneGen?.release() }
+                                toneGen = runCatching {
+                                    ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+                                }.getOrNull()
+                                val fresh = toneGen
+                                if (fresh != null) {
+                                    played = runCatching {
+                                        fresh.startTone(ToneGenerator.TONE_SUP_RINGTONE, CallRingLogic.RINGBACK_TONE_DURATION_MS)
+                                    }.getOrDefault(false)
                                 }
-                                runCatching { toneGen?.startTone(ToneGenerator.TONE_SUP_RINGTONE, 1000) }
-                                delay(3500L)
+                                if (!played) {
+                                    android.util.Log.w("WesalCalls", "Ringback tone could not be started on the current audio route")
+                                }
                             }
-                        } finally {
-                            runCatching {
-                                toneGen?.stopTone()
-                                toneGen?.release()
-                            }
+                            delay(CallRingLogic.RINGBACK_CYCLE_DELAY_MS)
+                        }
+                    } finally {
+                        runCatching {
+                            toneGen?.stopTone()
+                            toneGen?.release()
                         }
                     }
                 }
@@ -554,14 +612,21 @@ class CallActivity : AppCompatActivity() {
                             }
                         }
                         DisposableEffect(localVideo) {
+                            onDispose { localRenderer.release() }
+                        }
+                        // Round 12 (addendum B): a completed camera switch
+                        // restarts the capturer's frame flow — re-attach
+                        // the sink on every switch so the preview can never
+                        // sit frozen on the old camera's last frame.
+                        DisposableEffect(localVideo, cameraSwitchCount) {
                             localVideo?.addSink(localRenderer)
                             onDispose {
                                 localVideo?.removeSink(localRenderer)
-                                localRenderer.release()
                             }
                         }
                         AndroidView(
                             factory = { localRenderer },
+                            update = { renderer -> renderer.setMirror(isFrontCamera) },
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(top = 48.dp, end = 16.dp)

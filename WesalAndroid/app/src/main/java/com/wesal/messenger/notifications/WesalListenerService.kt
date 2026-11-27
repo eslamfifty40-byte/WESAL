@@ -355,6 +355,15 @@ class WesalListenerService : Service() {
             .addAction(android.R.drawable.ic_menu_call, "رد", answerPendingIntent)
             .build()
 
+        if (!fullScreenAvailable) {
+            // Round 12 (addendum A): a notification sound plays exactly
+            // ONCE unless FLAG_INSISTENT is set — the no-FSI fallback was
+            // a single beep followed by silence. With the flag, the
+            // ringtone loops until the call is answered, rejected or the
+            // ring timeout ends the notification, like a real call.
+            notification.flags = notification.flags or android.app.Notification.FLAG_INSISTENT
+        }
+
         runCatching { manager.notify(notifId, notification) }
     }
 

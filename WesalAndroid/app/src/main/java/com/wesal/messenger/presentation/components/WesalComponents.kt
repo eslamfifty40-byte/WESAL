@@ -1206,7 +1206,11 @@ fun WesalNameWithBadge(
     // Owner rule: the icon must sit beside EVERY rendered name, so this shared
     // composable renders it right after the name text (before the verified
     // badge) whenever a non-blank resolved URL is supplied. Empty = no icon.
-    iconUrl: String = ""
+    iconUrl: String = "",
+    // Round 12: surfaces that give the name its own full-width line (the
+    // subscription-request preview card) opt into wrapping instead of the
+    // default single-line ellipsis used by dense list rows.
+    maxNameLines: Int = 1
 ) {
     val preset = NeonColorPreset.fromKey(neonColor)
     val neonOn = neonEnabled && preset != NeonColorPreset.NONE
@@ -1229,7 +1233,7 @@ fun WesalNameWithBadge(
             text = name,
             style = resolvedStyle,
             fontWeight = fontWeight,
-            maxLines = 1,
+            maxLines = maxNameLines.coerceAtLeast(1),
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false)
         )

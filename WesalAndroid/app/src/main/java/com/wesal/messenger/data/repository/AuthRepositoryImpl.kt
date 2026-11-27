@@ -1513,15 +1513,21 @@ class AuthRepositoryImpl @Inject constructor(
 
             var uploadedPhotoUrl: String? = null
             if (photoUri != null) {
-                uploadedPhotoUrl = withContext(Dispatchers.IO) {
-                    uploadProfileMediaToStorageOrSmallFallback(
-                        context,
-                        "avatars/$uid/avatar_${System.currentTimeMillis()}",
-                        photoUri,
-                        maxSide = 512,
-                        quality = 82
-                    )
-                }
+                // Round 12 (sibling of the subscription-request fix): profile
+                // COMPLETION is the primary intent — a Storage failure on the
+                // optional photo degrades to "no photo yet" instead of
+                // aborting the whole setup write (name/ID/phone included).
+                uploadedPhotoUrl = runCatching {
+                    withContext(Dispatchers.IO) {
+                        uploadProfileMediaToStorageOrSmallFallback(
+                            context,
+                            "avatars/$uid/avatar_${System.currentTimeMillis()}",
+                            photoUri,
+                            maxSide = 512,
+                            quality = 82
+                        )
+                    }
+                }.getOrNull()
                 if (uploadedPhotoUrl.isNotBlank()) {
                     updates["photoUrl"] = uploadedPhotoUrl
                 }

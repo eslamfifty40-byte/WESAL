@@ -3,6 +3,7 @@ package com.wesal.messenger.data.repository
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.util.Base64
 import android.util.Log
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
@@ -20,6 +21,7 @@ import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.PhoneUtils
+import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import com.wesal.messenger.core.util.VerificationSealType
 import com.wesal.messenger.core.util.WesalFrameCatalog
 import com.wesal.messenger.core.util.WesalFrameLibrary
@@ -1128,15 +1130,21 @@ class UserRepositoryImpl @Inject constructor(
 
             if (photoUri != null) {
                 val isCutout = withContext(Dispatchers.IO) { hasUriAlphaChannel(context, photoUri) }
-                val uploadedAvatar = withContext(Dispatchers.IO) {
-                    uploadProfileMediaToStorageOrSmallFallback(
-                        ctx = context,
-                        storagePath = "avatars/$uid/avatar_${System.currentTimeMillis()}.jpg",
-                        uri = photoUri,
-                        maxSide = 512,
-                        quality = 84
-                    )
-                }
+                // Round 12 (sibling fix): the profile FIELDS are the primary
+                // intent here — a Storage failure on the optional new avatar
+                // degrades to "keep the old photo" instead of aborting the
+                // whole profile write.
+                val uploadedAvatar = runCatching {
+                    withContext(Dispatchers.IO) {
+                        uploadProfileMediaToStorageOrSmallFallback(
+                            ctx = context,
+                            storagePath = "avatars/$uid/avatar_${System.currentTimeMillis()}.jpg",
+                            uri = photoUri,
+                            maxSide = 512,
+                            quality = 84
+                        )
+                    }
+                }.getOrDefault("")
                 if (uploadedAvatar.isNotBlank()) {
                     updates["photoUrl"] = if (hideAvatar) "" else uploadedAvatar
                     val hasAlphaFlag = isCutout ||
@@ -1155,15 +1163,19 @@ class UserRepositoryImpl @Inject constructor(
             }
 
             if (coverUri != null) {
-                val uploadedCover = withContext(Dispatchers.IO) {
-                    uploadProfileMediaToStorageOrSmallFallback(
-                        ctx = context,
-                        storagePath = "avatars/$uid/cover_${System.currentTimeMillis()}.jpg",
-                        uri = coverUri,
-                        maxSide = 1080,
-                        quality = 84
-                    )
-                }
+                // Round 12 (sibling fix): same rule as the avatar above —
+                // a Storage failure keeps the old cover, never the fields.
+                val uploadedCover = runCatching {
+                    withContext(Dispatchers.IO) {
+                        uploadProfileMediaToStorageOrSmallFallback(
+                            ctx = context,
+                            storagePath = "avatars/$uid/cover_${System.currentTimeMillis()}.jpg",
+                            uri = coverUri,
+                            maxSide = 1080,
+                            quality = 84
+                        )
+                    }
+                }.getOrDefault("")
                 if (uploadedCover.isNotBlank()) {
                     updates["coverUrl"] = if (hideCover) "" else uploadedCover
                     userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
@@ -2141,6 +2153,8 @@ class UserRepositoryImpl @Inject constructor(
         desiredFrameId = getString("desiredFrameId").orEmpty(),
         desiredGlowColor = getString("desiredGlowColor").orEmpty(),
         idDocumentUrl = getString("idDocumentUrl").orEmpty(),
+        idDocumentInline = getString("idDocumentInline").orEmpty(),
+        idDocumentSource = getString("idDocumentSource").orEmpty(),
         note = getString("note").orEmpty(),
         status = getString("status") ?: "PENDING",
         adminResponse = getString("adminResponse").orEmpty(),
@@ -2203,16 +2217,32 @@ class UserRepositoryImpl @Inject constructor(
         val validSeal = VerificationSealType.fromKey(desiredSeal).key
         val validGlow = NeonColorPreset.fromKey(desiredGlowColor).key
         val cleanFrame = desiredFrameId.trim()
-        val idDocUrl = withContext(Dispatchers.IO) {
-            uploadProfileMediaToStorageOrSmallFallback(
-                ctx = context,
-                storagePath = "subscription_ids/$uid/$reqId.jpg",
-                uri = idUri,
-                maxSide = 960,
-                quality = 82
-            )
+        // Round 12 (DEVICE-PROVEN fix): the old flow uploaded the ID image
+        // to Storage FIRST and rethrew on failure — on this project Storage
+        // is effectively unprovisioned (OBJECT_NOT_FOUND), so the request
+        // doc was NEVER written and the admin panel stayed empty. Now the
+        // image is encoded ONCE to budget-fitting JPEG bytes, the Storage
+        // upload is attempted with them, and on ANY failure the doc carries
+        // a compact inline copy instead. The Firestore write below is the
+        // only step allowed to fail the submission.
+        val idJpegBytes = withContext(Dispatchers.IO) {
+            runCatching { encodeIdDocumentJpeg(context, idUri) }.getOrNull()
         }
-        check(idDocUrl.isNotBlank()) { "تعذر رفع صورة الهوية" }
+        val storageUrl = if (idJpegBytes != null && idJpegBytes.isNotEmpty()) {
+            uploadRawBytesToStorage(
+                storagePath = "subscription_ids/$uid/$reqId.jpg",
+                bytes = idJpegBytes,
+                mimeType = "image/jpeg"
+            ).getOrNull()
+        } else {
+            null
+        }
+        val inlineData = if (storageUrl.isNullOrBlank() && idJpegBytes != null && idJpegBytes.isNotEmpty()) {
+            "data:image/jpeg;base64," + Base64.encodeToString(idJpegBytes, Base64.NO_WRAP)
+        } else {
+            ""
+        }
+        val payload = SubscriptionRequestLogic.resolvePayload(storageUrl, inlineData)
         val now = System.currentTimeMillis()
         firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS).document(reqId).set(
             mapOf(
@@ -2225,7 +2255,9 @@ class UserRepositoryImpl @Inject constructor(
                 "desiredSeal" to validSeal,
                 "desiredFrameId" to cleanFrame,
                 "desiredGlowColor" to validGlow,
-                "idDocumentUrl" to idDocUrl,
+                "idDocumentUrl" to payload.url,
+                "idDocumentInline" to payload.inlineData,
+                "idDocumentSource" to payload.source.name,
                 "note" to note.trim(),
                 "status" to "PENDING",
                 "adminResponse" to "",
@@ -4438,16 +4470,22 @@ class UserRepositoryImpl @Inject constructor(
         val me = getUserOnce(uid) ?: WesalUser(uid = uid)
         val ticketId = "tkt_${uid}_${System.currentTimeMillis()}"
         val refNum = "WS-${(100000..999999).random()}"
+        // Round 12 (sibling of the subscription-request fix): the ticket is
+        // the primary intent and the attachment is optional — a Storage
+        // failure must not kill the ticket write, so the upload degrades
+        // to "no attachment" instead of throwing.
         val attachmentUrl = if (attachmentUri != null) {
-            withContext(Dispatchers.IO) {
-                uploadProfileMediaToStorageOrSmallFallback(
-                    ctx = context,
-                    storagePath = "support_attachments/$ticketId/attach_${System.currentTimeMillis()}.jpg",
-                    uri = attachmentUri,
-                    maxSide = 1080,
-                    quality = 82
-                )
-            }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    uploadProfileMediaToStorageOrSmallFallback(
+                        ctx = context,
+                        storagePath = "support_attachments/$ticketId/attach_${System.currentTimeMillis()}.jpg",
+                        uri = attachmentUri,
+                        maxSide = 1080,
+                        quality = 82
+                    )
+                }
+            }.getOrDefault("")
         } else {
             ""
         }

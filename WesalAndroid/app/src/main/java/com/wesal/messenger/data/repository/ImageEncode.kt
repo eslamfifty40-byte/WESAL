@@ -9,6 +9,7 @@ import android.media.ExifInterface
 import android.net.Uri
 import android.util.Base64
 import com.google.firebase.FirebaseApp
+import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import java.io.ByteArrayOutputStream
 
 fun uriToBase64Jpeg(uri: Uri, maxSide: Int = 720, quality: Int = 78): String {
@@ -135,6 +136,40 @@ fun uriToBase64Smart(
     } while (bytes.size > 320_000 && q >= 40)
 
     return "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+}
+
+/**
+ * Round 12: encodes a picked ID image to compact JPEG bytes whose base64
+ * form PROVABLY fits [SubscriptionRequestLogic]'s inline budget, walking
+ * the pure encode plan (largest side + highest quality first, stepping
+ * down only while the result would overflow the budget). The bytes serve
+ * both payloads of a subscription request: they are what gets uploaded
+ * to Storage, and — when Storage fails — what is inlined into the
+ * Firestore doc as a `data:image/jpeg;base64,...` string.
+ *
+ * Returns the first fitting encode; if no step fits (not expected — the
+ * last step is 384px/q28), the smallest encode produced; null only when
+ * the source image cannot be decoded at all.
+ */
+fun encodeIdDocumentJpeg(ctx: Context, uri: Uri): ByteArray? {
+    var smallest: ByteArray? = null
+    val plan = SubscriptionRequestLogic.encodePlan()
+    for (side in plan.map { it.maxSide }.distinct()) {
+        val bmp = decodeArgbBitmap(ctx, uri, side) ?: break
+        try {
+            for (step in plan) {
+                if (step.maxSide != side) continue
+                val bos = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, step.quality, bos)
+                val bytes = bos.toByteArray()
+                if (smallest == null || bytes.size < smallest.size) smallest = bytes
+                if (SubscriptionRequestLogic.fitsInlineBudget(bytes.size)) return bytes
+            }
+        } finally {
+            bmp.recycle()
+        }
+    }
+    return smallest
 }
 
 fun hasUriAlphaChannel(ctx: Context, uri: Uri): Boolean {

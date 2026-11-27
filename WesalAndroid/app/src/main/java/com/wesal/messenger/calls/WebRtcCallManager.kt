@@ -18,6 +18,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.network.NetworkMonitor
+import com.wesal.messenger.core.util.CameraSwitchStateMachine
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -619,8 +620,124 @@ class WebRtcCallManager @Inject constructor(
         localVideoTrack?.setEnabled(enabled)
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Camera switching (round 12, addendum B). The old implementation was a
+    // bare `videoCapturer?.switchCamera(null)`: no CameraSwitchHandler (so
+    // success/failure was invisible) and no in-flight guard (so the
+    // switch-BACK tap landed while the first switch was still
+    // reconfiguring the camera session — the capturer wedged, capture
+    // never resumed, and the call froze: «بيتهنج»). Switches are now
+    // serialized through CameraSwitchStateMachine, confirmed via the
+    // handler, watchdogged, and recovered on error/timeout by rebuilding
+    // the capturer on the camera the call is already using. The call
+    // itself (peer connection, audio, video track) is never touched by a
+    // switch failure — worst case the user stays on the current camera
+    // and sees a short Arabic message.
+    // ---------------------------------------------------------------------------------------------
+
+    private val cameraSwitchMachine = CameraSwitchStateMachine()
+    private var cameraSwitchTimeoutRunnable: Runnable? = null
+
+    /** The camera the call is actually on (CallActivity mirrors the preview from it). */
+    private val _isFrontCamera = MutableStateFlow(true)
+    val isFrontCamera: StateFlow<Boolean> = _isFrontCamera.asStateFlow()
+
+    /** Bumped after every completed switch/recovery so the UI re-attaches the local renderer. */
+    private val _cameraSwitchCount = MutableStateFlow(0)
+    val cameraSwitchCount: StateFlow<Int> = _cameraSwitchCount.asStateFlow()
+
+    /** One-shot human message for the call screen (e.g. a failed camera switch). */
+    private val _cameraMessage = MutableStateFlow<String?>(null)
+    val cameraMessage: StateFlow<String?> = _cameraMessage.asStateFlow()
+
+    fun clearCameraMessage() {
+        _cameraMessage.value = null
+    }
+
     fun switchCamera() {
-        videoCapturer?.switchCamera(null)
+        val capturer = videoCapturer ?: return
+        if (!cameraSwitchMachine.tryBegin()) {
+            Log.d(TAG, "Camera switch ignored — another switch is already in flight")
+            return
+        }
+        scheduleCameraSwitchTimeout()
+        runCatching {
+            capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                    cancelCameraSwitchTimeout()
+                    // A false return means this callback is stale (the
+                    // watchdog already resolved the flight) — ignore it.
+                    if (cameraSwitchMachine.onDone(isFrontCamera)) {
+                        _isFrontCamera.value = isFrontCamera
+                        _cameraSwitchCount.value += 1
+                    }
+                }
+
+                override fun onCameraSwitchError(errorDescription: String?) {
+                    cancelCameraSwitchTimeout()
+                    if (cameraSwitchMachine.onError()) {
+                        Log.e(TAG, "Camera switch failed: $errorDescription — recovering the capturer")
+                        recoverCameraCapturer()
+                    }
+                }
+            })
+        }.onFailure {
+            cancelCameraSwitchTimeout()
+            if (cameraSwitchMachine.onError()) {
+                Log.e(TAG, "Camera switch threw: ${it.message} — recovering the capturer")
+                recoverCameraCapturer()
+            }
+        }
+    }
+
+    private fun scheduleCameraSwitchTimeout() {
+        cancelCameraSwitchTimeout()
+        val runnable = Runnable {
+            if (cameraSwitchMachine.onTimeout()) {
+                Log.e(TAG, "Camera switch produced no callback within ${CAMERA_SWITCH_TIMEOUT_MS}ms — recovering the capturer")
+                recoverCameraCapturer()
+            }
+        }
+        cameraSwitchTimeoutRunnable = runnable
+        mainHandler.postDelayed(runnable, CAMERA_SWITCH_TIMEOUT_MS)
+    }
+
+    private fun cancelCameraSwitchTimeout() {
+        cameraSwitchTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        cameraSwitchTimeoutRunnable = null
+    }
+
+    /**
+     * Rebuilds the capturer on the camera the call is ALREADY using (a
+     * failed/timed-out switch never changed it) and restarts capture into
+     * the same video source, so the existing local video track — and the
+     * call — carry on. Only when even that fails is the user told.
+     */
+    private fun recoverCameraCapturer() {
+        val oldCapturer = videoCapturer
+        val source = localVideoSource
+        val helper = surfaceTextureHelper
+        runCatching { oldCapturer?.stopCapture() }
+        runCatching { oldCapturer?.dispose() }
+        videoCapturer = null
+        if (source == null || helper == null) {
+            _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
+            return
+        }
+        val fresh = createCameraCapturer(preferFront = cameraSwitchMachine.isFrontCamera)
+        if (fresh == null) {
+            _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
+            return
+        }
+        videoCapturer = fresh
+        runCatching {
+            fresh.initialize(helper, context, source.capturerObserver)
+            fresh.startCapture(720, 1280, 30)
+            _cameraSwitchCount.value += 1
+        }.onFailure {
+            Log.e(TAG, "Camera capturer recovery failed: ${it.message}")
+            _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
+        }
     }
 
     private fun hasBluetoothConnectPermission(): Boolean {
@@ -795,6 +912,7 @@ class WebRtcCallManager @Inject constructor(
     fun endSession() {
         stopNetworkMonitoring()
         _sessionError.value = null
+        cancelCameraSwitchTimeout()
         cancelPendingIceRestart()
         iceRestartSignalledForEpisode = false
         iceRestartAwaitingRenegotiation = false
@@ -847,11 +965,15 @@ class WebRtcCallManager @Inject constructor(
         audioManager.mode = AudioManager.MODE_NORMAL
     }
 
-    private fun createCameraCapturer(): CameraVideoCapturer? {
+    private fun createCameraCapturer(preferFront: Boolean = true): CameraVideoCapturer? {
         val enumerator = Camera2Enumerator(context)
         val frontName = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
         val backName = enumerator.deviceNames.firstOrNull { !enumerator.isFrontFacing(it) }
-        val target = frontName ?: backName ?: return null
+        val target = if (preferFront) {
+            frontName ?: backName
+        } else {
+            backName ?: frontName
+        } ?: return null
         return enumerator.createCapturer(target, null)
     }
 
@@ -872,6 +994,9 @@ class WebRtcCallManager @Inject constructor(
         private const val SESSION_ERROR_SDP = "حدثت مشكلة أثناء إعداد المكالمة"
         private const val ICE_DISCONNECT_GRACE_MS = 3_000L
         private const val ICE_RENEGOTIATION_FALLBACK_MS = 1_200L
+        /** Round 12 (addendum B): a camera switch that produces neither callback within this window is treated as wedged and recovered. */
+        private const val CAMERA_SWITCH_TIMEOUT_MS = 5_000L
+        private const val CAMERA_SWITCH_FAILED_MESSAGE = "تعذر تبديل الكاميرا"
 
         fun parseTurnUrls(raw: String): List<String> = TurnUrlParser.parse(raw)
     }
