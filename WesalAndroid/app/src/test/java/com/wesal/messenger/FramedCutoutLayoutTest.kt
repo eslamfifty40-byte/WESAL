@@ -62,10 +62,17 @@ class FramedCutoutLayoutTest {
 
     /** The core round-6 invariants: fill-from-bottom, head inside, no void. */
     private fun assertFillFromBottomHeadInside(t: FramedCutoutTransform, box: AlphaBounds) {
-        // Bottom anchored at the overflow point below the aperture's bottom edge:
-        // the torso continues behind the bottom artwork, so the ring's bottom is
-        // never a bare glow void.
-        assertEquals(apertureBottom + overflow, personBottom(t, box), 1f)
+        // Bottom reaches AT LEAST the overflow point below the aperture's
+        // bottom edge: the torso continues behind the bottom artwork, so the
+        // ring's bottom is never a bare glow void. (Round-12 addendum 5: when
+        // the width fill boosts the scale, the head-clearance anchor lets the
+        // bottom overflow FURTHER behind the plaque — more is fine, less is
+        // the void this invariant exists to forbid. Unboosted cases still
+        // land exactly on the point.)
+        assertTrue(
+            "person bottom must reach the overflow point (bottom=${personBottom(t, box)}, point=${apertureBottom + overflow})",
+            personBottom(t, box) >= apertureBottom + overflow - 1f
+        )
         // Head INSIDE the ring: the box top never rises above the aperture's top
         // edge (no frame ornament can cover face/hair), and with the height-first
         // scale it sits at or below the clearance point.
@@ -121,12 +128,20 @@ class FramedCutoutLayoutTest {
 
     @Test
     fun tallFullBody_heightFirstKeepsHeadInsideAndBottomFilled() {
-        // Narrow full-body person: height-first fit makes him 1.22 x aperture tall
-        // and narrower than the aperture (glow at the sides, like the reference's
-        // side glow) — the old width-first/guard math exploded him to 2.1 x aperture.
+        // Narrow full-body person. Round-12 addendum 5 supersedes the old
+        // exact-height expectation for narrow figures: the width fill now
+        // raises the scale (capped at 1.45x the height-fit scale) and pins
+        // the head at the clearance point, so the figure is TALLER than
+        // 1.22 x aperture with the extra height overflowing behind the
+        // plaque. Even boosted, this very narrow figure stays narrower
+        // than the aperture (side glow, like the reference) — the old
+        // width-first/guard math that exploded him to 2.1 x aperture is
+        // still impossible. Head-inside + bottom-filled invariants hold.
         val bounds = AlphaBounds(0.30f, 0f, 0.70f, 1f, 0.6f)
         val t = compute(bounds, 640, 640)
-        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertTrue(personHeight(t, bounds) > targetPersonH)
+        assertEquals(apertureTop + clearance, personTop(t, bounds), 1f)
+        assertTrue(personBottom(t, bounds) > apertureBottom + overflow)
         assertTrue(personWidth(t, bounds) < apertureD)
         assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 640, 640)
@@ -167,12 +182,16 @@ class FramedCutoutLayoutTest {
     @Test
     fun smallPerson_scaledUpToFillFromBottom() {
         // Person is only 20% of the canvas wide / 40% tall (deep transparent
-        // padding): the bounds fit scales the PERSON up to the full target height
-        // instead of rendering the padded canvas small inside the ring.
+        // padding): the bounds fit scales the PERSON up instead of rendering
+        // the padded canvas small inside the ring. Round-12 addendum 5: the
+        // width fill boosts the scale further (capped), the head stays
+        // pinned at the clearance point and the bottom overflows behind
+        // the plaque — the person ends up at least the full target height.
         val bounds = AlphaBounds(0.40f, 0.30f, 0.60f, 0.70f, 0.92f)
         val t = compute(bounds, 640, 640)
         assertTrue(t.drawWidthPx.isFinite() && t.drawHeightPx.isFinite())
-        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertTrue(personHeight(t, bounds) >= targetPersonH)
+        assertEquals(apertureTop + clearance, personTop(t, bounds), 1f)
         assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 640, 640)
     }
@@ -189,10 +208,21 @@ class FramedCutoutLayoutTest {
 
     @Test
     fun nonSquareImage_aspectPreservedAndPersonLands() {
-        // Portrait source 480x640, person centred.
+        // Portrait source 480x640, person centred. Round-12 addendum 5:
+        // this figure renders 0.81 x aperture wide under the height fit —
+        // the owner's exact rejected case — so the width fill raises the
+        // scale until the person spans TARGET_MIN_WIDTH_FRACTION of the
+        // aperture, head pinned at the clearance point, bottom
+        // overflowing behind the plaque. Aspect + centring unchanged.
         val bounds = AlphaBounds(0.10f, 0.05f, 0.90f, 0.95f, 0.28f)
         val t = compute(bounds, 480, 640)
-        assertEquals(targetPersonH, personHeight(t, bounds), 1f)
+        assertEquals(
+            FramedCutoutLayout.TARGET_MIN_WIDTH_FRACTION * apertureD,
+            personWidth(t, bounds),
+            1f
+        )
+        assertTrue(personHeight(t, bounds) > targetPersonH)
+        assertEquals(apertureTop + clearance, personTop(t, bounds), 1f)
         assertFillFromBottomHeadInside(t, bounds)
         assertCentredAndAspect(t, bounds, 480, 640)
     }

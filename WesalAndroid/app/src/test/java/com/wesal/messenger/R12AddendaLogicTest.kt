@@ -103,6 +103,9 @@ class R12AddendaLogicTest {
         assertEquals("100000", UserSearchLogic.planNumericIdQuery("100000"))
         assertEquals("1000000", UserSearchLogic.planNumericIdQuery("1000000"))
         assertEquals("10002", UserSearchLogic.planNumericIdQuery("10002"))
+        // A 5-digit input is a complete valid ID in its own right
+        // (the range starts at 10000), not a "partial" of a longer one.
+        assertEquals("78967", UserSearchLogic.planNumericIdQuery("78967"))
     }
 
     @Test
@@ -114,7 +117,7 @@ class R12AddendaLogicTest {
 
     @Test
     fun `search - partial IDs and non-IDs plan nothing`() {
-        assertNull(UserSearchLogic.planNumericIdQuery("78967"))
+        assertNull(UserSearchLogic.planNumericIdQuery("7896"))
         assertNull(UserSearchLogic.planNumericIdQuery("7896710"))
         assertNull(UserSearchLogic.planNumericIdQuery("saad"))
         assertNull(UserSearchLogic.planNumericIdQuery(""))
