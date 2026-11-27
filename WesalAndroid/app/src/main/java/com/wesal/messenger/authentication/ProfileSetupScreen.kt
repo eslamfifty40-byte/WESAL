@@ -80,6 +80,7 @@ fun ProfileSetupScreen(
     var localPhone by remember { mutableStateOf("") }
     var birthDateIso by remember { mutableStateOf("") }
     var hideBirthDate by remember { mutableStateOf(false) }
+    var inviterId by remember { mutableStateOf("") }
 
     var locationGranted by remember {
         mutableStateOf(LocationVerificationHelper.hasLocationPermission(context))
@@ -508,6 +509,27 @@ fun ProfileSetupScreen(
                     colors = fieldColors
                 )
 
+                // 7. Invited by (optional): manual referral attribution. Sideloaded
+                // installs never receive the /join link parameter, so the invitee can
+                // credit their inviter by typing the inviter's @ID or numeric ID here.
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    OutlinedTextField(
+                        value = inviterId,
+                        onValueChange = { raw -> inviterId = raw.filter { !it.isWhitespace() }.take(40) },
+                        label = {
+                            Text(
+                                if (strings.isEnglish) "Who invited you? Enter their ID or number (optional)"
+                                else "مين دعاك؟ اكتب معرفه أو رقمه (اختياري)"
+                            )
+                        },
+                        placeholder = { Text("@username / 10001") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = fieldColors
+                    )
+                }
+
                 if (state.errorMessage != null) {
                     Surface(
                         color = palette.error.copy(alpha = 0.14f),
@@ -542,7 +564,8 @@ fun ProfileSetupScreen(
                         birthDateIso = birthDateIso,
                         hideBirthDate = hideBirthDate,
                         locationGranted = locationGranted,
-                        locationGraceStartedAt = graceStart
+                        locationGraceStartedAt = graceStart,
+                        inviterId = inviterId
                     )
                 },
                 enabled = canSubmit,

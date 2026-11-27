@@ -508,7 +508,8 @@ class AuthRepositoryImpl @Inject constructor(
      * rejected, and the write is skipped if the fields are already set — combined with
      * the fact that the only caller sits in the doc-creation branch of
      * ensureUserSkeletonExists, attribution is create-only and can never be re-pointed
-     * by later sign-ins. The pending invite is cleared once the stamp lands.
+     * by later sign-ins. Both stored invite sources (the deep-link pending invite and
+     * the manually typed inviter id) are cleared once the stamp lands.
      */
     private fun stampReferralAttribution(newUid: String, inviteId: String) {
         appScope.launch {
@@ -533,6 +534,7 @@ class AuthRepositoryImpl @Inject constructor(
             }.getOrDefault(false)
             if (stamped) {
                 runCatching { prefs.clearPendingInviteId() }
+                runCatching { prefs.clearManualInviteId() }
             }
         }
     }
@@ -939,6 +941,19 @@ class AuthRepositoryImpl @Inject constructor(
             docRef.set(updates, SetOptions.merge()).awaitQueued(8_000L)
             if (!WesalIdUtils.isValidNumericId(existingSnap.getString("numericId"))) {
                 withTimeoutOrNull(8_000L) { allocateUniqueNumericId(uid) }
+            }
+            // Manual referral attribution (round 3): the optional "who invited you" id
+            // typed on the profile-setup screen is persisted locally before this call.
+            // This is the reliable path for sideloaded installs, where the /join link
+            // parameter never reaches the app. stampReferralAttribution is fire-and-forget,
+            // create-only (it re-reads the doc and skips when attribution already exists,
+            // e.g. stamped from a deep-link pending invite at skeleton creation) and
+            // rejects self-referral — so this can never block or fail profile completion.
+            val manualInviteId = withTimeoutOrNull(2_000L) {
+                runCatching { prefs.settingsFlow.first().manualInviteId }.getOrNull()
+            }?.trim().orEmpty()
+            if (manualInviteId.isNotBlank()) {
+                stampReferralAttribution(uid, manualInviteId)
             }
             prefs.setCachedStartupProfileState(uid, true)
             prefs.setLocationState(locationGranted, locationGraceStartedAt)

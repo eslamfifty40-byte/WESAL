@@ -428,7 +428,8 @@ class AuthViewModel @Inject constructor(
         birthDateIso: String,
         hideBirthDate: Boolean,
         locationGranted: Boolean,
-        locationGraceStartedAt: Long
+        locationGraceStartedAt: Long,
+        inviterId: String = ""
     ) {
         if (displayName.trim().length < 2) {
             _uiState.update { it.copy(errorMessage = "الاسم الظاهر مطلوب (حرفان على الأقل)") }
@@ -466,6 +467,14 @@ class AuthViewModel @Inject constructor(
 
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
         viewModelScope.launch {
+            // Persist the optional hand-typed inviter id BEFORE the repository call:
+            // AuthRepositoryImpl.completeUserProfile reads it from DataStore and stamps
+            // the referral attribution once the profile writes succeed. Sequential in
+            // this same coroutine, so the write is guaranteed to land first.
+            val cleanInviterId = inviterId.trim().removePrefix("@")
+            if (cleanInviterId.isNotBlank()) {
+                runCatching { prefs.setManualInviteId(cleanInviterId) }
+            }
             val result = authCall {
                 authRepository.completeUserProfile(
                     displayName = displayName,

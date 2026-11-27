@@ -51,6 +51,7 @@ data class AppUserSettings(
     val notificationToneUri: String = "",
     val callRingtoneUri: String = "",
     val pendingInviteId: String = "",
+    val manualInviteId: String = "",
     val pendingChannelInvite: String = "",
     val recentEmojis: List<String> = emptyList(),
     val welcomeMessageEnabled: Boolean = false,
@@ -163,6 +164,7 @@ class UserPreferencesDataStore @Inject constructor(
         val DEVICE_SESSION_ID = stringPreferencesKey("device_session_id")
         val SAVED_ACCOUNTS_JSON = stringPreferencesKey("saved_accounts_json")
         val PENDING_INVITE_ID = stringPreferencesKey("pending_invite_id")
+        val MANUAL_INVITE_ID = stringPreferencesKey("manual_invite_id")
         val PENDING_CHANNEL_INVITE = stringPreferencesKey("pending_channel_invite")
         val CACHED_UID = stringPreferencesKey("cached_uid")
         val CACHED_PROFILE_COMPLETE = booleanPreferencesKey("cached_profile_complete")
@@ -214,6 +216,7 @@ class UserPreferencesDataStore @Inject constructor(
             notificationToneUri = prefs[strKey(uid, "notification_tone_uri")] ?: "",
             callRingtoneUri = prefs[strKey(uid, "call_ringtone_uri")] ?: "",
             pendingInviteId = prefs[GlobalKeys.PENDING_INVITE_ID] ?: "",
+            manualInviteId = prefs[GlobalKeys.MANUAL_INVITE_ID] ?: "",
             pendingChannelInvite = prefs[GlobalKeys.PENDING_CHANNEL_INVITE] ?: "",
             recentEmojis = decodeStringList(prefs[strKey(uid, "recent_emojis_json")]),
             welcomeMessageEnabled = prefs[boolKey(uid, "welcome_message_enabled")] ?: false,
@@ -658,6 +661,27 @@ class UserPreferencesDataStore @Inject constructor(
     suspend fun clearPendingInviteId() {
         context.wesalDataStore.edit { prefs ->
             prefs.remove(GlobalKeys.PENDING_INVITE_ID)
+        }
+    }
+
+    /**
+     * The inviter id/number the user typed by hand on the profile-setup screen
+     * ("who invited you"). This is the reliable attribution path for sideloaded
+     * installs, where a shared link's /join parameter never reaches the app.
+     * Persisted before completeUserProfile runs; consumed (and cleared) by
+     * AuthRepositoryImpl once the referral stamp lands.
+     */
+    suspend fun setManualInviteId(id: String) {
+        val clean = id.trim().removePrefix("@")
+        if (clean.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            prefs[GlobalKeys.MANUAL_INVITE_ID] = clean
+        }
+    }
+
+    suspend fun clearManualInviteId() {
+        context.wesalDataStore.edit { prefs ->
+            prefs.remove(GlobalKeys.MANUAL_INVITE_ID)
         }
     }
 
