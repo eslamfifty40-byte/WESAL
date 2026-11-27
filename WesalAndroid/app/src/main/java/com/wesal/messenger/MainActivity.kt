@@ -71,11 +71,18 @@ class MainActivity : AppCompatActivity() {
             // Round 12 (addendum 11): welcome-gift announcement — the event
             // fires at most once per account (the grant is stamped on the
             // user doc), so this dialog + notification can never repeat.
+            // The event carries WHAT was granted (referral upgrade,
+            // 2026-11-27) so the announcement matches the actual package.
             var showWelcomeGift by remember { mutableStateOf(false) }
+            var welcomeGiftOutcome by remember {
+                mutableStateOf(com.wesal.messenger.core.util.ReferralGiftLogic.Outcome.STANDARD_FRAME)
+            }
             LaunchedEffect(Unit) {
-                mainViewModel.welcomeGiftEvent.collect {
+                mainViewModel.welcomeGiftEvent.collect { outcome ->
+                    welcomeGiftOutcome = outcome
                     showWelcomeGift = true
                     postWelcomeGiftNotification(
+                        outcome = outcome,
                         isArabic = LocaleManager.isRtlLanguage(settings.languageTag)
                     )
                 }
@@ -178,6 +185,7 @@ class MainActivity : AppCompatActivity() {
                     // the new registrant cannot miss it on first entry.
                     if (showWelcomeGift) {
                         WesalWelcomeGiftDialog(
+                            outcome = welcomeGiftOutcome,
                             onDismiss = { showWelcomeGift = false }
                         )
                     }
@@ -191,9 +199,13 @@ class MainActivity : AppCompatActivity() {
      * welcome-gift announcement on the system channel (created at app
      * startup). Best-effort — the in-app dialog is the primary surface.
      */
-    private fun postWelcomeGiftNotification(isArabic: Boolean) {
+    private fun postWelcomeGiftNotification(
+        outcome: com.wesal.messenger.core.util.ReferralGiftLogic.Outcome,
+        isArabic: Boolean
+    ) {
         runCatching {
-            val text = com.wesal.messenger.core.util.WelcomeGiftLogic.announcement(isArabic)
+            val text = com.wesal.messenger.core.util.ReferralGiftLogic.announcement(outcome, isArabic)
+                ?: com.wesal.messenger.core.util.WelcomeGiftLogic.announcement(isArabic)
             val intent = Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             }
@@ -274,12 +286,20 @@ private const val WELCOME_GIFT_NOTIFICATION_ID = 12011
  * Round 12 (addendum 11): the welcome-gift announcement dialog. The text
  * is the owner's wording (WelcomeGiftLogic.announcement); the frame name
  * line names the actual granted frame so the user can recognise it.
+ * Referral upgrade (2026-11-27): for a referred signup the announcement
+ * is ReferralGiftLogic's (the actual package granted), and the frame
+ * name line appears only when a frame was part of that package.
  */
 @Composable
-private fun WesalWelcomeGiftDialog(onDismiss: () -> Unit) {
+private fun WesalWelcomeGiftDialog(
+    outcome: com.wesal.messenger.core.util.ReferralGiftLogic.Outcome =
+        com.wesal.messenger.core.util.ReferralGiftLogic.Outcome.STANDARD_FRAME,
+    onDismiss: () -> Unit
+) {
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val isEn = strings.isEnglish
+    val frameGranted = outcome != com.wesal.messenger.core.util.ReferralGiftLogic.Outcome.REFERRAL_BADGE
     val frameName = com.wesal.messenger.core.util.WesalFrameLibrary
         .docs[com.wesal.messenger.core.util.WelcomeGiftLogic.WELCOME_FRAME_ID]
         ?.titleAr
@@ -299,8 +319,9 @@ private fun WesalWelcomeGiftDialog(onDismiss: () -> Unit) {
         },
         text = {
             Text(
-                text = com.wesal.messenger.core.util.WelcomeGiftLogic.announcement(!isEn) +
-                    if (frameName.isNotBlank()) {
+                text = (com.wesal.messenger.core.util.ReferralGiftLogic.announcement(outcome, !isEn)
+                    ?: com.wesal.messenger.core.util.WelcomeGiftLogic.announcement(!isEn)) +
+                    if (frameGranted && frameName.isNotBlank()) {
                         if (isEn) "\n\nYour gift frame: $frameName" else "\n\nإطار الهدية: $frameName"
                     } else {
                         ""
