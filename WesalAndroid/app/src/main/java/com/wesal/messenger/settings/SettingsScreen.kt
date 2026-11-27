@@ -696,23 +696,22 @@ fun SettingsScreen(
                             .fillMaxWidth()
                             .height(120.dp)
                             .clip(RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp))
+                            // Round 9 (item 9): solid backdrop for the Fit
+                            // cover's leftover band space (no blur ghost).
+                            .background(palette.surfaceElevated)
                     ) {
                     if (coverUrl.isNotBlank()) {
-                        // Round 7 (owner's cover spec): ONE clean image fills
-                        // the 120dp band edge-to-edge — ContentScale.Crop
-                        // biased to the TOP of the image, so enlarging a
-                        // portrait cover to fill the band never cuts the
-                        // face at the top. NO blurred ghost copy behind it
-                        // and NO scrim: the owner rejected the blurred
-                        // backdrop appearing around the photo. (Rounds 4-6
-                        // drew the cover twice — blurred Crop backdrop +
-                        // Fit copy + scrim; all gone.)
+                        // Round 9 (item 9 — SUPERSEDES the round-7 Crop
+                        // instruction): the COMPLETE cover photo shows via
+                        // ContentScale.Fit, uncropped and undistorted; the
+                        // solid surfaceElevated band fills the rest. NO
+                        // blurred ghost copy and NO scrim (round-7 rejection
+                        // stands).
                         AsyncImage(
                             model = wesalImageModel(coverUrl),
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                            alignment = Alignment.TopCenter
+                            contentScale = ContentScale.Fit
                         )
                     }
                         Box(modifier = Modifier.fillMaxWidth().padding(18.dp)) {
@@ -755,6 +754,7 @@ fun SettingsScreen(
                             frameId = user?.frameId.orEmpty(),
                             frameExpiresAt = user?.frameExpiresAt ?: 0L,
                             isCutout = user?.photoRemovedBg == true,
+                            isUserFramed = user?.photoUserFramed == true,
                             iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
                             neonColor = activeNeonColor,
                             neonGlowIntensity = activeGlow

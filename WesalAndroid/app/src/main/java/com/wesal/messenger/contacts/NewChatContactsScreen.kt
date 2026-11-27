@@ -706,6 +706,7 @@ fun NewChatContactsScreen(
                                         frameId = user.frameId,
                                         frameExpiresAt = user.frameExpiresAt,
                                         isCutout = user.photoRemovedBg,
+                                        isUserFramed = user.photoUserFramed,
                                         iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
                                         neonColor = if (user.neonEnabled) user.neonColor else "",
                                         neonGlowIntensity = user.neonGlowIntensity,
@@ -760,15 +761,30 @@ fun NewChatContactsScreen(
                                             style = MaterialTheme.typography.bodyMedium,
                                             color = palette.textSecondary
                                         )
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        // Round 9: the «الإعدادات» label wrapped mid-word
+                                        // («الإعداد» / «ات») because the unweighted Row
+                                        // measured the long green button first and squeezed
+                                        // the settings button into the leftover width. Now
+                                        // the settings button is unweighted (measured first,
+                                        // at its intrinsic width) and the green button takes
+                                        // the remaining space via weight(1f); both labels are
+                                        // pinned to a single line.
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
                                             Button(
                                                 onClick = { contactsPermission.launchPermissionRequest() },
                                                 colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
-                                                shape = RoundedCornerShape(12.dp)
+                                                shape = RoundedCornerShape(12.dp),
+                                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                                                modifier = Modifier.weight(1f)
                                             ) {
                                                 Text(
                                                     text = if (strings.isEnglish) "Allow Contact Sync" else "السماح بمطابقة جهات الاتصال",
-                                                    fontWeight = FontWeight.Bold
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
                                             }
                                             if (!contactsPermission.status.shouldShowRationale) {
@@ -780,8 +796,16 @@ fun NewChatContactsScreen(
                                                         )
                                                         runCatching { context.startActivity(intent) }
                                                     },
-                                                    shape = RoundedCornerShape(12.dp)
-                                                ) { Text(strings.settings, color = palette.turquoise) }
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                                                ) {
+                                                    Text(
+                                                        strings.settings,
+                                                        color = palette.turquoise,
+                                                        maxLines = 1,
+                                                        softWrap = false
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -1476,6 +1500,7 @@ private fun WesalContactDirectoryRow(
                 frameId = user.frameId,
                 frameExpiresAt = user.frameExpiresAt,
                 isCutout = user.photoRemovedBg,
+                                        isUserFramed = user.photoUserFramed,
                 iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
                 neonColor = if (user.neonEnabled) user.neonColor else "",
                 neonGlowIntensity = user.neonGlowIntensity,

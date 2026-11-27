@@ -78,6 +78,12 @@ class CropActivity : ComponentActivity() {
         const val EXTRA_CROP_MODE = "wesal_crop_mode"
         const val EXTRA_TITLE = "wesal_crop_title"
         const val EXTRA_BG_REMOVED = "wesal_crop_bg_removed"
+        // Round 9 (item 7): true when the user manually moved/zoomed the photo in
+        // the editor (zoom != 1 or offset != zero at export). A user-framed cutout
+        // is exported WITHOUT the alpha trim, so the composition the user set is
+        // baked into the saved square, and the save flow stamps photoUserFramed so
+        // WesalAvatar renders that composition as-is instead of re-fitting it.
+        const val EXTRA_USER_FRAMED = "wesal_crop_user_framed"
         const val EXTRA_GLOW_COLOR = "wesal_crop_glow_color"
         const val MODE_CIRCLE_AVATAR = "CIRCLE_AVATAR"
         const val MODE_COVER_16_9 = "COVER_16_9"
@@ -120,7 +126,7 @@ class CropActivity : ComponentActivity() {
                     setResult(RESULT_CANCELED)
                     finish()
                 },
-                onDone = { out, hasAlpha ->
+                onDone = { out, hasAlpha, userFramed ->
                     val ext = if (hasAlpha) "png" else "jpg"
                     val f = File(cacheDir, "crop_${System.currentTimeMillis()}.$ext")
                     f.outputStream().use { stream ->
@@ -133,6 +139,7 @@ class CropActivity : ComponentActivity() {
                     val resultIntent = Intent()
                         .setData(Uri.fromFile(f))
                         .putExtra(EXTRA_BG_REMOVED, hasAlpha)
+                        .putExtra(EXTRA_USER_FRAMED, userFramed)
                     setResult(RESULT_OK, resultIntent)
                     finish()
                 }
@@ -187,7 +194,7 @@ private fun CropScreen(
     customTitle: String,
     customGlowHex: Long = 0L,
     onCancel: () -> Unit,
-    onDone: (Bitmap, Boolean) -> Unit
+    onDone: (Bitmap, Boolean, Boolean) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val argbInitial = remember(initialBitmap) {
@@ -875,14 +882,25 @@ private fun CropScreen(
                         CropActivity.MODE_WALLPAPER -> 720 to 1280
                         else -> 640 to 640
                     }
+                    // Round 9 (item 7): did the user MANUALLY frame this shot
+                    // (zoom/pan away from the initial fit)? If so, their framing
+                    // is the product: the export below keeps the exact viewport
+                    // composition and the result is flagged EXTRA_USER_FRAMED so
+                    // the renderer honors it instead of re-fitting.
+                    val userFramed = zoomLevel != 1f || offset != Offset.Zero
                     // Round-3 source fix: a background-removed avatar is trimmed to the
                     // person's measured alpha bounds (+3% margin) BEFORE scaling, so the
                     // stored asset itself is person-tight like the reference composite —
                     // the transparent padding that made framed avatars render small is
                     // removed at the source (the render-side bounds fit covers uploads
                     // made by older versions). Covers/wallpapers are never trimmed.
+                    // Round 9: the trim is SKIPPED for a user-framed cutout — trimming
+                    // would erase the user's composition and hand the renderer a
+                    // person-tight asset it re-fits with its own fixed math (the
+                    // "قصيتها وما طلعتش زي ما قصيت" defect).
                     val preTrimHasAlpha = bgRemoved || bitmapHasTransparentCorner(cropped)
                     val trimmed = if (
+                        !userFramed &&
                         preTrimHasAlpha &&
                         mode != CropActivity.MODE_COVER_16_9 &&
                         mode != CropActivity.MODE_WALLPAPER
@@ -908,7 +926,7 @@ private fun CropScreen(
                         Bitmap.createScaledBitmap(cropped, targetW, targetH, true)
                     }
                     val actualHasAlpha = preTrimHasAlpha || bitmapHasTransparentCorner(scaled)
-                    onDone(scaled, actualHasAlpha)
+                    onDone(scaled, actualHasAlpha, userFramed)
                 },
                 modifier = Modifier.weight(1f).height(50.dp),
                 shape = RoundedCornerShape(14.dp),

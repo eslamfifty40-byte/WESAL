@@ -42,7 +42,9 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -116,6 +118,10 @@ fun AssistantChatScreen(
     var inputText by remember { mutableStateOf("") }
     var pendingImageUri by remember { mutableStateOf<Uri?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
+    // Round 9 (item 10): clearing the conversation asks first — the wipe is
+    // destructive and purely local (history lives only in the per-uid
+    // DataStore; nothing exists server-side to restore from).
+    var showClearConfirm by remember { mutableStateOf(false) }
 
     val micPermission = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
     val photoPicker = rememberLauncherForActivityResult(
@@ -130,6 +136,63 @@ fun AssistantChatScreen(
         if (itemCount > 0) {
             listState.animateScrollToItem(itemCount - 1)
         }
+    }
+
+    // Round 9 (item 10): clear-conversation confirmation. On confirm the
+    // ViewModel wipes the per-uid DataStore history + local media files and
+    // empties the message state, so the screen falls back to the greeting +
+    // suggestion-chips empty state on its own.
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            containerColor = palette.surface,
+            title = {
+                Text(
+                    text = if (strings.isEnglish) "Clear conversation?" else "مسح المحادثة؟",
+                    color = palette.textPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = if (strings.isEnglish) {
+                        "All your messages with the assistant will be deleted."
+                    } else {
+                        "سيتم حذف كل الرسائل مع المساعد"
+                    },
+                    color = palette.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearConfirm = false
+                        viewModel.clearConversation()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.error,
+                        contentColor = palette.onAccent
+                    )
+                ) {
+                    Text(
+                        if (strings.isEnglish) "Clear" else "مسح",
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text(
+                        if (strings.isEnglish) "Cancel" else "إلغاء",
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+        )
     }
 
     Scaffold(
@@ -195,9 +258,13 @@ fun AssistantChatScreen(
                                         if (strings.isEnglish) "Clear conversation" else "مسح المحادثة"
                                     )
                                 },
+                                // Round 9 (item 10): nothing to clear when the
+                                // conversation is already empty, and a wipe
+                                // always goes through the confirmation dialog.
+                                enabled = messages.isNotEmpty(),
                                 onClick = {
                                     menuOpen = false
-                                    viewModel.clearConversation()
+                                    showClearConfirm = true
                                 }
                             )
                         }

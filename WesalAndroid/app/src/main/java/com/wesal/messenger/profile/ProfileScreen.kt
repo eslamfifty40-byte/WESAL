@@ -75,6 +75,9 @@ import com.wesal.messenger.media.AvatarPreviewConfirmDialog
 import com.wesal.messenger.media.AvatarSourceBottomSheet
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WhatsAppOtpHandoffHint
+import com.wesal.messenger.presentation.components.WhatsAppOtpManualFallback
+import com.wesal.messenger.presentation.components.rememberWhatsAppOtpHandoff
 import com.wesal.messenger.presentation.components.WesalRoyalNameplateBanner
 import com.wesal.messenger.presentation.components.saveImageUrlToGallery
 import com.wesal.messenger.presentation.components.wesalImageModel
@@ -231,7 +234,7 @@ class ProfileViewModel @Inject constructor(
     // output is now alpha-trimmed, so the probe's samples always see the transparency),
     // the two agree — the verdict is carried into the save call so the authoritative
     // signal is owned end to end by the flow that produced it.
-    fun saveImages(photoUri: Uri?, coverUri: Uri?, isEn: Boolean, bgRemoved: Boolean = false) {
+    fun saveImages(photoUri: Uri?, coverUri: Uri?, isEn: Boolean, bgRemoved: Boolean = false, userFramed: Boolean = false) {
         if (!networkMonitor.isCurrentlyConnected()) {
             _uiStatus.value = ProfileUiStatus(
                 message = if (isEn) "No internet to upload photo" else "لا يوجد اتصال بالإنترنت لرفع الصورة",
@@ -241,7 +244,7 @@ class ProfileViewModel @Inject constructor(
         }
         viewModelScope.launch {
             _uiStatus.value = ProfileUiStatus(isSaving = true)
-            userRepository.updateProfileImages(photoUri, coverUri)
+            userRepository.updateProfileImages(photoUri, coverUri, photoUserFramed = userFramed)
                 .onSuccess {
                     _uiStatus.value = ProfileUiStatus(
                         message = if (isEn) "Photo saved" else "تم حفظ الصورة على حسابك",
@@ -580,6 +583,12 @@ fun ProfileScreen(
     var publicId by remember { mutableStateOf("") }
     var selectedCountry by remember { mutableStateOf(CountryCatalog.defaultEgypt) }
     var localPhone by remember { mutableStateOf("") }
+    // Round 9 (item 4-revised): «تأكيد الرقم» IS the WhatsApp handoff — the
+    // press opens WhatsApp with «ابدأ» prefilled; on return, the save+verify
+    // (updateCountryPhone) fires automatically with the current field values.
+    val whatsAppHandoff = rememberWhatsAppOtpHandoff {
+        viewModel.updateCountryPhone(selectedCountry, localPhone, strings.isEnglish)
+    }
     var birthDateIso by remember { mutableStateOf("") }
     var hideBirthDate by remember { mutableStateOf(false) }
     var facebookUrl by remember { mutableStateOf("") }
@@ -623,8 +632,12 @@ fun ProfileScreen(
     var selectedAvatarUri by remember { mutableStateOf<Uri?>(null) }
     var selectedCoverUri by remember { mutableStateOf<Uri?>(null) }
     // If a save failed, drop the local preview so the screen never shows a photo that was not really saved.
+    // Round 9 (item 7b): also drop it after a SUCCESSFUL save — the confirm dialog
+    // already persisted the photo, and a lingering local Uri would make the main
+    // profile Save re-upload the same file through the full-profile path (which
+    // also resets the photoUserFramed verdict the crop flow just stamped).
     LaunchedEffect(uiStatus.message, uiStatus.isError) {
-        if (uiStatus.isError && uiStatus.message != null) {
+        if (uiStatus.message != null) {
             selectedAvatarUri = null
             selectedCoverUri = null
         }
@@ -634,6 +647,8 @@ fun ProfileScreen(
     var pendingPreviewUri by remember { mutableStateOf<Uri?>(null) }
     // The crop flow's background-removed verdict for the pending preview (EXTRA_BG_REMOVED).
     var pendingCropBgRemoved by remember { mutableStateOf(false) }
+    // Round 9 (item 7): the crop flow's manual-framing verdict (EXTRA_USER_FRAMED).
+    var pendingCropUserFramed by remember { mutableStateOf(false) }
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var showSourceSheetFor by remember { mutableStateOf<PendingCropKind?>(null) }
     var showDeleteAvatarConfirm by remember { mutableStateOf(false) }
@@ -662,6 +677,7 @@ fun ProfileScreen(
                 // (previously EXTRA_BG_REMOVED was dropped here and the flag had to be
                 // re-derived downstream from a file probe).
                 pendingCropBgRemoved = AvatarCropHelper.isBackgroundRemoved(result.data)
+                pendingCropUserFramed = AvatarCropHelper.isUserFramed(result.data)
                 pendingPreviewUri = croppedUri
             }
         }
@@ -784,9 +800,10 @@ fun ProfileScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Cover Banner + framed avatar header: (a) round 7 — the cover
-            // is ONE clean image filling its band edge-to-edge
-            // (ContentScale.Crop, top-biased; NO blurred ghost backdrop and
-            // NO scrim — the owner rejected both outright); (b) the framed
+            // is ONE clean image (NO blurred ghost backdrop and NO scrim —
+            // the owner rejected both outright); round 9 (item 9) supersedes
+            // the round-7 Crop fill: the photo now shows COMPLETE via
+            // ContentScale.Fit over the solid band backdrop; (b) the framed
             // avatar block sits fully BELOW the cover with a clear gap strip
             // between cover bottom and frame top (the cutout head pop-out
             // renders into that gap) on the plain surface colour;
@@ -809,17 +826,20 @@ fun ProfileScreen(
                     ) {
                         val coverPreview = selectedCoverUri?.toString() ?: user?.coverUrl.orEmpty()
                         if (coverPreview.isNotBlank()) {
-                            // Round 7 (owner's cover spec): ONE clean image
-                            // fills the 16:9 band edge-to-edge —
-                            // ContentScale.Crop biased to the TOP of the
-                            // image so faces near the top are not cut. No
-                            // blurred ghost copy behind it, no scrim wash.
+                            // Round 9 (item 9 — SUPERSEDES the round-7 Crop
+                            // instruction): the owner wants the COMPLETE
+                            // cover photo visible, never cropped — "عايز
+                            // أخليها كاملة ما يبقاش مقصوصة". ContentScale.Fit
+                            // shows the whole photo undistorted; the band's
+                            // solid surfaceElevated backdrop (on the Box
+                            // above) fills any leftover space. The round-7
+                            // rejection of the blurred ghost copy still
+                            // stands — no blur, no second copy, no scrim.
                             AsyncImage(
                                 model = wesalImageModel(coverPreview),
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop,
-                                alignment = Alignment.TopCenter
+                                contentScale = ContentScale.Fit
                             )
                         } else {
                             Column(
@@ -929,6 +949,7 @@ fun ProfileScreen(
                         frameId = user?.frameId.orEmpty(),
                         frameExpiresAt = user?.frameExpiresAt ?: 0L,
                         isCutout = user?.photoRemovedBg == true,
+                        isUserFramed = user?.photoUserFramed == true,
                         iconUrl = WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
                         neonColor = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
                         neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
@@ -1501,7 +1522,7 @@ fun ProfileScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
                             enabled = !uiStatus.isSaving && !phoneOtpState.isBusy && localPhone.isNotBlank(),
-                            onClick = { viewModel.updateCountryPhone(selectedCountry, localPhone, strings.isEnglish) },
+                            onClick = whatsAppHandoff,
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = palette.turquoise, contentColor = palette.onAccent)
@@ -1513,7 +1534,12 @@ fun ProfileScreen(
                                     strokeWidth = 2.dp
                                 )
                             } else {
-                                Text(strings.verifyPhoneNow, fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (strings.isEnglish) "Confirm Number" else "تأكيد الرقم",
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
                         if (!user?.phoneNumber.isNullOrBlank()) {
@@ -1529,6 +1555,13 @@ fun ProfileScreen(
                                 Text(strings.delete, color = palette.error)
                             }
                         }
+                    }
+
+                    if (phoneOtpState.step == 0) {
+                        WhatsAppOtpHandoffHint()
+                        WhatsAppOtpManualFallback(
+                            enabled = !uiStatus.isSaving && !phoneOtpState.isBusy && localPhone.isNotBlank()
+                        ) { viewModel.updateCountryPhone(selectedCountry, localPhone, strings.isEnglish) }
                     }
 
                     // Round 6: OTP code entry for the verification started by
@@ -1550,22 +1583,38 @@ fun ProfileScreen(
                                 shape = RoundedCornerShape(12.dp)
                             )
                         }
+                        // Round 9 (owner screenshot + his general rule «مش عايز أي
+                        // كتابة تبقى مكسورة»): the three actions shared ONE row, so
+                        // «تأكيد الكود» was squeezed into a tall narrow box with its
+                        // label stacked letter-by-letter. Stacked now: the primary
+                        // action full-width, the two secondary actions on their own
+                        // row — every label on one full line (maxLines = 1).
+                        Button(
+                            enabled = !phoneOtpState.isBusy && profileOtpInput.length == PhoneOtpLogic.OTP_LENGTH,
+                            onClick = { viewModel.verifyProfilePhoneOtp(profileOtpInput, strings.isEnglish) },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = palette.turquoise, contentColor = palette.onAccent)
+                        ) {
+                            Text(
+                                if (strings.isEnglish) "Verify" else "تأكيد الكود",
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                enabled = !phoneOtpState.isBusy && profileOtpInput.length == PhoneOtpLogic.OTP_LENGTH,
-                                onClick = { viewModel.verifyProfilePhoneOtp(profileOtpInput, strings.isEnglish) },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(10.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = palette.turquoise, contentColor = palette.onAccent)
-                            ) {
-                                Text(if (strings.isEnglish) "Verify" else "تأكيد الكود", fontWeight = FontWeight.Bold)
-                            }
                             OutlinedButton(
                                 enabled = !phoneOtpState.isBusy,
                                 onClick = { viewModel.resendProfilePhoneOtp(strings.isEnglish) },
+                                modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
-                                Text(if (strings.isEnglish) "Resend" else "إعادة إرسال")
+                                Text(
+                                    if (strings.isEnglish) "Resend" else "إعادة إرسال",
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                             OutlinedButton(
                                 enabled = !phoneOtpState.isBusy,
@@ -1573,9 +1622,14 @@ fun ProfileScreen(
                                     profileOtpInput = ""
                                     viewModel.cancelProfilePhoneOtp()
                                 },
+                                modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(10.dp)
                             ) {
-                                Text(if (strings.isEnglish) "Change number" else "تغيير الرقم")
+                                Text(
+                                    if (strings.isEnglish) "Change number" else "تغيير الرقم",
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
                             }
                         }
                     }
@@ -1621,6 +1675,11 @@ fun ProfileScreen(
         AvatarPreviewConfirmDialog(
             imageUri = previewUri,
             isCircular = activeCropKind == PendingCropKind.AVATAR,
+            frameId = if (activeCropKind == PendingCropKind.AVATAR) user?.frameId.orEmpty() else "",
+            frameExpiresAt = user?.frameExpiresAt ?: 0L,
+            previewIsCutout = pendingCropBgRemoved,
+            previewIsUserFramed = pendingCropUserFramed,
+            previewName = user?.displayName.orEmpty(),
             onConfirm = {
                 if (activeCropKind == PendingCropKind.COVER) {
                     selectedCoverUri = previewUri
@@ -1633,19 +1692,23 @@ fun ProfileScreen(
                         photoUri = previewUri,
                         coverUri = null,
                         isEn = strings.isEnglish,
-                        bgRemoved = pendingCropBgRemoved
+                        bgRemoved = pendingCropBgRemoved,
+                        userFramed = pendingCropUserFramed
                     )
                     pendingCropBgRemoved = false
+                    pendingCropUserFramed = false
                 }
             },
             onRecrop = {
                 pendingPreviewUri = null
                 pendingCropBgRemoved = false
+                pendingCropUserFramed = false
                 pendingRawUri?.let { raw -> launchCropFor(activeCropKind, raw) }
             },
             onCancel = {
                 pendingPreviewUri = null
                 pendingCropBgRemoved = false
+                pendingCropUserFramed = false
             }
         )
     }

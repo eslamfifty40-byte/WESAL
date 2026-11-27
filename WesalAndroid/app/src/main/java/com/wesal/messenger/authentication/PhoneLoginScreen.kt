@@ -61,6 +61,9 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.wesal.messenger.R
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.presentation.components.WesalAvatar
+import com.wesal.messenger.presentation.components.WhatsAppOtpHandoffHint
+import com.wesal.messenger.presentation.components.WhatsAppOtpManualFallback
+import com.wesal.messenger.presentation.components.rememberWhatsAppOtpHandoff
 import com.wesal.messenger.settings.SessionRevokeNotice
 import com.wesal.messenger.settings.WesalCredentialVault
 import kotlinx.coroutines.launch
@@ -86,6 +89,9 @@ fun PhoneLoginScreen(
 ) {
     val strings = LocalWesalStrings.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // Round 9 (item 4-revised): «تأكيد الرقم» IS the WhatsApp handoff — opens
+    // WhatsApp with «ابدأ» prefilled; the code request fires on return.
+    val whatsAppHandoff = rememberWhatsAppOtpHandoff { viewModel.sendPhoneOtp() }
     val savedAccounts by viewModel.savedAccounts.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val activity = context as? Activity
@@ -736,7 +742,7 @@ fun PhoneLoginScreen(
                     )
                 }
                 Button(
-                    onClick = viewModel::sendPhoneOtp,
+                    onClick = whatsAppHandoff,
                     enabled = !state.isLoading && !state.isPhoneBusy && !googleLaunching,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -757,11 +763,17 @@ fun PhoneLoginScreen(
                         )
                     } else {
                         Text(
-                            text = if (strings.isEnglish) "Send the Code" else "ابعت الكود",
-                            fontWeight = FontWeight.Bold
+                            text = if (strings.isEnglish) "Confirm Number" else "تأكيد الرقم",
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                 }
+                WhatsAppOtpHandoffHint()
+                WhatsAppOtpManualFallback(
+                    enabled = !state.isLoading && !state.isPhoneBusy && !googleLaunching
+                ) { viewModel.sendPhoneOtp() }
             } else {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                     OutlinedTextField(

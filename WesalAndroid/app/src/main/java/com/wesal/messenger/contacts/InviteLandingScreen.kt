@@ -221,6 +221,7 @@ fun InviteLandingScreen(
                                 frameId = inviter.frameId,
                                 frameExpiresAt = inviter.frameExpiresAt,
                                 isCutout = inviter.photoRemovedBg,
+                                isUserFramed = inviter.photoUserFramed,
                                 iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(inviter.iconId, inviter.iconUrl),
                                 neonColor = if (inviter.neonEnabled) inviter.neonColor else "",
                                 neonGlowIntensity = inviter.neonGlowIntensity

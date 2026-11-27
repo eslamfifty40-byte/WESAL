@@ -1,5 +1,7 @@
 package com.wesal.messenger.presentation.components
 
+import android.content.Intent
+import android.net.Uri
 import androidx.annotation.DrawableRes
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -7,6 +9,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -23,12 +26,16 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,6 +60,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.ResolvedFrame
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import androidx.compose.ui.text.TextStyle
@@ -130,6 +138,10 @@ fun WesalAvatar(
     frameExpiresAt: Long = 0L,
     glowEnabled: Boolean = true,
     isCutout: Boolean = false,
+    // Round 9 (item 7): the photo's square already carries the owner's manual
+    // crop-editor framing — render that composition as-is (normal-photo path
+    // over the glow disc) and never let the alpha-bounds re-fit override it.
+    isUserFramed: Boolean = false,
     iconUrl: String = "",
     neonColor: String = "",
     neonGlowIntensity: Float = 0.7f,
@@ -297,12 +309,17 @@ fun WesalAvatar(
     // body shrunk, dark void inside the ring): FramedCutoutLayout now places the
     // person HEIGHT-FIRST and BOTTOM-ANCHORED inside the aperture — torso fills
     // the ring from its bottom up and continues behind the frame's bottom
-    // artwork, head near the top INSIDE the ring (0.04 x aperture clearance), so
-    // no frame ornament ever covers face/hair. The over-frame strip survives
+    // artwork, head near the top INSIDE the ring (0.03 x aperture clearance —
+    // round 9 re-measured it on the owner's definitive reference composite),
+    // so no frame ornament ever covers face/hair. The over-frame strip survives
     // only as a crown-margin sliver (see FramedCutoutLayout).
     // The aperture window opens for a verified cutout OR the legacy flag; the
     // strip window (below) opens for verified bounds ONLY.
-    val framedCutout = activeFrame != null && (verifiedBounds != null || detectedCutout)
+    // Round 9 (item 7): a user-framed photo NEVER takes the cutout path — its
+    // baked composition renders through the normal-photo branch below (square
+    // source into the aperture disc = exact fit, glow disc behind its
+    // transparent margins), exactly as framed in the crop editor.
+    val framedCutout = activeFrame != null && !isUserFramed && (verifiedBounds != null || detectedCutout)
     // Corner-alpha probe for uncached, unflagged framed photos (drives cutout detection).
     val needSoftwareCheck = activeFrame != null && cachedCutout == null && !isCutout
     val popOutStrip = containerSize * 0.10f
@@ -311,13 +328,13 @@ fun WesalAvatar(
     val apertureRadiusPx = innerPx / 2f
     // Bounds-driven placement of the PERSON (not the padded canvas) inside the aperture:
     // round-6 height-first, bottom-anchored fit (see FramedCutoutLayout) — the person
-    // spans 1.21 x the aperture height, bottom anchored below the aperture's bottom
+    // spans 1.22 x the aperture height, bottom anchored below the aperture's bottom
     // edge, head just inside its top edge.
     // The aspect comes from the bounds record's SOURCE dimensions (published by
     // AlphaBoundsTransformation from its input bitmap), never from a delivered drawable.
     // Null until verified bounds are known; the legacy full-canvas rendering covers the
     // first frame(s) until then (bounds cache makes later binds synchronous).
-    val cutoutTransform: FramedCutoutTransform? = if (verifiedBounds != null && activeFrame != null) {
+    val cutoutTransform: FramedCutoutTransform? = if (verifiedBounds != null && activeFrame != null && !isUserFramed) {
         detectedBoundsRecord?.let { record ->
             FramedCutoutLayout.compute(
                 containerPx = containerPx.toFloat(),
@@ -1332,5 +1349,93 @@ fun OfflineBanner(isOnline: Boolean) {
                 )
             }
         }
+    }
+}
+
+/**
+ * Round 9 (item 4, owner's own design — revised 2026-11-27 15:16/15:18):
+ * the «تأكيد الرقم» press itself carries the hidden «ابدأ».
+ *
+ * Meta refuses free-form WhatsApp messages from a business to a user who has
+ * not messaged the business in the last 24 hours (error 131047, verified in
+ * the Zavu delivery logs) — so a WhatsApp OTP code silently never arrives
+ * unless the user FIRST sends any message to the WESAL WhatsApp Business
+ * number. Instead of a separate explanatory step, the primary confirm action
+ * IS the handoff: pressing it opens WhatsApp on the WESAL number with «ابدأ»
+ * prefilled (zero typing), the user sends it and returns — and the moment
+ * the app resumes, the pending code request fires automatically (once,
+ * guarded by the armed flag so unrelated resumes never send). If WhatsApp
+ * cannot be opened at all, the code request fires immediately instead of
+ * stranding the user.
+ *
+ * Returns the handoff trigger for the screen's primary button. The screens
+ * add one short hint line under the button plus a manual direct-send
+ * fallback ([WhatsAppOtpManualFallback]) for anyone who skips the trip.
+ */
+@Composable
+fun rememberWhatsAppOtpHandoff(onSendCode: () -> Unit): () -> Unit {
+    val context = LocalContext.current
+    val armed = remember { mutableStateOf(false) }
+    val sendState = rememberUpdatedState(onSendCode)
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && armed.value) {
+                armed.value = false
+                sendState.value()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    return remember {
+        {
+            armed.value = true
+            val launched = runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(Constants.WHATSAPP_OTP_WINDOW_URL))
+                )
+            }.isSuccess
+            if (!launched) {
+                armed.value = false
+                sendState.value()
+            }
+        }
+    }
+}
+
+/** The one short hint line shown under a «تأكيد الرقم» handoff button. */
+@Composable
+fun WhatsAppOtpHandoffHint(modifier: Modifier = Modifier) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    Text(
+        text = if (strings.isEnglish) {
+            "Tapping «Confirm number» opens WhatsApp with a ready message — send it and come back, and your code will be sent automatically."
+        } else {
+            "الضغط على «تأكيد الرقم» هيفتح واتساب برسالة جاهزة — ابعتها وارجع، والكود هيتبعت لك تلقائياً."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = palette.textSecondary,
+        modifier = modifier.fillMaxWidth()
+    )
+}
+
+/** Manual fallback for users who skip the WhatsApp trip (window already open). */
+@Composable
+fun WhatsAppOtpManualFallback(
+    enabled: Boolean = true,
+    onSendCode: () -> Unit
+) {
+    val palette = WesalColors.current
+    val strings = LocalWesalStrings.current
+    TextButton(onClick = onSendCode, enabled = enabled) {
+        Text(
+            text = if (strings.isEnglish) "Send the code directly" else "إرسال الكود مباشرة",
+            color = palette.turquoise,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }

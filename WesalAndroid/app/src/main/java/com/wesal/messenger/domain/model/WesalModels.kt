@@ -279,6 +279,10 @@ data class WesalUser(
     val iconId: String = "",
     val iconUrl: String = "",
     val photoRemovedBg: Boolean = false,
+    // Round 9 (item 7): the owner manually framed this avatar in the crop editor;
+    // the saved square already carries his composition, so WesalAvatar renders it
+    // as-is (no alpha-bounds re-fit). Stamped by the crop/save flow only.
+    val photoUserFramed: Boolean = false,
     val neonEnabled: Boolean = false,
     val neonColor: String = "", // "", RED, GREEN, BLACK, BLUE
     val neonGlowIntensity: Float = 0.7f,

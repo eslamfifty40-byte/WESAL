@@ -817,6 +817,7 @@ fun ChannelDetailScreen(
                                 frameId = mod.frameId,
                                 frameExpiresAt = mod.frameExpiresAt,
                                 isCutout = mod.photoRemovedBg,
+                                isUserFramed = mod.photoUserFramed,
                                 iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(mod.iconId, mod.iconUrl),
                                 neonColor = if (mod.neonEnabled) mod.neonColor else "",
                                 neonGlowIntensity = mod.neonGlowIntensity,

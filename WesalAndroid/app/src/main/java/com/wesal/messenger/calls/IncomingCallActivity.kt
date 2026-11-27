@@ -61,7 +61,10 @@ class IncomingCallActivity : AppCompatActivity() {
 
         val callId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         val callerUid = intent.getStringExtra(EXTRA_CALLER_UID).orEmpty()
-        val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "WESAL User"
+        // Round 9 (item 5): a present-but-BLANK extra must fall back too — the
+        // old `?: "WESAL User"` only covered a MISSING extra, so a blank caller
+        // name rendered as an empty identity line on the ringing screen.
+        val callerName = intent.getStringExtra(EXTRA_CALLER_NAME)?.takeIf { it.isNotBlank() } ?: "WESAL User"
         val callerAvatar = intent.getStringExtra(EXTRA_CALLER_AVATAR).orEmpty()
         val callerVerified = intent.getBooleanExtra(EXTRA_CALLER_VERIFIED, false)
         val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)

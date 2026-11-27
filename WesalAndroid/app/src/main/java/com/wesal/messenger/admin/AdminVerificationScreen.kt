@@ -1614,6 +1614,7 @@ fun AdminVerificationScreen(
                         frameId = u.frameId,
                         frameExpiresAt = u.frameExpiresAt,
                         isCutout = u.photoRemovedBg,
+                        isUserFramed = u.photoUserFramed,
                         iconUrl = WesalFrameLibrary.resolveIconUrl(u.iconId, u.iconUrl),
                         neonColor = if (u.neonEnabled) u.neonColor else "",
                         neonGlowIntensity = u.neonGlowIntensity
@@ -1641,7 +1642,10 @@ fun AdminVerificationScreen(
                 ) {
                     AdminInfoLine("UID", u.uid)
                     AdminInfoLine("البريد الإلكتروني", u.email.ifBlank { "—" })
-                    AdminInfoLine("رقم الهاتف الحقيقي", u.phoneNumber.ifBlank { "غير مسجل" })
+                    // Round 9 (owner rule): a phone number is visible ONLY to its
+                    // owner — the admin inspect view shows the verification STATUS
+                    // only, never the digits.
+                    AdminInfoLine("توثيق الهاتف", if (u.isPhoneVerified) "موثّق ✓" else "غير موثّق")
                     AdminInfoLine("تاريخ الميلاد", u.birthDate.ifBlank { "—" })
                     AdminInfoLine("البايو", u.bio.ifBlank { "—" })
                     AdminInfoLine("الحالة", if (u.isBanned) "محظور (${u.banType}: ${u.banReason})" else if (u.deletedAt > 0L) "محذوف" else "نشط")
@@ -1658,18 +1662,21 @@ fun AdminVerificationScreen(
 
                     Spacer(Modifier.height(6.dp))
                     if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                        // Round 9 (item 6): «إطار/أيقونة/نيون» cannot fit a
+                        // half-width weighted button on one line — the two
+                        // actions stack full-width instead of squeezing.
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                             if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageVerification) {
                                 FilledTonalButton(
                                     onClick = { viewModel.dismissInspectedUser(); verifyTarget = u },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("التوثيق", maxLines = 1) }
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("التوثيق", maxLines = 1, softWrap = false) }
                             }
                             if (adminPermissions.isFullSuperAdmin || adminPermissions.canManageFramesAndNeon || adminPermissions.canManageLibrary) {
                                 FilledTonalButton(
                                     onClick = { viewModel.dismissInspectedUser(); frameNeonInitialTab = 0; frameNeonTarget = u },
-                                    modifier = Modifier.weight(1f)
-                                ) { Text("إطار/أيقونة/نيون", maxLines = 1) }
+                                    modifier = Modifier.fillMaxWidth()
+                                ) { Text("إطار/أيقونة/نيون", maxLines = 1, softWrap = false) }
                             }
                         }
                     }
@@ -2122,6 +2129,7 @@ private fun AdminUsersListSection(
                             frameId = user.frameId,
                             frameExpiresAt = user.frameExpiresAt,
                             isCutout = user.photoRemovedBg,
+                            isUserFramed = user.photoUserFramed,
                             iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
                             neonColor = if (user.neonEnabled) user.neonColor else "",
                             neonGlowIntensity = user.neonGlowIntensity
@@ -3057,6 +3065,7 @@ private fun AdminVerificationAndAppearanceSection(
                                 frameId = user.frameId,
                                 frameExpiresAt = user.frameExpiresAt,
                                 isCutout = user.photoRemovedBg,
+                            isUserFramed = user.photoUserFramed,
                                 iconUrl = WesalFrameLibrary.resolveIconUrl(user.iconId, user.iconUrl),
                                 neonColor = if (user.neonEnabled) user.neonColor else "",
                                 neonGlowIntensity = user.neonGlowIntensity
@@ -3174,6 +3183,7 @@ private fun AdminWesalTeamSection(
                             frameId = ou.frameId,
                             frameExpiresAt = ou.frameExpiresAt,
                             isCutout = ou.photoRemovedBg,
+                            isUserFramed = ou.photoUserFramed,
                             iconUrl = ou.iconUrl,
                             neonColor = if (ou.neonEnabled) ou.neonColor else "",
                             neonGlowIntensity = ou.neonGlowIntensity
@@ -3322,20 +3332,23 @@ private fun AdminWelcomeConfigSection(
                             label = { Text("استعادة النص الافتراضي") }
                         )
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    // Round 9 (item 6): «إرسال رسالة تجريبية لنفسي» cannot fit
+                    // a half-width weighted button on one line — stack the
+                    // two actions full-width instead of squeezing them.
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                         Button(
                             onClick = { onSave(enabled, template) },
                             enabled = "welcome_save" !in busyOps,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("حفظ التعديل")
+                            Text("حفظ التعديل", maxLines = 1, softWrap = false)
                         }
                         OutlinedButton(
                             onClick = onSendTest,
                             enabled = "welcome_test" !in busyOps,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("إرسال رسالة تجريبية لنفسي")
+                            Text("إرسال رسالة تجريبية لنفسي", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -5375,7 +5388,9 @@ private fun AdminGlobalAppearanceSection(
         }
 
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            // Round 9 (item 6): both labels are ~17 chars — at half width on
+            // narrower screens they clip; stack them full-width, one line each.
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = {
                         val reset = GlobalAppearanceConfig(enabled = false)
@@ -5383,14 +5398,14 @@ private fun AdminGlobalAppearanceSection(
                         onSave(reset)
                     },
                     enabled = "appearance_save" !in busyOps,
-                    modifier = Modifier.weight(1f)
-                ) { Text("استعادة الافتراضي") }
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("استعادة الافتراضي", maxLines = 1, softWrap = false) }
                 Button(
                     onClick = { onSave(draft) },
                     enabled = "appearance_save" !in busyOps,
                     colors = ButtonDefaults.buttonColors(containerColor = palette.emerald),
-                    modifier = Modifier.weight(1f)
-                ) { Text("حفظ وتطبيق للجميع") }
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("حفظ وتطبيق للجميع", maxLines = 1, softWrap = false) }
             }
         }
     }

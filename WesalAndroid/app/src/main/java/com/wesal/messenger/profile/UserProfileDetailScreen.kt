@@ -671,20 +671,21 @@ fun UserProfileDetailScreen(
                                 )
                         ) {
                             if (showCover) {
-                                // Round 7 (owner's cover spec): ONE clean
-                                // image fills the band edge-to-edge —
-                                // ContentScale.Crop biased to the TOP so
-                                // faces near the top are not cut. No blurred
-                                // ghost copy, no scrim. The fullscreen tap
-                                // rides this single image.
+                                // Round 9 (item 9 — SUPERSEDES the round-7
+                                // Crop instruction): the COMPLETE cover photo
+                                // shows via ContentScale.Fit, uncropped and
+                                // undistorted; the band's palette gradient
+                                // (on the Box above) fills any leftover space.
+                                // No blurred ghost copy, no scrim (round-7
+                                // rejection stands). The fullscreen tap rides
+                                // this single image.
                                 AsyncImage(
                                     model = wesalImageModel(target.coverUrl),
                                     contentDescription = null,
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .clickable { fullscreenMediaUrl = target.coverUrl },
-                                    contentScale = ContentScale.Crop,
-                                    alignment = Alignment.TopCenter
+                                    contentScale = ContentScale.Fit
                                 )
                                 Surface(
                                     color = palette.background.copy(alpha = 0.72f),
@@ -751,6 +752,7 @@ fun UserProfileDetailScreen(
                             frameId = target.frameId,
                             frameExpiresAt = target.frameExpiresAt,
                             isCutout = target.photoRemovedBg,
+                            isUserFramed = target.photoUserFramed,
                             iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(target.iconId, target.iconUrl),
                             neonColor = if (target.neonEnabled) target.neonColor else "",
                             neonGlowIntensity = neonGlow
@@ -843,11 +845,11 @@ fun UserProfileDetailScreen(
                                     onClick = { viewModel.acceptContactRequest(req.requestId) },
                                     colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onAccent),
                                     modifier = Modifier.weight(1f)
-                                ) { Text(strings.acceptContactRequest, fontWeight = FontWeight.Bold, maxLines = 1) }
+                                ) { Text(strings.acceptContactRequest, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false) }
                                 OutlinedButton(
                                     onClick = { viewModel.rejectContactRequest(req.requestId) },
                                     modifier = Modifier.weight(1f)
-                                ) { Text(strings.rejectContactRequest, color = palette.error, maxLines = 1) }
+                                ) { Text(strings.rejectContactRequest, color = palette.error, maxLines = 1, softWrap = false) }
                             }
                         }
                         req?.status == ContactRequestStatus.PENDING && req.senderUid == viewModel.myUid -> {
@@ -882,24 +884,17 @@ fun UserProfileDetailScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(strings.phoneNumberLabel, style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
-                        Text(
-                            text = if (target.privacySettings.hidePhoneNumber || target.phoneNumber.isBlank()) {
-                                strings.phoneHiddenValue
-                            } else {
-                                target.phoneNumber
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = palette.textPrimary
-                        )
-
+                        // Round 9 (owner rule): a phone number is visible ONLY to
+                        // its owner — another user's profile never renders it,
+                        // not even masked. People reach each other via
+                        // @publicId + numeric ID, so this card starts with the
+                        // birth date / bio.
                         if (!target.privacySettings.hideBirthDate && target.birthDate.isNotBlank()) {
-                            HorizontalDivider(color = palette.border)
                             Text(if (strings.isEnglish) "Birth Date" else "تاريخ الميلاد", style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
                             Text(target.birthDate, style = MaterialTheme.typography.bodyMedium, color = palette.textPrimary)
+                            HorizontalDivider(color = palette.border)
                         }
 
-                        HorizontalDivider(color = palette.border)
                         Text(if (strings.isEnglish) "Bio" else "نبذة عن الحساب", style = MaterialTheme.typography.labelMedium, color = palette.turquoise)
                         Text(
                             text = target.bio.ifBlank { "WESAL Messenger" },
@@ -1364,11 +1359,14 @@ fun UserProfileDetailScreen(
 
     if (showEditContactDialog && target != null) {
         var nameInput by remember { mutableStateOf(target.displayName) }
-        // Round 3: the phone is a real, editable field. It is prefilled from the account's
-        // doc number, but for Gmail-only / hidden-phone accounts that value is blank — the
-        // old dialog had NO phone field at all, so the insert path's «رقم الهاتف مطلوب»
-        // validation could never be satisfied from this screen.
-        var phoneInput by remember { mutableStateOf(target.phoneNumber) }
+        // Round 3: the phone is a real, editable field — the old dialog had NO phone
+        // field at all, so the insert path's «رقم الهاتف مطلوب» validation could never
+        // be satisfied from this screen.
+        // Round 9 (owner rule): the field is NOT prefilled from the account's doc
+        // number anymore — another user's number is never shown to anyone but its
+        // owner. The viewer types a number they already know; a blank phone fails
+        // the upsert validation with an honest message instead of leaking the number.
+        var phoneInput by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showEditContactDialog = false },
             containerColor = palette.surface,

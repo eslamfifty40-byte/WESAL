@@ -1294,6 +1294,7 @@ fun GroupInfoScreen(
                             frameId = member.frameId,
                             frameExpiresAt = member.frameExpiresAt,
                             isCutout = member.photoRemovedBg,
+                            isUserFramed = member.photoUserFramed,
                             iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(member.iconId, member.iconUrl),
                             neonColor = if (member.neonEnabled) member.neonColor else "",
                             neonGlowIntensity = member.neonGlowIntensity,

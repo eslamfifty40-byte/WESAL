@@ -224,7 +224,20 @@ class WesalListenerService : Service() {
             seenCallIds += call.callId
             if (!latestSettings.notificationsCalls) continue
             if (isAppInForeground()) continue // MainActivity drives the in-app ringing UI.
-            showIncomingCallNotification(call, latestSettings.callRingtoneUri.trim())
+            val ringtoneUri = latestSettings.callRingtoneUri.trim()
+            if (call.callerName.isNotBlank()) {
+                showIncomingCallNotification(call, ringtoneUri)
+            } else {
+                // Round 9 (item 5): the call doc carried no caller name (older
+                // caller build, or a caller doc with blank displayName/publicId)
+                // — resolve the name from the caller's user doc (same cached
+                // lookup the chat notifications use) instead of ringing with a
+                // blank identity.
+                serviceScope.launch {
+                    val resolved = resolveUserName(call.callerId)
+                    showIncomingCallNotification(call.copy(callerName = resolved), ringtoneUri)
+                }
+            }
         }
     }
 

@@ -13,11 +13,14 @@ import org.junit.Test
  *
  * Round-6 geometry (item 10 — replaces the round-4 pop-out spec the owner rejected
  * on device): HEIGHT-FIRST, BOTTOM-ANCHORED, head INSIDE the ring.
- * - person height = aperture x (1 - 0.10 clearance + 0.25 overflow) = 1.15 x aperture;
+ * Round 9 (item 7): the clearance fraction was re-measured on the owner's
+ * definitive reference composite and set to 0.03 (overflow unchanged at 0.25),
+ * so the expectations below are derived from the shipped constants:
+ * - person height = aperture x (1 - clearance + 0.25 overflow) = 1.22 x aperture;
  * - box bottom anchored at apertureBottom + 0.25 x aperture (torso continues behind
  *   the frame's bottom artwork — no void inside the ring);
- * - box top lands at apertureTop + 0.10 x aperture (head near the top INSIDE the
- *   ring, clear of the crown ornament zone);
+ * - box top lands at apertureTop + clearance x aperture (head near the top INSIDE
+ *   the ring, clear of the crown ornament zone);
  * - rendered width capped at 1.35 x aperture (bottom anchor kept when it binds);
  * - the over-frame strip is just the 2%-of-container crown-margin sliver.
  */
@@ -30,9 +33,9 @@ class FramedCutoutLayoutTest {
     private val apertureTop = s * cyF - apertureD / 2f // 148
     private val apertureBottom = apertureTop + apertureD // 644
     private val crown = FramedCutoutLayout.CROWN_MARGIN_CONTAINER_FRACTION * s // 20
-    private val clearance = FramedCutoutLayout.HEAD_CLEARANCE_APERTURE_FRACTION * apertureD // 19.84
+    private val clearance = FramedCutoutLayout.HEAD_CLEARANCE_APERTURE_FRACTION * apertureD // 14.88
     private val overflow = FramedCutoutLayout.BOTTOM_OVERFLOW_APERTURE_FRACTION * apertureD // 124
-    private val targetPersonH = apertureD - clearance + overflow // 600.16
+    private val targetPersonH = apertureD - clearance + overflow // 605.12
 
     private fun compute(bounds: AlphaBounds, imgW: Int, imgH: Int, pad: Float = 0f): FramedCutoutTransform =
         FramedCutoutLayout.compute(
@@ -90,7 +93,7 @@ class FramedCutoutLayoutTest {
         // Person occupies 90% of the canvas width, like the owner's reference composite.
         val bounds = AlphaBounds(0.05f, 0.02f, 0.95f, 0.98f, 0.15f)
         val t = compute(bounds, 640, 640)
-        // Height-first: person height is exactly the round-6 target (1.15 x aperture).
+        // Height-first: person height is exactly the target (1.22 x aperture).
         assertEquals(targetPersonH, personHeight(t, bounds), 1f)
         assertEquals(targetPersonH / (bounds.height * 640f), t.scale, 0.001f)
         // Head top lands exactly at the clearance point inside the ring.
@@ -118,7 +121,7 @@ class FramedCutoutLayoutTest {
 
     @Test
     fun tallFullBody_heightFirstKeepsHeadInsideAndBottomFilled() {
-        // Narrow full-body person: height-first fit makes him 1.15 x aperture tall
+        // Narrow full-body person: height-first fit makes him 1.22 x aperture tall
         // and narrower than the aperture (glow at the sides, like the reference's
         // side glow) — the old width-first/guard math exploded him to 2.1 x aperture.
         val bounds = AlphaBounds(0.30f, 0f, 0.70f, 1f, 0.6f)

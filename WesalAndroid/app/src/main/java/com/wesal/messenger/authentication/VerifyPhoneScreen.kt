@@ -28,6 +28,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.presentation.components.WhatsAppOtpHandoffHint
+import com.wesal.messenger.presentation.components.WhatsAppOtpManualFallback
+import com.wesal.messenger.presentation.components.rememberWhatsAppOtpHandoff
 
 /**
  * Mandatory phone-verification gate screen (phone phase). Shown after any
@@ -44,6 +47,10 @@ fun VerifyPhoneScreen(
     val palette = WesalColors.current
     val strings = LocalWesalStrings.current
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    // Round 9 (item 4-revised): «تأكيد الرقم» IS the WhatsApp handoff — the
+    // press opens WhatsApp with «ابدأ» prefilled; on return the code request
+    // fires automatically (see rememberWhatsAppOtpHandoff).
+    val whatsAppHandoff = rememberWhatsAppOtpHandoff { viewModel.sendCode() }
     var showCountryPicker by remember { mutableStateOf(false) }
 
     BackHandler(enabled = true) {
@@ -204,7 +211,7 @@ fun VerifyPhoneScreen(
             }
 
             Button(
-                onClick = { if (state.step == 0) viewModel.sendCode() else viewModel.verify() },
+                onClick = { if (state.step == 0) whatsAppHandoff() else viewModel.verify() },
                 enabled = !state.isBusy,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -226,14 +233,23 @@ fun VerifyPhoneScreen(
                 } else {
                     Text(
                         text = if (state.step == 0) {
-                            if (strings.isEnglish) "Send the Code" else "ابعت الكود"
+                            if (strings.isEnglish) "Confirm Number" else "تأكيد الرقم"
                         } else {
                             if (strings.isEnglish) "Confirm" else "تأكيد"
                         },
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
+            }
+
+            if (state.step == 0) {
+                // One short hint under the handoff button + a manual direct
+                // send for anyone who skips the WhatsApp trip.
+                WhatsAppOtpHandoffHint()
+                WhatsAppOtpManualFallback(enabled = !state.isBusy) { viewModel.sendCode() }
             }
 
             if (state.step == 1) {

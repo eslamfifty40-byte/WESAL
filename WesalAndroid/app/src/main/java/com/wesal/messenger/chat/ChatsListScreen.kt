@@ -153,64 +153,11 @@ fun ChatsListScreen(
                 )
             }
 
-            // Round 8 (owner spec): «مساعد وِصال» is pinned at the very top of
-            // the chats list. It lives in the static header — outside the
-            // filtered LazyColumn and outside every mode below — so it stays
-            // visible with zero chats, is never filtered by the search query,
-            // and is unaffected by the hidden-chats lock or the archive view.
-            // It renders from local resources only (no network on this row).
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onOpenAssistant() }
-                    .padding(horizontal = 16.dp, vertical = 11.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // Icon: R.mipmap.ic_launcher_foreground, NOT ic_launcher —
-                // ic_launcher resolves to the <adaptive-icon> XML in
-                // mipmap-anydpi-v26 (minSdk 26, so always), and
-                // painterResource() throws IllegalArgumentException for
-                // adaptive icons at composition time. The foreground asset
-                // is the full icon artwork as a raster PNG in every density
-                // bucket, so it loads safely and looks identical.
-                Image(
-                    painter = painterResource(id = R.mipmap.ic_launcher_foreground),
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        Text(
-                            text = if (strings.isEnglish) "Wesal Assistant" else "مساعد وِصال",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = palette.textPrimary,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        WesalVerifiedBadge(size = 16.dp)
-                    }
-                    Text(
-                        text = if (strings.isEnglish) {
-                            "AI assistant — ask me anything"
-                        } else {
-                            "مساعد ذكاء اصطناعي — اسألني أي حاجة"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = palette.textSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-            HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-
+            // Round 9 (owner spec): «مساعد وِصال» no longer sits as a pinned
+            // row in this header — it is a floating button stacked above the
+            // new-chat FAB in the corner of the root Box (see below), exactly
+            // like WhatsApp's Meta AI button. Same always-visible behaviour:
+            // it lives outside the filtered LazyColumn and every mode branch.
             if (showHiddenChats) {
                 Row(
                     modifier = Modifier
@@ -479,22 +426,62 @@ fun ChatsListScreen(
             }
         }
 
-        FloatingActionButton(
-            onClick = onNewChat,
-            containerColor = palette.emerald,
-            contentColor = palette.onPrimary,
+        // Round 9 (owner spec, WhatsApp Meta AI placement): the assistant is a
+        // circular floating button stacked directly ABOVE the new-chat FAB in
+        // the same corner (BottomEnd = bottom-left in this RTL layout), with
+        // the standard 16.dp FAB-stack gap. It is a sibling of the content
+        // Column inside the root Box, so — exactly like the old pinned row —
+        // it shows with zero chats, during search, and in every list mode.
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(16.dp)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Icon(Icons.Default.AddComment, contentDescription = strings.newMessage)
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(palette.surface)
+                    .clickable { onOpenAssistant() }
+            ) {
+                // Icon: R.mipmap.ic_launcher_foreground, NOT ic_launcher —
+                // ic_launcher resolves to the <adaptive-icon> XML in
+                // mipmap-anydpi-v26 (minSdk 26, so always), and
+                // painterResource() throws IllegalArgumentException for
+                // adaptive icons at composition time (the r8 launch crash).
+                // The foreground asset is the full icon artwork as a raster
+                // PNG in every density bucket, so it loads safely.
+                Image(
+                    painter = painterResource(id = R.mipmap.ic_launcher_foreground),
+                    contentDescription = if (strings.isEnglish) "Wesal Assistant" else "مساعد وِصال",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                )
+                WesalVerifiedBadge(
+                    size = 16.dp,
+                    modifier = Modifier.align(Alignment.BottomEnd)
+                )
+            }
+
+            FloatingActionButton(
+                onClick = onNewChat,
+                containerColor = palette.emerald,
+                contentColor = palette.onPrimary
+            ) {
+                Icon(Icons.Default.AddComment, contentDescription = strings.newMessage)
+            }
         }
 
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 84.dp)
+                // Round 9: raised from 84.dp so the snackbar clears the taller
+                // FAB stack (16 padding + 56 FAB + 16 gap + 48 assistant).
+                .padding(bottom = 144.dp)
         )
     }
 

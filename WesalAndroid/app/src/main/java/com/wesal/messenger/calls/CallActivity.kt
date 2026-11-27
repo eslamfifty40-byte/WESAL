@@ -78,7 +78,9 @@ class CallActivity : AppCompatActivity() {
         val isIncoming = intent.getBooleanExtra(EXTRA_IS_INCOMING, false)
         val initialCallId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         val peerUid = intent.getStringExtra(EXTRA_PEER_UID).orEmpty()
-        val peerName = intent.getStringExtra(EXTRA_PEER_NAME) ?: "WESAL User"
+        // Round 9 (item 5): same blank-extra hole as IncomingCallActivity —
+        // a present-but-blank peer name must fall back, not render empty.
+        val peerName = intent.getStringExtra(EXTRA_PEER_NAME)?.takeIf { it.isNotBlank() } ?: "WESAL User"
         val peerAvatar = intent.getStringExtra(EXTRA_PEER_AVATAR).orEmpty()
         val peerVerified = intent.getBooleanExtra(EXTRA_PEER_VERIFIED, false)
         val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)

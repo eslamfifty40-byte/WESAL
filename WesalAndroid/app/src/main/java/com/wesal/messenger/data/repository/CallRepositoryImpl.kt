@@ -254,12 +254,20 @@ class CallRepositoryImpl @Inject constructor(
         val callerSnap = firestore.collection(Constants.COLLECTION_USERS).document(callerUid).get().await()
         val callerHandle = callerSnap.getString("publicId")?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
         val calleeHandle = callee.publicId.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+        // Round 9 (item 5): the stamped callerName must never be blank — the old
+        // chain (displayName?.ifBlank { callerHandle } ?: "WESAL User") produced ""
+        // when displayName was blank AND publicId was blank, and every callee
+        // surface then rendered an empty caller identity. Fall back stepwise:
+        // displayName → @publicId → "WESAL User".
+        val stampedCallerName = callerSnap.getString("displayName")?.takeIf { it.isNotBlank() }
+            ?: callerHandle.takeIf { it.isNotBlank() }
+            ?: "WESAL User"
         val callId = UUID.randomUUID().toString()
         val data = mapOf(
             "callId" to callId,
             "participants" to listOf(callerUid, callee.uid),
             "callerId" to callerUid,
-            "callerName" to (callerSnap.getString("displayName")?.ifBlank { callerHandle } ?: "WESAL User"),
+            "callerName" to stampedCallerName,
             "callerAvatarUrl" to (callerSnap.getString("photoUrl") ?: ""),
             "callerVerified" to (callerSnap.getBoolean("isVerified") ?: false),
             "calleeId" to callee.uid,

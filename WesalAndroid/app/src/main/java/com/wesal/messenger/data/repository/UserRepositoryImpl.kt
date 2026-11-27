@@ -245,6 +245,7 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         iconId = rawIconId,
         iconUrl = resolvedIconUrl,
         photoRemovedBg = getBoolean("photoRemovedBg") ?: false,
+        photoUserFramed = getBoolean("photoUserFramed") ?: false,
         neonEnabled = rawNeonEnabled,
         neonColor = rawNeonColor,
         neonGlowIntensity = (getDouble("neonGlowIntensity")?.toFloat()) ?: 0.7f,
@@ -886,8 +887,14 @@ class UserRepositoryImpl @Inject constructor(
                 (!requireVerified || user.isPhoneVerified) &&
                 !user.privacySettings.hidePhoneNumber &&
                 !user.hiddenFromSearch &&
-                user.numericId != Constants.SECONDARY_ADMIN_NUMERIC_ID &&
-                !Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true) &&
+                // Round 9 (item 8): the secondary-admin exclusion that used to
+                // sit here made account 10002 (the owner's own second account)
+                // undiscoverable by phone matching for EVERYONE — including
+                // his 10001 account, whose phone book holds the number. The
+                // owner's rule is discovery by verified number for all
+                // accounts; only SELF is excluded (uid check above), plus the
+                // privacy/ban/hidden filters. (The number itself is never
+                // displayed — round-9 item 1.)
                 !user.isBanned &&
                 user.deletedAt == 0L
             ) {
@@ -966,6 +973,14 @@ class UserRepositoryImpl @Inject constructor(
                     if (registry == null && firestoreFailed) failedPrimaryChunks.incrementAndGet()
                 }
             }.awaitAll()
+        }
+        if (com.wesal.messenger.BuildConfig.DEBUG) {
+            // Round 9 (item 8): make lookup mismatches visible in logcat — a
+            // silent empty result used to be indistinguishable from a failure.
+            android.util.Log.d(
+                "PhoneHashLookup",
+                "requested=${distinct.size} matched=${matched.size} failedChunks=${failedPrimaryChunks.get()}/${chunks.size}"
+            )
         }
         // Total lookup failure must surface as an error (ContactsViewModel shows it), not as a
         // silently empty "registered" section. Partial failures keep the matches that did load.
@@ -1077,6 +1092,10 @@ class UserRepositoryImpl @Inject constructor(
                         uploadedAvatar.contains("image/webp", ignoreCase = true) ||
                         uploadedAvatar.contains(".png", ignoreCase = true)
                     updates["photoRemovedBg"] = hasAlphaFlag
+                    // Round 9 (item 7): a photo saved through this path carries no
+                    // manual-framing verdict — reset the flag so the renderer's
+                    // auto-fit applies to the new photo.
+                    updates["photoUserFramed"] = false
                     userRef.collection(Constants.SUBCOLLECTION_PRIVATE).document("info")
                         .set(mapOf("hiddenPhotoUrl" to uploadedAvatar), SetOptions.merge())
                         .await()
@@ -1139,7 +1158,7 @@ class UserRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun updateProfileImages(photoUri: Uri?, coverUri: Uri?): Result<Unit> = runCatching {
+    override suspend fun updateProfileImages(photoUri: Uri?, coverUri: Uri?, photoUserFramed: Boolean): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("المستخدم غير مسجل الدخول")
         require(photoUri != null || coverUri != null) { "يرجى اختيار صورة أولاً" }
 
@@ -1176,6 +1195,11 @@ class UserRepositoryImpl @Inject constructor(
                 uploadedAvatar.contains("image/webp", ignoreCase = true) ||
                 uploadedAvatar.contains(".png", ignoreCase = true)
             updates["photoRemovedBg"] = isCutoutPng
+            // Round 9 (item 7): stamp the crop flow's framing verdict with every
+            // new avatar — true only when the user manually framed the shot in
+            // the editor (composition baked into the saved square); any other
+            // new photo resets it so the renderer's auto-fit applies again.
+            updates["photoUserFramed"] = photoUserFramed
             privateUpdates["hiddenPhotoUrl"] = uploadedAvatar
         }
 

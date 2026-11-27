@@ -46,6 +46,9 @@ package com.wesal.messenger.core.util
  * inside the ring below the body; rendered person height ~0.83xD.
  * AFTER (this math): person top = apertureTop + 0.10xD, person bottom =
  * apertureBottom + 0.25xD (behind the plaque), rendered height 1.15xD, void = 0.
+ * ROUND 9 (item 7): clearance re-measured on the owner's definitive reference
+ * composite and set to 0.03xD (see HEAD_CLEARANCE_APERTURE_FRACTION): person
+ * top = apertureTop + 0.03xD, bottom unchanged, rendered height 1.22xD.
  *
  * Pure math, no Android classes — unit-tested on the JVM.
  */
@@ -78,8 +81,21 @@ object FramedCutoutLayout {
      * face or the hair — 0.10 keeps the hair fully clear of the ring's inner
      * ornament band (incl. the flame wisps that lick inside the aperture)
      * even under zoom, at the cost of a slightly smaller figure.
+     *
+     * Round 9 (item 7): the owner superseded the 0.10 with his DEFINITIVE
+     * reference composite (2026-11-27 15:11, the royal crest with the suited
+     * man): measured on that 1536x1536 image against the crest aperture
+     * (centre 0.396, diameter 0.496 -> top 0.148, bottom 0.644 of the height),
+     * the hair top sits ~0.16 of the height = ~0.02-0.04 of the aperture BELOW
+     * its top inner edge, and the figure's bottom (behind the shield/plaque)
+     * lands ~0.75-0.78 = ~0.24 of the aperture BELOW its bottom edge. So the
+     * reference split is clearance ~0.03 / overflow ~0.25 / total height
+     * ~1.22 x aperture. The 0.10 clearance pushed the whole figure 0.07 x
+     * aperture too low (visible glow gap above the hair — the owner's
+     * "أبعاد الصورة مش متظبطة" complaint), so clearance returns to the
+     * reference value 0.03; overflow already matched at 0.25 and is unchanged.
      */
-    const val HEAD_CLEARANCE_APERTURE_FRACTION = 0.10f
+    const val HEAD_CLEARANCE_APERTURE_FRACTION = 0.03f
 
     /**
      * Round 6: the person's bounding-box bottom lands this far (fraction of the
@@ -125,7 +141,8 @@ object FramedCutoutLayout {
 
         // Height-first fit: the person spans from the head-clearance point just
         // inside the aperture's top edge to the overflow point below its bottom
-        // edge — 1.21 aperture diameters for the round-6 fractions.
+        // edge — 1.22 aperture diameters for the round-9 fractions
+        // (1 - 0.03 clearance + 0.25 overflow, the owner's reference split).
         val targetPersonH = apertureD *
             (1f - HEAD_CLEARANCE_APERTURE_FRACTION + BOTTOM_OVERFLOW_APERTURE_FRACTION)
         var scale = targetPersonH / boxH

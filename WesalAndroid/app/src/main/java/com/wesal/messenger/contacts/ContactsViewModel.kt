@@ -162,17 +162,28 @@ class ContactsViewModel @Inject constructor(
                 deviceList.forEach { contact ->
                     val contactHashes = contact.candidateHashes.ifEmpty { listOfNotNull(contact.phoneHash) }
                     val user = contactHashes.firstNotNullOfOrNull { matchedByHash[it] }
-                    val isSecondaryAdmin = user != null && (
-                        user.numericId == Constants.SECONDARY_ADMIN_NUMERIC_ID ||
-                            Constants.SECONDARY_ADMIN_EMAIL.equals(user.email, ignoreCase = true)
-                        )
-                    if (user != null && !isSecondaryAdmin) {
+                    // Round 9 (item 8): the secondary-admin carve-out that
+                    // used to drop the matched user here (sending account
+                    // 10002 to NEITHER list) is removed — the repository map
+                    // already excludes only the current user themself, and a
+                    // verified match belongs in the «على وصال» list, admins
+                    // included, exactly as the owner expects for his own
+                    // 10001/10002 pair.
+                    if (user != null) {
                         if (seenUids.add(user.uid)) {
                             matched.add(MatchedWesalContact(deviceName = contact.displayName, user = user))
                         }
-                    } else if (user == null) {
+                    } else {
                         unmatched.add(contact)
                     }
+                }
+                if (com.wesal.messenger.BuildConfig.DEBUG) {
+                    android.util.Log.d(
+                        "ContactsSync",
+                        "device=${deviceList.size} hashes=${hashes.size} " +
+                            "registryOrFirestoreMatched=${matchedByHash.size} " +
+                            "onWesal=${matched.size} unmatched=${unmatched.size}"
+                    )
                 }
                 val sortedMatched = matched.sortedBy {
                     it.deviceName.ifBlank { it.user.displayName }.trim().lowercase()

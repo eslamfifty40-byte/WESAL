@@ -70,6 +70,14 @@ object Constants {
     const val APK_DOWNLOAD_URL = "https://tinyurl.com/wesal-Messenger"
     const val WEB_BASE_URL = "https://ais-pre-dcqe7rfl5fmp57d6kasklc-603239014289.europe-west3.run.app"
 
+    // Round 9: wa.me deep link opening a chat with the WESAL WhatsApp Business
+    // number (+201013545227) with «ابدأ» prefilled. Meta refuses free-form
+    // business messages outside the 24-hour window (error 131047, verified in
+    // the Zavu logs); the window opens only when the USER messages the business
+    // first. The verification UI offers this as an explicit first step before
+    // requesting a WhatsApp OTP code.
+    const val WHATSAPP_OTP_WINDOW_URL = "https://wa.me/201013545227?text=%D8%A7%D8%A8%D8%AF%D8%A3"
+
     // Supabase phone-verification backend (round 5): the Firebase project is a
     // Google-managed project where Cloud Functions cannot be deployed, so ONLY
     // the phone-OTP backend (code delivery via Zavu + the verified_phones

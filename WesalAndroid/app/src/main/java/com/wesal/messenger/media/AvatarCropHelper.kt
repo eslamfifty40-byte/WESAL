@@ -43,6 +43,10 @@ object AvatarCropHelper {
     fun isBackgroundRemoved(resultData: Intent?): Boolean =
         resultData?.getBooleanExtra(CropActivity.EXTRA_BG_REMOVED, false) == true
 
+    /** Round 9 (item 7): the user manually framed the shot in the crop editor. */
+    fun isUserFramed(resultData: Intent?): Boolean =
+        resultData?.getBooleanExtra(CropActivity.EXTRA_USER_FRAMED, false) == true
+
     fun createCameraPhotoUri(context: Context): Uri {
         val camDir = File(context.cacheDir, "camera").apply { mkdirs() }
         val photoFile = File(camDir, "avatar_cam_${System.currentTimeMillis()}.jpg")
@@ -129,6 +133,15 @@ fun AvatarSourceBottomSheet(
 fun AvatarPreviewConfirmDialog(
     imageUri: Uri,
     isCircular: Boolean = true,
+    // Round 9 (item 7): when the owner wears a frame, the preview renders the
+    // REAL framed avatar (WesalAvatar with the same flags the save will stamp)
+    // instead of a plain circle crop of the raw file — what he approves here is
+    // exactly what the frame will show after saving.
+    frameId: String = "",
+    frameExpiresAt: Long = 0L,
+    previewIsCutout: Boolean = false,
+    previewIsUserFramed: Boolean = false,
+    previewName: String = "",
     onConfirm: () -> Unit,
     onRecrop: () -> Unit,
     onCancel: () -> Unit
@@ -151,7 +164,18 @@ fun AvatarPreviewConfirmDialog(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (isCircular) {
+                if (isCircular && frameId.isNotBlank()) {
+                    com.wesal.messenger.presentation.components.WesalAvatar(
+                        imageUrl = imageUri.toString(),
+                        name = previewName,
+                        size = 180.dp,
+                        frameId = frameId,
+                        frameExpiresAt = frameExpiresAt,
+                        isCutout = previewIsCutout,
+                        isUserFramed = previewIsUserFramed,
+                        fitInsideBounds = true
+                    )
+                } else if (isCircular) {
                     AsyncImage(
                         model = imageUri,
                         contentDescription = null,

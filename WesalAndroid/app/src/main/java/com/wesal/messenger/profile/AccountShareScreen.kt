@@ -110,6 +110,7 @@ fun AccountShareScreen(
                         frameId = user?.frameId.orEmpty(),
                         frameExpiresAt = user?.frameExpiresAt ?: 0L,
                         isCutout = user?.photoRemovedBg == true,
+                        isUserFramed = user?.photoUserFramed == true,
                         iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(user?.iconId, user?.iconUrl.orEmpty()),
                         neonColor = if (user?.neonEnabled != false) user?.neonColor.orEmpty() else "",
                         neonGlowIntensity = user?.neonGlowIntensity ?: 0.7f
