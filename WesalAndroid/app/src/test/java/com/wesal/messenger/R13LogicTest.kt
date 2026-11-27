@@ -82,7 +82,10 @@ class R13LogicTest {
     fun grantPlan_unknownKeysFallBackLikeTheWriters() {
         val plan = SubscriptionGrantLogic.planFor("NOPE", "ALSO_NOPE", "  cust_01 ")
         assertEquals("BLUE", plan.sealKey) // VerificationSealType.fromKey default
-        assertEquals("NONE", plan.glowKey) // NeonColorPreset.fromKey default
+        // NeonColorPreset.fromKey default is NONE, whose STORED key is ""
+        // (WesalFrameCatalog) — the plan must carry exactly what the
+        // writers store and the readers map back to NONE.
+        assertEquals("", plan.glowKey)
         assertEquals("cust_01", plan.frameId) // frame ids are trimmed, never remapped
         assertTrue(plan.applyFrame)
     }
@@ -91,9 +94,52 @@ class R13LogicTest {
     fun grantPlan_nullsAreSafe() {
         val plan = SubscriptionGrantLogic.planFor(null, null, null)
         assertEquals("BLUE", plan.sealKey)
-        assertEquals("NONE", plan.glowKey)
+        assertEquals("", plan.glowKey) // NONE's stored key, as above
         assertNull(plan.frameId)
         assertFalse(plan.applyFrame)
+    }
+
+    // ---------------------------------------------------------------
+    // Addendum M1: search verdict-vs-failure separation (the 68742
+    // case — سحر محمد @omeslam exists; the query had FAILED on the
+    // exhausted read quota, so no not-found verdict may render).
+    // ---------------------------------------------------------------
+
+    @Test
+    fun search_failedQuery_neverShowsNoMatchVerdict() {
+        assertFalse(
+            com.wesal.messenger.core.util.SearchStateLogic.shouldShowNoMatch(
+                query = "68742", isSearching = false, hasError = true, resultCount = 0
+            )
+        )
+    }
+
+    @Test
+    fun search_successfulEmptyQuery_showsNoMatch() {
+        assertTrue(
+            com.wesal.messenger.core.util.SearchStateLogic.shouldShowNoMatch(
+                query = "68742", isSearching = false, hasError = false, resultCount = 0
+            )
+        )
+    }
+
+    @Test
+    fun search_searchingOrResultsOrBlank_neverShowsNoMatch() {
+        assertFalse(
+            com.wesal.messenger.core.util.SearchStateLogic.shouldShowNoMatch(
+                query = "68742", isSearching = true, hasError = false, resultCount = 0
+            )
+        )
+        assertFalse(
+            com.wesal.messenger.core.util.SearchStateLogic.shouldShowNoMatch(
+                query = "68742", isSearching = false, hasError = false, resultCount = 2
+            )
+        )
+        assertFalse(
+            com.wesal.messenger.core.util.SearchStateLogic.shouldShowNoMatch(
+                query = "  ", isSearching = false, hasError = false, resultCount = 0
+            )
+        )
     }
 
     // ---------------------------------------------------------------

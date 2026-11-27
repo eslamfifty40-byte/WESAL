@@ -1,5 +1,6 @@
 package com.wesal.messenger.authentication
 
+import com.wesal.messenger.core.util.ErrorCopy
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.wesal.messenger.core.network.NetworkMonitor
@@ -172,7 +173,7 @@ class VerifyPhoneViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isBusy = false,
-                            errorMessage = err.localizedMessage ?: "تعذر إرسال كود التحقق"
+                            errorMessage = ErrorCopy.friendly(err, "تعذر إرسال كود التحقق")
                         )
                     }
                 }
@@ -233,7 +234,7 @@ class VerifyPhoneViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isBusy = false,
-                            errorMessage = err.localizedMessage ?: "تعذر التحقق من الكود"
+                            errorMessage = ErrorCopy.friendly(err, "تعذر التحقق من الكود")
                         )
                     }
                 }

@@ -122,6 +122,9 @@ interface AuthRepository {
 interface UserRepository {
     fun observeCurrentUser(): Flow<WesalUser?>
     fun observeUser(uid: String): Flow<WesalUser?>
+
+    /** Round 13 (Addendum L2): tri-state variant — load failure is not "not found". */
+    fun observeUserState(uid: String): Flow<com.wesal.messenger.domain.model.UserLoadState>
     suspend fun getUserOnce(uid: String): WesalUser?
     suspend fun findUserByPublicIdOrUid(idOrUid: String): WesalUser?
     suspend fun findExactUserByNumericId(numericId: String): WesalUser?

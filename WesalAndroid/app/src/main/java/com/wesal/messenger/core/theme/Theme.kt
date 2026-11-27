@@ -186,7 +186,7 @@ fun WesalTheme(
     val basePalette = if (darkTheme) WesalDarkPalette else WesalLightPalette
     val accentPreset = WesalPersonalAccentPreset.fromKey(personalAccentPreset)
     val surfacePreset = WesalPersonalSurfacePreset.fromKey(personalSurfacePreset)
-    val palette = if (globalAppearance.enabled) {
+    val rawPalette = if (globalAppearance.enabled) {
         val customEmerald = safeArgbColor(globalAppearance.emeraldHex) ?: basePalette.emerald
         val customTurquoise = safeArgbColor(globalAppearance.turquoiseHex) ?: basePalette.turquoise
         val rawBg = safeArgbColor(globalAppearance.backgroundHex)
@@ -241,6 +241,32 @@ fun WesalTheme(
         )
     } else {
         basePalette
+    }
+    // Round 13 (Items H + M2): pairing invariant. Above, textPrimary and
+    // surfaceElevated are overridden INDEPENDENTLY (the global-appearance
+    // branch validates custom text against `surface` only and never
+    // touches surfaceElevated; surface presets replace surfaceElevated
+    // without touching text), and field sites historically paired
+    // palette text with scheme containers — in light mode the owner's
+    // typed text rendered near-white on light fields (device-proven:
+    // assistant composer, contacts search digits «68742»). Guarantee the
+    // pair every input relies on: when textPrimary is illegible on
+    // surfaceElevated, snap surfaceElevated back to the base elevated of
+    // the text's own luminance side (the designed pairing).
+    val palette = run {
+        val elevLum = rawPalette.surfaceElevated.relativeLuminance()
+        val textLum = rawPalette.textPrimary.relativeLuminance()
+        if (kotlin.math.abs(textLum - elevLum) >= 0.35f) {
+            rawPalette
+        } else {
+            rawPalette.copy(
+                surfaceElevated = if (textLum > 0.5f) {
+                    WesalDarkPalette.surfaceElevated
+                } else {
+                    WesalLightPalette.surfaceElevated
+                }
+            )
+        }
     }
     val baseColorScheme = if (darkTheme) WesalDarkColorScheme else WesalLightColorScheme
     val colorScheme = if (globalAppearance.enabled || accentPreset != WesalPersonalAccentPreset.DEFAULT || surfacePreset != WesalPersonalSurfacePreset.DEFAULT) {

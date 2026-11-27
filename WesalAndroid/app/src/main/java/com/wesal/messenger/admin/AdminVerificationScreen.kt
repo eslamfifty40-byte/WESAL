@@ -1,5 +1,6 @@
 package com.wesal.messenger.admin
 
+import com.wesal.messenger.core.util.ErrorCopy
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -256,7 +257,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.replySupportTicket(ticketId, clean, newStatus)
                 .onSuccess { _statusMessage.value = "تم إرسال الرد على التذكرة ✓" }
-                .onFailure { _statusMessage.value = it.message ?: "فشل إرسال الرد" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل إرسال الرد")}
             _busy.value = false
         }
     }
@@ -266,7 +267,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.updateSupportTicketStatus(ticketId, status)
                 .onSuccess { _statusMessage.value = "تم تحديث حالة التذكرة: $status" }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث حالة التذكرة" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تحديث حالة التذكرة")}
             _busy.value = false
         }
     }
@@ -475,7 +476,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.adminGetUserFullDetails(uid, reason = "معاينة الحساب من لوحة المشرف الأعلى")
                 .onSuccess { _inspectedUser.value = it }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر جلب تفاصيل المستخدم" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر جلب تفاصيل المستخدم")}
             _busy.value = false
         }
     }
@@ -531,7 +532,7 @@ class AdminVerificationViewModel @Inject constructor(
                         verificationExpiresAt = if (verified) expiresAt else 0L
                     )
                 }
-            }.onFailure { _statusMessage.value = it.message ?: "فشل تحديث التوثيق" }
+            }.onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تحديث التوثيق")}
             _busy.value = false
         }
     }
@@ -577,7 +578,7 @@ class AdminVerificationViewModel @Inject constructor(
                         )
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الإطار" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تحديث الإطار")}
             _busy.value = false
         }
     }
@@ -625,7 +626,7 @@ class AdminVerificationViewModel @Inject constructor(
                         "تم إيقاف مطالبة تحديث التطبيق ✓"
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ إعدادات التحديث" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حفظ إعدادات التحديث")}
             _busy.value = false
         }
     }
@@ -645,7 +646,7 @@ class AdminVerificationViewModel @Inject constructor(
                     // ONLY the users list, not stats/welcome/channels.
                     refreshUsersOnly()
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر تطبيق الإطار الجماعي" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر تطبيق الإطار الجماعي")}
             _busy.value = false
         }
     }
@@ -669,7 +670,7 @@ class AdminVerificationViewModel @Inject constructor(
                     // Item A (r13): users-only refresh (see toggle above).
                     refreshUsersOnly()
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ الإعدادات الجماعية" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حفظ الإعدادات الجماعية")}
             _busy.value = false
         }
     }
@@ -694,7 +695,7 @@ class AdminVerificationViewModel @Inject constructor(
                         )
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث النيون" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تحديث النيون")}
             _busy.value = false
         }
     }
@@ -719,7 +720,7 @@ class AdminVerificationViewModel @Inject constructor(
                         )
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث الأيقونة" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تحديث الأيقونة")}
             _busy.value = false
         }
     }
@@ -740,7 +741,7 @@ class AdminVerificationViewModel @Inject constructor(
                         it.copy(nameplateColor = colorKey.trim().uppercase())
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث لون لوحة الاسم" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تحديث لون لوحة الاسم")}
             _busy.value = false
         }
     }
@@ -759,7 +760,7 @@ class AdminVerificationViewModel @Inject constructor(
                     // (removeUserLocally also clears the inspected user).
                     removeUserLocally(target.uid)
                 }
-                .onFailure { _statusMessage.value = it.message ?: "فشل حذف الحساب" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل حذف الحساب")}
             _busy.value = false
         }
     }
@@ -771,7 +772,7 @@ class AdminVerificationViewModel @Inject constructor(
                 .onSuccess {
                     _statusMessage.value = if (config.enabled) "تم حفظ وتفعيل المظهر العام للتطبيق ✓" else "تمت استعادة ألوان WESAL الافتراضية ✓"
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ المظهر العام" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حفظ المظهر العام")}
             _busy.value = false
         }
     }
@@ -783,7 +784,7 @@ class AdminVerificationViewModel @Inject constructor(
                 .onSuccess {
                     _statusMessage.value = if (permissions == null) "تم سحب صلاحيات المشرف" else "تم حفظ صلاحيات المشرف المساعد ✓"
                 }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تعديل صلاحيات المشرف" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تعديل صلاحيات المشرف")}
             _busy.value = false
         }
     }
@@ -822,7 +823,7 @@ class AdminVerificationViewModel @Inject constructor(
                         }
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر معالجة الطلب" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر معالجة الطلب")}
             _busy.value = false
         }
     }
@@ -840,7 +841,7 @@ class AdminVerificationViewModel @Inject constructor(
                     // Item A (r13): local patch instead of refreshAll().
                     patchUserLocally(target.uid) { it.copy(warningsCount = it.warningsCount + 1) }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر إرسال الإنذار" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر إرسال الإنذار")}
             _busy.value = false
         }
     }
@@ -858,7 +859,7 @@ class AdminVerificationViewModel @Inject constructor(
                     // Item A (r13): local removal instead of refreshAll().
                     removeUserLocally(target.uid)
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر حذف الحساب" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حذف الحساب")}
             _busy.value = false
         }
     }
@@ -893,7 +894,7 @@ class AdminVerificationViewModel @Inject constructor(
                         )
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تطبيق الحظر" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تطبيق الحظر")}
             _busy.value = false
         }
     }
@@ -909,7 +910,7 @@ class AdminVerificationViewModel @Inject constructor(
                         it.copy(isBanned = false, banType = "", banExpiresAt = 0L, banReason = "")
                     }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر رفع الحظر" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر رفع الحظر")}
             _busy.value = false
         }
     }
@@ -923,7 +924,7 @@ class AdminVerificationViewModel @Inject constructor(
                     // Item A (r13): local patch instead of refreshAll().
                     patchUserLocally(target.uid) { it.copy(hiddenFromSearch = hidden) }
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر تحديث حالة الإخفاء" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر تحديث حالة الإخفاء")}
             _busy.value = false
         }
     }
@@ -933,7 +934,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.updateReportStatus(reportId, status, note, resolution)
                 .onSuccess { _statusMessage.value = "تم تحديث البلاغ إلى: $status" }
-                .onFailure { _statusMessage.value = it.message ?: "فشل تحديث البلاغ" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل تحديث البلاغ")}
             _busy.value = false
         }
     }
@@ -966,7 +967,7 @@ class AdminVerificationViewModel @Inject constructor(
                     _statusMessage.value = if (suspended) "تم تعليق القناة" else "تم تفعيل القناة"
                     loadAllChannels()
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر تعديل حالة القناة" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر تعديل حالة القناة")}
             _busy.value = false
         }
     }
@@ -983,7 +984,7 @@ class AdminVerificationViewModel @Inject constructor(
                     _statusMessage.value = "تم حذف القناة"
                     loadAllChannels()
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر حذف القناة" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حذف القناة")}
             _busy.value = false
         }
     }
@@ -1010,7 +1011,7 @@ class AdminVerificationViewModel @Inject constructor(
                             _busy.value = false
                         }
                     }.onFailure { err ->
-                        _statusMessage.value = err.message ?: "فشل النشر في القناة"
+                        _statusMessage.value = ErrorCopy.friendly(err, "فشل النشر في القناة")
                         _busy.value = false
                     }
                 }
@@ -1025,7 +1026,7 @@ class AdminVerificationViewModel @Inject constructor(
                     _welcomeConfig.value = userRepository.getWelcomeConfig()
                     _statusMessage.value = "تم حفظ إعدادات رسالة الترحيب"
                 }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ رسالة الترحيب" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حفظ رسالة الترحيب")}
             _busy.value = false
         }
     }
@@ -1035,7 +1036,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.sendWelcomeTestToSelf()
                 .onSuccess { _statusMessage.value = "تم إرسال رسالة ترحيب تجريبية إلى محادثة WESAL Messenger لديك" }
-                .onFailure { _statusMessage.value = it.message ?: "فشل إرسال الرسالة التجريبية" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "فشل إرسال الرسالة التجريبية")}
             _busy.value = false
         }
     }
@@ -1045,7 +1046,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.publishOfficialAnnouncement(title, body)
                 .onSuccess { _statusMessage.value = "تم إرسال الإعلان الرسمي إلى جميع المستخدمين بنجاح" }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر إرسال الإعلان" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر إرسال الإعلان")}
             _busy.value = false
         }
     }
@@ -1055,7 +1056,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.deleteAuditLog(collectionName, logId)
                 .onSuccess { _statusMessage.value = "تم حذف السجل بنجاح ✓" }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر حذف السجل" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حذف السجل")}
             _busy.value = false
         }
     }
@@ -1065,7 +1066,7 @@ class AdminVerificationViewModel @Inject constructor(
             _busy.value = true
             userRepository.clearAuditLogs(collectionName)
                 .onSuccess { _statusMessage.value = "تم تفريغ السجل بنجاح ✓" }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر تفريغ السجل" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر تفريغ السجل")}
             _busy.value = false
         }
     }
@@ -1080,14 +1081,14 @@ class AdminVerificationViewModel @Inject constructor(
             onOpenChat(instantId)
             runOp("open_chat_$uid") {
                 chatRepository.getOrCreateDirectChat(uid)
-                    .onFailure { _statusMessage.value = it.message ?: "تعذر فتح المحادثة" }
+                    .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر فتح المحادثة")}
             }
             return
         }
         runOp("open_chat_$uid") {
             chatRepository.getOrCreateDirectChat(uid)
                 .onSuccess { chatId -> onOpenChat(chatId) }
-                .onFailure { _statusMessage.value = it.message ?: "تعذر فتح المحادثة" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر فتح المحادثة")}
         }
     }
 
@@ -1122,7 +1123,7 @@ class AdminVerificationViewModel @Inject constructor(
                         _statusMessage.value = "تم تحديث صورة المحادثة والقناة الرسمية ✓"
                         loadAllChannels()
                     }
-                    .onFailure { _statusMessage.value = it.message ?: "تعذر حفظ صورة الهوية الرسمية" }
+                    .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حفظ صورة الهوية الرسمية")}
             }
             _busy.value = false
         }
@@ -4259,7 +4260,7 @@ private fun AdminFrameAndNeonDialog(
                     busy = false
                     statusMsg = res.fold(
                         onSuccess = { "تم الحفظ على Firebase ✓" },
-                        onFailure = { "فشل الحفظ: ${it.localizedMessage ?: "خطأ غير معروف"}" }
+                        onFailure = { "فشل الحفظ: ${ErrorCopy.friendly(it, "خطأ غير معروف")}" }
                     )
                 }
             } else {
@@ -4282,7 +4283,7 @@ private fun AdminFrameAndNeonDialog(
             busy = true
             val r = block()
             busy = false
-            statusMsg = r.fold({ ok }, { "فشلت العملية: ${it.localizedMessage ?: "خطأ"}" })
+            statusMsg = r.fold({ ok }, { "فشلت العملية: ${ErrorCopy.friendly(it, "خطأ")}" })
         }
     }
 
@@ -4335,7 +4336,7 @@ private fun AdminFrameAndNeonDialog(
                                     }
                                     "تم الحفظ على Firebase ✓"
                                 },
-                                onFailure = { "فشل الحفظ: ${it.localizedMessage ?: "خطأ غير معروف"}" }
+                                onFailure = { "فشل الحفظ: ${ErrorCopy.friendly(it, "خطأ غير معروف")}" }
                             )
                         }
                     }

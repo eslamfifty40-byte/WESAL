@@ -899,6 +899,46 @@ fun ChatDetailScreen(
                         }
                     }
 
+                    // Round 13 (Addendum L3): the official welcome chat
+                    // must never open as a bare empty room while the
+                    // chats list shows its welcome preview. If the
+                    // message docs are not readable yet (e.g. the write
+                    // quota died between the chat doc and the message
+                    // write on the server), render the welcome from the
+                    // chat's own lastMessagePreview — list and detail
+                    // stay consistent, and the real message doc replaces
+                    // this automatically once it lands/loads.
+                    val officialPreview = chat?.takeIf {
+                        it.isOfficialWesalChat && messages.isEmpty()
+                    }?.lastMessagePreview?.takeIf { it.isNotBlank() }
+                    if (officialPreview != null) {
+                        item(key = "official_welcome_preview") {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.Start
+                            ) {
+                                Text(
+                                    text = "WESAL Messenger",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.emerald,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Surface(
+                                    color = palette.bubbleIncoming,
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier.padding(top = 2.dp)
+                                ) {
+                                    Text(
+                                        text = officialPreview,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = palette.textPrimary,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     items(messages, key = { it.messageId }) { msg ->
                         val isMine = msg.senderId == viewModel.myUid
                         MessageBubble(

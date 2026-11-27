@@ -1,5 +1,6 @@
 package com.wesal.messenger.channels
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.content.Context
 import android.net.Uri
 import android.util.Base64
@@ -155,7 +156,7 @@ class ChannelsViewModel @Inject constructor(
         viewModelScope.launch {
             channelRepository.createChannel(title, description, isPublic, avatarUri)
                 .onSuccess { ch -> onCreated(ch.channelId) }
-                .onFailure { showTempMessage(it.message ?: "تعذر إنشاء القناة") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر إنشاء القناة")) }
         }
     }
 
@@ -173,7 +174,7 @@ class ChannelsViewModel @Inject constructor(
                     showTempMessage("تم تحديث القناة")
                     onDone()
                 }
-                .onFailure { showTempMessage(it.message ?: "تعذر تحديث القناة") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر تحديث القناة")) }
         }
     }
 
@@ -181,21 +182,21 @@ class ChannelsViewModel @Inject constructor(
         viewModelScope.launch {
             channelRepository.deleteChannel(channelId)
                 .onSuccess { onDeleted() }
-                .onFailure { showTempMessage(it.message ?: "تعذر حذف القناة") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر حذف القناة")) }
         }
     }
 
     fun subscribe(channelId: String) {
         viewModelScope.launch {
             channelRepository.subscribePublicChannel(channelId)
-                .onFailure { showTempMessage(it.message ?: "تعذر الاشتراك") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر الاشتراك")) }
         }
     }
 
     fun unsubscribe(channelId: String) {
         viewModelScope.launch {
             channelRepository.unsubscribeChannel(channelId)
-                .onFailure { showTempMessage(it.message ?: "تعذر إلغاء الاشتراك") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر إلغاء الاشتراك")) }
         }
     }
 
@@ -203,7 +204,7 @@ class ChannelsViewModel @Inject constructor(
         viewModelScope.launch {
             channelRepository.requestJoinPrivateChannel(channelId)
                 .onSuccess { showTempMessage("تم إرسال طلب الانضمام إلى مشرفي القناة") }
-                .onFailure { showTempMessage(it.message ?: "تعذر إرسال طلب الانضمام") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر إرسال طلب الانضمام")) }
         }
     }
 
@@ -253,7 +254,7 @@ class ChannelsViewModel @Inject constructor(
             )
                 .catch { err ->
                     _uploadProgress.value = null
-                    showTempMessage(err.message ?: "تعذر نشر المنشور")
+                    showTempMessage(ErrorCopy.friendly(err, "تعذر نشر المنشور"))
                 }
                 .onCompletion {
                     _uploadProgress.value = null
@@ -263,7 +264,7 @@ class ChannelsViewModel @Inject constructor(
                         _uploadProgress.value = if (fraction >= 1.0f) null else fraction
                     }.onFailure { err ->
                         _uploadProgress.value = null
-                        showTempMessage(err.message ?: "تعذر نشر المنشور")
+                        showTempMessage(ErrorCopy.friendly(err, "تعذر نشر المنشور"))
                     }
                 }
         }
@@ -328,7 +329,7 @@ class ChannelsViewModel @Inject constructor(
         viewModelScope.launch {
             channelRepository.editPost(channelId, postId, newText)
                 .onSuccess { showTempMessage("تم تعديل المنشور") }
-                .onFailure { showTempMessage(it.message ?: "تعذر تعديل المنشور") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر تعديل المنشور")) }
         }
     }
 
@@ -399,7 +400,7 @@ class ChannelsViewModel @Inject constructor(
     fun addComment(channelId: String, postId: String, text: String) {
         viewModelScope.launch {
             channelRepository.addComment(channelId, postId, text)
-                .onFailure { showTempMessage(it.message ?: "تعذر إضافة التعليق") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر إضافة التعليق")) }
         }
     }
 
@@ -425,7 +426,7 @@ class ChannelsViewModel @Inject constructor(
         viewModelScope.launch {
             channelRepository.regenerateInviteCode(channelId)
                 .onSuccess { code -> showTempMessage("تم تحديث رمز الدعوة: $code") }
-                .onFailure { showTempMessage(it.message ?: "تعذر تحديث رمز الدعوة") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر تحديث رمز الدعوة")) }
         }
     }
 
@@ -440,14 +441,14 @@ class ChannelsViewModel @Inject constructor(
             }
             channelRepository.setModerator(channelId, target.uid, true)
                 .onSuccess { showTempMessage("تمت إضافة ${target.displayName.ifBlank { "@${target.publicId}" }} كمشرف") }
-                .onFailure { showTempMessage(it.message ?: "تعذر إضافة المشرف") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر إضافة المشرف")) }
         }
     }
 
     fun toggleModerator(channelId: String, targetUid: String, makeMod: Boolean) {
         viewModelScope.launch {
             channelRepository.setModerator(channelId, targetUid, makeMod)
-                .onFailure { showTempMessage(it.message ?: "تعذر تعديل المشرف") }
+                .onFailure { showTempMessage(ErrorCopy.friendly(it, "تعذر تعديل المشرف")) }
         }
     }
 

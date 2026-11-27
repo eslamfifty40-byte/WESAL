@@ -1,5 +1,6 @@
 package com.wesal.messenger.authentication
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.content.Context
 import android.net.Uri
 import android.util.Patterns
@@ -230,7 +231,7 @@ class AuthViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        errorMessage = err.localizedMessage ?: "تعذر تبديل الحساب"
+                        errorMessage = ErrorCopy.friendly(err, "تعذر تبديل الحساب")
                     )
                 }
             }
@@ -274,7 +275,7 @@ class AuthViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = err.localizedMessage ?: "تعذر تسجيل الدخول عبر Google"
+                            errorMessage = ErrorCopy.friendly(err, "تعذر تسجيل الدخول عبر Google")
                         )
                     }
                 }
@@ -365,7 +366,7 @@ class AuthViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        errorMessage = err.localizedMessage ?: "تعذر إتمام المصادقة بالبريد الإلكتروني"
+                        errorMessage = ErrorCopy.friendly(err, "تعذر إتمام المصادقة بالبريد الإلكتروني")
                     )
                 }
             }
@@ -397,7 +398,7 @@ class AuthViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = err.localizedMessage ?: "تعذر إرسال رابط استعادة كلمة المرور"
+                            errorMessage = ErrorCopy.friendly(err, "تعذر إرسال رابط استعادة كلمة المرور")
                         )
                     }
                 }
@@ -425,7 +426,7 @@ class AuthViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            errorMessage = err.localizedMessage ?: "تعذر فتح محادثة الإدارة 10001"
+                            errorMessage = ErrorCopy.friendly(err, "تعذر فتح محادثة الإدارة 10001")
                         )
                     }
                 }
@@ -511,7 +512,7 @@ class AuthViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isPhoneBusy = false,
-                            errorMessage = err.localizedMessage ?: "تعذر إرسال كود التحقق"
+                            errorMessage = ErrorCopy.friendly(err, "تعذر إرسال كود التحقق")
                         )
                     }
                 }
@@ -605,7 +606,7 @@ class AuthViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isPhoneBusy = false,
-                            errorMessage = err.localizedMessage ?: "تعذر التحقق من الكود"
+                            errorMessage = ErrorCopy.friendly(err, "تعذر التحقق من الكود")
                         )
                     }
                 }
@@ -714,7 +715,7 @@ class AuthViewModel @Inject constructor(
                     // exact message — queueing a claim that can never
                     // land would be a silent lie.
                     _uiState.update {
-                        it.copy(isLoading = false, errorMessage = err.localizedMessage ?: "تعذر حفظ الملف الشخصي")
+                        it.copy(isLoading = false, errorMessage = ErrorCopy.friendly(err, "تعذر حفظ الملف الشخصي"))
                     }
                 } else {
                     // INFRASTRUCTURE failure (timeout / quota / network):

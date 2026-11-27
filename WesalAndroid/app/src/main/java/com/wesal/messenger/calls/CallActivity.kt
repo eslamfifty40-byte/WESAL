@@ -331,7 +331,13 @@ class CallActivity : AppCompatActivity() {
                                     photoUrl = peerAvatar,
                                     isVerified = peerVerified
                                 )
-                                callRepository.initiateCall(targetUser, isVideo, offerSdp)
+                                // Round 13 (Addendum L6): bounded setup —
+                                // a call-doc write that never ACKs (quota /
+                                // stalled stream) must not hang the dialer.
+                                val initResult = withTimeoutOrNull(CALL_SETUP_TIMEOUT_MS) {
+                                    callRepository.initiateCall(targetUser, isVideo, offerSdp)
+                                }
+                                (initResult ?: Result.failure(Exception("call setup timeout")))
                                     .onSuccess { newCallId ->
                                         activeCallId = newCallId
                                         val queued = synchronized(pendingLocalCandidates) {
@@ -360,7 +366,14 @@ class CallActivity : AppCompatActivity() {
                                         }
                                     }
                                     .onFailure {
-                                        callStatusLabel = if (strings.isEnglish) "Unable to start call" else "تعذر بدء المكالمة"
+                                        // Round 13 (Addendum L6): honest
+                                        // failure exit — show why and
+                                        // RELEASE the call UI instead of
+                                        // sitting on «جاري الاتصال» forever.
+                                        isFinishingCall = true
+                                        callStatusLabel = if (strings.isEnglish) "Could not connect — please try again" else "تعذر الاتصال — حاول مرة أخرى"
+                                        delay(1500L)
+                                        finishCallLocally()
                                     }
                             }
                         }
@@ -495,17 +508,39 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                LaunchedEffect(isIncoming, connState) {
-                    if (!isIncoming && connState != PeerConnection.PeerConnectionState.CONNECTED) {
-                        delay(45_000L)
-                        if (webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED && !isFinishingCall) {
-                            callStatusLabel = strings.callMissed
-                            if (activeCallId.isNotBlank()) {
-                                callRepository.updateCallStatus(activeCallId, CallStatus.MISSED, 0L)
-                            }
-                            delay(1100L)
-                            finishCallLocally()
+                // Round 13 (Addendum L6): the no-answer/setup deadlines
+                // are keyed on the CALL, not on connState. The old effect
+                // was keyed on (isIncoming, connState) — every WebRTC
+                // state flap (NEW → CHECKING → DISCONNECTED…) restarted
+                // the 45s delay, so under signaling failure the exit
+                // never fired and the dialer sat at «جاري الاتصال»
+                // forever (device-proven under the exhausted quota).
+                LaunchedEffect(isIncoming) {
+                    if (isIncoming) return@LaunchedEffect
+                    // Setup deadline: the call doc must exist by now.
+                    delay(CALL_SETUP_TIMEOUT_MS)
+                    if (!isFinishingCall &&
+                        webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED &&
+                        activeCallId.isBlank()
+                    ) {
+                        isFinishingCall = true
+                        callStatusLabel = if (strings.isEnglish) "Could not connect — please try again" else "تعذر الاتصال — حاول مرة أخرى"
+                        delay(1500L)
+                        finishCallLocally()
+                        return@LaunchedEffect
+                    }
+                    // No-answer deadline: 45s total from placement.
+                    delay(NO_ANSWER_TIMEOUT_MS - CALL_SETUP_TIMEOUT_MS)
+                    if (!isFinishingCall &&
+                        webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED
+                    ) {
+                        isFinishingCall = true
+                        callStatusLabel = strings.callMissed
+                        if (activeCallId.isNotBlank()) {
+                            callRepository.updateCallStatus(activeCallId, CallStatus.MISSED, 0L)
                         }
+                        delay(1100L)
+                        finishCallLocally()
                     }
                 }
 
@@ -818,6 +853,19 @@ class CallActivity : AppCompatActivity() {
 
     companion object {
         private const val OFFER_WAIT_TIMEOUT_MS = 30_000L
+
+        /**
+         * Round 13 (Addendum L6): the outgoing setup phase is BOUNDED.
+         * If the call document cannot be created/acknowledged inside
+         * this window (device-proven: the write quota was exhausted and
+         * the call sat at «جاري الاتصال» forever), the attempt ends
+         * with the honest failure state instead of an eternal
+         * connecting screen.
+         */
+        private const val CALL_SETUP_TIMEOUT_MS = 20_000L
+
+        /** Total no-answer budget from call placement (WhatsApp-style). */
+        private const val NO_ANSWER_TIMEOUT_MS = 45_000L
         private const val EXTRA_IS_INCOMING = "is_incoming"
         private const val EXTRA_CALL_ID = "call_id"
         private const val EXTRA_PEER_UID = "peer_uid"

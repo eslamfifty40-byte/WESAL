@@ -97,6 +97,7 @@ import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.DictationLogic
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.wesalFieldColors
 import com.wesal.messenger.voice.VoicePlaybackState
 import java.io.File
 import java.util.Calendar
@@ -662,17 +663,11 @@ fun AssistantChatScreen(
                             minLines = 1,
                             maxLines = 6,
                             shape = RoundedCornerShape(24.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedTextColor = palette.textPrimary,
-                                unfocusedTextColor = palette.textPrimary,
-                                cursorColor = palette.turquoise,
-                                focusedBorderColor = palette.turquoise,
-                                unfocusedBorderColor = palette.border,
-                                focusedPlaceholderColor = palette.textMuted,
-                                unfocusedPlaceholderColor = palette.textMuted,
-                                focusedContainerColor = palette.surfaceElevated,
-                                unfocusedContainerColor = palette.surfaceElevated
-                            )
+                            // Round 13 (Item H): the standard field pairing
+                            // (this composer was the device-proven ghost-text
+                            // site — typed text rendered near-white on the
+                            // light field).
+                            colors = wesalFieldColors()
                         )
 
                         if (isSending) {

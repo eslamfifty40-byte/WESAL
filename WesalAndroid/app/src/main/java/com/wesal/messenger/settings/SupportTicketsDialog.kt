@@ -1,5 +1,6 @@
 package com.wesal.messenger.settings
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -98,7 +99,7 @@ class SupportTicketsViewModel @Inject constructor(
                 .onFailure { err ->
                     _isBusy.value = false
                     _feedback.value = false to (
-                        err.localizedMessage ?: if (isEn) "Failed to submit ticket" else "تعذر إرسال طلب الدعم"
+                        ErrorCopy.friendly(err, if (isEn) "Failed to submit ticket" else "تعذر إرسال طلب الدعم")
                         )
                 }
         }
@@ -118,7 +119,7 @@ class SupportTicketsViewModel @Inject constructor(
                 .onFailure { err ->
                     _isBusy.value = false
                     _feedback.value = false to (
-                        err.localizedMessage ?: if (isEn) "Failed to send reply" else "تعذر إرسال الرد"
+                        ErrorCopy.friendly(err, if (isEn) "Failed to send reply" else "تعذر إرسال الرد")
                         )
                 }
         }

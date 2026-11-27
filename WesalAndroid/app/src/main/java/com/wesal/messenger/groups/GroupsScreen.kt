@@ -1,5 +1,6 @@
 package com.wesal.messenger.groups
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -136,7 +137,7 @@ class GroupsViewModel @Inject constructor(
                 selectedMembers.value = emptyList()
                 onCreated(group.chatId)
             }.onFailure { err ->
-                postStatus(err.message ?: "تعذر إنشاء المجموعة")
+                postStatus(ErrorCopy.friendly(err, "تعذر إنشاء المجموعة"))
             }
             isCreating.value = false
         }
@@ -162,7 +163,7 @@ class GroupsViewModel @Inject constructor(
                     }
                 }
                 .onFailure { err ->
-                    postStatus(err.message ?: "تعذر الانضمام إلى المجموعة")
+                    postStatus(ErrorCopy.friendly(err, "تعذر الانضمام إلى المجموعة"))
                 }
         }
     }
@@ -187,7 +188,7 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.updateGroupInfo(groupId, name, desc, avatarUri)
                 .onSuccess { postStatus("تم تحديث بيانات المجموعة") }
-                .onFailure { postStatus(it.message ?: "تعذر التحديث") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر التحديث")) }
         }
     }
 
@@ -195,7 +196,7 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.updateGroupJoinMode(groupId, mode)
                 .onSuccess { postStatus("تم تحديث وضع الانضمام") }
-                .onFailure { postStatus(it.message ?: "تعذر تغيير وضع الانضمام") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر تغيير وضع الانضمام")) }
         }
     }
 
@@ -203,7 +204,7 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.regenerateGroupInviteCode(groupId)
                 .onSuccess { code -> postStatus("تم تجديد رمز الدعوة وإلغاء الرابط السابق: $code") }
-                .onFailure { postStatus(it.message ?: "تعذر تجديد رابط الدعوة") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر تجديد رابط الدعوة")) }
         }
     }
 
@@ -211,14 +212,14 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.approveGroupJoinRequest(groupId, req.requestId, req.requesterUid)
                 .onSuccess { postStatus("تمت الموافقة على انضمام ${req.requesterName}") }
-                .onFailure { postStatus(it.message ?: "تعذر قبول الطلب") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر قبول الطلب")) }
         }
     }
 
     fun rejectJoinRequest(groupId: String, req: GroupJoinRequest) {
         viewModelScope.launch {
             groupRepository.rejectGroupJoinRequest(groupId, req.requestId)
-                .onFailure { postStatus(it.message ?: "تعذر رفض الطلب") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر رفض الطلب")) }
         }
     }
 
@@ -226,7 +227,7 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.addMembers(groupId, listOf(uid))
                 .onSuccess { postStatus("تمت إضافة العضو إلى المجموعة ✓") }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر إضافة العضو بسبب إعدادات الخصوصية") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر إضافة العضو بسبب إعدادات الخصوصية")) }
         }
     }
 
@@ -234,14 +235,14 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.removeMember(groupId, uid)
                 .onSuccess { postStatus("تمت إزالة العضو") }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر إزالة العضو") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر إزالة العضو")) }
         }
     }
 
     fun toggleAdmin(groupId: String, uid: String, makeAdmin: Boolean) {
         viewModelScope.launch {
             groupRepository.setAdminRole(groupId, uid, makeAdmin)
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر تعديل صلاحية المشرف") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر تعديل صلاحية المشرف")) }
         }
     }
 
@@ -249,7 +250,7 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.leaveGroup(groupId)
                 .onSuccess { onLeft() }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر مغادرة المجموعة") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر مغادرة المجموعة")) }
         }
     }
 
@@ -257,7 +258,7 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             groupRepository.deleteGroup(groupId)
                 .onSuccess { onDeleted() }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر حذف المجموعة") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر حذف المجموعة")) }
         }
     }
 
@@ -270,7 +271,7 @@ class GroupsViewModel @Inject constructor(
                     postStatus("تم إنشاء قائمة البث ✓")
                     onDone()
                 }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر إنشاء قائمة البث") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر إنشاء قائمة البث")) }
             isCreating.value = false
         }
     }
@@ -284,7 +285,7 @@ class GroupsViewModel @Inject constructor(
                     postStatus("تم تحديث قائمة البث ✓")
                     onDone()
                 }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر تحديث قائمة البث") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر تحديث قائمة البث")) }
             isCreating.value = false
         }
     }
@@ -293,7 +294,7 @@ class GroupsViewModel @Inject constructor(
         viewModelScope.launch {
             chatRepository.deleteBroadcastList(listId)
                 .onSuccess { postStatus("تم حذف قائمة البث") }
-                .onFailure { postStatus(it.localizedMessage ?: "تعذر حذف قائمة البث") }
+                .onFailure { postStatus(ErrorCopy.friendly(it, "تعذر حذف قائمة البث")) }
         }
     }
 

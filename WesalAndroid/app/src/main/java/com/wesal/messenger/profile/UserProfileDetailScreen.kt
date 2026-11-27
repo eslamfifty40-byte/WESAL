@@ -1,5 +1,6 @@
 package com.wesal.messenger.profile
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -97,7 +98,29 @@ class UserProfileDetailViewModel @Inject constructor(
     val myUid: String
         get() = authRepository.currentUserId.orEmpty()
 
-    val peerUser: StateFlow<WesalUser?> = userRepository.observeUser(targetUid)
+    private val profileRetryTick = MutableStateFlow(0)
+
+    /**
+     * Round 13 (Addendum L2): tri-state profile load. A FAILED load
+     * (quota/network) renders a retryable error — never «الحساب غير
+     * موجود»; [retryProfile] re-subscribes the listener.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val peerState: StateFlow<com.wesal.messenger.domain.model.UserLoadState> =
+        profileRetryTick
+            .flatMapLatest { userRepository.observeUserState(targetUid) }
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5000),
+                com.wesal.messenger.domain.model.UserLoadState.Loading
+            )
+
+    fun retryProfile() {
+        profileRetryTick.value++
+    }
+
+    val peerUser: StateFlow<WesalUser?> = peerState
+        .map { (it as? com.wesal.messenger.domain.model.UserLoadState.Loaded)?.user }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
@@ -162,21 +185,21 @@ class UserProfileDetailViewModel @Inject constructor(
     fun sendContactRequest() {
         viewModelScope.launch {
             userRepository.sendContactRequest(targetUid)
-                .onFailure { _statusMessage.value = it.localizedMessage }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it) }
         }
     }
 
     fun acceptContactRequest(requestId: String) {
         viewModelScope.launch {
             userRepository.acceptContactRequest(requestId)
-                .onFailure { _statusMessage.value = it.localizedMessage }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it) }
         }
     }
 
     fun rejectContactRequest(requestId: String) {
         viewModelScope.launch {
             userRepository.rejectContactRequest(requestId)
-                .onFailure { _statusMessage.value = it.localizedMessage }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it) }
         }
     }
 
@@ -184,7 +207,7 @@ class UserProfileDetailViewModel @Inject constructor(
         viewModelScope.launch {
             chatRepository.getOrCreateDirectChat(targetUid)
                 .onSuccess(onOpenChat)
-                .onFailure { _statusMessage.value = it.localizedMessage }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it) }
         }
     }
 
@@ -196,7 +219,7 @@ class UserProfileDetailViewModel @Inject constructor(
                     _statusMessage.value = if (!chat.isMuted) "تم كتم إشعارات المحادثة" else "تم تفعيل إشعارات المحادثة"
                 }
                 // Audit B4: failure was silent — the row looked toggled but nothing was written.
-                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر تغيير حالة كتم الإشعارات" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر تغيير حالة كتم الإشعارات")}
         }
     }
 
@@ -211,7 +234,7 @@ class UserProfileDetailViewModel @Inject constructor(
                         "تم تفعيل مؤقت ${timer.labelAr}"
                     }
                 }
-                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر تغيير مؤقت اختفاء الرسائل" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر تغيير مؤقت اختفاء الرسائل")}
         }
     }
 
@@ -220,7 +243,7 @@ class UserProfileDetailViewModel @Inject constructor(
         viewModelScope.launch {
             chatRepository.clearChatMessagesForMe(chat.chatId)
                 .onSuccess { _statusMessage.value = "تم مسح سجل الرسائل لديك ✓" }
-                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر مسح المحادثة" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر مسح المحادثة")}
         }
     }
 
@@ -231,15 +254,15 @@ class UserProfileDetailViewModel @Inject constructor(
             if (favoriteList == null) {
                 userRepository.upsertContactList(null, "المفضلة", listOf(targetUid))
                     .onSuccess { _statusMessage.value = "تمت الإضافة إلى المفضلة ✓" }
-                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث المفضلة" }
+                    .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذّر تحديث المفضلة")}
             } else if (targetUid in favoriteList.memberUids) {
                 userRepository.removeUidFromContactList(favoriteList.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإزالة من المفضلة" }
-                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث المفضلة" }
+                    .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذّر تحديث المفضلة")}
             } else {
                 userRepository.addUidToContactList(favoriteList.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإضافة إلى المفضلة ✓" }
-                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث المفضلة" }
+                    .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذّر تحديث المفضلة")}
             }
         }
     }
@@ -249,11 +272,11 @@ class UserProfileDetailViewModel @Inject constructor(
             if (targetUid in list.memberUids) {
                 userRepository.removeUidFromContactList(list.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإزالة من قائمة ${list.name}" }
-                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث القائمة" }
+                    .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذّر تحديث القائمة")}
             } else {
                 userRepository.addUidToContactList(list.listId, targetUid)
                     .onSuccess { _statusMessage.value = "تمت الإضافة إلى قائمة ${list.name} ✓" }
-                    .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذّر تحديث القائمة" }
+                    .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذّر تحديث القائمة")}
             }
         }
     }
@@ -272,8 +295,7 @@ class UserProfileDetailViewModel @Inject constructor(
                     _statusMessage.value = if (isEn) "Contact removed" else "تمت إزالة جهة الاتصال"
                 }
                 .onFailure {
-                    _statusMessage.value = it.localizedMessage
-                        ?: if (isEn) "Could not remove the contact" else "تعذّرت إزالة جهة الاتصال"
+                    _statusMessage.value = ErrorCopy.friendly(it, if (isEn) "Could not remove the contact" else "تعذّرت إزالة جهة الاتصال")
                 }
         }
     }
@@ -284,7 +306,7 @@ class UserProfileDetailViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.upsertContactList(null, clean, listOf(targetUid))
                 .onSuccess { _statusMessage.value = "تم إنشاء قائمة $clean وإضافة الحساب ✓" }
-                .onFailure { _statusMessage.value = it.localizedMessage }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it) }
         }
     }
 
@@ -301,7 +323,7 @@ class UserProfileDetailViewModel @Inject constructor(
             }
             PhoneContactsHelper.upsertDeviceContact(context, newName, rawPhone, contactId)
                 .onSuccess { _statusMessage.value = "تم تحديث الاسم في دفتر الهاتف ✓" }
-                .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر تحديث دفتر الهاتف" }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر تحديث دفتر الهاتف")}
         }
     }
 
@@ -314,7 +336,7 @@ class UserProfileDetailViewModel @Inject constructor(
                     // contacts-screen delete flow in ContactsViewModel.
                     PhoneContactsHelper.deleteDeviceContact(context, lookup.contactId, rawPhone)
                         .onSuccess { _statusMessage.value = "تم حذف جهة الاتصال من دفتر الهاتف ✓" }
-                        .onFailure { _statusMessage.value = it.localizedMessage ?: "تعذر حذف جهة الاتصال" }
+                        .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حذف جهة الاتصال")}
                 PhoneContactsHelper.PhoneContactLookup.NoPhone ->
                     // Honest message: the account exposes no number, so there is nothing to
                     // look up — the old code falsely claimed the number "is not saved".
@@ -339,8 +361,7 @@ class UserProfileDetailViewModel @Inject constructor(
             }
             // Audit B4: a failed block/unblock was completely silent.
             res.onFailure {
-                _statusMessage.value = it.localizedMessage
-                    ?: if (isEn) "Could not update the block state" else "تعذّر تحديث حالة الحظر"
+                _statusMessage.value = ErrorCopy.friendly(it, if (isEn) "Could not update the block state" else "تعذّر تحديث حالة الحظر")
             }
         }
     }
@@ -354,8 +375,7 @@ class UserProfileDetailViewModel @Inject constructor(
                 // Audit B4: the dialog closed either way, so a failed report
                 // looked exactly like a submitted one.
                 .onFailure {
-                    _statusMessage.value = it.localizedMessage
-                        ?: if (isEn) "Could not submit the report" else "تعذّر إرسال البلاغ"
+                    _statusMessage.value = ErrorCopy.friendly(it, if (isEn) "Could not submit the report" else "تعذّر إرسال البلاغ")
                 }
         }
     }
@@ -376,6 +396,7 @@ fun UserProfileDetailScreen(
     val strings = LocalWesalStrings.current
     val context = LocalContext.current
     val peer by viewModel.peerUser.collectAsStateWithLifecycle()
+    val peerState by viewModel.peerState.collectAsStateWithLifecycle()
     val me by viewModel.currentUser.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val requests by viewModel.contactRequests.collectAsStateWithLifecycle()
@@ -606,11 +627,44 @@ fun UserProfileDetailScreen(
             )
         }
     ) { padding ->
-        if (target == null) {
+        // Round 13 (Addendum L2): failure ≠ not-found ≠ unavailable.
+        // A failed load (quota/network) gets a retryable error state;
+        // only a genuinely missing document is «الحساب غير موجود»;
+        // and hiddenFromSearch (a SEARCH-visibility flag) no longer
+        // makes an existing contact's profile "unavailable" — it only
+        // ever governed search results (the r12 asymmetry class).
+        if (peerState is com.wesal.messenger.domain.model.UserLoadState.Failed) {
+            Box(Modifier.fillMaxSize().padding(padding).padding(24.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Default.CloudOff, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(56.dp))
+                    Text(
+                        text = if (strings.isEnglish) "Couldn't load this profile — check your connection and try again" else "تعذر تحميل الملف الشخصي — تحقق من الاتصال وحاول مرة أخرى",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.textSecondary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Button(onClick = { viewModel.retryProfile() }) {
+                        Text(if (strings.isEnglish) "Retry" else "إعادة المحاولة")
+                    }
+                }
+            }
+        } else if (peerState is com.wesal.messenger.domain.model.UserLoadState.NotFound) {
+            Box(Modifier.fillMaxSize().padding(padding).padding(24.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Default.PersonOff, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(56.dp))
+                    Text(
+                        text = if (strings.isEnglish) "Account not found" else "الحساب غير موجود",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = palette.textSecondary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        } else if (target == null) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator(color = palette.turquoise)
             }
-        } else if ((target.hiddenFromSearch && !isSuperAdmin && target.uid != viewModel.myUid) || target.deletedAt > 0L || target.deletedPermanent) {
+        } else if (target.deletedAt > 0L || target.deletedPermanent) {
             Box(Modifier.fillMaxSize().padding(padding).padding(24.dp), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Default.PersonOff, contentDescription = null, tint = palette.textMuted, modifier = Modifier.size(56.dp))

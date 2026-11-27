@@ -1,5 +1,6 @@
 package com.wesal.messenger.authentication
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.app.Activity
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
@@ -191,9 +192,9 @@ fun PhoneLoginScreen(
             } catch (e: Exception) {
                 viewModel.setAuthError(
                     if (strings.isEnglish) {
-                        "Google Sign-In failed: ${e.localizedMessage ?: "verify SHA-1 and Google Sign-In"}"
+                        "Google Sign-In failed: ${ErrorCopy.friendly(e, "verify SHA-1 and Google Sign-In")}"
                     } else {
-                        "تعذر تسجيل الدخول عبر Google: ${e.localizedMessage ?: "تأكد من تفعيل Google في Firebase وبصمة SHA-1"}"
+                        "تعذر تسجيل الدخول عبر Google: ${ErrorCopy.friendly(e, "تأكد من تفعيل Google في Firebase وبصمة SHA-1")}"
                     }
                 )
             } finally {

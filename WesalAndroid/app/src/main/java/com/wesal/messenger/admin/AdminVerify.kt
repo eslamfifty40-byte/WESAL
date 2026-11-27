@@ -1,5 +1,6 @@
 package com.wesal.messenger.admin
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -124,7 +125,7 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                     selectedSeal = VerificationSealType.fromKey(doc.getString("verificationType"))
                 }
             } catch (e: Exception) {
-                msg = "حصل خطأ: " + (e.message ?: "")
+                msg = "حصل خطأ: " + (ErrorCopy.friendly(e, ""))
             }
             busy = false
         }
@@ -177,7 +178,7 @@ private fun AdminVerifyScreen(onClose: () -> Unit) {
                     if (value) "تم منح ${selectedSeal.labelAr} بنجاح" else "تم سحب التوثيق بنجاح"
                 }
             } catch (e: Exception) {
-                "حصل خطأ: " + (e.message ?: "")
+                "حصل خطأ: " + (ErrorCopy.friendly(e, ""))
             }
             busy = false
         }

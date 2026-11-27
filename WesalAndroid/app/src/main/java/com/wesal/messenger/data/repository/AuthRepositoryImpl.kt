@@ -23,6 +23,7 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.PhoneOtpLogic
 import com.wesal.messenger.core.util.PendingProfileLogic
 import com.wesal.messenger.core.util.PhoneUtils
@@ -426,7 +427,8 @@ class AuthRepositoryImpl @Inject constructor(
             return PhoneOtpLogic.arabicMessageForErrorCode(e.errorCode, e.message, fallback)
         }
         if (e is IllegalStateException && !e.message.isNullOrBlank()) return e.message!!
-        return e.localizedMessage?.takeIf { it.isNotBlank() } ?: fallback
+        // Round 13 (Addendum L5): never the raw SDK message.
+        return ErrorCopy.friendly(e, fallback)
     }
 
     /**
@@ -2206,7 +2208,7 @@ class AuthRepositoryImpl @Inject constructor(
                     "لأسباب أمنية، يرجى تأكيد هويتك (إدخال كلمة المرور أو اختيار حساب Google) لإتمام حذف الحساب نهائياً"
                 is FirebaseAuthInvalidCredentialsException ->
                     "كلمة المرور غير صحيحة؛ تعذر تأكيد الهوية"
-                else -> e.localizedMessage ?: "تعذر حذف الحساب نهائياً"
+                else -> ErrorCopy.friendly(e, "تعذر حذف الحساب نهائياً")
             }
             Result.failure(Exception(msg, e))
         }
@@ -2272,7 +2274,10 @@ class AuthRepositoryImpl @Inject constructor(
             is FirebaseAuthInvalidCredentialsException -> "البريد الإلكتروني أو كلمة المرور غير صحيحة"
             is FirebaseAuthUserCollisionException -> "هذا البريد الإلكتروني مسجل بالفعل في WESAL"
             is FirebaseAuthWeakPasswordException -> "كلمة المرور ضعيفة جداً — استخدم 6 أحرف على الأقل"
-            else -> e.localizedMessage?.takeIf { it.isNotBlank() } ?: fallback
+            // Round 13 (Addendum L5): never surface a raw SDK message —
+            // unmapped exceptions collapse to the fixed fallback (or a
+            // quota/connection state) via ErrorCopy.
+            else -> ErrorCopy.friendly(e, fallback)
         }
     }
 }

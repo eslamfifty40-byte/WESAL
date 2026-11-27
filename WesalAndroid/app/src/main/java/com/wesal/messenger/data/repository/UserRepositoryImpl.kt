@@ -19,6 +19,7 @@ import com.google.firebase.firestore.Source
 import com.google.firebase.functions.FirebaseFunctions
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.GiftGrantLogic
 import com.wesal.messenger.core.util.WelcomeGiftLogic
 import com.wesal.messenger.core.util.PhoneDiscoveryLogic
@@ -530,6 +531,30 @@ class UserRepositoryImpl @Inject constructor(
                     return@addSnapshotListener
                 }
                 trySend(snapshot?.takeIf { it.exists() }?.toWesalUser(includePrivateUnredacted = isSelf))
+            }
+        awaitClose { registration.remove() }
+    }
+
+    override fun observeUserState(uid: String): Flow<com.wesal.messenger.domain.model.UserLoadState> = callbackFlow {
+        val isSelf = uid == auth.currentUser?.uid
+        val registration = firestore.collection(Constants.COLLECTION_USERS)
+            .document(uid)
+            .addSnapshotListener { snapshot, error ->
+                when {
+                    // Round 13 (Addendum L2): an error is a FAILED load,
+                    // never silently folded into "no such account".
+                    error != null ->
+                        trySend(com.wesal.messenger.domain.model.UserLoadState.Failed(error))
+                    snapshot == null ->
+                        trySend(com.wesal.messenger.domain.model.UserLoadState.Loading)
+                    !snapshot.exists() ->
+                        trySend(com.wesal.messenger.domain.model.UserLoadState.NotFound)
+                    else -> trySend(
+                        com.wesal.messenger.domain.model.UserLoadState.Loaded(
+                            snapshot.toWesalUser(includePrivateUnredacted = isSelf)
+                        )
+                    )
+                }
             }
         awaitClose { registration.remove() }
     }
@@ -1751,7 +1776,7 @@ class UserRepositoryImpl @Inject constructor(
                         if (error != null) {
                             sessionsSyncState.value = ChatListSyncState(
                                 ChatListSyncStatus.ERROR,
-                                error.message ?: "تعذر تحميل الجلسات"
+                                ErrorCopy.friendly(error, "تعذر تحميل الجلسات")
                             )
                             return@addSnapshotListener
                         }
@@ -4487,7 +4512,7 @@ class UserRepositoryImpl @Inject constructor(
                     if (err != null) {
                         contactListsSyncState.value = ChatListSyncState(
                             ChatListSyncStatus.ERROR,
-                            err.message ?: "تعذر تحميل القوائم"
+                            ErrorCopy.friendly(err, "تعذر تحميل القوائم")
                         )
                         return@addSnapshotListener
                     }

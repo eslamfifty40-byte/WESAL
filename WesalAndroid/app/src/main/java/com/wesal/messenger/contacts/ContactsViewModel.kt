@@ -1,5 +1,6 @@
 package com.wesal.messenger.contacts
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -215,7 +216,7 @@ class ContactsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoadingContacts = false,
-                            error = err.localizedMessage ?: "تعذر قراءة جهات الاتصال"
+                            error = ErrorCopy.friendly(err, "تعذر قراءة جهات الاتصال")
                         )
                     }
                     return@launch
@@ -234,14 +235,12 @@ class ContactsViewModel @Inject constructor(
                             it.copy(
                                 isLoadingContacts = false,
                                 nonWesalContacts = deviceList.sortedBy { c -> c.displayName.trim().lowercase() },
-                                error = err.localizedMessage
-                                    ?: "تعذر التحقق من جهات الاتصال المسجلة على WESAL"
+                                error = ErrorCopy.friendly(err, "تعذر التحقق من جهات الاتصال المسجلة على WESAL")
                             )
                         } else {
                             it.copy(
                                 isLoadingContacts = false,
-                                error = err.localizedMessage
-                                    ?: "تعذر التحقق من جهات الاتصال المسجلة على WESAL"
+                                error = ErrorCopy.friendly(err, "تعذر التحقق من جهات الاتصال المسجلة على WESAL")
                             )
                         }
                     }
@@ -291,7 +290,7 @@ class ContactsViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         isLoadingContacts = false,
-                        error = err.localizedMessage ?: "تعذر قراءة جهات الاتصال"
+                        error = ErrorCopy.friendly(err, "تعذر قراءة جهات الاتصال")
                     )
                 }
             }
@@ -432,8 +431,8 @@ class ContactsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isSavingDeviceContact = false,
-                            deviceContactSaveError = err.localizedMessage ?: "تعذر حفظ جهة الاتصال",
-                            error = err.localizedMessage ?: "تعذر حفظ جهة الاتصال"
+                            deviceContactSaveError = ErrorCopy.friendly(err, "تعذر حفظ جهة الاتصال"),
+                            error = ErrorCopy.friendly(err, "تعذر حفظ جهة الاتصال")
                         )
                     }
                 }
@@ -463,7 +462,7 @@ class ContactsViewModel @Inject constructor(
                     syncDeviceContacts()
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر حذف جهة الاتصال") }
+                    _uiState.update { it.copy(error = ErrorCopy.friendly(err, "تعذر حذف جهة الاتصال")) }
                     // Audit B5: the row was optimistically hidden above; without a
                     // resync a FAILED delete looked exactly like a successful one
                     // until the next manual refresh. Resync restores the true row.
@@ -476,7 +475,7 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.upsertContactList(listId, name, memberUids)
                 .onSuccess { _uiState.update { it.copy(feedback = "تم حفظ القائمة ✓") } }
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر حفظ القائمة") } }
+                .onFailure { err -> _uiState.update { it.copy(error = ErrorCopy.friendly(err, "تعذر حفظ القائمة")) } }
         }
     }
 
@@ -484,7 +483,7 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.deleteContactList(listId)
                 .onSuccess { _uiState.update { it.copy(feedback = "تم حذف القائمة") } }
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage) } }
+                .onFailure { err -> _uiState.update { it.copy(error = ErrorCopy.friendly(err)) } }
         }
     }
 
@@ -492,7 +491,7 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.createAppEvent(title, description, locationName, eventTime)
                 .onSuccess { _uiState.update { it.copy(feedback = "تم نشر المناسبة ✓") } }
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر إنشاء المناسبة") } }
+                .onFailure { err -> _uiState.update { it.copy(error = ErrorCopy.friendly(err, "تعذر إنشاء المناسبة")) } }
         }
     }
 
@@ -500,14 +499,14 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.deleteAppEvent(eventId)
                 .onSuccess { _uiState.update { it.copy(feedback = "تم حذف المناسبة") } }
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage) } }
+                .onFailure { err -> _uiState.update { it.copy(error = ErrorCopy.friendly(err)) } }
         }
     }
 
     fun toggleEventRsvp(eventId: String, join: Boolean) {
         viewModelScope.launch {
             userRepository.rsvpAppEvent(eventId, join)
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage) } }
+                .onFailure { err -> _uiState.update { it.copy(error = ErrorCopy.friendly(err)) } }
         }
     }
 
@@ -530,7 +529,7 @@ class ContactsViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isSendingBroadcast = false,
-                            error = err.localizedMessage ?: "تعذر إرسال البث الجماعي"
+                            error = ErrorCopy.friendly(err, "تعذر إرسال البث الجماعي")
                         )
                     }
                 }
@@ -555,7 +554,7 @@ class ContactsViewModel @Inject constructor(
                     _uiState.update { it.copy(searchResults = list, isSearching = false) }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(isSearching = false, error = err.localizedMessage) }
+                    _uiState.update { it.copy(isSearching = false, error = ErrorCopy.friendly(err)) }
                 }
         }
     }
@@ -567,7 +566,7 @@ class ContactsViewModel @Inject constructor(
                     _uiState.update { it.copy(feedback = "تم إرسال طلب التعارف ✓") }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(error = err.message ?: "تعذر إرسال الطلب") }
+                    _uiState.update { it.copy(error = ErrorCopy.friendly(err, "تعذر إرسال الطلب")) }
                 }
         }
     }
@@ -597,7 +596,7 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch {
             chatRepository.getOrCreateDirectChat(peerUid)
                 .onSuccess { chatId -> onChatReady(chatId) }
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر فتح المحادثة") } }
+                .onFailure { err -> _uiState.update { it.copy(error = ErrorCopy.friendly(err, "تعذر فتح المحادثة")) } }
         }
     }
 
@@ -613,7 +612,7 @@ class ContactsViewModel @Inject constructor(
         viewModelScope.launch {
             chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
                 .onSuccess { chatId -> onChatReady(chatId) }
-                .onFailure { err -> _uiState.update { it.copy(error = err.localizedMessage ?: "تعذر فتح محادثة الإدارة") } }
+                .onFailure { err -> _uiState.update { it.copy(error = ErrorCopy.friendly(err, "تعذر فتح محادثة الإدارة")) } }
         }
     }
 

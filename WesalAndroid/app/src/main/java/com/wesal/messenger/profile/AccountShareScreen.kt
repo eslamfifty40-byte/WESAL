@@ -1,5 +1,6 @@
 package com.wesal.messenger.profile
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -302,7 +303,7 @@ fun AccountShareScreen(
                                     ).show()
                                 }
                                 .onFailure { err ->
-                                    Toast.makeText(context, err.localizedMessage ?: "Error", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, ErrorCopy.friendly(err, "Error"), Toast.LENGTH_SHORT).show()
                                 }
                         },
                         modifier = Modifier.weight(1f),
@@ -317,7 +318,7 @@ fun AccountShareScreen(
                         onClick = {
                             shareQrBitmapViaFileProvider(context, deepLink, shareMessage)
                                 .onFailure { err ->
-                                    Toast.makeText(context, err.localizedMessage ?: "Error", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, ErrorCopy.friendly(err, "Error"), Toast.LENGTH_SHORT).show()
                                 }
                         },
                         modifier = Modifier.weight(1f),

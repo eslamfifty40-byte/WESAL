@@ -1,5 +1,6 @@
 package com.wesal.messenger.media
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -224,7 +225,7 @@ fun CameraCaptureScreen(
                                     }.onFailure { err ->
                                         Toast.makeText(
                                             context,
-                                            err.localizedMessage ?: if (strings.isEnglish) "Could not save to gallery" else "تعذر الحفظ في المعرض",
+                                            ErrorCopy.friendly(err, if (strings.isEnglish) "Could not save to gallery" else "تعذر الحفظ في المعرض"),
                                             Toast.LENGTH_SHORT
                                         ).show()
                                     }
@@ -273,7 +274,7 @@ fun CameraCaptureScreen(
                     cameraProvider.unbindAll()
                     cameraProvider.bindToLifecycle(lifecycleOwner, selector, preview, imgCap, vidCap)
                 }.onFailure { err ->
-                    captureError = err.localizedMessage ?: if (strings.isEnglish) "Failed to start camera" else "تعذر تشغيل الكاميرا"
+                    captureError = ErrorCopy.friendly(err, if (strings.isEnglish) "Failed to start camera" else "تعذر تشغيل الكاميرا")
                 }
             }, ContextCompat.getMainExecutor(context))
         }
@@ -402,11 +403,11 @@ fun CameraCaptureScreen(
 
                                         override fun onError(exception: ImageCaptureException) {
                                             runCatching { file.delete() }
-                                            captureError = exception.localizedMessage ?: if (strings.isEnglish) {
+                                            captureError = ErrorCopy.friendly(exception, if (strings.isEnglish) {
                                                 "Failed to capture photo"
                                             } else {
                                                 "تعذر التقاط الصورة"
-                                            }
+                                            })
                                         }
                                     }
                                 )

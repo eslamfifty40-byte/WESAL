@@ -1,5 +1,6 @@
 package com.wesal.messenger.profile
 
+import com.wesal.messenger.core.util.ErrorCopy
 import androidx.lifecycle.ViewModel
 import android.Manifest
 import android.app.Activity
@@ -194,7 +195,7 @@ class ProfileViewModel @Inject constructor(
                 )
             }.onFailure { err ->
                 _uiStatus.value = ProfileUiStatus(
-                    message = err.localizedMessage ?: if (isEn) "Failed to save profile" else "تعذر حفظ التعديلات",
+                    message = ErrorCopy.friendly(err, if (isEn) "Failed to save profile" else "تعذر حفظ التعديلات"),
                     isError = true,
                     navigateBackOnSuccess = false
                 )
@@ -226,7 +227,7 @@ class ProfileViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     _uiStatus.value = ProfileUiStatus(
-                        message = err.localizedMessage ?: if (isEn) "Failed to update the frame" else "تعذر تحديث الإطار",
+                        message = ErrorCopy.friendly(err, if (isEn) "Failed to update the frame" else "تعذر تحديث الإطار"),
                         isError = true,
                         navigateBackOnSuccess = false
                     )
@@ -260,7 +261,7 @@ class ProfileViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     _uiStatus.value = ProfileUiStatus(
-                        message = (if (isEn) "Photo not saved: " else "لم يتم حفظ الصورة: ") + (err.localizedMessage ?: ""),
+                        message = (if (isEn) "Photo not saved: " else "لم يتم حفظ الصورة: ") + (ErrorCopy.friendly(err, "")),
                         isError = true
                     )
                 }
@@ -306,8 +307,7 @@ class ProfileViewModel @Inject constructor(
                 )
             if (saveResult.isFailure) {
                 _uiStatus.value = ProfileUiStatus(
-                    message = saveResult.exceptionOrNull()?.localizedMessage
-                        ?: if (isEn) "Phone number unavailable" else "تعذر حفظ رقم الهاتف",
+                    message = ErrorCopy.friendly(saveResult.exceptionOrNull(), if (isEn) "Phone number unavailable" else "تعذر حفظ رقم الهاتف"),
                     isError = true
                 )
                 return@launch
@@ -362,8 +362,7 @@ class ProfileViewModel @Inject constructor(
                         // The repository already maps backend codes to the
                         // phone screens' Arabic via
                         // PhoneOtpLogic.arabicMessageForErrorCode.
-                        message = err.localizedMessage
-                            ?: if (isEn) "Could not send the verification code" else "تعذر إرسال كود التحقق",
+                        message = ErrorCopy.friendly(err, if (isEn) "Could not send the verification code" else "تعذر إرسال كود التحقق"),
                         isError = true
                     )
                 }
@@ -413,8 +412,7 @@ class ProfileViewModel @Inject constructor(
                 .onFailure { err ->
                     _phoneOtpState.update { it.copy(isBusy = false) }
                     _uiStatus.value = ProfileUiStatus(
-                        message = err.localizedMessage
-                            ?: if (isEn) "Could not verify the code" else "تعذر التحقق من الكود",
+                        message = ErrorCopy.friendly(err, if (isEn) "Could not verify the code" else "تعذر التحقق من الكود"),
                         isError = true
                     )
                 }
@@ -457,8 +455,7 @@ class ProfileViewModel @Inject constructor(
                 .onFailure { err ->
                     _phoneOtpState.update { it.copy(isBusy = false) }
                     _uiStatus.value = ProfileUiStatus(
-                        message = err.localizedMessage
-                            ?: if (isEn) "Could not resend the code" else "تعذر إعادة إرسال الكود",
+                        message = ErrorCopy.friendly(err, if (isEn) "Could not resend the code" else "تعذر إعادة إرسال الكود"),
                         isError = true
                     )
                 }
@@ -487,7 +484,7 @@ class ProfileViewModel @Inject constructor(
                     )
                 }
                 .onFailure { err ->
-                    _uiStatus.value = ProfileUiStatus(message = err.localizedMessage ?: "Error", isError = true)
+                    _uiStatus.value = ProfileUiStatus(message = ErrorCopy.friendly(err, "Error"), isError = true)
                 }
         }
     }
@@ -501,7 +498,7 @@ class ProfileViewModel @Inject constructor(
             userRepository.updatePrivacySettings(settings)
                 .onFailure { err ->
                     _uiStatus.value = ProfileUiStatus(
-                        message = err.localizedMessage ?: "تعذر حفظ إعدادات الخصوصية",
+                        message = ErrorCopy.friendly(err, "تعذر حفظ إعدادات الخصوصية"),
                         isError = true
                     )
                 }
@@ -526,7 +523,7 @@ class ProfileViewModel @Inject constructor(
                     )
                 }
                 .onFailure { err ->
-                    _uiStatus.value = ProfileUiStatus(message = err.localizedMessage ?: "Error", isError = true)
+                    _uiStatus.value = ProfileUiStatus(message = ErrorCopy.friendly(err, "Error"), isError = true)
                 }
         }
     }
@@ -549,7 +546,7 @@ class ProfileViewModel @Inject constructor(
                     )
                 }
                 .onFailure { err ->
-                    _uiStatus.value = ProfileUiStatus(message = err.localizedMessage ?: "Error", isError = true)
+                    _uiStatus.value = ProfileUiStatus(message = ErrorCopy.friendly(err, "Error"), isError = true)
                 }
         }
     }
@@ -564,7 +561,7 @@ class ProfileViewModel @Inject constructor(
                     )
                 }
                 .onFailure { err ->
-                    _uiStatus.value = ProfileUiStatus(message = err.localizedMessage ?: "Error", isError = true)
+                    _uiStatus.value = ProfileUiStatus(message = ErrorCopy.friendly(err, "Error"), isError = true)
                 }
         }
     }
@@ -928,7 +925,7 @@ fun ProfileScreen(
                                                 .onFailure { err ->
                                                     Toast.makeText(
                                                         context,
-                                                        err.localizedMessage ?: "Error",
+                                                        ErrorCopy.friendly(err, "Error"),
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 }
@@ -1126,7 +1123,7 @@ fun ProfileScreen(
                                         ).show()
                                     }
                                     .onFailure { err ->
-                                        Toast.makeText(context, err.localizedMessage ?: "Error", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, ErrorCopy.friendly(err, "Error"), Toast.LENGTH_SHORT).show()
                                     }
                             }
                         }

@@ -1,5 +1,6 @@
 package com.wesal.messenger.channels
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -525,7 +526,7 @@ fun ChannelDetailScreen(
                                         .onFailure { err ->
                                             Toast.makeText(
                                                 context,
-                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر حفظ الصورة",
+                                                ErrorCopy.friendly(err, if (strings.isEnglish) "Save failed" else "تعذر حفظ الصورة"),
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }
@@ -611,7 +612,7 @@ fun ChannelDetailScreen(
                                         .onFailure { err ->
                                             Toast.makeText(
                                                 context,
-                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر الحفظ",
+                                                ErrorCopy.friendly(err, if (strings.isEnglish) "Save failed" else "تعذر الحفظ"),
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }

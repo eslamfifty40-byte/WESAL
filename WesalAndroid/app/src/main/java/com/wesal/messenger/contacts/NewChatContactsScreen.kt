@@ -40,6 +40,7 @@ import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.SearchStateLogic
 import com.wesal.messenger.core.util.WesalFeatureFlags
 import com.wesal.messenger.core.util.WesalIdUtils
 import com.wesal.messenger.core.util.WesalShareUtils
@@ -452,15 +453,13 @@ fun NewChatContactsScreen(
                             }
                         }
                     },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = palette.textPrimary,
-                        unfocusedTextColor = palette.textPrimary,
-                        focusedPlaceholderColor = palette.textMuted,
-                        unfocusedPlaceholderColor = palette.textMuted,
-                        focusedBorderColor = palette.turquoise,
-                        unfocusedBorderColor = palette.border,
-                        cursorColor = palette.turquoise
-                    ),
+                    // Round 13 (Addendum M2): the standard Item-H pairing —
+                    // text AND container from the same palette pair. This
+                    // field previously set text colors only and left the
+                    // container to the Material scheme; on the owner's
+                    // light theme the typed digits rendered near-white
+                    // (device-proven ghosting, same family as Item H).
+                    colors = wesalFieldColors(),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp)
@@ -984,7 +983,17 @@ fun NewChatContactsScreen(
                                     modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
                                 )
                             }
-                            if (extraGlobalResults.isEmpty() && !state.isSearching) {
+                            // Round 13 (Addendum M1): «لم يتم العثور» is a
+                            // verdict — only after a SUCCESSFUL empty query.
+                            // A failed query (state.error != null) shows only
+                            // the retryable failure line, never a verdict.
+                            if (SearchStateLogic.shouldShowNoMatch(
+                                    query = trimmedQuery,
+                                    isSearching = state.isSearching,
+                                    hasError = state.error != null,
+                                    resultCount = extraGlobalResults.size
+                                )
+                            ) {
                                 item(key = "no_exact_match") {
                                     Text(
                                         text = if (strings.isEnglish) {

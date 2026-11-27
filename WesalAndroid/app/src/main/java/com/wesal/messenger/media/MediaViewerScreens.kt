@@ -1,5 +1,6 @@
 package com.wesal.messenger.media
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.background
@@ -101,7 +102,7 @@ fun FullscreenImageViewer(
                                         .onFailure { err ->
                                             Toast.makeText(
                                                 context,
-                                                err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر حفظ الصورة",
+                                                ErrorCopy.friendly(err, if (strings.isEnglish) "Save failed" else "تعذر حفظ الصورة"),
                                                 Toast.LENGTH_SHORT
                                             ).show()
                                         }

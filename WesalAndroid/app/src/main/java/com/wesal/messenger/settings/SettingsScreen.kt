@@ -1,5 +1,6 @@
 package com.wesal.messenger.settings
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -317,8 +318,7 @@ class SettingsViewModel @Inject constructor(
                 }
                 else -> {
                     isSwitchingAccount.value = false
-                    statusMessage.value = result.exceptionOrNull()?.localizedMessage
-                        ?: if (isEn) "Failed to switch Google account" else "تعذر تبديل حساب Google"
+                    statusMessage.value = ErrorCopy.friendly(result.exceptionOrNull(), if (isEn) "Failed to switch Google account" else "تعذر تبديل حساب Google")
                 }
             }
         }
@@ -361,8 +361,7 @@ class SettingsViewModel @Inject constructor(
                 }
                 else -> {
                     isSwitchingAccount.value = false
-                    statusMessage.value = result.exceptionOrNull()?.localizedMessage
-                        ?: if (isEn) "Failed to switch account" else "تعذر تبديل الحساب"
+                    statusMessage.value = ErrorCopy.friendly(result.exceptionOrNull(), if (isEn) "Failed to switch account" else "تعذر تبديل الحساب")
                 }
             }
         }
@@ -385,7 +384,7 @@ class SettingsViewModel @Inject constructor(
             chatRepository.openSupportChatByNumericId(Constants.OWNER_ADMIN_NUMERIC_ID)
                 .onSuccess(onOpenChat)
                 .onFailure { err ->
-                    statusMessage.value = err.localizedMessage ?: if (isEn) "Unable to reach WESAL Support" else "تعذر فتح محادثة إدارة WESAL"
+                    statusMessage.value = ErrorCopy.friendly(err, if (isEn) "Unable to reach WESAL Support" else "تعذر فتح محادثة إدارة WESAL")
                 }
         }
     }
@@ -443,7 +442,7 @@ class SettingsViewModel @Inject constructor(
                 .onSuccess {
                     statusMessage.value = if (isEn) "All other sessions ended" else "تم إنهاء جميع الجلسات الأخرى"
                 }
-                .onFailure { err -> statusMessage.value = err.localizedMessage }
+                .onFailure { err -> statusMessage.value = ErrorCopy.friendly(err) }
         }
     }
 
@@ -451,7 +450,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             userRepository.createSessionLinkToken()
                 .onSuccess { sessionLinkToken.value = it }
-                .onFailure { err -> statusMessage.value = err.localizedMessage }
+                .onFailure { err -> statusMessage.value = ErrorCopy.friendly(err) }
         }
     }
 
@@ -520,7 +519,7 @@ class SettingsViewModel @Inject constructor(
                 onDeleted()
             }.onFailure { err ->
                 isDeletingAccount.value = false
-                statusMessage.value = err.localizedMessage ?: if (isEn) "Unable to delete account" else "تعذر حذف الحساب؛ تأكد من إعادة التحقق من الهوية"
+                statusMessage.value = ErrorCopy.friendly(err, if (isEn) "Unable to delete account" else "تعذر حذف الحساب؛ تأكد من إعادة التحقق من الهوية")
             }
         }
     }
@@ -671,7 +670,7 @@ fun SettingsScreen(
             } catch (_: NoCredentialException) {
                 onNoCredential()
             } catch (e: Exception) {
-                viewModel.showMessage(e.localizedMessage ?: "Error")
+                viewModel.showMessage(ErrorCopy.friendly(e, "Error"))
             }
         }
     }

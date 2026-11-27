@@ -1,5 +1,6 @@
 package com.wesal.messenger.contacts
 
+import com.wesal.messenger.core.util.ErrorCopy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -84,7 +85,7 @@ class InviteLandingViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(actionInProgress = true) }
             userRepository.sendContactRequest(targetUid)
-                .onFailure { err -> onFeedback(err.message ?: "تعذر إرسال الطلب") }
+                .onFailure { err -> onFeedback(ErrorCopy.friendly(err, "تعذر إرسال الطلب")) }
             _state.update { it.copy(actionInProgress = false) }
         }
     }
@@ -93,7 +94,7 @@ class InviteLandingViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(actionInProgress = true) }
             userRepository.acceptContactRequest(requestId)
-                .onFailure { err -> onFeedback(err.message ?: "تعذر قبول الطلب") }
+                .onFailure { err -> onFeedback(ErrorCopy.friendly(err, "تعذر قبول الطلب")) }
             _state.update { it.copy(actionInProgress = false) }
         }
     }
@@ -103,7 +104,7 @@ class InviteLandingViewModel @Inject constructor(
             _state.update { it.copy(actionInProgress = true) }
             chatRepository.getOrCreateDirectChat(peerUid)
                 .onSuccess(onSuccess)
-                .onFailure { err -> onFeedback(err.message ?: "تعذر فتح المحادثة") }
+                .onFailure { err -> onFeedback(ErrorCopy.friendly(err, "تعذر فتح المحادثة")) }
             _state.update { it.copy(actionInProgress = false) }
         }
     }

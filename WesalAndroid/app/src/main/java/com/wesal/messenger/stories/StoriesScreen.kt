@@ -1,5 +1,6 @@
 package com.wesal.messenger.stories
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.content.Context
 import android.Manifest
 import android.app.Activity
@@ -336,7 +337,7 @@ class StoriesViewModel @Inject constructor(
                 }
                 .onFailure { err ->
                     _uploadState.value = StoriesUploadUiState(
-                        errorMessage = err.localizedMessage ?: "تعذر نشر الحالة النصية"
+                        errorMessage = ErrorCopy.friendly(err, "تعذر نشر الحالة النصية")
                     )
                 }
         }
@@ -370,7 +371,7 @@ class StoriesViewModel @Inject constructor(
                 isOfficial = isOfficial
             ).catch { err ->
                 _uploadState.value = StoriesUploadUiState(
-                    errorMessage = err.localizedMessage ?: "تعذر نشر الحالة",
+                    errorMessage = ErrorCopy.friendly(err, "تعذر نشر الحالة"),
                     failedRequest = request
                 )
             }.collect { event ->
@@ -439,7 +440,7 @@ class StoriesViewModel @Inject constructor(
                 isOfficial = isOfficial
             ).catch { err ->
                 _uploadState.value = StoriesUploadUiState(
-                    errorMessage = err.localizedMessage ?: "تعذر نشر الحالة الصوتية"
+                    errorMessage = ErrorCopy.friendly(err, "تعذر نشر الحالة الصوتية")
                 )
             }.collect { event ->
                 when (event) {
@@ -541,7 +542,7 @@ class StoriesViewModel @Inject constructor(
             storyRepository.deleteStory(storyId)
                 .onSuccess { _uploadState.update { it.copy(statusBanner = "تم حذف الحالة") } }
                 .onFailure { err ->
-                    _uploadState.update { it.copy(errorMessage = err.localizedMessage ?: "تعذر حذف الحالة") }
+                    _uploadState.update { it.copy(errorMessage = ErrorCopy.friendly(err, "تعذر حذف الحالة")) }
                 }
         }
     }
@@ -1077,7 +1078,7 @@ fun StoriesScreen(
                                             .onFailure { err ->
                                                 Toast.makeText(
                                                     context,
-                                                    err.localizedMessage ?: if (strings.isEnglish) "Save failed" else "تعذر الحفظ",
+                                                    ErrorCopy.friendly(err, if (strings.isEnglish) "Save failed" else "تعذر الحفظ"),
                                                     Toast.LENGTH_SHORT
                                                 ).show()
                                             }

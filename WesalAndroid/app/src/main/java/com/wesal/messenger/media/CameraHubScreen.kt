@@ -1,5 +1,6 @@
 package com.wesal.messenger.media
 
+import com.wesal.messenger.core.util.ErrorCopy
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -165,7 +166,7 @@ class CameraHubViewModel @Inject constructor(
                     }
                 }.onFailure { err ->
                     _uiState.value = CameraHubUiState(
-                        error = err.localizedMessage ?: "تعذر إرسال الوسائط"
+                        error = ErrorCopy.friendly(err, "تعذر إرسال الوسائط")
                     )
                 }
             }

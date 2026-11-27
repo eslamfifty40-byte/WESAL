@@ -14,6 +14,7 @@ import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.DirectChatRequestLogic
 import com.wesal.messenger.core.util.MessageQueuedException
 import com.wesal.messenger.core.util.OfficialChatWelcome
@@ -48,6 +49,7 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import com.google.android.gms.tasks.Task
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -305,7 +307,9 @@ class ChatRepositoryImpl @Inject constructor(
                             if (paged) {
                                 _chatListState.value = ChatListSyncState(
                                     status = ChatListSyncStatus.ERROR,
-                                    errorMessage = error?.message ?: "تعذر تحميل المحادثات"
+                                    // Round 13 (Addendum L5): fixed Arabic
+                                    // state only — never the raw exception.
+                                    errorMessage = ErrorCopy.friendly(error, "تعذر تحميل المحادثات")
                                 )
                             }
                             return@addSnapshotListener
@@ -710,7 +714,7 @@ class ChatRepositoryImpl @Inject constructor(
                             // renders it with retry) instead of silently freezing.
                             _messageSyncState.value = ChatListSyncState(
                                 status = ChatListSyncStatus.ERROR,
-                                errorMessage = error?.message ?: "تعذر مزامنة الرسائل",
+                                errorMessage = ErrorCopy.friendly(error, "تعذر مزامنة الرسائل"),
                                 chatId = chatId
                             )
                             return@addSnapshotListener
@@ -1115,6 +1119,24 @@ class ChatRepositoryImpl @Inject constructor(
                 try {
                     chatRef.set(data, SetOptions.merge()).await()
                 } catch (denied: FirebaseFirestoreException) {
+                    if (denied.code == FirebaseFirestoreException.Code.RESOURCE_EXHAUSTED) {
+                        // Round 13 (Addendum L4): the server is quota-dead
+                        // (device-proven 2026-11-27) — «طلب مراسلة» must not
+                        // die silently. Queue the birth write locally: the
+                        // chat opens now from the SDK's latency-compensated
+                        // snapshot and the server commits it when the daily
+                        // quota resets. (PERMISSION_DENIED keeps its honest
+                        // fallback below — that signal must stay synchronous.)
+                        chatRef.set(data, SetOptions.merge()).awaitQueued()
+                        ensurePendingContactRequestDoc(
+                            sortedIds = sortedIds,
+                            myUid = myUid,
+                            me = me,
+                            peerUid = peerUid,
+                            peer = peer
+                        )
+                        return@runCatching deterministicChatId
+                    }
                     if (denied.code != FirebaseFirestoreException.Code.PERMISSION_DENIED) {
                         throw denied
                     }
@@ -1142,10 +1164,14 @@ class ChatRepositoryImpl @Inject constructor(
                     peer = peer
                 )
             } else {
-                chatRef.set(data, SetOptions.merge()).await()
+                // Round 13 (Addendum L4): queued write — the chat is born
+                // in the local snapshot immediately and commits when the
+                // server accepts it; a quota-dead server can no longer
+                // make «مراسلة» a dead tap.
+                chatRef.set(data, SetOptions.merge()).awaitQueued()
             }
         } else {
-            chatRef.update("deletedForUsers", FieldValue.arrayRemove(myUid)).await()
+            chatRef.update("deletedForUsers", FieldValue.arrayRemove(myUid)).awaitQueued()
         }
         deterministicChatId
     }
@@ -1437,8 +1463,17 @@ class ChatRepositoryImpl @Inject constructor(
         val now = System.currentTimeMillis()
 
         val adminAvatarUrl = fetchOwnerAdminAvatarUrl()
+        // Round 13 (Addendum L3): chat doc + welcome message + preview
+        // are written as ONE atomic batch (see the commit below). The
+        // old sequence of three separately-awaited writes could land
+        // the chat doc (list shows the welcome preview) and then die on
+        // the message write under the exhausted write quota — leaving
+        // a conversation that opens bare-empty (device-proven).
+        val batch = firestore.batch()
+        var batchHasWrites = false
         if (chatSnap == null || !chatSnap.exists()) {
-            chatRef.set(
+            batch.set(
+                chatRef,
                 mapOf(
                     "chatId" to officialChatId,
                     "isGroup" to false,
@@ -1458,13 +1493,16 @@ class ChatRepositoryImpl @Inject constructor(
                     "lastMessageStatus" to MessageStatus.DELIVERED.raw
                 ),
                 SetOptions.merge()
-            ).await()
+            )
+            batchHasWrites = true
         } else if (adminAvatarUrl.isNotBlank() && chatSnap.getString("groupAvatarUrl").orEmpty().isBlank()) {
-            runCatching { chatRef.set(mapOf("groupAvatarUrl" to adminAvatarUrl), SetOptions.merge()).await() }
+            batch.set(chatRef, mapOf("groupAvatarUrl" to adminAvatarUrl), SetOptions.merge())
+            batchHasWrites = true
         }
 
         if (!hasAnyMessage || forceResend) {
-            msgRef.set(
+            batch.set(
+                msgRef,
                 mapOf(
                     "messageId" to messageId,
                     "chatId" to officialChatId,
@@ -1480,7 +1518,8 @@ class ChatRepositoryImpl @Inject constructor(
                     "status" to MessageStatus.DELIVERED.raw,
                     "timestamp" to now
                 )
-            ).await()
+            )
+            batchHasWrites = true
 
             val updatePayload = hashMapOf<String, Any>(
                 "isOfficialWesalChat" to true,
@@ -1495,11 +1534,19 @@ class ChatRepositoryImpl @Inject constructor(
             if (forceResend) {
                 updatePayload["deletedForUsers"] = FieldValue.arrayRemove(myUid)
             }
-            chatRef.set(updatePayload, SetOptions.merge()).await()
+            batch.set(chatRef, updatePayload, SetOptions.merge())
+            batchHasWrites = true
+        }
+        // ONE atomic commit: chat doc + welcome message + preview land
+        // together or not at all, and awaitQueued surfaces them in the
+        // local snapshot immediately even while the server cannot
+        // accept writes (quota) — the commit lands when it resets.
+        if (batchHasWrites) batch.commit().awaitQueued()
 
+        if (!hasAnyMessage || forceResend) {
             firestore.collection(Constants.COLLECTION_USERS).document(myUid)
                 .set(mapOf("welcomeSent" to true), SetOptions.merge())
-                .await()
+                .awaitQueued()
         }
     }
 
@@ -2405,3 +2452,18 @@ class ChatRepositoryImpl @Inject constructor(
     }
 }
 
+
+/**
+ * Round 13 (Addenda J/L3/L4): bounded wait for a Firestore write's
+ * server ACK. The write itself is already queued in the SDK's
+ * persistent outbox and visible in local snapshots immediately
+ * (latency compensation); waiting for the ACK must never block the
+ * user — on timeout OR failure this returns and the SDK keeps
+ * retrying the commit in the background (e.g. past a quota reset).
+ * Mirrors the helper of the same name in AuthRepositoryImpl, except
+ * that failures are also swallowed: chat-birth and welcome writes are
+ * fire-and-forget by design.
+ */
+private suspend fun <T> Task<T>.awaitQueued(timeoutMs: Long = 6_000L) {
+    runCatching { withTimeoutOrNull(timeoutMs) { await() } }
+}

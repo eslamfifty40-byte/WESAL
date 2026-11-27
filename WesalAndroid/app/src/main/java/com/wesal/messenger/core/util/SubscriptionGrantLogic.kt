@@ -41,7 +41,7 @@ object SubscriptionGrantLogic {
      * (`desiredSeal`, `desiredGlowColor`, `desiredFrameId`). Unknown
      * seal/glow keys fall back exactly like the writers do
      * ([VerificationSealType.fromKey] → its default seal,
-     * [NeonColorPreset.fromKey] → NONE), and a blank frame id means
+     * [NeonColorPreset.fromKey] → NONE, whose stored key is ""), and a blank frame id means
      * "no frame grant" rather than "clear the frame".
      */
     fun planFor(
