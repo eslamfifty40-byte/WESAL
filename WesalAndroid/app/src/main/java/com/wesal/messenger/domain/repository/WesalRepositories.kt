@@ -210,6 +210,7 @@ interface UserRepository {
     fun observeAppUpdateConfig(): Flow<AppUpdateConfig>
     suspend fun updateAppUpdateConfig(config: AppUpdateConfig): Result<Unit>
     fun observeSubscriptionRequests(): Flow<List<SubscriptionRequest>>
+    suspend fun refreshSubscriptionRequests(): List<SubscriptionRequest>
     fun observeMySubscriptionRequests(): Flow<List<SubscriptionRequest>>
     suspend fun submitSubscriptionRequest(
         requestType: String,

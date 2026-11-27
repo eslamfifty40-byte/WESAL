@@ -995,15 +995,17 @@ fun WesalAvatar(
                                 )
                             }
                         }
-                        effectiveCutout || neonPreset != NeonColorPreset.NONE -> Modifier.background(
-                            Brush.radialGradient(
-                                colors = listOf(
-                                    innerBackdropColor.copy(alpha = 0.58f),
-                                    innerBackdropColor.copy(alpha = 0.22f),
-                                    if (effectiveCutout) innerBackdropColor.copy(alpha = 0.04f) else palette.surface.copy(alpha = 0.96f)
+                        effectiveCutout || neonPreset != NeonColorPreset.NONE -> Modifier
+                            .background(palette.surface)
+                            .background(
+                                Brush.radialGradient(
+                                    colors = listOf(
+                                        innerBackdropColor.copy(alpha = 0.58f),
+                                        innerBackdropColor.copy(alpha = 0.24f),
+                                        palette.surface
+                                    )
                                 )
                             )
-                        )
                         else -> Modifier
                     }
                 ),

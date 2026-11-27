@@ -2293,6 +2293,49 @@ class UserRepositoryImpl @Inject constructor(
         )
     }
 
+    private suspend fun setDocWithRestFallback(
+        docRef: com.google.firebase.firestore.DocumentReference,
+        data: Map<String, Any?>,
+        merge: Boolean = false
+    ) {
+        val sdkAttempt = withTimeoutOrNull(8_000L) {
+            runCatching {
+                if (merge) docRef.set(data, SetOptions.merge()).await()
+                else docRef.set(data).await()
+            }
+        }
+        if (sdkAttempt != null && sdkAttempt.isSuccess) return
+        val sdkErr = sdkAttempt?.exceptionOrNull()
+        if (sdkErr is FirebaseFirestoreException &&
+            sdkErr.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+        ) {
+            throw sdkErr
+        }
+        val code = FirestoreRest.setDocument(auth, docRef.path, data, merge = merge)
+        if (code in 200..299) return
+        if (sdkErr != null) throw sdkErr
+        error("Firestore write failed (HTTP $code)")
+    }
+
+    private suspend fun deleteDocWithRestFallback(
+        docRef: com.google.firebase.firestore.DocumentReference
+    ) {
+        val sdkAttempt = withTimeoutOrNull(8_000L) {
+            runCatching { docRef.delete().await() }
+        }
+        if (sdkAttempt != null && sdkAttempt.isSuccess) return
+        val sdkErr = sdkAttempt?.exceptionOrNull()
+        if (sdkErr is FirebaseFirestoreException &&
+            sdkErr.code == FirebaseFirestoreException.Code.PERMISSION_DENIED
+        ) {
+            throw sdkErr
+        }
+        val code = FirestoreRest.deleteDocument(auth, docRef.path)
+        if (code in 200..299 || code == 404) return
+        if (sdkErr != null) throw sdkErr
+        error("Firestore delete failed (HTTP $code)")
+    }
+
     private fun DocumentSnapshot.toSubscriptionRequest(): SubscriptionRequest = SubscriptionRequest(
         requestId = getString("requestId") ?: id,
         userUid = getString("userUid").orEmpty(),
@@ -2333,6 +2376,19 @@ class UserRepositoryImpl @Inject constructor(
                 }
             awaitClose { reg.remove() }
         }
+    }
+
+    override suspend fun refreshSubscriptionRequests(): List<SubscriptionRequest> {
+        if (!getCurrentAdminPermissions().hasAnyAccess() && !isSuperAdmin()) return emptyList()
+        val query = firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS).limit(250)
+        val snap = runCatching {
+            withTimeoutOrNull(8_000L) { query.get(Source.SERVER).await() }
+        }.getOrNull() ?: runCatching {
+            withTimeoutOrNull(8_000L) { query.get().await() }
+        }.getOrNull() ?: return emptyList()
+        return snap.documents
+            .map { it.toSubscriptionRequest() }
+            .sortedByDescending { it.createdAt }
     }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -2395,28 +2451,31 @@ class UserRepositoryImpl @Inject constructor(
         }
         val payload = SubscriptionRequestLogic.resolvePayload(storageUrl, inlineData)
         val now = System.currentTimeMillis()
-        firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS).document(reqId).set(
-            mapOf(
-                "requestId" to reqId,
-                "userUid" to uid,
-                "userName" to me.displayName.ifBlank { "@${me.publicId}" },
-                "userNumericId" to me.numericId,
-                "userPublicId" to me.publicId,
-                "requestType" to requestType.ifBlank { "VERIFICATION_$validSeal" },
-                "desiredSeal" to validSeal,
-                "desiredFrameId" to cleanFrame,
-                "desiredGlowColor" to validGlow,
-                "idDocumentUrl" to payload.url,
-                "idDocumentInline" to payload.inlineData,
-                "idDocumentSource" to payload.source.name,
-                "note" to note.trim(),
-                "status" to "PENDING",
-                "adminResponse" to "",
-                "reviewedByUid" to "",
-                "reviewedAt" to 0L,
-                "createdAt" to now
-            )
-        ).await()
+        val reqPayload = mapOf(
+            "requestId" to reqId,
+            "userUid" to uid,
+            "userName" to me.displayName.ifBlank { "@${me.publicId}" },
+            "userNumericId" to me.numericId,
+            "userPublicId" to me.publicId,
+            "requestType" to requestType.ifBlank { "VERIFICATION_$validSeal" },
+            "desiredSeal" to validSeal,
+            "desiredFrameId" to cleanFrame,
+            "desiredGlowColor" to validGlow,
+            "idDocumentUrl" to payload.url,
+            "idDocumentInline" to payload.inlineData,
+            "idDocumentSource" to payload.source.name,
+            "note" to note.trim(),
+            "status" to "PENDING",
+            "adminResponse" to "",
+            "reviewedByUid" to "",
+            "reviewedAt" to 0L,
+            "createdAt" to now
+        )
+        setDocWithRestFallback(
+            firestore.collection(Constants.COLLECTION_SUBSCRIPTION_REQUESTS).document(reqId),
+            reqPayload,
+            merge = false
+        )
     }
 
     override suspend fun reviewSubscriptionRequest(
@@ -3447,14 +3506,15 @@ class UserRepositoryImpl @Inject constructor(
                 "لا يمكن حذف أو تعطيل حساب الإدارة المحمي"
             }
             val now = System.currentTimeMillis()
-            ref.set(
+            setDocWithRestFallback(
+                ref,
                 mapOf(
                     "deletedAt" to now,
                     "hiddenFromSearch" to true,
                     "isOnline" to false
                 ),
-                SetOptions.merge()
-            ).await()
+                merge = true
+            )
             writeAdminActionLog(
                 action = "USER_SOFT_DELETED",
                 targetUid = targetUid,
@@ -3600,7 +3660,8 @@ class UserRepositoryImpl @Inject constructor(
         }
 
         // Write scrubbed tombstone so deleted account stays tracked in DELETED stats/filters and cannot be recreated
-        ref.set(
+        setDocWithRestFallback(
+            ref,
             mapOf(
                 "displayName" to "حساب محذوف",
                 "nameSearchKey" to WesalIdUtils.normalizeNameSearchKey("حساب محذوف"),
@@ -3628,10 +3689,10 @@ class UserRepositoryImpl @Inject constructor(
                 "hiddenFromSearch" to true,
                 "deletedAt" to now,
                 "deletedPermanent" to true,
-                "lastSeen" to FieldValue.serverTimestamp()
+                "lastSeen" to now
             ),
-            SetOptions.merge()
-        ).await()
+            merge = true
+        )
 
         // Spec §10.2: dedicated deleted-accounts log — one tombstone doc per deleted
         // account (doc id = uid), separate from the audit logs so the record survives
@@ -4452,17 +4513,30 @@ class UserRepositoryImpl @Inject constructor(
         )
         require(collectionName in allowedCollections && logId.isNotBlank()) { "معرف سجل غير صالح" }
         val col = firestore.collection(collectionName)
-        col.document(logId).delete().await()
-        val byOp = runCatching { col.whereEqualTo("operationId", logId).get().await() }.getOrNull()
-        val byLogId = runCatching { col.whereEqualTo("logId", logId).get().await() }.getOrNull()
+        deleteDocWithRestFallback(col.document(logId))
+        val byOp = runCatching {
+            withTimeoutOrNull(6_000L) { col.whereEqualTo("operationId", logId).get(Source.SERVER).await() }
+                ?: col.whereEqualTo("operationId", logId).get().await()
+        }.getOrNull()
+        val byLogId = runCatching {
+            withTimeoutOrNull(6_000L) { col.whereEqualTo("logId", logId).get(Source.SERVER).await() }
+                ?: col.whereEqualTo("logId", logId).get().await()
+        }.getOrNull()
         val matchingDocs = (byOp?.documents.orEmpty() + byLogId?.documents.orEmpty())
             .distinctBy { it.id }
             .filter { it.id != logId }
         if (matchingDocs.isNotEmpty()) {
             matchingDocs.chunked(350).forEach { chunk ->
-                val batch = firestore.batch()
-                chunk.forEach { batch.delete(it.reference) }
-                batch.commit().await()
+                val batchOk = withTimeoutOrNull(8_000L) {
+                    runCatching {
+                        val batch = firestore.batch()
+                        chunk.forEach { batch.delete(it.reference) }
+                        batch.commit().await()
+                    }.isSuccess
+                } == true
+                if (!batchOk) {
+                    FirestoreRest.commitBatchDeletes(auth, chunk.map { "$collectionName/${it.id}" })
+                }
             }
         }
     }
@@ -4478,11 +4552,29 @@ class UserRepositoryImpl @Inject constructor(
         require(collectionName in allowedCollections) { "سجل غير صالح" }
         val col = firestore.collection(collectionName)
         while (true) {
-            val snap = col.limit(350).get().await()
+            val snap = withTimeoutOrNull(8_000L) {
+                runCatching { col.limit(350).get(Source.SERVER).await() }.getOrNull()
+                    ?: runCatching { col.limit(350).get().await() }.getOrNull()
+            }
+            if (snap == null) {
+                val ids = FirestoreRest.listDocumentIds(auth, collectionName, 300)
+                if (ids.isEmpty()) break
+                val code = FirestoreRest.commitBatchDeletes(auth, ids.map { "$collectionName/$it" })
+                if (code !in 200..299) error("تعذر تفريغ السجل")
+                continue
+            }
             if (snap.isEmpty) break
-            val batch = firestore.batch()
-            snap.documents.forEach { batch.delete(it.reference) }
-            batch.commit().await()
+            val batchOk = withTimeoutOrNull(8_000L) {
+                runCatching {
+                    val batch = firestore.batch()
+                    snap.documents.forEach { batch.delete(it.reference) }
+                    batch.commit().await()
+                }.isSuccess
+            } == true
+            if (!batchOk) {
+                val code = FirestoreRest.commitBatchDeletes(auth, snap.documents.map { "$collectionName/${it.id}" })
+                if (code !in 200..299) error("تعذر تفريغ السجل")
+            }
         }
     }
 

@@ -169,14 +169,15 @@ enum class AdminUserFilter(val labelAr: String, val isPrimaryChip: Boolean = fal
     fun matches(u: WesalUser, now: Long): Boolean {
         val dayMs = 24L * 60L * 60L * 1000L
         val online = u.isOnline || (maxOf(u.lastHeartbeatAt, u.lastSeen) > 0L && now - maxOf(u.lastHeartbeatAt, u.lastSeen) <= Constants.PRESENCE_ONLINE_TTL_MS)
+        val isDeleted = u.deletedAt > 0L || u.deletedPermanent
         return when (this) {
-            ALL -> true
-            ONLINE -> online
-            OFFLINE -> !online
-            VERIFIED -> u.isVerified
+            ALL -> !isDeleted
+            ONLINE -> online && !isDeleted
+            OFFLINE -> !online && !isDeleted
+            VERIFIED -> u.isVerified && !isDeleted
             BANNED -> u.isBanned
-            HIDDEN -> u.hiddenFromSearch
-            DELETED -> u.deletedAt > 0L
+            HIDDEN -> u.hiddenFromSearch && !isDeleted
+            DELETED -> isDeleted
             NEW_TODAY -> u.createdAt > 0L && now - u.createdAt <= dayMs
             NEW_2DAYS -> u.createdAt > 0L && now - u.createdAt <= 2 * dayMs
             NEW_WEEK -> u.createdAt > 0L && now - u.createdAt <= 7 * dayMs
@@ -214,8 +215,17 @@ class AdminVerificationViewModel @Inject constructor(
     val appUpdateConfig: StateFlow<AppUpdateConfig> = userRepository.observeAppUpdateConfig()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUpdateConfig())
 
-    val subscriptionRequests: StateFlow<List<SubscriptionRequest>> = userRepository.observeSubscriptionRequests()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    private val _refreshedSubscriptionRequests = MutableStateFlow<List<SubscriptionRequest>?>(null)
+
+    val subscriptionRequests: StateFlow<List<SubscriptionRequest>> = kotlinx.coroutines.flow.combine(
+        userRepository.observeSubscriptionRequests(),
+        _refreshedSubscriptionRequests
+    ) { live, refreshed ->
+        val merged = linkedMapOf<String, SubscriptionRequest>()
+        refreshed.orEmpty().forEach { merged[it.requestId] = it }
+        live.forEach { merged[it.requestId] = it }
+        merged.values.sortedByDescending { it.createdAt }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val verificationLogs: StateFlow<List<VerificationAuditLog>> = userRepository.observeVerificationAuditLogs()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -407,6 +417,10 @@ class AdminVerificationViewModel @Inject constructor(
             }
             runCatching { _welcomeConfig.value = userRepository.getWelcomeConfig() }
             runCatching { _globalCustomerFrameEnabled.value = userRepository.getGlobalCustomerFrameEnabled() }
+            runCatching {
+                val fresh = userRepository.refreshSubscriptionRequests()
+                if (fresh.isNotEmpty()) _refreshedSubscriptionRequests.value = fresh
+            }
             if (isSuperAdmin.value || adminPermissions.value.canBroadcastAnnouncements) {
                 runCatching { _officialTeamChannel.value = channelRepository.ensureOfficialTeamChannel() }
             }

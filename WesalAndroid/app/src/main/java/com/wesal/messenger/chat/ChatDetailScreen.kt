@@ -16,6 +16,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -40,6 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -61,8 +63,10 @@ import com.google.accompanist.permissions.rememberPermissionState
 import com.google.android.gms.location.LocationServices
 import com.wesal.messenger.calls.CallActivity
 import com.wesal.messenger.core.theme.WesalColors
+import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.ScreenshotProtectionPolicy
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.crop.CropActivity
@@ -82,6 +86,7 @@ import com.wesal.messenger.presentation.components.WesalEmojiKeyboard
 import com.wesal.messenger.presentation.components.WesalEmojiUtils
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.wesalImageModel
+import com.wesal.messenger.presentation.components.wesalNeonTextStyle
 import com.wesal.messenger.voice.VoicePlaybackState
 import kotlinx.coroutines.launch
 import java.io.File
@@ -491,39 +496,81 @@ fun ChatDetailScreen(
                             fallbackResId = if (isOfficialReadOnly || chat?.isSupportChat == true) com.wesal.messenger.R.drawable.wesal_brand_logo else null
                         )
                         Column {
-                            WesalNameWithBadge(
-                                name = chat?.title ?: if (strings.isEnglish) "Chat" else "محادثة",
-                                isVerified = chat?.peerVerified == true && (chat?.isGroup == false || isOfficialReadOnly),
-                                verificationType = chat?.peerVerificationType?.ifBlank { "BLUE" } ?: "BLUE",
-                                neonColor = peerUser?.neonColor ?: chat?.peerNeonColor.orEmpty(),
-                                neonGlowIntensity = peerUser?.neonGlowIntensity ?: (chat?.peerNeonGlowIntensity ?: 0.7f),
-                                neonEnabled = if (isOfficialReadOnly || chat?.isGroup == true) false else (peerUser?.neonEnabled ?: (chat?.peerNeonEnabled == true)),
-                                verificationGlowColor = peerUser?.verificationGlowColor ?: chat?.peerVerificationGlowColor.orEmpty(),
-                                verificationGlowEnabled = peerUser?.verificationGlowEnabled ?: (chat?.peerVerificationGlowEnabled ?: true),
-                                verificationGlowIntensity = peerUser?.verificationGlowIntensity ?: (chat?.peerVerificationGlowIntensity ?: 0.7f),
-                                style = MaterialTheme.typography.titleMedium,
-                                color = palette.textPrimary,
-                                // FIX 1 (round 5): the peer's nameplate icon beside
-                                // the header name — same value the header avatar
-                                // shows (1:1 chats only; groups/official excluded,
-                                // mirroring the avatar's own condition).
-                                iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) {
-                                    val livePeer = peerUser
-                                    if (livePeer != null) {
-                                        WesalFrameLibrary.resolveIconUrl(livePeer.iconId, livePeer.iconUrl)
-                                            .ifBlank { chat?.peerIconUrl.orEmpty() }
-                                    } else {
-                                        chat?.peerIconUrl.orEmpty()
-                                    }
-                                } else ""
-                            )
+                            val headerNeonEnabled = if (isOfficialReadOnly || chat?.isGroup == true) false else (peerUser?.neonEnabled ?: (chat?.peerNeonEnabled == true))
+                            val headerNeonColor = peerUser?.neonColor ?: chat?.peerNeonColor.orEmpty()
+                            val headerNeonIntensity = peerUser?.neonGlowIntensity ?: (chat?.peerNeonGlowIntensity ?: 0.7f)
+                            val headerVerifGlowEnabled = peerUser?.verificationGlowEnabled ?: (chat?.peerVerificationGlowEnabled ?: true)
+                            val headerVerifGlowColor = peerUser?.verificationGlowColor ?: chat?.peerVerificationGlowColor.orEmpty()
+                            val headerVerifGlowIntensity = peerUser?.verificationGlowIntensity ?: (chat?.peerVerificationGlowIntensity ?: 0.7f)
+                            val showHeaderNameplate = !isOfficialReadOnly && chat?.isGroup == false &&
+                                peerUser != null && (
+                                !peerUser!!.nameplateColor.equals("CRIMSON", ignoreCase = true) ||
+                                    com.wesal.messenger.core.util.Constants.isProtectedAdminNumericId(peerUser!!.numericId)
+                                )
+                            val headerPreset = if (showHeaderNameplate) {
+                                WesalNameplateColorPreset.fromKey(peerUser?.nameplateColor)
+                            } else null
+                            val headerNameView: @Composable () -> Unit = {
+                                WesalNameWithBadge(
+                                    name = chat?.title ?: if (strings.isEnglish) "Chat" else "محادثة",
+                                    isVerified = chat?.peerVerified == true && (chat?.isGroup == false || isOfficialReadOnly),
+                                    verificationType = chat?.peerVerificationType?.ifBlank { "BLUE" } ?: "BLUE",
+                                    neonColor = headerNeonColor,
+                                    neonGlowIntensity = headerNeonIntensity,
+                                    neonEnabled = headerNeonEnabled,
+                                    verificationGlowColor = headerVerifGlowColor,
+                                    verificationGlowEnabled = headerVerifGlowEnabled,
+                                    verificationGlowIntensity = headerVerifGlowIntensity,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = if (headerPreset != null) Color.White else palette.textPrimary,
+                                    // FIX 1 (round 5): the peer's nameplate icon beside
+                                    // the header name — same value the header avatar
+                                    // shows (1:1 chats only; groups/official excluded,
+                                    // mirroring the avatar's own condition).
+                                    iconUrl = if (!isOfficialReadOnly && chat?.isGroup == false) {
+                                        val livePeer = peerUser
+                                        if (livePeer != null) {
+                                            WesalFrameLibrary.resolveIconUrl(livePeer.iconId, livePeer.iconUrl)
+                                                .ifBlank { chat?.peerIconUrl.orEmpty() }
+                                        } else {
+                                            chat?.peerIconUrl.orEmpty()
+                                        }
+                                    } else ""
+                                )
+                            }
+                            if (headerPreset != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            Brush.horizontalGradient(
+                                                listOf(
+                                                    Color(headerPreset.edgeHex),
+                                                    Color(headerPreset.midHex),
+                                                    Color(headerPreset.centerHex)
+                                                )
+                                            )
+                                        )
+                                        .border(
+                                            width = 1.dp,
+                                            color = Color(headerPreset.borderAccentHex).copy(alpha = 0.78f),
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) {
+                                    headerNameView()
+                                }
+                            } else {
+                                headerNameView()
+                            }
                             val activeTimer = DisappearingTimer.fromSeconds(chat?.disappearingDurationSec ?: 0L)
                             val timerSuffix = if (activeTimer != DisappearingTimer.OFF) {
                                 " • ⏱ ${if (strings.isEnglish) activeTimer.labelEn else activeTimer.labelAr}"
                             } else ""
+                            val isTypingNow = chat?.typingUsers?.isNotEmpty() == true
                             val subtitle = when {
                                 isOfficialReadOnly -> if (strings.isEnglish) "Official WESAL Channel • Read Only" else "إشعارات وصال الرسمية • للقراءة فقط"
-                                chat?.typingUsers?.isNotEmpty() == true -> strings.typingNow
+                                isTypingNow -> strings.typingNow
                                 chat?.isGroup == true -> if (strings.isEnglish) "${chat?.participantIds?.size ?: 0} members" else "${chat?.participantIds?.size ?: 0} عضو"
                                 chat?.peerOnline == true -> strings.onlineNow
                                 (chat?.peerLastSeen ?: 0L) > 0L ->
@@ -531,10 +578,24 @@ fun ChatDetailScreen(
                                     else "آخر ظهور ${DateTimeUtils.formatChatListTime(chat!!.peerLastSeen)}"
                                 else -> "WESAL Messenger"
                             } + timerSuffix
+                            val activeTypingGlowColor = when {
+                                headerNeonEnabled && NeonColorPreset.fromKey(headerNeonColor) != NeonColorPreset.NONE -> headerNeonColor
+                                chat?.peerVerified == true && headerVerifGlowEnabled && NeonColorPreset.fromKey(headerVerifGlowColor) != NeonColorPreset.NONE -> headerVerifGlowColor
+                                else -> ""
+                            }
                             Text(
                                 text = subtitle,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (chat?.typingUsers?.isNotEmpty() == true || chat?.peerOnline == true) {
+                                style = if (isTypingNow && activeTypingGlowColor.isNotBlank()) {
+                                    wesalNeonTextStyle(
+                                        baseStyle = MaterialTheme.typography.labelSmall,
+                                        neonColorKey = activeTypingGlowColor,
+                                        intensity = maxOf(headerNeonIntensity, headerVerifGlowIntensity),
+                                        baseColor = palette.emerald
+                                    )
+                                } else {
+                                    MaterialTheme.typography.labelSmall
+                                },
+                                color = if (isTypingNow || chat?.peerOnline == true) {
                                     palette.emerald
                                 } else {
                                     palette.textSecondary
@@ -678,62 +739,6 @@ fun ChatDetailScreen(
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
-                val diagError by WesalDiag.error.collectAsStateWithLifecycle()
-                val diagStatus by WesalDiag.status.collectAsStateWithLifecycle()
-                val diagProbe by WesalDiag.probe.collectAsStateWithLifecycle()
-                val diagClr by WesalDiag.clearResult.collectAsStateWithLifecycle()
-                LaunchedEffect(Unit) {
-                    if (WesalDiag.probe.value.isBlank()) {
-                        kotlinx.coroutines.delay(6000L)
-                        WesalDiag.probe.value = "فحص..."
-                        WesalDiag.probe.value = runCatching {
-                            com.wesal.messenger.data.repository.NetProbe.run(
-                                com.google.firebase.firestore.FirebaseFirestore.getInstance(
-                                    com.google.firebase.FirebaseApp.getInstance(),
-                                    "ai-studio-livo-cd975dac-35e6-4dbb-864e-829e3b638424"
-                                ),
-                                com.google.firebase.auth.FirebaseAuth.getInstance()
-                            )
-                        }.getOrElse { "probe failed: ${it.javaClass.simpleName}" }
-                    }
-                }
-                if (diagStatus.isNotBlank()) {
-                    androidx.compose.material3.Text(
-                        text = "v${com.wesal.messenger.BuildConfig.BUILD_STAMP} | $diagStatus | $diagProbe | $diagClr",
-                        color = Color(0xFFBBBBBB),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFF222222))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-                diagError?.let { msg ->
-                    val diagCtx = androidx.compose.ui.platform.LocalContext.current
-                    androidx.compose.material3.Text(
-                        text = msg + "  (اضغط للمشاركة · اضغط مطولاً للإخفاء)",
-                        color = Color.White,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFFB00020))
-                            .combinedClickable(
-                                onClick = {
-                                    val full = msg + "\n" + diagStatus + " | " + diagProbe + " | " + diagClr
-                                    val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(android.content.Intent.EXTRA_TEXT, full)
-                                    }
-                                    runCatching {
-                                        diagCtx.startActivity(
-                                            android.content.Intent.createChooser(send, "مشاركة التشخيص")
-                                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                        )
-                                    }
-                                },
-                                onLongClick = { WesalDiag.error.value = null }
-                            )
-                            .padding(8.dp)
-                    )
-                }
                 if (chat?.isMessageRequest == true || chat?.requestStatus == "PENDING" || chat?.requestStatus == "HELD") {
                     Surface(
                         color = palette.surfaceElevated,

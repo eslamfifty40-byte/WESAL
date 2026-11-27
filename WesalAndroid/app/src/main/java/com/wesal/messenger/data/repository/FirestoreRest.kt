@@ -72,6 +72,7 @@ object FirestoreRest {
         is Long -> JSONObject().put("integerValue", v.toString())
         is Int -> JSONObject().put("integerValue", v.toString())
         is Double -> JSONObject().put("doubleValue", v)
+        is Float -> JSONObject().put("doubleValue", v.toDouble())
         is String -> JSONObject().put("stringValue", v)
         is Map<*, *> -> {
             val m = JSONObject()
@@ -158,6 +159,71 @@ object FirestoreRest {
             .put("updateMask", JSONObject().put("fieldPaths", mask))
             .put("updateTransforms", transforms)
         val body = JSONObject().put("writes", JSONArray().put(msgWrite).put(chatWrite))
+        val c = open("$BASE:commit", idToken(auth), "POST")
+        post(c, body)
+    }
+
+    suspend fun setDocument(
+        auth: FirebaseAuth,
+        docPath: String,
+        data: Map<String, Any?>,
+        merge: Boolean = false
+    ): Int = withContext(Dispatchers.IO) {
+        val url = if (merge && data.isNotEmpty()) {
+            val maskParams = data.keys.joinToString("&") { "updateMask.fieldPaths=${java.net.URLEncoder.encode(it, "UTF-8")}" }
+            "$BASE/$docPath?$maskParams"
+        } else {
+            "$BASE/$docPath"
+        }
+        val body = JSONObject().put("fields", docFields(data))
+        val c = open(url, idToken(auth), "PATCH")
+        post(c, body)
+    }
+
+    suspend fun deleteDocument(auth: FirebaseAuth, docPath: String): Int = withContext(Dispatchers.IO) {
+        val c = open("$BASE/$docPath", idToken(auth), "DELETE")
+        c.doOutput = false
+        val code = c.responseCode
+        runCatching { (if (code >= 400) c.errorStream else c.inputStream)?.close() }
+        c.disconnect()
+        code
+    }
+
+    suspend fun listDocumentIds(
+        auth: FirebaseAuth,
+        collectionPath: String,
+        pageSize: Int = 300
+    ): List<String> = withContext(Dispatchers.IO) {
+        val c = open("$BASE/$collectionPath?pageSize=${pageSize.coerceIn(1, 300)}", idToken(auth), "GET")
+        c.doOutput = false
+        val code = c.responseCode
+        val bodyText = runCatching {
+            val stream = if (code >= 400) c.errorStream else c.inputStream
+            stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        }.getOrDefault("")
+        c.disconnect()
+        if (code !in 200..299 || bodyText.isBlank()) return@withContext emptyList()
+        val json = runCatching { JSONObject(bodyText) }.getOrNull() ?: return@withContext emptyList()
+        val docs = json.optJSONArray("documents") ?: return@withContext emptyList()
+        buildList {
+            for (i in 0 until docs.length()) {
+                val fullName = docs.optJSONObject(i)?.optString("name").orEmpty()
+                val id = fullName.substringAfterLast('/')
+                if (id.isNotBlank()) add(id)
+            }
+        }
+    }
+
+    suspend fun commitBatchDeletes(
+        auth: FirebaseAuth,
+        docPaths: List<String>
+    ): Int = withContext(Dispatchers.IO) {
+        if (docPaths.isEmpty()) return@withContext 200
+        val writes = JSONArray()
+        docPaths.forEach { path ->
+            writes.put(JSONObject().put("delete", docName(path)))
+        }
+        val body = JSONObject().put("writes", writes)
         val c = open("$BASE:commit", idToken(auth), "POST")
         post(c, body)
     }

@@ -134,7 +134,7 @@ object PhoneContactsHelper {
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val cleanName = displayName.trim()
-            val cleanPhone = phone.trim()
+            val cleanPhone = PhoneUtils.normalizeAsciiDigits(phone).trim()
             require(cleanName.isNotBlank()) { "الاسم مطلوب" }
             // Round 6 (item 9): check the WRITE permission HERE, at insert
             // time. The add dialog's only gate was a permission-state
@@ -174,72 +174,82 @@ object PhoneContactsHelper {
                 resolver.applyBatch(ContactsContract.AUTHORITY, ops)
             } else {
                 require(cleanPhone.isNotBlank()) { "رقم الهاتف مطلوب" }
-                val ops = ArrayList<ContentProviderOperation>()
-                val rawContactInsertIndex = 0
-                ops.add(
-                    ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
-                        .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, null)
-                        .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, null)
-                        .build()
-                )
-                ops.add(
-                    ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactInsertIndex)
-                        .withValue(
-                            ContactsContract.Data.MIMETYPE,
-                            ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
-                        )
-                        .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, cleanName)
-                        // GIVEN_NAME as well as DISPLAY_NAME: several OEM
-                        // contacts providers only aggregate/surface a raw
-                        // contact in the Phone query when the structured
-                        // name carries a given name — a DISPLAY_NAME-only
-                        // row could be written yet never appear in the list.
-                        .withValue(ContactsContract.CommonDataKinds.StructuredName.GIVEN_NAME, cleanName)
-                        .build()
-                )
-                ops.add(
-                    ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
-                        .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactInsertIndex)
-                        .withValue(
-                            ContactsContract.Data.MIMETYPE,
-                            ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
-                        )
-                        .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, cleanPhone)
-                        .withValue(
-                            ContactsContract.CommonDataKinds.Phone.TYPE,
-                            ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
-                        )
-                        .build()
-                )
-                val results = resolver.applyBatch(ContactsContract.AUTHORITY, ops)
-                // Round 6 (item 9): VERIFY the insert landed — applyBatch
-                // returning without an exception was previously taken as
-                // success without ever looking at the result Uris or
-                // re-reading the provider. Extract the new raw-contact id
-                // and confirm the phone row is actually queryable; anything
-                // else is a failure the caller must surface, not a save.
-                val rawContactId = results.getOrNull(0)?.uri?.lastPathSegment?.toLongOrNull()
-                    ?: error("تعذر حفظ جهة الاتصال على الجهاز")
-                val landed = resolver.query(
-                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                    arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
-                    "${ContactsContract.Data.RAW_CONTACT_ID} = ?",
-                    arrayOf(rawContactId.toString()),
-                    null
-                )?.use { cursor ->
-                    var found = false
-                    val wantedDigits = PhoneUtils.normalizeAsciiDigits(cleanPhone).filter { it.isDigit() }
-                    while (cursor.moveToNext()) {
-                        val storedDigits = PhoneUtils.normalizeAsciiDigits(cursor.getString(0).orEmpty())
-                            .filter { it.isDigit() }
-                        if (storedDigits == wantedDigits || storedDigits.endsWith(wantedDigits.takeLast(9))) {
-                            found = true
-                            break
+                fun insertIntoAccount(accountType: String?, accountName: String?): Boolean {
+                    val ops = ArrayList<ContentProviderOperation>()
+                    val rawContactInsertIndex = 0
+                    ops.add(
+                        ContentProviderOperation.newInsert(ContactsContract.RawContacts.CONTENT_URI)
+                            .withValue(ContactsContract.RawContacts.ACCOUNT_TYPE, accountType)
+                            .withValue(ContactsContract.RawContacts.ACCOUNT_NAME, accountName)
+                            .build()
+                    )
+                    ops.add(
+                        ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                            .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactInsertIndex)
+                            .withValue(
+                                ContactsContract.Data.MIMETYPE,
+                                ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE
+                            )
+                            .withValue(ContactsContract.CommonDataKinds.StructuredName.DISPLAY_NAME, cleanName)
+                            .withValue(ContactsContract.CommonDataKinds.StructuredName.GIVEN_NAME, cleanName)
+                            .build()
+                    )
+                    ops.add(
+                        ContentProviderOperation.newInsert(ContactsContract.Data.CONTENT_URI)
+                            .withValueBackReference(ContactsContract.Data.RAW_CONTACT_ID, rawContactInsertIndex)
+                            .withValue(
+                                ContactsContract.Data.MIMETYPE,
+                                ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE
+                            )
+                            .withValue(ContactsContract.CommonDataKinds.Phone.NUMBER, cleanPhone)
+                            .withValue(
+                                ContactsContract.CommonDataKinds.Phone.TYPE,
+                                ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE
+                            )
+                            .build()
+                    )
+                    val results = runCatching { resolver.applyBatch(ContactsContract.AUTHORITY, ops) }.getOrNull()
+                        ?: return false
+                    val rawContactId = results.getOrNull(0)?.uri?.lastPathSegment?.toLongOrNull()
+                        ?: return false
+                    return resolver.query(
+                        ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                        arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                        "${ContactsContract.Data.RAW_CONTACT_ID} = ?",
+                        arrayOf(rawContactId.toString()),
+                        null
+                    )?.use { cursor ->
+                        var found = false
+                        val wantedDigits = PhoneUtils.normalizeAsciiDigits(cleanPhone).filter { it.isDigit() }
+                        while (cursor.moveToNext()) {
+                            val storedDigits = PhoneUtils.normalizeAsciiDigits(cursor.getString(0).orEmpty())
+                                .filter { it.isDigit() }
+                            if (storedDigits == wantedDigits || storedDigits.endsWith(wantedDigits.takeLast(9))) {
+                                found = true
+                                break
+                            }
                         }
+                        found
+                    } ?: false
+                }
+
+                var landed = insertIntoAccount(null, null)
+                if (!landed) {
+                    val writableAccount = runCatching {
+                        resolver.query(
+                            ContactsContract.RawContacts.CONTENT_URI,
+                            arrayOf(ContactsContract.RawContacts.ACCOUNT_TYPE, ContactsContract.RawContacts.ACCOUNT_NAME),
+                            "${ContactsContract.RawContacts.ACCOUNT_TYPE} IS NOT NULL AND ${ContactsContract.RawContacts.ACCOUNT_NAME} IS NOT NULL",
+                            null,
+                            null
+                        )?.use { c ->
+                            if (c.moveToFirst()) c.getString(0) to c.getString(1) else null
+                        }
+                    }.getOrNull()
+                    if (writableAccount != null) {
+                        landed = insertIntoAccount(writableAccount.first, writableAccount.second)
                     }
-                    found
-                } ?: false
+                }
                 if (!landed) {
                     error("تعذر حفظ جهة الاتصال على الجهاز")
                 }

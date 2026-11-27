@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -26,6 +27,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -81,6 +83,7 @@ fun NewChatContactsScreen(
     var activeSection by remember { mutableIntStateOf(0) } // 0=Contacts, 1=Lists, 2=Events, 3=Broadcast
     var showTopMenu by remember { mutableStateOf(false) }
     var showAddEditContactDialog by remember { mutableStateOf(false) }
+    var pendingAddContact by remember { mutableStateOf(false) }
     var editingDeviceContact by remember { mutableStateOf<DeviceContact?>(null) }
     var showCreateListDialog by remember { mutableStateOf(false) }
     var showCreateEventDialog by remember { mutableStateOf(false) }
@@ -123,6 +126,13 @@ fun NewChatContactsScreen(
     LaunchedEffect(contactsPermission.status.isGranted) {
         if (contactsPermission.status.isGranted) {
             viewModel.syncDeviceContacts()
+        }
+    }
+
+    LaunchedEffect(writeContactsPermission.allPermissionsGranted, pendingAddContact) {
+        if (writeContactsPermission.allPermissionsGranted && pendingAddContact) {
+            pendingAddContact = false
+            showAddEditContactDialog = true
         }
     }
 
@@ -247,6 +257,7 @@ fun NewChatContactsScreen(
                     IconButton(onClick = {
                         editingDeviceContact = null
                         if (!writeContactsPermission.allPermissionsGranted) {
+                            pendingAddContact = true
                             writeContactsPermission.launchMultiplePermissionRequest()
                         } else {
                             showAddEditContactDialog = true
@@ -1392,6 +1403,8 @@ fun NewChatContactsScreen(
                         value = phoneInput,
                         onValueChange = { phoneInput = it },
                         label = { Text(strings.phoneNumberLabel) },
+                        placeholder = { Text("+20 10...") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )

@@ -230,6 +230,7 @@ class WebRtcCallManager @Inject constructor(
                         // Healthy again: cancel any pending restart and re-arm the episode flag.
                         cancelPendingIceRestart()
                         iceRestartSignalledForEpisode = false
+                        mainHandler.post { if (peerConnection != null) setAudioRoute(_audioRoute.value) }
                     }
                     PeerConnection.IceConnectionState.DISCONNECTED -> {
                         // Brief drops often heal on their own; give ICE a grace window first,
@@ -281,6 +282,7 @@ class WebRtcCallManager @Inject constructor(
                     } else if (newState == PeerConnection.PeerConnectionState.CONNECTED) {
                         cancelPendingIceRestart()
                         iceRestartSignalledForEpisode = false
+                        mainHandler.post { if (peerConnection != null) setAudioRoute(_audioRoute.value) }
                     }
                 }
             }
@@ -294,6 +296,12 @@ class WebRtcCallManager @Inject constructor(
             return
         }
         peerConnection = createdPeerConnection
+
+        // Prepare AudioManager communication mode, focus, and unmute BEFORE creating audio track
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        requestCallAudioFocus(audioManager)
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        runCatching { audioManager.isMicrophoneMute = false }
 
         // Audio track
         val audioConstraints = MediaConstraints().apply {
