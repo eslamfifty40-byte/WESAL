@@ -152,7 +152,9 @@ fun AssistantChatScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Image(
-                            painter = painterResource(id = R.mipmap.ic_launcher),
+                            // ic_launcher_foreground (raster PNG) — ic_launcher
+                            // is an adaptive-icon XML and crashes painterResource.
+                            painter = painterResource(id = R.mipmap.ic_launcher_foreground),
                             contentDescription = null,
                             modifier = Modifier
                                 .size(38.dp)
@@ -443,7 +445,9 @@ private fun AssistantEmptyState(
                 modifier = Modifier.padding(bottom = 10.dp)
             ) {
                 Image(
-                    painter = painterResource(id = R.mipmap.ic_launcher),
+                    // ic_launcher_foreground (raster PNG) — ic_launcher
+                    // is an adaptive-icon XML and crashes painterResource.
+                    painter = painterResource(id = R.mipmap.ic_launcher_foreground),
                     contentDescription = null,
                     modifier = Modifier
                         .size(96.dp)

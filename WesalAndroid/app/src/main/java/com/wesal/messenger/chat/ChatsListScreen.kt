@@ -167,8 +167,15 @@ fun ChatsListScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Icon: R.mipmap.ic_launcher_foreground, NOT ic_launcher —
+                // ic_launcher resolves to the <adaptive-icon> XML in
+                // mipmap-anydpi-v26 (minSdk 26, so always), and
+                // painterResource() throws IllegalArgumentException for
+                // adaptive icons at composition time. The foreground asset
+                // is the full icon artwork as a raster PNG in every density
+                // bucket, so it loads safely and looks identical.
                 Image(
-                    painter = painterResource(id = R.mipmap.ic_launcher),
+                    painter = painterResource(id = R.mipmap.ic_launcher_foreground),
                     contentDescription = null,
                     modifier = Modifier
                         .size(52.dp)
