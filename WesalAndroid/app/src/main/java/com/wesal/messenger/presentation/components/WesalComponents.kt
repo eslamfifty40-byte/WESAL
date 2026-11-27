@@ -448,8 +448,8 @@ fun WesalAvatar(
     fun FrameShineSparkles(frame: ResolvedFrame) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val ringCenter = Offset(
-                x = size.width / 2f,
-                y = size.height / 2f + apertureOffsetYPx
+                x = this.size.width / 2f,
+                y = this.size.height / 2f + apertureOffsetYPx
             )
             val ringRadius = apertureRadiusPx * 1.24f
             val intensity = frameGlowIntensity.coerceIn(0f, 1f)
