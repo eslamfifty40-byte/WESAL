@@ -68,6 +68,7 @@ fun HomeScreen(
     onOpenCameraHub: () -> Unit = {},
     onOpenChannel: (String) -> Unit = {},
     onOpenAdminVerification: () -> Unit = {},
+    onOpenAssistant: () -> Unit = {},
     onOpenAddAccount: (String?) -> Unit = {},
     onAccountSwitched: (Boolean) -> Unit = {},
     onSignedOut: () -> Unit,
@@ -185,7 +186,8 @@ fun HomeScreen(
             when (selectedTab) {
                 HomeTab.CHATS -> ChatsListScreen(
                     onOpenChat = onOpenChat,
-                    onNewChat = onOpenNewChat
+                    onNewChat = onOpenNewChat,
+                    onOpenAssistant = onOpenAssistant
                 )
                 HomeTab.STORIES -> StoriesScreen(
                     onOpenChannel = onOpenChannel,

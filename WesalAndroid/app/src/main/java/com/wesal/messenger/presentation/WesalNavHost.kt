@@ -15,6 +15,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.wesal.messenger.admin.AdminVerificationScreen
+import com.wesal.messenger.aiassistant.AssistantChatScreen
 import com.wesal.messenger.authentication.AuthViewModel
 import com.wesal.messenger.authentication.PhoneLoginScreen
 import com.wesal.messenger.authentication.ProfileSetupScreen
@@ -43,6 +44,7 @@ private object Routes {
     const val CHANNEL_DETAIL = "channel_detail/{channelId}"
     const val INVITE_LANDING = "invite_landing/{inviteId}"
     const val ADMIN_VERIFICATION = "admin_verification"
+    const val AI_ASSISTANT = "ai_assistant"
     const val PROFILE = "profile"
     const val ACCOUNT_SHARE = "account_share"
     const val USER_PROFILE = "user_profile/{uid}"
@@ -174,6 +176,7 @@ fun WesalNavHost(
             Routes.CHANNEL_DETAIL,
             Routes.INVITE_LANDING,
             Routes.ADMIN_VERIFICATION,
+            Routes.AI_ASSISTANT,
             Routes.PROFILE,
             Routes.ACCOUNT_SHARE,
             Routes.USER_PROFILE,
@@ -269,6 +272,7 @@ fun WesalNavHost(
                 onOpenCameraHub = { navController.navigate(Routes.CAMERA_HUB) },
                 onOpenChannel = { channelId -> navController.navigate("channel_detail/$channelId") },
                 onOpenAdminVerification = { navController.navigate(Routes.ADMIN_VERIFICATION) },
+                onOpenAssistant = { navController.navigate(Routes.AI_ASSISTANT) },
                 onOpenAddAccount = { email ->
                     val encoded = Uri.encode(email.orEmpty())
                     navController.navigate("add_account?email=$encoded")
@@ -391,6 +395,12 @@ fun WesalNavHost(
                 onOpenChannel = { channelId ->
                     navController.navigate("channel_detail/$channelId") { launchSingleTop = true }
                 }
+            )
+        }
+
+        composable(Routes.AI_ASSISTANT) {
+            AssistantChatScreen(
+                onBack = { navController.popBackStack() }
             )
         }
 

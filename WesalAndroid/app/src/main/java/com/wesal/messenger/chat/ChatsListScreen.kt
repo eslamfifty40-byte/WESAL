@@ -3,6 +3,7 @@ package com.wesal.messenger.chat
 import android.app.Activity
 import android.view.WindowManager
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -21,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -30,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wesal.messenger.R
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
@@ -38,11 +41,13 @@ import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.presentation.components.MessageStatusTick
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
+import com.wesal.messenger.presentation.components.WesalVerifiedBadge
 
 @Composable
 fun ChatsListScreen(
     onOpenChat: (String) -> Unit,
     onNewChat: () -> Unit,
+    onOpenAssistant: () -> Unit = {},
     viewModel: ChatsListViewModel = hiltViewModel()
 ) {
     val palette = WesalColors.current
@@ -147,6 +152,57 @@ fun ChatsListScreen(
                     )
                 )
             }
+
+            // Round 8 (owner spec): «مساعد وِصال» is pinned at the very top of
+            // the chats list. It lives in the static header — outside the
+            // filtered LazyColumn and outside every mode below — so it stays
+            // visible with zero chats, is never filtered by the search query,
+            // and is unaffected by the hidden-chats lock or the archive view.
+            // It renders from local resources only (no network on this row).
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpenAssistant() }
+                    .padding(horizontal = 16.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = R.mipmap.ic_launcher),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text(
+                            text = if (strings.isEnglish) "Wesal Assistant" else "مساعد وِصال",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = palette.textPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        WesalVerifiedBadge(size = 16.dp)
+                    }
+                    Text(
+                        text = if (strings.isEnglish) {
+                            "AI assistant — ask me anything"
+                        } else {
+                            "مساعد ذكاء اصطناعي — اسألني أي حاجة"
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            HorizontalDivider(color = palette.border, thickness = 0.5.dp)
 
             if (showHiddenChats) {
                 Row(

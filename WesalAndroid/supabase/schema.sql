@@ -43,3 +43,15 @@ create policy verified_phones_select_anon
   using (true);
 
 grant select on public.verified_phones to anon, authenticated;
+
+-- «مساعد وِصال» AI assistant (round 8): per-user daily question counter.
+-- Written only by the ai-assistant Edge Function (service role).
+create table if not exists public.ai_usage (
+  firebase_uid text not null,
+  day          date not null,
+  count        int  not null default 0,
+  primary key (firebase_uid, day)
+);
+
+alter table public.ai_usage enable row level security;
+-- No policies for anon/authenticated on purpose: service role only.
