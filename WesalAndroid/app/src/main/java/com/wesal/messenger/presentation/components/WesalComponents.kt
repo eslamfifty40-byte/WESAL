@@ -581,11 +581,14 @@ fun WesalAvatar(
                                 intensity = frameGlowIntensity
                             )
                             Modifier.drawBehind {
+                                // NOTE: `this.size` is required — WesalAvatar's own
+                                // `size: Dp` parameter shadows DrawScope.size here.
+                                val drawSize = this.size
                                 val discCenter = Offset(
-                                    x = size.width / 2f,
-                                    y = size.height * FrameGlowDisc.CENTER_Y_FRACTION
+                                    x = drawSize.width / 2f,
+                                    y = drawSize.height * FrameGlowDisc.CENTER_Y_FRACTION
                                 )
-                                val discRadius = size.minDimension / 2f
+                                val discRadius = drawSize.minDimension / 2f
                                 drawRect(
                                     brush = Brush.radialGradient(
                                         colorStops = arrayOf(
