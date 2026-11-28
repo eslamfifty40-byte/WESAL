@@ -7,6 +7,7 @@ import com.wesal.messenger.core.network.NetworkMonitor
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.OwnProfileSnapshot
 import com.wesal.messenger.core.util.PhoneOtpLogic
+import com.wesal.messenger.core.util.ReferralGiftLogic
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.AppUpdateConfig
@@ -76,10 +77,12 @@ class MainViewModel @Inject constructor(
 
     // Round 12 (addendum 11): one-shot event — a welcome gift was just
     // granted to the signed-in user; MainActivity announces it (dialog +
-    // system notification). Fires at most once per account, ever.
+    // system notification). Fires at most once per account, ever. The
+    // payload is WHAT was granted (referral upgrade, 2026-11-27) so the
+    // announcement matches the actual package.
     private val _welcomeGiftEvent =
-        kotlinx.coroutines.flow.MutableSharedFlow<Long>(extraBufferCapacity = 1)
-    val welcomeGiftEvent: kotlinx.coroutines.flow.SharedFlow<Long> =
+        kotlinx.coroutines.flow.MutableSharedFlow<ReferralGiftLogic.Outcome>(extraBufferCapacity = 1)
+    val welcomeGiftEvent: kotlinx.coroutines.flow.SharedFlow<ReferralGiftLogic.Outcome> =
         _welcomeGiftEvent
 
     private val _resolvedChannelId = MutableStateFlow<String?>(null)
@@ -158,11 +161,13 @@ class MainViewModel @Inject constructor(
             // once-ever stamp lives on it, so account switches and
             // restarts can never re-fire it; the event is emitted only
             // when a gift was actually granted in this call.
-            val welcomeGranted = runCatching {
+            val welcomeOutcome = runCatching {
                 userRepository.grantWelcomeGiftIfEligible(uid)
-            }.getOrDefault(false)
-            if (welcomeGranted && authRepository.currentUserId == uid) {
-                _welcomeGiftEvent.tryEmit(System.currentTimeMillis())
+            }.getOrDefault(ReferralGiftLogic.Outcome.NONE)
+            if (welcomeOutcome != ReferralGiftLogic.Outcome.NONE &&
+                authRepository.currentUserId == uid
+            ) {
+                _welcomeGiftEvent.tryEmit(welcomeOutcome)
             }
             val inRegistry = runCatching { authRepository.isPhoneVerifiedInRegistry(uid) }
                 .getOrDefault(false)

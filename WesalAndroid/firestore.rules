@@ -319,6 +319,45 @@ service cloud.firestore {
       );
     }
 
+    // Referral welcome package (2026-11-27): the ONE-TIME welcome write of
+    // a referred signup may equip the timed gift BADGE (addendum-6 slot)
+    // alongside — or instead of, when an admin frame gift is live — the
+    // welcome frame (see ReferralGiftLogic / UserRepositoryImpl
+    // .grantWelcomeGiftIfEligible). Same discipline as the round-12
+    // welcome arm below: the write must stamp welcomeGiftGrantedAt from
+    // unset/0 (so it can never re-arm), may touch ONLY the 19 gift keys,
+    // and each component, when present, must be exactly the fixed gift —
+    // frame 'anim_04' with the frame slot active; a timed verified badge
+    // (expiry set) with the badge slot active. The frame-only welcome
+    // write still fits the round-12 arm, and the stamp-only write touches
+    // no protected key; this predicate exists for the writes that carry
+    // the badge keys. NOT YET DEPLOYED: until this file is deployed, the
+    // badge-carrying write is denied, the client leaves the once-ever
+    // stamp unset, and a later entry retries (the frame-only fallback is
+    // NOT silently substituted — the promised package is granted whole
+    // or retried).
+    function isWelcomePackageWrite() {
+      let changed = request.resource.data.diff(resource.data).affectedKeys();
+      return resource.data.get('welcomeGiftGrantedAt', 0) == 0 &&
+        request.resource.data.get('welcomeGiftGrantedAt', 0) > 0 &&
+        changed.hasOnly([
+          'frameId', 'frameExpiresAt', 'preGiftFrameId', 'preGiftFrameExpiresAt', 'giftFrameActive',
+          'isVerified', 'verificationType', 'verificationGlowColor', 'verificationGlowEnabled',
+          'verificationGlowIntensity', 'verificationExpiresAt',
+          'giftBadgeActive', 'preGiftIsVerified', 'preGiftVerificationType', 'preGiftVerificationGlowColor',
+          'preGiftVerificationGlowEnabled', 'preGiftVerificationGlowIntensity', 'preGiftVerificationExpiresAt',
+          'welcomeGiftGrantedAt'
+        ]) &&
+        (
+          !changed.hasAny(['frameId', 'frameExpiresAt', 'preGiftFrameId', 'preGiftFrameExpiresAt', 'giftFrameActive']) ||
+          (request.resource.data.get('frameId', '') == 'anim_04' && request.resource.data.get('giftFrameActive', false) == true)
+        ) &&
+        (
+          !changed.hasAny(['isVerified', 'verificationType', 'verificationGlowColor', 'verificationGlowEnabled', 'verificationGlowIntensity', 'verificationExpiresAt', 'giftBadgeActive', 'preGiftIsVerified', 'preGiftVerificationType', 'preGiftVerificationGlowColor', 'preGiftVerificationGlowEnabled', 'preGiftVerificationGlowIntensity', 'preGiftVerificationExpiresAt']) ||
+          (request.resource.data.get('isVerified', false) == true && request.resource.data.get('giftBadgeActive', false) == true && request.resource.data.get('verificationExpiresAt', 0) > 0)
+        );
+    }
+
     // Users collection
     match /users/{userId} {
       allow read: if isSignedIn();
@@ -345,32 +384,39 @@ service cloud.firestore {
             // handled by the dedicated carve-out below: the one-time registration
             // stamp (an owner merge-update on the just-created doc) may set them
             // ONLY while they are still empty; once set they are locked.
-            !request.resource.data.diff(resource.data).affectedKeys().hasAny([
-              'isVerified',
-              'verifiedByUid',
-              'verifiedAt',
-              'verificationNote',
-              'verificationType',
-              'verificationGlowColor',
-              'verificationGlowEnabled',
-              'verificationGlowIntensity',
-              'verificationExpiresAt',
-              'frameUrl',
-              'neonEnabled',
-              'neonColor',
-              'neonGlowIntensity',
-              'adminPermissions',
-              'isBanned',
-              'banType',
-              'banReason',
-              'banExpiresAt',
-              'warningsCount',
-              'hiddenFromSearch',
-              'hideFromSearchReason',
-              'hiddenAt',
-              'hiddenByUid',
-              'grantedFrameIds'
-            ]) &&
+            // Sole exception to the protected list: the one-time referral
+            // welcome package write (isWelcomePackageWrite) legitimately
+            // carries the badge keys — it is pinned to the fixed gift shape
+            // and the once-ever welcomeGiftGrantedAt stamp.
+            (
+              !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                'isVerified',
+                'verifiedByUid',
+                'verifiedAt',
+                'verificationNote',
+                'verificationType',
+                'verificationGlowColor',
+                'verificationGlowEnabled',
+                'verificationGlowIntensity',
+                'verificationExpiresAt',
+                'frameUrl',
+                'neonEnabled',
+                'neonColor',
+                'neonGlowIntensity',
+                'adminPermissions',
+                'isBanned',
+                'banType',
+                'banReason',
+                'banExpiresAt',
+                'warningsCount',
+                'hiddenFromSearch',
+                'hideFromSearchReason',
+                'hiddenAt',
+                'hiddenByUid',
+                'grantedFrameIds'
+              ]) ||
+              isWelcomePackageWrite()
+            ) &&
             // Frame self-pick carve-out (round 2): frameId/frameExpiresAt are NOT
             // in the protected list above; instead the owner may change them ONLY
             // to clear the frame, or to (re)apply a frame an admin granted them
@@ -404,6 +450,13 @@ service cloud.firestore {
                   'welcomeGiftGrantedAt'
                 ])
               ) ||
+              // Referral welcome package (2026-11-27): the same one-time
+              // write may carry the timed gift BADGE keys alongside the
+              // welcome frame (the badge-only variant touches no frame key
+              // and already passes the first disjunct above; this disjunct
+              // covers the combined package write). The exact shape is
+              // pinned by isWelcomePackageWrite().
+              isWelcomePackageWrite() ||
               // Review fix (round-2 pass 1): completeUserProfile() stamps the
               // admin-configured GLOBAL default frame into the same owner update
               // when the worn frame is blank. That default is neither granted

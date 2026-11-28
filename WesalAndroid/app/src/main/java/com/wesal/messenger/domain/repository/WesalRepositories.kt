@@ -3,6 +3,7 @@ package com.wesal.messenger.domain.repository
 import android.app.Activity
 import android.net.Uri
 import com.google.firebase.auth.PhoneAuthProvider
+import com.wesal.messenger.core.util.ReferralGiftLogic
 import com.wesal.messenger.domain.model.*
 import kotlinx.coroutines.flow.Flow
 
@@ -260,12 +261,22 @@ interface UserRepository {
      * (completed profile + verified phone) and the gift was never
      * granted, equip the welcome frame for one hour through the
      * addendum-6 snapshot machinery and stamp `welcomeGiftGrantedAt`.
-     * Returns true ONLY when a gift was actually granted (the caller
-     * announces it); false for already-granted / not-yet-eligible /
-     * superseded-by-an-admin-gift. A denied write (rules arm not yet
-     * deployed) leaves the stamp unset so a later entry retries.
+     *
+     * Referral upgrade (owner's idea, 2026-11-27): when the account was
+     * created through an invite (attribution stamp `referredByUid`, or
+     * the locally persisted invite id as pre-stamp evidence), the same
+     * once-ever grant delivers the package the invite message promises —
+     * the welcome frame for 24 hours PLUS a timed gift verification
+     * badge for 24 hours (addendum-6 badge machinery; see
+     * [ReferralGiftLogic] for the per-slot MARK_ONLY discipline).
+     *
+     * Returns what was actually granted (the caller announces exactly
+     * that); [ReferralGiftLogic.Outcome.NONE] for already-granted /
+     * not-yet-eligible / superseded-by-an-admin-gift. A denied write
+     * (rules arm not yet deployed) leaves the stamp unset so a later
+     * entry retries.
      */
-    suspend fun grantWelcomeGiftIfEligible(uid: String): Boolean
+    suspend fun grantWelcomeGiftIfEligible(uid: String): ReferralGiftLogic.Outcome
     // Self-service frame choice: succeeds only for a blank frameId, a frameId in the
     // caller's grantedFrameIds, or an admin caller (mirrored by firestore.rules).
     suspend fun setOwnFrame(frameId: String): Result<Unit>

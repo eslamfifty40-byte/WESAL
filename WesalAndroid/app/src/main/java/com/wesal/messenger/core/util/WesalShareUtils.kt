@@ -22,7 +22,14 @@ object WesalShareUtils {
      * انضم إليّ في تطبيق WESAL للمراسلة الفورية.
      * معرفي: [معرف المرسل]
      * [اسم المرسل]
+     * وإذا سجّلت بمعرفي، هتاخد إطار هدية وعلامة توثيق لمدة ٢٤ ساعة 🎁
      * https://tinyurl.com/wesal-Messenger»
+     *
+     * The gift line (owner's idea, 2026-11-27) promises exactly what the
+     * app grants a referred signup — see ReferralGiftLogic: the welcome
+     * frame + a timed gift verification badge, 24 hours. It is only
+     * appended when the sender's ID is present, because attribution (and
+     * therefore the gift) requires registering through that ID.
      */
     fun buildInviteMessage(
         myWesalId: String?,
@@ -53,6 +60,12 @@ object WesalShareUtils {
             }
             if (cleanSenderName.isNotBlank()) {
                 append("\n$cleanSenderName")
+            }
+            if (cleanId.isNotBlank()) {
+                append(
+                    if (isEnglish) "\nRegister with my ID and you'll get a free gift frame + a verification badge for 24 hours 🎁"
+                    else "\nوإذا سجّلت بمعرفي، هتاخد إطار هدية وعلامة توثيق لمدة ٢٤ ساعة 🎁"
+                )
             }
             append("\n$directApkUrl")
         }

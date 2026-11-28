@@ -23,6 +23,7 @@ import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.GiftGrantLogic
 import com.wesal.messenger.core.util.WelcomeGiftLogic
 import com.wesal.messenger.core.util.PhoneDiscoveryLogic
+import com.wesal.messenger.core.util.ReferralGiftLogic
 import com.wesal.messenger.core.util.PresenceWriteGate
 import com.wesal.messenger.core.util.UserSearchLogic
 import com.wesal.messenger.core.util.NeonColorPreset
@@ -51,6 +52,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -3030,21 +3032,63 @@ class UserRepositoryImpl @Inject constructor(
     }
 
     /**
-     * Round 12 (addendum 11): see the interface doc. The grant reuses the
-     * addendum-6 gift slot verbatim (preGiftFrameId/preGiftFrameExpiresAt
-     * snapshot + giftFrameActive), so the existing read-side revert in
-     * toWesalUser and the write-back in [revertExpiredGiftGrants] retire
-     * the welcome frame at expiry with no extra machinery. The write is
-     * shaped to the narrow welcome arm in firestore.rules (fixed frame,
-     * once-ever stamp, only the six gift keys touched).
+     * Round 12 (addendum 11) + referral upgrade (2026-11-27): see the
+     * interface doc. The grant reuses the addendum-6 gift slots verbatim
+     * (frame: preGiftFrameId/preGiftFrameExpiresAt + giftFrameActive;
+     * badge: preGift* verification snapshot + giftBadgeActive), so the
+     * existing read-side revert in toWesalUser and the write-back in
+     * [revertExpiredGiftGrants] retire both gifts at expiry with no extra
+     * machinery. The write is shaped to the welcome arms in
+     * firestore.rules (fixed frame, once-ever stamp, only gift keys
+     * touched).
+     *
+     * Referral sequencing: attribution is stamped fire-and-forget at doc
+     * creation (AuthRepositoryImpl.stampReferralAttribution) while this
+     * grant fires later, at the fully-registered state — the stamp has
+     * normally landed long before. Two safety nets cover the residual
+     * race, in order: (1) when the doc carries no stamp yet, the locally
+     * persisted invite ids (deep-link pending id / hand-typed manual id —
+     * both cleared ONLY when the stamp lands) are consulted as evidence
+     * via [ReferralGiftLogic.isLocalInviteEvidence], which also rejects
+     * self-invites; (2) on local evidence, the doc is re-read once so
+     * the freshest state (stamp + gift slots) feeds the once-ever write.
      */
-    override suspend fun grantWelcomeGiftIfEligible(uid: String): Boolean {
-        if (uid.isBlank() || auth.currentUser?.uid != uid) return false
+    override suspend fun grantWelcomeGiftIfEligible(uid: String): ReferralGiftLogic.Outcome {
+        if (uid.isBlank() || auth.currentUser?.uid != uid) return ReferralGiftLogic.Outcome.NONE
         return runCatching {
             val ref = firestore.collection(Constants.COLLECTION_USERS).document(uid)
-            val snap = ref.get().await()
-            if (!snap.exists()) return false
-            val user = runCatching { snap.toWesalUser() }.getOrNull() ?: return false
+            var snap = ref.get().await()
+            if (!snap.exists()) return ReferralGiftLogic.Outcome.NONE
+            var user = runCatching { snap.toWesalUser() }.getOrNull()
+                ?: return ReferralGiftLogic.Outcome.NONE
+
+            var referred = user.referredByUid.isNotBlank()
+            if (!referred && user.welcomeGiftGrantedAt == 0L) {
+                val settings = withTimeoutOrNull(2_000L) {
+                    runCatching { prefs.settingsFlow.first() }.getOrNull()
+                }
+                val localEvidence = listOf(settings?.pendingInviteId, settings?.manualInviteId)
+                    .any {
+                        ReferralGiftLogic.isLocalInviteEvidence(
+                            inviteId = it,
+                            ownUid = uid,
+                            ownPublicId = user.publicId,
+                            ownNumericId = user.numericId
+                        )
+                    }
+                if (localEvidence) {
+                    // The stamp may have landed between the first read and
+                    // now — one bounded re-read so the once-ever decision
+                    // and the snapshots use the freshest doc state.
+                    val fresh = runCatching { ref.get().await() }.getOrNull()
+                    if (fresh != null && fresh.exists()) {
+                        snap = fresh
+                        user = runCatching { fresh.toWesalUser() }.getOrNull() ?: user
+                    }
+                    referred = user.referredByUid.isNotBlank() || localEvidence
+                }
+            }
+
             val profileComplete = user.displayName.isNotBlank() &&
                 user.publicId.isNotBlank() && user.numericId.isNotBlank()
             val phoneVerified = PhoneOtpLogic.isCompleteVerificationMirror(
@@ -3052,40 +3096,64 @@ class UserRepositoryImpl @Inject constructor(
                 phoneNumber = snap.getString("phoneNumber"),
                 phoneHash = snap.getString("phoneHash")
             )
+            val plan = ReferralGiftLogic.plan(
+                welcomeGiftGrantedAt = user.welcomeGiftGrantedAt,
+                profileComplete = profileComplete,
+                phoneVerified = phoneVerified,
+                referred = referred,
+                giftFrameActive = user.giftFrameActive,
+                giftBadgeActive = user.giftBadgeActive
+            )
             val now = System.currentTimeMillis()
-            when (
-                WelcomeGiftLogic.decide(
-                    welcomeGiftGrantedAt = user.welcomeGiftGrantedAt,
-                    profileComplete = profileComplete,
-                    phoneVerified = phoneVerified,
-                    giftFrameActive = user.giftFrameActive
-                )
-            ) {
-                WelcomeGiftLogic.Decision.SKIP -> false
-                WelcomeGiftLogic.Decision.MARK_ONLY -> {
-                    // An admin gift is live: never stomp its snapshot.
-                    // The welcome gift is superseded — stamp it granted
-                    // so it never fires later, and announce nothing.
+            when {
+                plan.stampOnly -> {
+                    // An admin gift is live on every slot this package
+                    // would use: never stomp its snapshot. The welcome
+                    // gift is superseded — stamp it granted so it never
+                    // fires later, and announce nothing.
                     ref.set(
                         mapOf("welcomeGiftGrantedAt" to now),
                         SetOptions.merge()
                     ).await()
-                    false
+                    ReferralGiftLogic.Outcome.NONE
                 }
-                WelcomeGiftLogic.Decision.GRANT -> {
-                    val updates = mapOf<String, Any>(
-                        "preGiftFrameId" to (snap.getString("frameId").orEmpty()),
-                        "preGiftFrameExpiresAt" to (snap.getLong("frameExpiresAt") ?: 0L),
-                        "giftFrameActive" to true,
-                        "frameId" to WelcomeGiftLogic.WELCOME_FRAME_ID,
-                        "frameExpiresAt" to now + WelcomeGiftLogic.DURATION_MS,
+                !plan.grantFrame && !plan.grantBadge -> ReferralGiftLogic.Outcome.NONE
+                else -> {
+                    val updates = hashMapOf<String, Any>(
                         "welcomeGiftGrantedAt" to now
                     )
+                    if (plan.grantFrame) {
+                        updates["preGiftFrameId"] = snap.getString("frameId").orEmpty()
+                        updates["preGiftFrameExpiresAt"] = snap.getLong("frameExpiresAt") ?: 0L
+                        updates["giftFrameActive"] = true
+                        updates["frameId"] = WelcomeGiftLogic.WELCOME_FRAME_ID
+                        updates["frameExpiresAt"] = now + plan.frameDurationMs
+                    }
+                    if (plan.grantBadge) {
+                        // Addendum-6 badge snapshot, mirroring
+                        // setAccountVerification's timed-grant block: the
+                        // recipient's CURRENT (effective) badge state is
+                        // captured first so expiry restores it exactly.
+                        updates["preGiftIsVerified"] = user.isVerified
+                        updates["preGiftVerificationType"] = user.verificationType
+                        updates["preGiftVerificationGlowColor"] = user.verificationGlowColor
+                        updates["preGiftVerificationGlowEnabled"] = user.verificationGlowEnabled
+                        updates["preGiftVerificationGlowIntensity"] =
+                            user.verificationGlowIntensity.toDouble()
+                        updates["preGiftVerificationExpiresAt"] = user.verificationExpiresAt
+                        updates["giftBadgeActive"] = true
+                        updates["isVerified"] = true
+                        updates["verificationType"] = VerificationSealType.BLUE.key
+                        updates["verificationGlowColor"] = NeonColorPreset.fromKey(null).key
+                        updates["verificationGlowEnabled"] = true
+                        updates["verificationGlowIntensity"] = 0.7
+                        updates["verificationExpiresAt"] = now + ReferralGiftLogic.DURATION_MS
+                    }
                     ref.set(updates, SetOptions.merge()).await()
-                    true
+                    plan.outcome
                 }
             }
-        }.getOrDefault(false)
+        }.getOrDefault(ReferralGiftLogic.Outcome.NONE)
     }
 
     override suspend fun setOwnFrame(frameId: String): Result<Unit> = runCatching {
