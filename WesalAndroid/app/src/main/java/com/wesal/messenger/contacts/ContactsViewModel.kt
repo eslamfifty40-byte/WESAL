@@ -42,6 +42,15 @@ data class ContactsUiState(
     val nonWesalContacts: List<DeviceContact> = emptyList(),
     val searchResults: List<WesalUser> = emptyList(),
     val isSearching: Boolean = false,
+    // Round 18 (Task 6): the GLOBAL account search has its own error
+    // channel. It used to write into the screen-wide [error], so one
+    // failed global lookup painted a red «حدث خطأ غير متوقع» banner
+    // above the whole contacts screen while the on-device branches
+    // (registered contacts, phone contacts, referrals — all filtered
+    // locally) rendered fine underneath. The screen now renders this
+    // inside the global-search section only, and hides that section
+    // silently when local branches already produced results.
+    val searchError: String? = null,
     val invitedPhonesCount: Int = 0,
     /** Bulk-invite selection mode: keys ([deviceContactKey]) of the unregistered contacts the user ticked. */
     val selectedContactKeys: Set<String> = emptySet(),
@@ -571,20 +580,32 @@ class ContactsViewModel @Inject constructor(
     }
 
     fun search(query: String) {
-        _uiState.update { it.copy(query = query, isSearching = query.isNotBlank(), error = null) }
+        _uiState.update { it.copy(query = query, isSearching = query.isNotBlank(), error = null, searchError = null) }
         searchJob?.cancel()
         if (query.isBlank()) {
-            _uiState.update { it.copy(searchResults = emptyList(), isSearching = false) }
+            _uiState.update { it.copy(searchResults = emptyList(), isSearching = false, searchError = null) }
             return
         }
         searchJob = viewModelScope.launch {
             delay(250L)
             runCatching { userRepository.searchUsers(query) }
                 .onSuccess { list ->
-                    _uiState.update { it.copy(searchResults = list, isSearching = false) }
+                    _uiState.update { it.copy(searchResults = list, isSearching = false, searchError = null) }
                 }
                 .onFailure { err ->
-                    _uiState.update { it.copy(isSearching = false, error = ErrorCopy.friendly(err)) }
+                    // Round 18 (Task 6): a failed GLOBAL lookup is a
+                    // branch failure, not a screen failure — the local
+                    // branches keep their results and the screen-wide
+                    // error banner stays reserved for sync/action errors.
+                    // Stale results from a previous query are cleared so
+                    // the failed branch honestly shows as empty.
+                    _uiState.update {
+                        it.copy(
+                            isSearching = false,
+                            searchResults = emptyList(),
+                            searchError = ErrorCopy.friendly(err)
+                        )
+                    }
                 }
         }
     }

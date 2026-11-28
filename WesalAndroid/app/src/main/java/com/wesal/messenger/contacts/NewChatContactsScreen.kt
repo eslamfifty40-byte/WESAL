@@ -787,7 +787,9 @@ fun NewChatContactsScreen(
                 }
 
                 else -> {
-                    // Default Contacts Tab (0) — Saved WESAL phonebook contacts ALWAYS appear at the top first
+                    // Default Contacts Tab (0) — order (round 18): consent card, then the
+                    // unregistered phone contacts (invite-first), then requests, referrals,
+                    // registered-on-WESAL contacts, global search, sent requests, ID/support cards.
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (!contactsPermission.status.isGranted) {
                             item(key = "contacts_consent_card") {
@@ -868,174 +870,14 @@ fun NewChatContactsScreen(
                             }
                         }
 
-                        if (incomingPending.isNotEmpty()) {
-                            item(key = "header_incoming_requests") {
-                                Text(
-                                    text = "${strings.incomingRequestsTitle} (${incomingPending.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.emerald,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 4.dp)
-                                )
-                            }
-                            items(incomingPending, key = { "in_${it.requestId}" }) { req ->
-                                Surface(
-                                    color = palette.surface,
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = BorderStroke(1.dp, palette.emerald.copy(alpha = 0.35f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onOpenUserProfile(req.senderUid) }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        WesalAvatar(
-                                            imageUrl = req.senderAvatarUrl,
-                                            name = req.senderName,
-                                            size = 44.dp,
-                                            iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.senderIconId, req.senderIconUrl),
-                                            neonColor = if (req.senderNeonEnabled) req.senderNeonColor else "",
-                                            neonGlowIntensity = req.senderNeonGlowIntensity,
-                                            fitInsideBounds = true
-                                        )
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            WesalNameWithBadge(
-                                                name = req.senderName.ifBlank { "@${req.senderPublicId}" },
-                                                isVerified = req.senderVerified,
-                                                verificationType = req.senderVerificationType,
-                                                neonColor = req.senderNeonColor,
-                                                neonGlowIntensity = req.senderNeonGlowIntensity,
-                                                neonEnabled = req.senderNeonEnabled,
-                                                fontWeight = FontWeight.SemiBold,
-                                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.senderIconId, req.senderIconUrl)
-                                            )
-                                            if (req.senderPublicId.isNotBlank()) {
-                                                Text("@${req.senderPublicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
-                                            }
-                                        }
-                                        Button(
-                                            onClick = { viewModel.acceptContactRequest(req.requestId) },
-                                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                        ) { Text(strings.acceptContactRequest, maxLines = 1) }
-                                        OutlinedButton(
-                                            onClick = { viewModel.rejectContactRequest(req.requestId) },
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                        ) { Text(strings.rejectContactRequest, color = palette.error, maxLines = 1) }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (filteredReferrals.isNotEmpty()) {
-                            item(key = "header_referrals") {
-                                Text(
-                                    text = if (strings.isEnglish) "Registered Through Me (${filteredReferrals.size})" else "سجّلوا من خلالي (${filteredReferrals.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.emerald,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
-                                )
-                            }
-                            items(filteredReferrals, key = { "referral_${it.uid}" }) { user ->
-                                WesalContactDirectoryRow(
-                                    user = user,
-                                    displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
-                                    request = requestByPeer[user.uid],
-                                    myUid = myUid,
-                                    isSuperAdmin = isSuperAdmin,
-                                    onOpenProfile = { onOpenUserProfile(user.uid) },
-                                    onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
-                                    onSendRequest = { viewModel.sendContactRequest(user.uid) },
-                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
-                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
-                                )
-                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-                            }
-                        }
-
-                        if (filteredWesalContacts.isNotEmpty()) {
-                            item(key = "header_verified_contacts") {
-                                Text(
-                                    text = if (strings.isEnglish) "Saved Contacts on WESAL (${filteredWesalContacts.size})" else "جهات اتصالك المسجلة على WESAL (${filteredWesalContacts.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.turquoise,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
-                                )
-                            }
-                            items(filteredWesalContacts, key = { "wesal_${it.user.uid}" }) { matched ->
-                                WesalContactDirectoryRow(
-                                    user = matched.user,
-                                    displayTitle = matched.deviceName,
-                                    request = requestByPeer[matched.user.uid],
-                                    myUid = myUid,
-                                    isSuperAdmin = isSuperAdmin,
-                                    onOpenProfile = { onOpenUserProfile(matched.user.uid) },
-                                    onStartChat = { viewModel.startChatWith(matched.user.uid, onOpenChat) },
-                                    onSendRequest = { viewModel.sendContactRequest(matched.user.uid) },
-                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
-                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, matched.user, isVideo)) }
-                                )
-                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-                            }
-                        }
-
-                        if (trimmedQuery.isNotBlank()) {
-                            item(key = "header_global_search") {
-                                Text(
-                                    text = if (strings.isEnglish) "Global Account Search" else "نتائج البحث العام في WESAL",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.emerald,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
-                                )
-                            }
-                            // Round 13 (Addendum M1): «لم يتم العثور» is a
-                            // verdict — only after a SUCCESSFUL empty query.
-                            // A failed query (state.error != null) shows only
-                            // the retryable failure line, never a verdict.
-                            if (SearchStateLogic.shouldShowNoMatch(
-                                    query = trimmedQuery,
-                                    isSearching = state.isSearching,
-                                    hasError = state.error != null,
-                                    resultCount = extraGlobalResults.size
-                                )
-                            ) {
-                                item(key = "no_exact_match") {
-                                    Text(
-                                        text = if (strings.isEnglish) {
-                                            "No matching WESAL account found. Try a full name, @username, or numeric ID."
-                                        } else {
-                                            "لم يتم العثور على حساب مطابق؛ ابحث بالاسم أو @username أو المعرّف الرقمي."
-                                        },
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = palette.textSecondary,
-                                        modifier = Modifier.padding(vertical = 8.dp)
-                                    )
-                                }
-                            } else {
-                                items(extraGlobalResults, key = { "search_${it.uid}" }) { user ->
-                                    WesalContactDirectoryRow(
-                                        user = user,
-                                        displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
-                                        request = requestByPeer[user.uid],
-                                        myUid = myUid,
-                                        isSuperAdmin = isSuperAdmin,
-                                        onOpenProfile = { onOpenUserProfile(user.uid) },
-                                        onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
-                                        onSendRequest = { viewModel.sendContactRequest(user.uid) },
-                                        onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
-                                        onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
-                                    )
-                                    HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-                                }
-                            }
-                        }
-
+                        // Round 18 (Task 5, owner order 2026-11-28): the
+                        // UNREGISTERED phone contacts section sits at the
+                        // TOP of this tab — before the registered-on-WESAL
+                        // names — so inviting is immediate, with no
+                        // scrolling/searching through the whole list first.
+                        // Everything inside the section (multi-select,
+                        // select-all, personalized WhatsApp invite,
+                        // edit/delete) is unchanged; only the order moved.
                         if (filteredNonWesalContacts.isNotEmpty()) {
                             item(key = "header_invite_contacts") {
                                 Row(
@@ -1164,6 +1006,194 @@ fun NewChatContactsScreen(
                                     }
                                 }
                                 HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
+                        }
+
+                        if (incomingPending.isNotEmpty()) {
+                            item(key = "header_incoming_requests") {
+                                Text(
+                                    text = "${strings.incomingRequestsTitle} (${incomingPending.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.emerald,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
+                            items(incomingPending, key = { "in_${it.requestId}" }) { req ->
+                                Surface(
+                                    color = palette.surface,
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = BorderStroke(1.dp, palette.emerald.copy(alpha = 0.35f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onOpenUserProfile(req.senderUid) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        WesalAvatar(
+                                            imageUrl = req.senderAvatarUrl,
+                                            name = req.senderName,
+                                            size = 44.dp,
+                                            iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.senderIconId, req.senderIconUrl),
+                                            neonColor = if (req.senderNeonEnabled) req.senderNeonColor else "",
+                                            neonGlowIntensity = req.senderNeonGlowIntensity,
+                                            fitInsideBounds = true
+                                        )
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            WesalNameWithBadge(
+                                                name = req.senderName.ifBlank { "@${req.senderPublicId}" },
+                                                isVerified = req.senderVerified,
+                                                verificationType = req.senderVerificationType,
+                                                neonColor = req.senderNeonColor,
+                                                neonGlowIntensity = req.senderNeonGlowIntensity,
+                                                neonEnabled = req.senderNeonEnabled,
+                                                fontWeight = FontWeight.SemiBold,
+                                                iconUrl = com.wesal.messenger.core.util.WesalFrameLibrary.resolveIconUrl(req.senderIconId, req.senderIconUrl)
+                                            )
+                                            if (req.senderPublicId.isNotBlank()) {
+                                                Text("@${req.senderPublicId}", color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                                            }
+                                        }
+                                        Button(
+                                            onClick = { viewModel.acceptContactRequest(req.requestId) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text(strings.acceptContactRequest, maxLines = 1) }
+                                        OutlinedButton(
+                                            onClick = { viewModel.rejectContactRequest(req.requestId) },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text(strings.rejectContactRequest, color = palette.error, maxLines = 1) }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (filteredReferrals.isNotEmpty()) {
+                            item(key = "header_referrals") {
+                                Text(
+                                    text = if (strings.isEnglish) "Registered Through Me (${filteredReferrals.size})" else "سجّلوا من خلالي (${filteredReferrals.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.emerald,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(filteredReferrals, key = { "referral_${it.uid}" }) { user ->
+                                WesalContactDirectoryRow(
+                                    user = user,
+                                    displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
+                                    request = requestByPeer[user.uid],
+                                    myUid = myUid,
+                                    isSuperAdmin = isSuperAdmin,
+                                    onOpenProfile = { onOpenUserProfile(user.uid) },
+                                    onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
+                                    onSendRequest = { viewModel.sendContactRequest(user.uid) },
+                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
+                        }
+
+                        if (filteredWesalContacts.isNotEmpty()) {
+                            item(key = "header_verified_contacts") {
+                                Text(
+                                    text = if (strings.isEnglish) "Saved Contacts on WESAL (${filteredWesalContacts.size})" else "جهات اتصالك المسجلة على WESAL (${filteredWesalContacts.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.turquoise,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(filteredWesalContacts, key = { "wesal_${it.user.uid}" }) { matched ->
+                                WesalContactDirectoryRow(
+                                    user = matched.user,
+                                    displayTitle = matched.deviceName,
+                                    request = requestByPeer[matched.user.uid],
+                                    myUid = myUid,
+                                    isSuperAdmin = isSuperAdmin,
+                                    onOpenProfile = { onOpenUserProfile(matched.user.uid) },
+                                    onStartChat = { viewModel.startChatWith(matched.user.uid, onOpenChat) },
+                                    onSendRequest = { viewModel.sendContactRequest(matched.user.uid) },
+                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, matched.user, isVideo)) }
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
+                        }
+
+                        if (trimmedQuery.isNotBlank()) {
+                            // Round 18 (Task 6): a failed GLOBAL lookup
+                            // (state.searchError) is scoped to this section.
+                            // When the on-device branches already produced
+                            // results, the section stays completely silent —
+                            // no red banner, no orphan header. When nothing
+                            // matched anywhere, a small muted note carries
+                            // the failure (a failure is never dressed up as
+                            // a «not found» verdict — round-13 M1 doctrine).
+                            val hasLocalSearchResults = filteredWesalContacts.isNotEmpty() ||
+                                filteredNonWesalContacts.isNotEmpty() ||
+                                filteredReferrals.isNotEmpty()
+                            if (state.searchError == null || !hasLocalSearchResults) {
+                                item(key = "header_global_search") {
+                                    Text(
+                                        text = if (strings.isEnglish) "Global Account Search" else "نتائج البحث العام في WESAL",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = palette.emerald,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+                                    )
+                                }
+                            }
+                            if (state.searchError != null) {
+                                if (!hasLocalSearchResults) {
+                                    item(key = "global_search_failed") {
+                                        Text(
+                                            text = state.searchError.orEmpty(),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = palette.textSecondary,
+                                            modifier = Modifier.padding(vertical = 8.dp)
+                                        )
+                                    }
+                                }
+                            } else if (SearchStateLogic.shouldShowNoMatch(
+                                    query = trimmedQuery,
+                                    isSearching = state.isSearching,
+                                    hasError = false,
+                                    resultCount = extraGlobalResults.size
+                                )
+                            ) {
+                                item(key = "no_exact_match") {
+                                    Text(
+                                        text = if (strings.isEnglish) {
+                                            "No matching WESAL account found. Try a full name, @username, or numeric ID."
+                                        } else {
+                                            "لم يتم العثور على حساب مطابق؛ ابحث بالاسم أو @username أو المعرّف الرقمي."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = palette.textSecondary,
+                                        modifier = Modifier.padding(vertical = 8.dp)
+                                    )
+                                }
+                            } else {
+                                items(extraGlobalResults, key = { "search_${it.uid}" }) { user ->
+                                    WesalContactDirectoryRow(
+                                        user = user,
+                                        displayTitle = user.displayName.ifBlank { "@${user.publicId}" },
+                                        request = requestByPeer[user.uid],
+                                        myUid = myUid,
+                                        isSuperAdmin = isSuperAdmin,
+                                        onOpenProfile = { onOpenUserProfile(user.uid) },
+                                        onStartChat = { viewModel.startChatWith(user.uid, onOpenChat) },
+                                        onSendRequest = { viewModel.sendContactRequest(user.uid) },
+                                        onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                                        onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
+                                    )
+                                    HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                                }
                             }
                         }
 
