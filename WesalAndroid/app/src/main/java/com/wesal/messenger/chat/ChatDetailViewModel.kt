@@ -11,6 +11,7 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.wesal.messenger.core.util.OfficialChatLockLogic
 import com.wesal.messenger.core.util.ReadReceiptBatcher
 import com.wesal.messenger.core.util.TypingSignalGate
 import com.wesal.messenger.core.util.WesalIdUtils
@@ -42,6 +43,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
@@ -333,6 +335,14 @@ class ChatDetailViewModel @Inject constructor(
             val pending = runCatching { prefs.pendingOutboxMessages() }.getOrDefault(emptyList())
                 .filter { it.chatId == chatId }
             if (pending.isEmpty()) return@launch
+            // Round 18: in the official conversation the replay decision
+            // depends on the admin identity, which loads asynchronously —
+            // wait (bounded) for the user doc so an admin's queued send is
+            // not misjudged as locked before his identity arrives. For a
+            // non-admin the retry guard below blocks the replay anyway.
+            if (OfficialChatLockLogic.isOfficialChat(chatId, isOfficialFlag = false)) {
+                withTimeoutOrNull(3_000L) { currentUser.first { it != null } }
+            }
             pending.forEach { entry ->
                 _failedMessages.update { list ->
                     if (list.any { it.messageId == entry.messageId }) list else list + WesalMessage(
@@ -478,9 +488,31 @@ class ChatDetailViewModel @Inject constructor(
         _toastMessage.value = null
     }
 
+    // Round 18: the official welcome conversation is one-way for
+    // non-admins (OfficialChatLockLogic). Every send entry point below
+    // consults this BEFORE creating an optimistic echo or an outbox
+    // entry, so a blocked send leaves no trace and the user gets the
+    // lock notice instead of a generic send failure. The repository
+    // gate (ChatRepositoryImpl refuses non-super-admin writes into
+    // official chats) remains as the second layer.
+    private fun isOfficialSendLocked(): Boolean = OfficialChatLockLogic.isSendLocked(
+        chatId = chatId,
+        isOfficialFlag = chatPreview.value?.isOfficialWesalChat == true,
+        isSuperAdmin = isSuperAdmin.value,
+        myNumericId = currentUser.value?.numericId
+    )
+
+    private fun notifyOfficialSendLocked() {
+        _toastMessage.value = OfficialChatLockLogic.LOCKED_NOTICE_AR
+    }
+
     fun sendOrEditText(text: String) {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
+        if (isOfficialSendLocked()) {
+            notifyOfficialSendLocked()
+            return
+        }
 
         val editing = _editingMessage.value
         if (editing != null) {
@@ -601,6 +633,12 @@ class ChatDetailViewModel @Inject constructor(
 
     fun retryFailedMessage(failed: WesalMessage) {
         if (failed.status != MessageStatus.FAILED && failed.status != MessageStatus.SENDING) return
+        // Round 18: a pre-lock outbox entry for the official conversation
+        // must not be replayed by a non-admin — the echo stays dismissible.
+        if (isOfficialSendLocked()) {
+            notifyOfficialSendLocked()
+            return
+        }
         // Entries created by older in-memory-only code used a "failed_..." id that is not a real
         // message id; give those a fresh stable id (and outbox entry) before retrying.
         val effectiveId = if (failed.messageId.startsWith("failed_")) {
@@ -831,6 +869,13 @@ class ChatDetailViewModel @Inject constructor(
     }
 
     private fun enqueueUpload(upload: PendingMediaUpload) {
+        // Round 18: single funnel for media/voice sends (sendMediaDraft,
+        // stopAndSendVoiceRecording, retryUpload) — the official-chat
+        // lock is enforced here so no upload can start for a non-admin.
+        if (isOfficialSendLocked()) {
+            notifyOfficialSendLocked()
+            return
+        }
         _pendingUploads.update { it + upload }
         viewModelScope.launch {
             chatRepository.sendMediaMessage(

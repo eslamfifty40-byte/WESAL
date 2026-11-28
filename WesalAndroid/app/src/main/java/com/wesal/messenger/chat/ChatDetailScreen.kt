@@ -69,6 +69,7 @@ import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.DictationLogic
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.OfficialChatLockLogic
 import com.wesal.messenger.core.util.ScreenshotProtectionPolicy
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.crop.CropActivity
@@ -137,6 +138,24 @@ fun ChatDetailScreen(
     val quickReplies by viewModel.quickReplies.collectAsStateWithLifecycle()
     val currentUser by viewModel.currentUser.collectAsStateWithLifecycle()
     val isCurrentChatHidden by viewModel.isCurrentChatHidden.collectAsStateWithLifecycle()
+
+    // Round 18: the official «WESAL Messenger» welcome conversation is
+    // one-way for non-admins. The lock derives from the chatId prefix as
+    // well as the preview flag, so it holds from the very first frame —
+    // the preview can still be loading — and an admin is recognised by
+    // super-admin identity OR by an admin numericId (10001 / 10002).
+    // Computed here, before every send surface below (composer, media
+    // draft overlay, camera), so all of them honour the same lock.
+    val isOfficialReadOnly = OfficialChatLockLogic.isOfficialChat(
+        viewModel.chatId,
+        chat?.isOfficialWesalChat == true
+    )
+    val officialSendLocked = OfficialChatLockLogic.isSendLocked(
+        chatId = viewModel.chatId,
+        isOfficialFlag = chat?.isOfficialWesalChat == true,
+        isSuperAdmin = isSuperAdmin,
+        myNumericId = currentUser?.numericId
+    )
 
     // Metadata-only live presence inside chat
     LaunchedEffect(chat?.chatId, chat?.participantIds?.size) {
@@ -587,6 +606,16 @@ fun ChatDetailScreen(
         return
     }
 
+    // Round 18: a media draft must never reach the send preview in the
+    // locked official conversation (e.g. a picker result landing just as
+    // the lock becomes known) — drop it instead of showing the overlay.
+    LaunchedEffect(officialSendLocked, pendingDraft) {
+        if (officialSendLocked && pendingDraft != null) {
+            pendingDraft = null
+            pendingDraftQueue = emptyList()
+        }
+    }
+
     // Pre-send Media / Voice Preview Overlay (Crop, Caption, View-Once toggle, Play Audio Preview)
     pendingDraft?.let { draft ->
         MediaDraftPreviewScreen(
@@ -626,7 +655,6 @@ fun ChatDetailScreen(
         return
     }
 
-    val isOfficialReadOnly = chat?.isOfficialWesalChat == true
     val effectiveWallpaper = personalWallpaper.ifBlank { chat?.officialWallpaperUrl.orEmpty() }
 
     Scaffold(
@@ -911,7 +939,7 @@ fun ChatDetailScreen(
                     .background(palette.background)
                     .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
             ) {
-                if (isOfficialReadOnly && !isSuperAdmin) {
+                if (officialSendLocked) {
                     Surface(
                         color = palette.surface,
                         modifier = Modifier.fillMaxWidth()
@@ -927,9 +955,9 @@ fun ChatDetailScreen(
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 text = if (strings.isEnglish) {
-                                    "Official announcements from WESAL Messenger — Read only"
+                                    OfficialChatLockLogic.LOCKED_NOTICE_EN
                                 } else {
-                                    "قناة الإشعارات الرسمية من WESAL Messenger — للقراءة فقط"
+                                    OfficialChatLockLogic.LOCKED_NOTICE_AR
                                 },
                                 color = palette.textSecondary,
                                 style = MaterialTheme.typography.bodyMedium
