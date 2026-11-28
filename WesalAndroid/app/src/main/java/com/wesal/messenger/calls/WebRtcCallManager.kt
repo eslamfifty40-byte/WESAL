@@ -912,9 +912,6 @@ class WebRtcCallManager @Inject constructor(
         }
         screenCapturer = capturer
         _isScreenSharing.value = true
-        // Screen content is detail, not motion: ask the encoder for
-        // sharpness over smoothness while sharing.
-        runCatching { localVideoTrack?.setContentHint(VideoTrack.ContentHint.DETAILED) }
         // Re-attach the local preview sink: the frame source changed
         // under the same track.
         _cameraSwitchCount.value += 1
@@ -931,7 +928,6 @@ class WebRtcCallManager @Inject constructor(
         if (capturer == null) return
         runCatching { capturer.stopCapture() }
         runCatching { capturer.dispose() }
-        runCatching { localVideoTrack?.setContentHint(VideoTrack.ContentHint.NONE) }
         // Return to the camera (the capturer is still initialized
         // against the same video source — a plain startCapture resumes
         // it). If the session is already gone this simply no-ops into
