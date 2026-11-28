@@ -20,7 +20,17 @@ class CallActionReceiver : BroadcastReceiver() {
 
     @Inject lateinit var webRtcManager: WebRtcCallManager
 
+    @Inject lateinit var callController: CallSessionController
+
     override fun onReceive(context: Context, intent: Intent) {
+        // Round 22: the picture-in-picture window's end-call action.
+        // Goes through the session controller — the exact path the
+        // in-call end button uses — so teardown (signaling stamp,
+        // media, service, notification) is identical.
+        if (intent.action == ACTION_END_CALL) {
+            callController.endCall()
+            return
+        }
         // Round 21: «إيقاف المشاركة» on the ongoing-call notification
         // while a screen share is live. Stops the share on the manager
         // (video returns to the camera); the call itself is never
@@ -49,6 +59,7 @@ class CallActionReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_REJECT_CALL = "com.wesal.messenger.ACTION_REJECT_CALL"
         const val ACTION_STOP_SCREEN_SHARE = "com.wesal.messenger.ACTION_STOP_SCREEN_SHARE"
+        const val ACTION_END_CALL = "com.wesal.messenger.ACTION_END_CALL"
         const val EXTRA_CALL_ID = "extra_call_id"
     }
 }

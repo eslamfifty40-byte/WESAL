@@ -2,13 +2,18 @@ package com.wesal.messenger.calls
 
 import android.Manifest
 import android.app.Activity
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Rational
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -34,6 +39,7 @@ import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalTheme
+import com.wesal.messenger.core.util.CallPipLogic
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.data.local.AppUserSettings
@@ -85,6 +91,7 @@ class CallActivity : AppCompatActivity() {
     private val screenShareLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        shareConsentInFlight = false
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
             val metrics = resources.displayMetrics
@@ -107,6 +114,114 @@ class CallActivity : AppCompatActivity() {
                 android.widget.Toast.LENGTH_SHORT
             ).show()
         }
+    }
+
+    /**
+     * Round 22: picture-in-picture state, mirrored from
+     * [onPictureInPictureModeChanged] into Compose. PiP is a MODE of
+     * this detachable view — the session still lives in
+     * [CallSessionController]; entering PiP changes nothing about the
+     * call, leaving PiP (tap to expand) restores the full UI, and
+     * destroying the activity (the PiP window's close button)
+     * detaches exactly like Back does for voice calls.
+     */
+    private var inPipState by mutableStateOf(false)
+
+    /**
+     * Round 22: PiP must NOT trigger on the leave-hint fired by our
+     * OWN screen-share consent prompt (the system dialog takes the
+     * foreground, which looks exactly like the user leaving). Set
+     * just before the prompt launches; cleared by its result.
+     */
+    @Volatile
+    private var shareConsentInFlight = false
+
+    /**
+     * Round 22: builds the PiP parameters for the current call —
+     * aspect clamped into the platform's legal range by the pure
+     * [CallPipLogic] (an out-of-range aspect makes the platform throw
+     * and the mini window silently never appears), plus the one
+     * remote action a control-less floating window needs: end call,
+     * routed through [CallActionReceiver] to the controller. On
+     * Android 12+ auto-enter is enabled so the swipe-home gesture
+     * minimizes straight into PiP.
+     */
+    private fun buildPipParams(): PictureInPictureParams {
+        val metrics = resources.displayMetrics
+        val (aspectW, aspectH) = CallPipLogic.clampedAspect(metrics.widthPixels, metrics.heightPixels)
+        val endCallIntent = PendingIntent.getBroadcast(
+            this,
+            PIP_END_CALL_REQUEST,
+            Intent(this, CallActionReceiver::class.java)
+                .setAction(CallActionReceiver.ACTION_END_CALL),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(aspectW, aspectH))
+            .setActions(
+                listOf(
+                    RemoteAction(
+                        android.graphics.drawable.Icon.createWithResource(
+                            this,
+                            com.wesal.messenger.R.drawable.ic_pip_end_call
+                        ),
+                        "إنهاء المكالمة",
+                        "إنهاء المكالمة",
+                        endCallIntent
+                    )
+                )
+            )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setAutoEnterEnabled(true)
+        }
+        return builder.build()
+    }
+
+    /**
+     * Round 22: attempts PiP entry for a live VIDEO call. Returns
+     * false — and the caller falls back to the round-20 behaviour
+     * (detach + ongoing-call notification) — when PiP does not apply
+     * (voice call, no live session, already in PiP) or the platform
+     * refuses (device/OEM without PiP, user-disabled PiP): the
+     * fallback is silent by design.
+     */
+    private fun tryEnterPip(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        val session = callController.session.value
+        if (shareConsentInFlight) return false
+        if (!CallPipLogic.shouldEnterPip(
+                isVideoCall = session?.isVideo == true,
+                sessionLive = session != null,
+                alreadyInPip = inPipState
+            )
+        ) {
+            return false
+        }
+        if (isInPictureInPictureMode) {
+            inPipState = true
+            return true
+        }
+        return runCatching { enterPictureInPictureMode(buildPipParams()) }
+            .getOrDefault(false)
+    }
+
+    /**
+     * Round 22: the platform's "the user is leaving" signal — Home
+     * button, recents, or (without auto-enter) the swipe-home
+     * gesture. A video call minimizes into the floating PiP window
+     * instead of just vanishing into the notification.
+     */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        tryEnterPip()
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPipState = isInPictureInPictureMode
     }
 
     /**
@@ -253,7 +368,25 @@ class CallActivity : AppCompatActivity() {
                 // Round 20: Back DETACHES the call UI — the call keeps
                 // running (owner's explicit r19 verdict). Only the
                 // end-call button ends a call.
-                BackHandler { finish() }
+                // Round 22: for a VIDEO call, Back first tries to
+                // minimize into the floating PiP window (WhatsApp-
+                // style); when PiP does not apply or the platform
+                // refuses, it falls back to the round-20 detach.
+                BackHandler {
+                    if (!tryEnterPip()) {
+                        finish()
+                    }
+                }
+
+                // Round 22: keep the PiP parameters fresh while a
+                // video session is live — Android 12+ reads them for
+                // the swipe-home auto-enter, and the end-call action
+                // must exist before any leave happens.
+                LaunchedEffect(sessionLive, isVideo, isScreenSharing) {
+                    if (sessionLive && isVideo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        runCatching { setPictureInPictureParams(buildPipParams()) }
+                    }
+                }
 
                 LaunchedEffect(Unit) {
                     if (!sessionLive && !permissions.allPermissionsGranted) {
@@ -456,7 +589,52 @@ class CallActivity : AppCompatActivity() {
                 }
 
                 Box(modifier = Modifier.fillMaxSize().background(palette.background)) {
-                    if (!mediaReady) {
+                    if (inPipState) {
+                        // Round 22: picture-in-picture — ONLY the video,
+                        // full-bleed: the peer's picture, or (before it
+                        // arrives / while sharing with no peer picture
+                        // yet) the outgoing track, which during a share
+                        // IS the shared screen. No controls, no chips:
+                        // the system window is draggable, and tapping it
+                        // expands back to the full UI below.
+                        val pipTrack = remoteVideo ?: localVideo
+                        if (pipTrack != null) {
+                            val pipRenderer = remember(pipTrack) {
+                                SurfaceViewRenderer(this@CallActivity).apply {
+                                    init(webRtcManager.eglBase.eglBaseContext, null)
+                                }
+                            }
+                            DisposableEffect(pipTrack) {
+                                pipTrack.addSink(pipRenderer)
+                                onDispose {
+                                    pipTrack.removeSink(pipRenderer)
+                                    pipRenderer.release()
+                                }
+                            }
+                            AndroidView(
+                                factory = { pipRenderer },
+                                update = { renderer ->
+                                    renderer.setMirror(
+                                        pipTrack === localVideo && isFrontCamera && !isScreenSharing
+                                    )
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Column(
+                                modifier = Modifier.align(Alignment.Center),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                WesalAvatar(imageUrl = peerAvatar, name = peerName, size = 56.dp)
+                                Text(
+                                    callStatusLabel,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = palette.turquoise
+                                )
+                            }
+                        }
+                    } else if (!mediaReady) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -549,7 +727,7 @@ class CallActivity : AppCompatActivity() {
                         }
                     }
 
-                    if (isVideo && localVideo != null && !cameraOff) {
+                    if (!inPipState && isVideo && localVideo != null && !cameraOff) {
                         val localRenderer = remember(localVideo) {
                             SurfaceViewRenderer(this@CallActivity).apply {
                                 init(webRtcManager.eglBase.eglBaseContext, null)
@@ -583,6 +761,10 @@ class CallActivity : AppCompatActivity() {
                         )
                     }
 
+                    // Round 22: no control row in PiP — the floating
+                    // window carries only the video (plus the system's
+                    // own expand/close and our end-call action).
+                    if (!inPipState) {
                     Row(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
@@ -646,6 +828,12 @@ class CallActivity : AppCompatActivity() {
                                         callController.prepareScreenShare()
                                         val projectionManager =
                                             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                                        // Round 22: mark the consent
+                                        // prompt as ours BEFORE it takes
+                                        // the foreground, so its
+                                        // leave-hint cannot minimize the
+                                        // call into PiP mid-request.
+                                        shareConsentInFlight = true
                                         screenShareLauncher.launch(projectionManager.createScreenCaptureIntent())
                                     }
                                 }
@@ -688,6 +876,7 @@ class CallActivity : AppCompatActivity() {
                             )
                         }
                     }
+                    }
                 }
             }
         }
@@ -722,6 +911,7 @@ class CallActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val PIP_END_CALL_REQUEST = 0xCA11
         private const val EXTRA_IS_INCOMING = "is_incoming"
         private const val EXTRA_CALL_ID = "call_id"
         private const val EXTRA_PEER_UID = "peer_uid"

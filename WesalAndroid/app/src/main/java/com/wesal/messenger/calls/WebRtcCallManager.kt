@@ -54,6 +54,7 @@ class WebRtcCallManager @Inject constructor(
     private var localVideoSource: VideoSource? = null
     private var localAudioSource: AudioSource? = null
     private var localVideoTrack: VideoTrack? = null
+    private var localVideoSender: RtpSender? = null
     private var localAudioTrack: AudioTrack? = null
     private var remoteDescriptionSet = false
     private val pendingRemoteCandidates = mutableListOf<IceCandidate>()
@@ -327,7 +328,11 @@ class WebRtcCallManager @Inject constructor(
                 capturer.startCapture(720, 1280, 30)
                 localVideoTrack = factory.createVideoTrack("WESAL_VIDEO", localVideoSource)
                 localVideoTrack?.let {
-                    peerConnection?.addTrack(it, listOf("WESAL_STREAM"))
+                    // Round 22: keep the video RtpSender — screen
+                    // sharing swaps the track ON THIS SENDER
+                    // (RtpSender.setTrack) instead of feeding a second
+                    // capturer into the camera's video source.
+                    localVideoSender = peerConnection?.addTrack(it, listOf("WESAL_STREAM"))
                     _localVideoTrackFlow.value = it
                 }
             }
@@ -878,19 +883,56 @@ class WebRtcCallManager @Inject constructor(
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Screen sharing (round 20). The screen capturer feeds the SAME
-    // local video source the camera feeds, so the existing local video
-    // track — and therefore the remote side — simply sees the screen
-    // instead of the camera; no renegotiation is needed. The camera
-    // capturer is stopped (not disposed) while sharing and restarted
-    // when sharing stops. The caller (CallActivity) owns the
-    // MediaProjection permission prompt and must have the
-    // mediaProjection foreground service running before calling
-    // [startScreenShare] (Android 14 requirement); a denial never
-    // reaches this function and never touches the call.
+    // Screen sharing (round 20; ARCHITECTURE REBUILT in round 22).
+    //
+    // R20/R21 design — and why it produced a BLACK SCREEN on the
+    // owner's device: the screen capturer was initialized against the
+    // CAMERA's video source and the CAMERA's SurfaceTextureHelper.
+    // Both are single-owner resources in stream-webrtc-android 1.2.2
+    // (verified against the shipped sources jar):
+    //  - a VideoSource exposes ONE CapturerObserver; its
+    //    onCapturerStarted/onCapturerStopped drive the native source
+    //    state, so two capturers reporting into one source interleave
+    //    their start/stop signals;
+    //  - a SurfaceTextureHelper has ONE frame listener slot:
+    //    startListening() throws IllegalStateException when a listener
+    //    is already set, and Camera2Session.stopInternal() calls
+    //    stopListening() UNCONDITIONALLY when the parked camera
+    //    session finishes closing — asynchronously, on the camera
+    //    thread, i.e. typically AFTER ScreenCapturerAndroid's
+    //    startCapture() registered ITSELF as that listener. The
+    //    virtual display then renders into a SurfaceTexture nobody
+    //    drains, onFrame() is never called, the source receives zero
+    //    frames, and both the peer and the local preview render
+    //    black. (The other interleaving — the camera listener still
+    //    set when the screen capturer starts — throws inside
+    //    startListening and the share "fails to start".)
+    //  - the shared helper's texture size was also reset to the
+    //    screen's dimensions under the camera capturer.
+    //
+    // R22 design — the library's supported mechanism: the screen gets
+    // its OWN pipeline (VideoSource created with isScreencast=true,
+    // its own SurfaceTextureHelper, its own VideoTrack), and sharing
+    // is an RtpSender.setTrack() swap on the call's existing video
+    // sender (camera track ↔ screen track). A same-kind track
+    // replacement needs no renegotiation: the m= section, SSRC and
+    // the peer's receiver track are unchanged — the peer simply
+    // starts receiving screen frames, and stopping the share swaps
+    // the camera track back. The camera capturer is parked (stopped,
+    // not disposed) while sharing; its stop now only touches the
+    // CAMERA's helper, which nothing else is using.
+    //
+    // The caller (CallActivity) owns the MediaProjection permission
+    // prompt and must have the mediaProjection foreground service
+    // running before calling [startScreenShare] (Android 14
+    // requirement); a denial never reaches this function and never
+    // touches the call.
     // ---------------------------------------------------------------------------------------------
 
     private var screenCapturer: ScreenCapturerAndroid? = null
+    private var screenVideoSource: VideoSource? = null
+    private var screenVideoTrack: VideoTrack? = null
+    private var screenTextureHelper: SurfaceTextureHelper? = null
 
     private val _isScreenSharing = MutableStateFlow(false)
     val isScreenSharing: StateFlow<Boolean> = _isScreenSharing.asStateFlow()
@@ -899,13 +941,31 @@ class WebRtcCallManager @Inject constructor(
      * Starts sharing the screen into the ongoing video call.
      * [resultData] is the data intent from the MediaProjection
      * permission prompt. Returns false (call untouched, camera still
-     * live) when there is no video session or the capturer fails to
-     * start.
+     * live) when there is no video session or any step fails — the
+     * camera is only parked AFTER the screen pipeline exists and the
+     * sender has accepted the swap, so a failed attempt changes
+     * nothing the user can see.
      */
     fun startScreenShare(resultData: Intent, displayWidth: Int, displayHeight: Int): Boolean {
-        val source = localVideoSource ?: return false
-        val helper = surfaceTextureHelper ?: return false
+        val factory = peerConnectionFactory ?: return false
+        if (localVideoTrack == null) return false
         if (_isScreenSharing.value) return true
+        val sender = localVideoSender
+            ?: peerConnection?.senders?.firstOrNull { it.track()?.kind() == "video" }
+                ?.also { localVideoSender = it }
+            ?: return false
+        val (width, height) = com.wesal.messenger.core.util.ScreenShareLogic
+            .targetSize(displayWidth, displayHeight)
+
+        // Build the dedicated screen pipeline first.
+        val source = factory.createVideoSource(true)
+        val helper = SurfaceTextureHelper.create("WesalScreenCaptureThread", eglBase.eglBaseContext)
+        val track = factory.createVideoTrack("WESAL_SCREEN", source)
+        if (track == null) {
+            runCatching { source.dispose() }
+            runCatching { helper.dispose() }
+            return false
+        }
         val capturer = ScreenCapturerAndroid(
             resultData,
             object : android.media.projection.MediaProjection.Callback() {
@@ -918,12 +978,6 @@ class WebRtcCallManager @Inject constructor(
                 }
             }
         )
-        val (width, height) = com.wesal.messenger.core.util.ScreenShareLogic
-            .targetSize(displayWidth, displayHeight)
-        // Park the camera: capture stops, the capturer object (and its
-        // initialization against this same source) survives for the
-        // return trip.
-        runCatching { videoCapturer?.stopCapture() }
         val started = runCatching {
             capturer.initialize(helper, context, source.capturerObserver)
             capturer.startCapture(
@@ -938,34 +992,72 @@ class WebRtcCallManager @Inject constructor(
         }
         if (!started) {
             runCatching { capturer.dispose() }
-            // Resume the camera so a failed share attempt never leaves
-            // the call without local video.
-            runCatching { videoCapturer?.startCapture(720, 1280, 30) }
+            runCatching { track.dispose() }
+            runCatching { source.dispose() }
+            runCatching { helper.dispose() }
+            return false
+        }
+        // Swap what the call's video sender sends: camera track out,
+        // screen track in. takeOwnership=false — both tracks stay
+        // owned (and disposed) by this manager.
+        val swapped = runCatching { sender.setTrack(track, false) }.getOrDefault(false)
+        if (!swapped) {
+            Log.e(TAG, "RtpSender refused the screen track — screen share aborted")
+            runCatching { capturer.stopCapture() }
+            runCatching { capturer.dispose() }
+            runCatching { track.dispose() }
+            runCatching { source.dispose() }
+            runCatching { helper.dispose() }
             return false
         }
         screenCapturer = capturer
+        screenVideoSource = source
+        screenVideoTrack = track
+        screenTextureHelper = helper
+        // Park the camera only now: capture stops, the capturer object
+        // (and its initialization against the CAMERA source/helper)
+        // survives for the return trip.
+        runCatching { videoCapturer?.stopCapture() }
+        // The local preview follows the sender: it now shows the
+        // shared screen (the same track the peer receives).
+        _localVideoTrackFlow.value = track
         _isScreenSharing.value = true
-        // Re-attach the local preview sink: the frame source changed
-        // under the same track.
+        // Re-attach the local preview sink under the new track.
         _cameraSwitchCount.value += 1
-        Log.i(TAG, "Screen share started at ${width}x$height")
+        Log.i(TAG, "Screen share started at ${width}x$height (dedicated source + sender track swap)")
         return true
     }
 
     /** Stops sharing and returns the outgoing video to the camera. */
     fun stopScreenShare() {
         val capturer = screenCapturer
+        val sTrack = screenVideoTrack
+        val sSource = screenVideoSource
+        val sHelper = screenTextureHelper
         screenCapturer = null
+        screenVideoTrack = null
+        screenVideoSource = null
+        screenTextureHelper = null
         val wasSharing = _isScreenSharing.value
         _isScreenSharing.value = false
-        if (capturer == null) return
-        runCatching { capturer.stopCapture() }
-        runCatching { capturer.dispose() }
-        // Return to the camera (the capturer is still initialized
-        // against the same video source — a plain startCapture resumes
-        // it). If the session is already gone this simply no-ops into
-        // the runCatching.
-        if (wasSharing && localVideoSource != null) {
+        if (!wasSharing && capturer == null) return
+        // Hand the sender its camera track back FIRST, while the
+        // screen pipeline is still alive, so the peer's picture never
+        // passes through a sender with no track.
+        val cameraTrack = localVideoTrack
+        if (cameraTrack != null) {
+            runCatching { localVideoSender?.setTrack(cameraTrack, false) }
+            _localVideoTrackFlow.value = cameraTrack
+        }
+        // Tear the screen pipeline down (capturer → track → source →
+        // helper) and resume the parked camera capturer, which is
+        // still initialized against the camera source/helper.
+        runCatching { capturer?.stopCapture() }
+        runCatching { capturer?.dispose() }
+        runCatching { sTrack?.dispose() }
+        runCatching { sSource?.dispose() }
+        runCatching { sHelper?.dispose() }
+        if (localVideoSource != null) {
             runCatching { videoCapturer?.startCapture(720, 1280, 30) }
             _cameraSwitchCount.value += 1
         }
@@ -1219,13 +1311,23 @@ class WebRtcCallManager @Inject constructor(
         _iceConnectionState.value = PeerConnection.IceConnectionState.CLOSED
         unregisterAudioMonitoring()
         // Round 20: tear down any live screen share WITHOUT returning
-        // to the camera (the whole session is going away).
+        // to the camera (the whole session is going away). Round 22:
+        // the share owns a dedicated source/track/helper — all of it
+        // is disposed here; the video sender dies with the peer
+        // connection below, so no track swap is needed.
         screenCapturer?.let { sc ->
             runCatching { sc.stopCapture() }
             runCatching { sc.dispose() }
         }
         screenCapturer = null
+        screenVideoTrack?.dispose()
+        screenVideoTrack = null
+        screenVideoSource?.dispose()
+        screenVideoSource = null
+        screenTextureHelper?.dispose()
+        screenTextureHelper = null
         _isScreenSharing.value = false
+        localVideoSender = null
         currentCameraName = null
         pinnedCameras = null
         runCatching { videoCapturer?.stopCapture() }
