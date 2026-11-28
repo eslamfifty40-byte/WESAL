@@ -96,6 +96,16 @@ class CoreDomainUnitTest {
     }
 
     @Test
+    fun callStatusWithDuration_keepsStateWordNextToTime() {
+        // R17 (G-01): «متصل • 01:23» — the state word stays, the minutes
+        // count sits next to it; negative input never renders a broken time.
+        assertEquals("متصل • 00:00", DateTimeUtils.formatCallStatusWithDuration("متصل", 0))
+        assertEquals("Connected • 01:24", DateTimeUtils.formatCallStatusWithDuration("Connected", 84))
+        assertEquals("متصل • 61:01", DateTimeUtils.formatCallStatusWithDuration("متصل", 3661))
+        assertEquals("متصل • 00:00", DateTimeUtils.formatCallStatusWithDuration("متصل", -5))
+    }
+
+    @Test
     fun ecdhAesGcmRoundTrip_succeedsAndDetectsTampering() {
         val kpg = KeyPairGenerator.getInstance("EC").apply {
             initialize(ECGenParameterSpec("secp256r1"))

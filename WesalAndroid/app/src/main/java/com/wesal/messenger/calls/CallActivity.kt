@@ -160,6 +160,11 @@ class CallActivity : AppCompatActivity() {
                 var micMuted by remember { mutableStateOf(false) }
                 var cameraOff by remember { mutableStateOf(!isVideo) }
                 var durationSeconds by remember { mutableLongStateOf(0L) }
+                // R17 (G-01): true once the other side has ANSWERED
+                // (CallStatus.ACTIVE — callee ack via submitAnswer). The
+                // minutes count starts here, not when the media path
+                // happens to connect.
+                var callAnswered by remember { mutableStateOf(false) }
                 // Start strictly with CONNECTING ("جاري الاتصال...") — switches to RINGING only on real callee ACK
                 var callStatusLabel by remember(strings.isEnglish) {
                     mutableStateOf(strings.connectingCall)
@@ -360,7 +365,8 @@ class CallActivity : AppCompatActivity() {
                                             ringingText = strings.ringingCall,
                                             connectedText = strings.connectedCall,
                                             rejectedText = strings.callRejected,
-                                            missedText = strings.callMissed
+                                            missedText = strings.callMissed,
+                                            onActive = { callAnswered = true }
                                         ) { status ->
                                             callStatusLabel = status
                                         }
@@ -396,7 +402,8 @@ class CallActivity : AppCompatActivity() {
                                         ringingText = strings.ringingCall,
                                         connectedText = strings.connectedCall,
                                         rejectedText = strings.callRejected,
-                                        missedText = strings.callMissed
+                                        missedText = strings.callMissed,
+                                        onActive = { callAnswered = true }
                                     ) { status ->
                                         callStatusLabel = status
                                     }
@@ -418,14 +425,32 @@ class CallActivity : AppCompatActivity() {
                 LaunchedEffect(connState) {
                     if (connState == PeerConnection.PeerConnectionState.CONNECTED) {
                         hasConnected = true
-                        while (true) {
-                            delay(1000L)
-                            durationSeconds++
-                            startedSeconds = durationSeconds
-                            callStatusLabel = DateTimeUtils.formatDurationSeconds(durationSeconds)
-                        }
                     } else if (connState == PeerConnection.PeerConnectionState.FAILED) {
                         callStatusLabel = if (strings.isEnglish) "Connection lost — retrying..." else "انقطع الاتصال — جاري إعادة المحاولة..."
+                    }
+                }
+
+                // R17 (G-01): the minutes count starts when the other side
+                // ANSWERS (CallStatus.ACTIVE), not when the media path
+                // happens to connect, and the status line keeps the state
+                // word next to the time («متصل • 01:23») instead of being
+                // replaced by a bare timer. The count keeps running through
+                // a mid-call media drop — the ICE effects own the label
+                // then («انقطع الاتصال…») and the timer resumes writing it
+                // on reconnect. Ending the call disposes the screen and
+                // stops the loop.
+                LaunchedEffect(callAnswered, connState) {
+                    if (!callAnswered && connState != PeerConnection.PeerConnectionState.CONNECTED) return@LaunchedEffect
+                    if (connState == PeerConnection.PeerConnectionState.CONNECTED) {
+                        callStatusLabel = DateTimeUtils.formatCallStatusWithDuration(strings.connectedCall, durationSeconds)
+                    }
+                    while (true) {
+                        delay(1000L)
+                        durationSeconds++
+                        startedSeconds = durationSeconds
+                        if (webRtcManager.connectionState.value == PeerConnection.PeerConnectionState.CONNECTED) {
+                            callStatusLabel = DateTimeUtils.formatCallStatusWithDuration(strings.connectedCall, durationSeconds)
+                        }
                     }
                 }
 
@@ -745,6 +770,9 @@ class CallActivity : AppCompatActivity() {
         connectedText: String,
         rejectedText: String,
         missedText: String,
+        // R17 (G-01): fired once when the observed call doc becomes ACTIVE
+        // (callee ack) so the in-call minutes count starts at the answer.
+        onActive: () -> Unit = {},
         onStatus: (String) -> Unit
     ) {
         lifecycleScope.launch {
@@ -757,8 +785,16 @@ class CallActivity : AppCompatActivity() {
             var appliedAnswerGeneration = -1L
             var appliedOfferGeneration = 0L // generation 0 is the initial offer, applied before this listener starts (callee)
             var handledRestartRequestAt = 0L
+            var activeReported = false
             callRepository.observeCall(callId).collect { call ->
                 if (call == null || isFinishingCall) return@collect
+                // R17 (G-01): the callee stamps ACTIVE in submitAnswer; the
+                // caller observes the same doc. Either side starts its
+                // minutes count the moment the answer lands.
+                if (call.status == CallStatus.ACTIVE && !activeReported) {
+                    activeReported = true
+                    onActive()
+                }
                 if (isCaller && (call.status == CallStatus.RINGING || call.calleeRingingAck) &&
                     appliedAnswerGeneration < 0L && webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED
                 ) {

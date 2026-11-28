@@ -37,4 +37,14 @@ object DateTimeUtils {
     }
 
     fun formatDurationMillis(millis: Long): String = formatDurationSeconds((millis / 1000L).coerceAtLeast(0L))
+
+    /**
+     * R17 (G-01, owner: «لما يجي يرد يبان عدد الدقايق»): the in-call status
+     * line keeps the state word next to the running time once the other
+     * side has answered — «متصل • 01:23» — instead of replacing the state
+     * with a bare timer. Pure, so the call screen and the unit test share
+     * exactly this composition.
+     */
+    fun formatCallStatusWithDuration(stateText: String, seconds: Long): String =
+        "$stateText • ${formatDurationSeconds(seconds.coerceAtLeast(0L))}"
 }
