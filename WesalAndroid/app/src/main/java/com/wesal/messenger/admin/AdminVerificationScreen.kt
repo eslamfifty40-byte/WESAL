@@ -223,7 +223,7 @@ class AdminVerificationViewModel @Inject constructor(
     // automatic health-driven router stays primary — saving here only
     // rewrites the configured primary it consults.
     private val _messagePlane = MutableStateFlow(
-        MessagePlaneRouter.currentConfig().configuredPrimary
+        MessagePlaneRouter.currentConfig().primary
     )
     val messagePlane: StateFlow<MessagePlaneRouter.Store> = _messagePlane.asStateFlow()
 

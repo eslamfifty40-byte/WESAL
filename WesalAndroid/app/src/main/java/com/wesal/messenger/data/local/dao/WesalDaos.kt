@@ -24,6 +24,9 @@ interface WesalDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMessages(messages: List<CachedMessageEntity>)
 
+    @Query("DELETE FROM cached_chats WHERE chatId = :chatId")
+    suspend fun deleteChat(chatId: String)
+
     /**
      * Failover §5.4: ids of a chat's Supabase-homed incoming messages
      * still awaiting a READ ack — the markChatAsRead sweep flushes

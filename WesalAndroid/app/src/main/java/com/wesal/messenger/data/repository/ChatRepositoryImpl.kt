@@ -2337,7 +2337,7 @@ class ChatRepositoryImpl @Inject constructor(
         chatId: String,
         messageData: Map<String, Any?>,
         participants: List<String>
-    ): SupabaseMessageClient.PlaneSendResult? {
+    ): PlaneSendResult? {
         val messageId = messageData["messageId"] as? String ?: return null
         attemptedStores[messageId] =
             MessagePlaneRouter.wireName(MessagePlaneRouter.Store.SUPABASE)
@@ -2370,7 +2370,7 @@ class ChatRepositoryImpl @Inject constructor(
         chatId: String,
         myUid: String,
         messageData: Map<String, Any?>,
-        landed: SupabaseMessageClient.PlaneSendResult
+        landed: PlaneSendResult
     ) {
         runCatching { prefs.setPlaneEngaged() }
         val message = WesalMessage(
