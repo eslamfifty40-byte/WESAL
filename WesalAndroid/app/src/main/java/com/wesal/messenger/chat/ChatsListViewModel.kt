@@ -14,9 +14,11 @@ import com.wesal.messenger.domain.model.ContactRequestStatus
 import com.wesal.messenger.domain.repository.AuthRepository
 import com.wesal.messenger.domain.repository.ChatRepository
 import com.wesal.messenger.domain.repository.UserRepository
+import com.wesal.messenger.stories.StarredMessageEntry
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 @HiltViewModel
@@ -91,6 +93,30 @@ class ChatsListViewModel @Inject constructor(
     val lockedChatIds: StateFlow<Set<String>> = prefs.settingsFlow
         .map { it.lockedChatIds }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptySet())
+
+    // Spec §9.6 (r17): starred messages on the chats bar — the same per-uid
+    // store the Updates tab already reads (StoriesViewModel.starredMessages),
+    // parsed identically ("chatId|messageId|summary").
+    val starredMessages: StateFlow<List<StarredMessageEntry>> = prefs.settingsFlow
+        .map { settings ->
+            val rawList = runCatching {
+                Json.decodeFromString<List<String>>(settings.starredMessagesJson)
+            }.getOrDefault(emptyList())
+            rawList.map { raw ->
+                val parts = raw.split("|", limit = 3)
+                StarredMessageEntry(
+                    rawKey = raw,
+                    chatId = parts.getOrElse(0) { "" },
+                    messageId = parts.getOrElse(1) { "" },
+                    summary = parts.getOrElse(2) { raw }
+                )
+            }
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun removeStarredEntry(rawKey: String) {
+        viewModelScope.launch { prefs.toggleStarredMessage(rawKey) }
+    }
 
     // One shared subscription to the chats listener for the whole screen (previously every
     // derived flow opened its own). The retry key lets the error state re-subscribe after

@@ -40,6 +40,7 @@ import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.WesalFrameLibrary
 import com.wesal.messenger.domain.model.ChatPreview
 import com.wesal.messenger.presentation.components.MessageStatusTick
+import com.wesal.messenger.stories.StarredMessagesDialog
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import com.wesal.messenger.presentation.components.WesalVerifiedBadge
@@ -71,6 +72,7 @@ fun ChatsListScreen(
     val hiddenCount by viewModel.hiddenCount.collectAsStateWithLifecycle()
     val hiddenIds by viewModel.hiddenChatIds.collectAsStateWithLifecycle()
     val lockedIds by viewModel.lockedChatIds.collectAsStateWithLifecycle()
+    val starredMessages by viewModel.starredMessages.collectAsStateWithLifecycle()
     val toastMsg by viewModel.toastMessage.collectAsStateWithLifecycle()
     // Round 10 (item 6): «مساعد وِصال» as a normal conversation row — present
     // once a conversation exists and not archived; behaves like a real row
@@ -103,6 +105,7 @@ fun ChatsListScreen(
     var deleteConfirmChat by remember { mutableStateOf<ChatPreview?>(null) }
     var showSetupPasswordForChatId by remember { mutableStateOf<String?>(null) }
     var showRequestsDialog by remember { mutableStateOf(false) }
+    var showStarredDialog by remember { mutableStateOf(false) }
     var pendingLockedChat by remember { mutableStateOf<ChatPreview?>(null) }
     var reportRequestTarget by remember { mutableStateOf<Pair<String, String?>?>(null) }
 
@@ -168,6 +171,28 @@ fun ChatsListScreen(
                         cursorColor = palette.turquoise
                     )
                 )
+                // Spec §9.6 (r17): star button on the chats bar — opens the
+                // same Starred Messages dialog as the Updates tab (same
+                // per-uid store). Always visible; the badge shows the count.
+                if (starredMessages.isNotEmpty()) {
+                    BadgedBox(badge = { Badge { Text("${starredMessages.size}") } }) {
+                        IconButton(onClick = { showStarredDialog = true }) {
+                            Icon(
+                                Icons.Default.Star,
+                                contentDescription = if (strings.isEnglish) "Starred" else "المميزة بنجمة",
+                                tint = palette.turquoise
+                            )
+                        }
+                    }
+                } else {
+                    IconButton(onClick = { showStarredDialog = true }) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = if (strings.isEnglish) "Starred" else "المميزة بنجمة",
+                            tint = palette.textSecondary
+                        )
+                    }
+                }
             }
 
             // Round 9 (owner spec): «مساعد وِصال» no longer sits as a pinned
@@ -976,6 +1001,20 @@ fun ChatsListScreen(
             dismissButton = {
                 TextButton(onClick = { showSetupPasswordForChatId = null }) { Text(strings.cancel) }
             }
+        )
+    }
+
+    // Spec §9.6 (r17): the chats-bar star button opens the same Starred
+    // Messages dialog as the Updates tab.
+    if (showStarredDialog) {
+        StarredMessagesDialog(
+            entries = starredMessages,
+            onDismiss = { showStarredDialog = false },
+            onOpenChat = { chatId ->
+                showStarredDialog = false
+                if (chatId.isNotBlank()) onOpenChat(chatId)
+            },
+            onRemoveStar = { rawKey -> viewModel.removeStarredEntry(rawKey) }
         )
     }
 

@@ -2780,7 +2780,11 @@ private fun ArchiveSettingsDialog(
 }
 
 @Composable
-private fun StarredMessagesDialog(
+/**
+ * Spec §9.6 (r17): shared with the chats bar — ChatsListScreen opens the same
+ * dialog, so this must stay non-private.
+ */
+fun StarredMessagesDialog(
     entries: List<StarredMessageEntry>,
     onDismiss: () -> Unit,
     onOpenChat: (String) -> Unit,
