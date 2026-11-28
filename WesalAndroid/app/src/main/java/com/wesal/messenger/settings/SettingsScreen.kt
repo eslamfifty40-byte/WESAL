@@ -462,6 +462,25 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { userRepository.unblockUser(uid) }
     }
 
+    // R17 (G-31, §6.5): the blocked-users dialog must never render raw
+    // Firebase UIDs as bare text. Each blocked UID resolves once to its
+    // account (name / @publicId / numeric ID); an account that no longer
+    // resolves (deleted) renders as "blocked user" and can still be
+    // unblocked by UID — the UID itself is never displayed.
+    private val _blockedUserDetails = MutableStateFlow<Map<String, WesalUser?>>(emptyMap())
+    val blockedUserDetails: StateFlow<Map<String, WesalUser?>> = _blockedUserDetails.asStateFlow()
+
+    fun loadBlockedUserDetails(uids: List<String>) {
+        val missing = uids.filter { it !in _blockedUserDetails.value }
+        if (missing.isEmpty()) return
+        viewModelScope.launch {
+            val resolved = missing.associateWith { uid ->
+                runCatching { userRepository.getUserOnce(uid) }.getOrNull()
+            }
+            _blockedUserDetails.value = _blockedUserDetails.value + resolved
+        }
+    }
+
     private val clearableCacheDirNames = listOf(
         "image_cache",
         "decrypted_media",
@@ -553,6 +572,7 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
 
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
+    val blockedUserDetails by viewModel.blockedUserDetails.collectAsStateWithLifecycle()
     val isSuperAdmin by viewModel.isSuperAdmin.collectAsStateWithLifecycle()
     val adminPermissions by viewModel.adminPermissions.collectAsStateWithLifecycle()
     val mySubscriptionRequests by viewModel.mySubscriptionRequests.collectAsStateWithLifecycle()
@@ -1961,6 +1981,7 @@ fun SettingsScreen(
 
     if (showBlockedDialog) {
         val blocked = user?.blockedUsers.orEmpty()
+        LaunchedEffect(blocked) { viewModel.loadBlockedUserDetails(blocked) }
         AlertDialog(
             onDismissRequest = { showBlockedDialog = false },
             containerColor = palette.surface,
@@ -1971,12 +1992,27 @@ fun SettingsScreen(
                 } else {
                     LazyColumn(modifier = Modifier.heightIn(max = 250.dp)) {
                         items(blocked) { uid ->
+                            // R17 (G-31, §6.5): never render the raw
+                            // Firebase UID — show the account's name /
+                            // @publicId / numeric ID, or a plain "blocked
+                            // user" label when it no longer resolves.
+                            val details = blockedUserDetails[uid]
+                            val label = details?.displayName?.takeIf { it.isNotBlank() }
+                                ?: details?.publicId?.takeIf { it.isNotBlank() }?.let { "@$it" }
+                                ?: if (strings.isEnglish) "Blocked user" else "مستخدم محظور"
+                            val idLine = details?.numericId?.takeIf { it.isNotBlank() }
+                                ?.let { if (strings.isEnglish) "WESAL ID: $it" else "معرّف وصال: $it" }
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(uid, color = palette.textPrimary, modifier = Modifier.weight(1f))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(label, color = palette.textPrimary)
+                                    if (idLine != null) {
+                                        Text(idLine, color = palette.textSecondary, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
                                 TextButton(onClick = { viewModel.unblockUser(uid) }) {
                                     Text(if (strings.isEnglish) "Unblock" else "إلغاء الحظر", color = palette.turquoise)
                                 }
