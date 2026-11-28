@@ -559,8 +559,9 @@ class StoriesViewModel @Inject constructor(
 fun StoriesScreen(
     onOpenChannel: (String) -> Unit = {},
     onOpenChat: (String) -> Unit = {},
-    // Round 12 (addendum 2): bumped by HomeScreen when an admin taps
-    // «نشر حالة رسمية» in Settings — switches the composer into
+    // Round 12 (addendum 2) / Round 18: bumped by HomeScreen when an
+    // admin taps «نشر حالة رسمية» in the admin panel (the entry moved
+    // out of Settings in round 18) — switches the composer into
     // official mode (the story then reaches every user).
     officialComposerRequest: Int = 0,
     viewModel: StoriesViewModel = hiltViewModel(),
@@ -589,10 +590,12 @@ fun StoriesScreen(
     val channelSearchQuery by channelsViewModel.searchQuery.collectAsStateWithLifecycle()
     val channelMessage by channelsViewModel.message.collectAsStateWithLifecycle()
 
-    // Round 12 (addendum 2): official-publishing mode. Entered from the
-    // admin-only Settings row; while on, every publish from this screen
-    // is stamped official (all users, pinned) and the create card shows
-    // a banner saying so, with a way back to normal mode.
+    // Round 12 (addendum 2) / Round 18: official-publishing mode.
+    // Entered only from the admin panel's «نشر حالة رسمية» section
+    // (via HomeScreen's request token); while on, every publish from
+    // this screen is stamped official (all users, pinned) and the
+    // create card shows a banner saying so, with a way back to
+    // normal mode.
     var officialMode by remember { mutableStateOf(false) }
     LaunchedEffect(officialComposerRequest) {
         if (officialComposerRequest > 0) officialMode = true

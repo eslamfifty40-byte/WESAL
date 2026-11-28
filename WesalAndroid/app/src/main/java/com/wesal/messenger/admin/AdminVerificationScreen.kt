@@ -58,6 +58,7 @@ import com.wesal.messenger.core.util.FrameAnimationPolicy
 import com.wesal.messenger.core.util.FramePickerItem
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
+import com.wesal.messenger.core.util.OfficialStoryRequestBus
 import com.wesal.messenger.core.util.SubscriptionGrantLogic
 import com.wesal.messenger.core.util.SubscriptionRequestLogic
 import com.wesal.messenger.core.util.VerificationDurationOption
@@ -130,7 +131,11 @@ enum class AdminSection(
     SUBSCRIPTION_REQUESTS(20, "طلبات التوثيق", "Requests", Icons.Default.Badge),
     MODERATORS(21, "المشرفون المساعدون", "Moderators", Icons.Default.SupervisorAccount),
     GLOBAL_APPEARANCE(22, "مظهر وألوان التطبيق", "App Theme", Icons.Default.Palette),
-    SUPPORT_TICKETS(23, "تذاكر الدعم", "Support Tickets", Icons.Default.SupportAgent);
+    SUPPORT_TICKETS(23, "تذاكر الدعم", "Support Tickets", Icons.Default.SupportAgent),
+    // Round 18: the official-story publish entry moved here from
+    // Settings (owner order 2026-11-28) — the admin panel is the only
+    // surface that may offer it.
+    OFFICIAL_STORY(24, "نشر حالة رسمية", "Official Story", Icons.Default.Campaign);
 
     fun isAllowedFor(p: AdminPermissions): Boolean {
         if (!p.hasAnyAccess()) return false
@@ -141,7 +146,12 @@ enum class AdminSection(
             BANS_WARNINGS, HIDDEN_ACCOUNTS, HIDDEN_LOGS -> p.canManageUsersModeration
             CHANNELS, WESAL_TEAM -> p.canManageUsersModeration || p.canBroadcastAnnouncements
             VERIFICATION_APPEARANCE, SUBSCRIPTION_REQUESTS -> p.canManageVerification || p.canManageFramesAndNeon || p.canManageLibrary
-            WELCOME_MSG, ANNOUNCEMENTS -> p.canBroadcastAnnouncements
+            // Round 18: OFFICIAL_STORY shares the announcements
+            // permission family — and its section body additionally
+            // requires the author's numericId to be 10001/10002 before
+            // offering the composer (OfficialStoryLogic.canPublishOfficial
+            // enforces the same rule again on the publish path itself).
+            WELCOME_MSG, ANNOUNCEMENTS, OFFICIAL_STORY -> p.canBroadcastAnnouncements
             ACTION_LOGS, ONLINE_NOW, CHAT_ACTIVITY -> p.canInspectPrivateData || p.canManageReports || p.canManageUsersModeration
             ADMIN_SETTINGS -> p.canManageAdmins || p.canCustomizeGlobalTheme
             MODERATORS -> p.canManageAdmins
@@ -1228,6 +1238,9 @@ fun AdminVerificationScreen(
     onOpenChat: (String) -> Unit = {},
     onOpenUserProfile: (String) -> Unit,
     onOpenChannel: (String) -> Unit = {},
+    // Round 18: the official-story section hands off to the Home
+    // Status tab (where the composer lives) via OfficialStoryRequestBus.
+    onNavigateHome: () -> Unit = {},
     viewModel: AdminVerificationViewModel = hiltViewModel()
 ) {
     val palette = WesalColors.current
@@ -1646,6 +1659,73 @@ fun AdminVerificationScreen(
                     announcements = announcements,
                     onPublish = viewModel::publishOfficialAnnouncement
                 )
+
+                // Round 18: «نشر حالة رسمية» lives ONLY in the admin
+                // panel now (removed from Settings by owner order). The
+                // button hands off to the Home Status-tab composer via
+                // OfficialStoryRequestBus; the composer and the publish
+                // path re-check OfficialStoryLogic.canPublishOfficial,
+                // so a moderator who can see this section still cannot
+                // publish an official story.
+                AdminSection.OFFICIAL_STORY -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    val canPublishOfficial = currentUser?.numericId in Constants.ADMIN_NUMERIC_IDS
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = palette.surface),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Campaign, contentDescription = null, tint = palette.turquoise)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    if (strings.isEnglish) "Publish Official Story" else "نشر حالة رسمية",
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                            }
+                            Text(
+                                if (strings.isEnglish) {
+                                    "The official story appears for every WESAL user at the top of the Status tab."
+                                } else {
+                                    "تظهر الحالة الرسمية لكل مستخدمي وِصال في أعلى الحالات."
+                                },
+                                color = palette.textSecondary,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            if (canPublishOfficial) {
+                                Button(
+                                    onClick = {
+                                        OfficialStoryRequestBus.requestPublish()
+                                        onNavigateHome()
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(if (strings.isEnglish) "Open the official story composer" else "فتح مؤلّف الحالات الرسمية")
+                                }
+                            } else {
+                                Text(
+                                    if (strings.isEnglish) {
+                                        "Publishing official stories is restricted to the owner accounts (10001 / 10002)."
+                                    } else {
+                                        "نشر الحالات الرسمية مقصور على حسابات المالك (10001 / 10002)."
+                                    },
+                                    color = palette.textSecondary,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        }
+                    }
+                }
 
                 AdminSection.ACTION_LOGS -> AdminAuditLogsListSection(
                     busyOps = busyOps,

@@ -1,6 +1,8 @@
 package com.wesal.messenger
 
 import com.wesal.messenger.core.util.OfficialChatLockLogic
+import com.wesal.messenger.core.util.OfficialStoryRequestBus
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -92,5 +94,25 @@ class R18LogicTest {
         assertFalse(OfficialChatLockLogic.isAdminNumericId("100010"))
         assertFalse(OfficialChatLockLogic.isAdminNumericId(""))
         assertFalse(OfficialChatLockLogic.isAdminNumericId(null))
+    }
+
+    // ---- Task 2: the admin-panel → Home hand-off for official stories ----
+
+    @Test
+    fun officialStoryBus_requestThenConsumeExactlyOnce() {
+        // Start clean regardless of test order.
+        OfficialStoryRequestBus.consume(OfficialStoryRequestBus.pendingRequest.value)
+        assertEquals(0, OfficialStoryRequestBus.pendingRequest.value)
+
+        OfficialStoryRequestBus.requestPublish()
+        val pending = OfficialStoryRequestBus.pendingRequest.value
+        assertTrue(pending > 0)
+
+        // A stale consume (wrong value) must not clear a live request.
+        OfficialStoryRequestBus.consume(pending + 99)
+        assertEquals(pending, OfficialStoryRequestBus.pendingRequest.value)
+
+        OfficialStoryRequestBus.consume(pending)
+        assertEquals(0, OfficialStoryRequestBus.pendingRequest.value)
     }
 }

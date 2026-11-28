@@ -26,10 +26,10 @@ object OfficialStoryLogic {
     /**
      * Round 13 (Item D clarification — defense in depth): may this author
      * publish an OFFICIAL story at all? Only the admin accounts (numericId
-     * in [Constants.ADMIN_NUMERIC_IDS]) may. The Settings row is hidden
-     * from everyone else, but the publish path itself re-checks here so a
-     * non-admin can never get a story stamped official even if the
-     * composer flag were somehow reached. [authorNumericId] is the
+     * in [Constants.ADMIN_NUMERIC_IDS]) may. Since round 18 the entry
+     * lives only in the admin panel, but the publish path itself
+     * re-checks here so a non-admin can never get a story stamped
+     * official even if the composer flag were somehow reached. [authorNumericId] is the
      * author's OWN user-doc numericId (string or number representation —
      * callers normalize before calling).
      */

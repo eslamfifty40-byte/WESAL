@@ -19,6 +19,7 @@ import com.wesal.messenger.chat.ChatsListScreen
 import com.wesal.messenger.contacts.ContactsInviteActivity
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.util.LocalWesalStrings
+import com.wesal.messenger.core.util.OfficialStoryRequestBus
 import com.wesal.messenger.domain.repository.UserRepository
 import com.wesal.messenger.groups.GroupsScreen
 import com.wesal.messenger.presentation.components.OfflineBanner
@@ -79,10 +80,22 @@ fun HomeScreen(
     val hasAdminAccess by homeViewModel.hasAdminAccess.collectAsStateWithLifecycle()
 
     var selectedTab by rememberSaveable { mutableStateOf(HomeTab.CHATS) }
-    // Round 12 (addendum 2): one-shot request token from the admin-only
-    // Settings row «نشر حالة رسمية» — switching to the Status tab bumps
-    // it, and StoriesScreen turns its composer to official mode.
+    // Round 12 (addendum 2) / Round 18: one-shot request token for the
+    // official story composer. The entry used to be a Settings row; it
+    // now lives ONLY in the admin panel, which bumps
+    // OfficialStoryRequestBus and navigates home — Home consumes each
+    // pending request exactly once: bump the local token (StoriesScreen
+    // turns its composer to official mode) and switch to the Status tab.
     var officialStoryRequest by remember { mutableStateOf(0) }
+    val pendingOfficialStoryRequest by OfficialStoryRequestBus.pendingRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingOfficialStoryRequest) {
+        val value = pendingOfficialStoryRequest
+        if (value > 0) {
+            OfficialStoryRequestBus.consume(value)
+            officialStoryRequest += 1
+            selectedTab = HomeTab.STORIES
+        }
+    }
     var menuOpen by remember { mutableStateOf(false) }
     var showSupportDialog by remember { mutableStateOf(false) }
     val ctxHome = LocalContext.current
@@ -209,10 +222,6 @@ fun HomeScreen(
                     onOpenAccountShare = onOpenAccountShare,
                     onOpenAdminPanel = onOpenAdminVerification,
                     onOpenChat = onOpenChat,
-                    onPublishOfficialStory = {
-                        officialStoryRequest += 1
-                        selectedTab = HomeTab.STORIES
-                    },
                     onOpenHiddenChatsTab = { selectedTab = HomeTab.CHATS },
                     onSignedOut = onSignedOut,
                     onOpenAddAccount = onOpenAddAccount,

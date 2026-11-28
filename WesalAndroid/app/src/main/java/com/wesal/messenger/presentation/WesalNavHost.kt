@@ -395,6 +395,15 @@ fun WesalNavHost(
                 onOpenUserProfile = { uid -> navController.navigate("user_profile/$uid") },
                 onOpenChannel = { channelId ->
                     navController.navigate("channel_detail/$channelId") { launchSingleTop = true }
+                },
+                // Round 18: «نشر حالة رسمية» hands off to the Home
+                // Status tab (OfficialStoryRequestBus carries the
+                // request; HomeScreen consumes it on arrival).
+                onNavigateHome = {
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.HOME) { inclusive = true }
+                        launchSingleTop = true
+                    }
                 }
             )
         }
