@@ -23,6 +23,8 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessaging
 import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.AccountAlreadyExistsException
+import com.wesal.messenger.core.util.AccountDedupeLogic
 import com.wesal.messenger.core.util.BackendHealthStore
 import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.OwnProfileSnapshot
@@ -49,6 +51,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -353,15 +357,29 @@ class AuthRepositoryImpl @Inject constructor(
                     }
                 }
             }
-            val needsSetup = ensureUserSkeletonExists(
-                uid = firebaseUser.uid,
-                phone = "",
-                email = firebaseUser.email ?: cleanEmail,
-                suggestedName = fullName.trim(),
-                suggestedPhoto = "",
-                phoneVerified = false,
-                provider = "email"
-            )
+            // Dedupe (owner rule, 2026-11-28): if the skeleton gate finds
+            // this email already belongs to a live account, the Auth user
+            // created a second ago is an orphan — delete it (bounded,
+            // best-effort) so no credential-less shell remains, then let
+            // the account-exists error surface. (The gate already signed
+            // the session out; delete is attempted on the user object
+            // itself, which needs no current session.)
+            val needsSetup = try {
+                ensureUserSkeletonExists(
+                    uid = firebaseUser.uid,
+                    phone = "",
+                    email = firebaseUser.email ?: cleanEmail,
+                    suggestedName = fullName.trim(),
+                    suggestedPhoto = "",
+                    phoneVerified = false,
+                    provider = "email"
+                )
+            } catch (e: AccountAlreadyExistsException) {
+                runCatching {
+                    withTimeoutOrNull(5_000L) { firebaseUser.delete().await() }
+                }
+                throw e
+            }
             prefs.setCachedStartupProfileState(firebaseUser.uid, !needsSetup)
             // Success returns NOW — session/FCM run in the bounded fire-and-forget tail.
             // (No welcome here: completeUserProfile delivers it, as before.)
@@ -483,10 +501,152 @@ class AuthRepositoryImpl @Inject constructor(
             ?: error("تعذر تجهيز جلسة التحقق، حاول مرة أخرى")
     }
 
+    // ---------------------------------------------------------------------
+    // No-duplicate-accounts enforcement (owner ruling, 2026-11-28): one
+    // person = one account = one numeric ID. The checks below run BEFORE
+    // anything is minted — before the phone-login anonymous session is
+    // created/replaced, before the OTP is verified (which would bind the
+    // registry), and before a fresh uid's skeleton + numeric ID exist.
+    // Every check is evidence-based and fail-open on lookup failure: the
+    // Supabase backend's verify-time phone_in_use rejection and the
+    // transactional ID claim remain the backstops, and an outage must
+    // never block a legitimate sign-in.
+    // ---------------------------------------------------------------------
+
+    /**
+     * The uid the Supabase registry binds [normalizedPhone] to, or null
+     * when the number is unbound OR the lookup failed/timed out (the two
+     * are deliberately indistinguishable here: no evidence = proceed).
+     */
+    private suspend fun registryBoundUidForPhone(normalizedPhone: String): String? {
+        val hash = PhoneUtils.sha256Hash(normalizedPhone)
+        val rows = withTimeoutOrNull(8_000L) {
+            supabasePhone.findVerifiedPhonesByHashes(listOf(hash))
+        } ?: return null
+        return rows[hash]?.firebaseUid?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Firestore claim evidence for [normalizedPhone]: the
+     * `phone_uniqueness` lock (claimed at profile completion and by the
+     * verified-phone mirror) or a user doc carrying the number's
+     * phoneHash (stamped only for verified numbers). A claim owned by
+     * any uid other than [selfUid] means an existing account already
+     * holds this number. Fail-open: any read failure = no evidence.
+     */
+    private suspend fun isPhoneClaimedByAnotherAccount(
+        normalizedPhone: String,
+        selfUid: String?
+    ): Boolean {
+        val hash = PhoneUtils.sha256Hash(normalizedPhone)
+        return withTimeoutOrNull(6_000L) {
+            val lockOwner = runCatching {
+                firestore.collection(Constants.COLLECTION_PHONE_UNIQUENESS)
+                    .document(hash)
+                    .get()
+                    .await()
+                    .getString("uid")
+                    .orEmpty()
+            }.getOrDefault("")
+            if (lockOwner.isNotBlank() && lockOwner != selfUid) {
+                return@withTimeoutOrNull true
+            }
+            val publicDup = runCatching {
+                firestore.collection(Constants.COLLECTION_USERS)
+                    .whereEqualTo("phoneHash", hash)
+                    .limit(3)
+                    .get()
+                    .await()
+            }.getOrNull()
+            publicDup?.documents?.any { it.id != selfUid } == true
+        } ?: false
+    }
+
+    /**
+     * Discards the anonymous session THIS phone-login flow created when
+     * the flow is aborted as a duplicate: the just-created anonymous
+     * Auth user is deleted where possible (it was created seconds ago,
+     * so no recent-login barrier applies) so no orphan account remains
+     * server-side; sign-out is the fallback. A session the flow did not
+     * create (a real account, or an anonymous session it merely reused)
+     * is never touched.
+     */
+    private suspend fun discardPhoneLoginAnonSession() {
+        val current = auth.currentUser ?: return
+        val flowUid = phoneLoginAnonUid ?: return
+        if (!current.isAnonymous || current.uid != flowUid) return
+        phoneLoginAnonUid = null
+        phoneLoginPreviousUid = null
+        sessionVerifiedPhoneUid = null
+        sessionVerifiedPhoneE164 = null
+        val deleted = runCatching {
+            withTimeoutOrNull(5_000L) { current.delete().await() } != null
+        }.getOrDefault(false)
+        if (!deleted) {
+            runCatching { auth.signOut() }
+        }
+    }
+
+    /**
+     * Phone-LOGIN duplicate gate, run before the anonymous session is
+     * created (send) and again before the backend verify call (a binding
+     * could have appeared in between). Throws [AccountAlreadyExistsException]
+     * with the owner's account-exists copy when the number already
+     * belongs to an account:
+     *  - registry-bound to a different uid → that account is the
+     *    original; the flow's anonymous session (if it created one) is
+     *    discarded so nothing is minted or orphaned;
+     *  - registry-bound to the CURRENT session's uid → at send time the
+     *    active account itself owns the number (re-login of the account
+     *    already signed in); at verify time the session IS the account
+     *    being built, so [atVerifyTime] lets it proceed;
+     *  - claimed in Firestore by another account (lock / phoneHash) →
+     *    same account-exists block, before any binding is written.
+     */
+    private suspend fun assertPhoneLoginNotDuplicate(
+        normalizedPhone: String,
+        atVerifyTime: Boolean
+    ) {
+        val sessionUid = auth.currentUser?.uid
+        when (
+            AccountDedupeLogic.registryBinding(
+                registryBoundUidForPhone(normalizedPhone),
+                sessionUid
+            )
+        ) {
+            AccountDedupeLogic.RegistryBinding.BOUND_TO_OTHER -> {
+                discardPhoneLoginAnonSession()
+                throw AccountAlreadyExistsException(
+                    AccountDedupeLogic.PHONE_ACCOUNT_EXISTS_MESSAGE
+                )
+            }
+            AccountDedupeLogic.RegistryBinding.BOUND_TO_SELF -> {
+                if (!atVerifyTime) {
+                    throw AccountAlreadyExistsException(
+                        AccountDedupeLogic.PHONE_BOUND_TO_CURRENT_MESSAGE
+                    )
+                }
+            }
+            AccountDedupeLogic.RegistryBinding.PROCEED -> Unit
+        }
+        if (isPhoneClaimedByAnotherAccount(normalizedPhone, sessionUid)) {
+            discardPhoneLoginAnonSession()
+            throw AccountAlreadyExistsException(
+                AccountDedupeLogic.PHONE_ACCOUNT_EXISTS_MESSAGE
+            )
+        }
+    }
+
     override suspend fun sendPhoneOtp(phoneE164: String): Result<String> {
         return try {
             val normalized = PhoneUtils.normalizeToE164(phoneE164)
                 ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
+            // Dedupe gate FIRST (owner rule, 2026-11-28): if this number
+            // already belongs to an account, stop here — before the
+            // anonymous phone-login session is created or replaces the
+            // active one, and before a code send is burned on a sign-in
+            // that can never complete.
+            assertPhoneLoginNotDuplicate(normalized, atVerifyTime = false)
             val channel = phoneBackendCall {
                 supabasePhone.sendPhoneCode(normalized, phoneLoginIdToken())
             }
@@ -502,6 +662,19 @@ class AuthRepositoryImpl @Inject constructor(
         return try {
             val normalized = PhoneUtils.normalizeToE164(phoneE164)
                 ?: error("يرجى إدخال رقم هاتف صحيح بالصيغة الدولية")
+            // Dedupe gate for the signed-in (mandatory-gate / profile)
+            // flow: a number the registry binds to a DIFFERENT account
+            // can never verify onto this one — say so before a code is
+            // sent. Bound to THIS uid or unbound: proceed as before.
+            val boundUid = registryBoundUidForPhone(normalized)
+            if (
+                AccountDedupeLogic.registryBinding(boundUid, auth.currentUser?.uid) ==
+                AccountDedupeLogic.RegistryBinding.BOUND_TO_OTHER
+            ) {
+                throw AccountAlreadyExistsException(
+                    AccountDedupeLogic.PHONE_ACCOUNT_EXISTS_MESSAGE
+                )
+            }
             val channel = phoneBackendCall {
                 supabasePhone.sendPhoneCode(normalized, currentIdToken())
             }
@@ -524,8 +697,32 @@ class AuthRepositoryImpl @Inject constructor(
             // sign-in — the session simply continues into the standard flow.
             val firebaseUser = auth.currentUser
                 ?: error("انتهت جلسة التحقق — اطلب كود جديد")
-            phoneBackendCall {
-                supabasePhone.verifyPhoneCode(normalized, code.trim(), currentIdToken())
+            // Dedupe gate, second pass (owner rule, 2026-11-28): re-check
+            // ownership BEFORE the backend verify binds the registry to
+            // this session — a binding or Firestore claim that appeared
+            // (or was missed) at send time must stop the flow here, so no
+            // skeleton doc and no numeric ID are ever minted for a
+            // duplicate. BOUND_TO_SELF proceeds: the session IS the
+            // account the number belongs to.
+            assertPhoneLoginNotDuplicate(normalized, atVerifyTime = true)
+            try {
+                phoneBackendCall {
+                    supabasePhone.verifyPhoneCode(normalized, code.trim(), currentIdToken())
+                }
+            } catch (e: SupabasePhoneException) {
+                // Lost a race: the number was bound to another account
+                // between the pre-check and the verify (the backend
+                // checks BEFORE consuming the code, so nothing was
+                // bound here). Discard the flow's anonymous session so
+                // no orphan remains, and give the account-exists answer
+                // instead of the generic "bound to another account".
+                if (AccountDedupeLogic.isPhoneInUseError(e.errorCode)) {
+                    discardPhoneLoginAnonSession()
+                    throw AccountAlreadyExistsException(
+                        AccountDedupeLogic.PHONE_ACCOUNT_EXISTS_MESSAGE
+                    )
+                }
+                throw e
             }
             val uid = firebaseUser.uid
 
@@ -594,7 +791,20 @@ class AuthRepositoryImpl @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(Exception(mapSupabasePhoneError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
+            // Dedupe (owner rule, 2026-11-28): the number belongs to
+            // another account — the honest answer is "sign in with your
+            // original account", not the generic binding error. The
+            // signed-in session is left untouched (it is a real account;
+            // the user signs out and back into the original themselves).
+            if (e is SupabasePhoneException && AccountDedupeLogic.isPhoneInUseError(e.errorCode)) {
+                Result.failure(
+                    AccountAlreadyExistsException(
+                        AccountDedupeLogic.PHONE_ACCOUNT_EXISTS_MESSAGE
+                    )
+                )
+            } else {
+                Result.failure(Exception(mapSupabasePhoneError(e, "تعذر التحقق من الكود، حاول مرة أخرى"), e))
+            }
         }
     }
 
@@ -790,8 +1000,19 @@ class AuthRepositoryImpl @Inject constructor(
             return existing
         }
 
+        // Primary claim path: TRANSACTIONAL via wesal_id_index — the
+        // index doc and the user doc are written in one transaction, so
+        // two accounts can never be issued the same ID through here.
         var indexRulesMissing = false
-        repeat(16) {
+        var txAttempts = 0
+        while (txAttempts < 16 && !indexRulesMissing) {
+            txAttempts++
+            // runCatching below would swallow a caller timeout's
+            // CancellationException and keep looping; bail out properly
+            // so withTimeoutOrNull caps upstream keep working (skeleton
+            // is created without an ID and allocation retries on a
+            // later sign-in, as before).
+            currentCoroutineContext().ensureActive()
             val candidate = WesalIdUtils.generateRandomNumericCandidate()
             val indexRef = firestore.collection(Constants.COLLECTION_WESAL_ID_INDEX).document(candidate)
             val txResult = runCatching {
@@ -823,13 +1044,25 @@ class AuthRepositoryImpl @Inject constructor(
             }
             val ex = txResult.exceptionOrNull()
             if (ex is FirebaseFirestoreException && ex.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                // The index rules are not live in this environment: stop
+                // burning attempts on a transaction that can never land
+                // and drop to the checked fallback below.
                 indexRulesMissing = true
-                return@repeat
             }
         }
 
         if (indexRulesMissing) {
+            // Fallback (index rules missing): query-checked claim. The
+            // old version of this path ended in a BLIND fallback that
+            // wrote a completely unchecked random candidate — a direct
+            // way to issue an already-issued ID twice (owner rule,
+            // 2026-11-28: never). Now every candidate is (1) checked
+            // free by query, (2) written with a server-acknowledged set
+            // (not the queued write), and (3) CONFIRMED by a re-query:
+            // if a concurrent claimer landed the same candidate in the
+            // race window, this claim yields and tries a fresh one.
             repeat(12) {
+                currentCoroutineContext().ensureActive()
                 val candidate = WesalIdUtils.generateRandomNumericCandidate()
                 val conflict = runCatching {
                     firestore.collection(Constants.COLLECTION_USERS)
@@ -837,17 +1070,39 @@ class AuthRepositoryImpl @Inject constructor(
                         .limit(1)
                         .get()
                         .await()
-                }.getOrNull()
-                if (conflict != null && conflict.documents.none { it.id != uid }) {
-                    userRef.set(mapOf("numericId" to candidate), SetOptions.merge()).awaitQueued()
+                }.getOrNull() ?: return@repeat
+                if (conflict.documents.any { it.id != uid }) {
+                    return@repeat
+                }
+                val written = runCatching {
+                    withTimeoutOrNull(6_000L) {
+                        userRef.set(mapOf("numericId" to candidate), SetOptions.merge()).await()
+                    } != null
+                }.getOrDefault(false)
+                if (!written) {
+                    return@repeat
+                }
+                val confirm = runCatching {
+                    firestore.collection(Constants.COLLECTION_USERS)
+                        .whereEqualTo("numericId", candidate)
+                        .limit(2)
+                        .get()
+                        .await()
+                }.getOrNull() ?: return@repeat
+                if (confirm.documents.none { it.id != uid }) {
                     return candidate
                 }
+                // Lost the race: a different account holds the candidate.
+                // Loop on — the next successful claim overwrites our doc.
             }
         }
 
-        val fallback = WesalIdUtils.generateRandomNumericCandidate()
-        userRef.set(mapOf("numericId" to fallback), SetOptions.merge()).awaitQueued()
-        return fallback
+        // No ID was claimed. NEVER fall back to an unchecked random ID
+        // (the pre-r18 behaviour): an already-issued ID must not be
+        // issued to a second account, so allocation fails honestly and
+        // the caller surfaces a retryable error; a later sign-in retries
+        // allocation for the same account (no duplicate is minted).
+        throw IllegalStateException("تعذر إنشاء رقم وصال فريد دلوقتي — حاول مرة أخرى")
     }
 
     /**
@@ -1060,6 +1315,63 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     /**
+     * Email duplicate gate (owner rule, 2026-11-28), run ONLY on the
+     * user-doc creation path: if a LIVE user doc already carries this
+     * email under a DIFFERENT uid, the person already has an account —
+     * a second skeleton + numeric ID must not be minted for this fresh
+     * uid. The block signs the fresh session out (mirroring the
+     * deleted-doc branch of [ensureUserSkeletonExists]) and throws
+     * [AccountAlreadyExistsException] so the user is routed to sign in
+     * with the original account/method.
+     *
+     * Deliberate limits:
+     *  - the two admin emails are exempt (identity-pinned by Constants;
+     *    their fixed IDs are governed by the admin gates, not this rule);
+     *  - deleted tombstones do not count (the banned-identifiers gate
+     *    already governs re-registration after deletion);
+     *  - fail-open on read failure: only a duplicate actually FOUND
+     *    blocks (same philosophy as completeUserProfile's reservation);
+     *  - Firestore email equality is case-sensitive, so both the typed
+     *    form and its lowercase form are queried;
+     *  - two sign-ups racing in the same instant can both pass before
+     *    either writes — closing that last window needs a server-side
+     *    claim (documented in DEDUPE_ACCOUNTS_REVIEW.md).
+     */
+    private suspend fun assertEmailNotRegisteredToAnotherAccount(uid: String, email: String) {
+        val cleanEmail = email.trim()
+        if (cleanEmail.isBlank()) return
+        if (Constants.SUPER_ADMIN_EMAIL.equals(cleanEmail, ignoreCase = true) ||
+            Constants.SECONDARY_ADMIN_EMAIL.equals(cleanEmail, ignoreCase = true)
+        ) {
+            return
+        }
+        val usersCol = firestore.collection(Constants.COLLECTION_USERS)
+        val forms = listOf(cleanEmail, cleanEmail.lowercase()).distinct()
+        val matches = mutableListOf<AccountDedupeLogic.EmailMatch>()
+        for (form in forms) {
+            val snap = runCatching {
+                withTimeoutOrNull(4_000L) {
+                    usersCol.whereEqualTo("email", form).limit(5).get().await()
+                }
+            }.getOrNull() ?: continue
+            for (doc in snap.documents) {
+                val deletedAt = coerceBanEpochMillis(doc.get("deletedAt")) ?: 0L
+                val deletedPermanent = doc.getBoolean("deletedPermanent") ?: false
+                matches += AccountDedupeLogic.EmailMatch(
+                    uid = doc.id,
+                    deleted = deletedAt > 0L || deletedPermanent
+                )
+            }
+        }
+        if (AccountDedupeLogic.emailBelongsToAnotherAccount(matches, uid)) {
+            auth.signOut()
+            throw AccountAlreadyExistsException(
+                AccountDedupeLogic.EMAIL_ACCOUNT_EXISTS_MESSAGE
+            )
+        }
+    }
+
+    /**
      * Failover design §3.2: the sign-in variant of [ensureUserSkeletonExists].
      *
      * Firebase Auth has ALREADY succeeded when this runs — an
@@ -1194,6 +1506,10 @@ class AuthRepositoryImpl @Inject constructor(
                     "recordProfileVisits" to true
                 )
             )
+            // Dedupe gate (owner rule, 2026-11-28): before this fresh uid
+            // gets a doc or a numeric ID, make sure the email does not
+            // already belong to a live account under a different uid.
+            assertEmailNotRegisteredToAnotherAccount(uid, email)
             userRef.set(newUserMap, SetOptions.merge()).awaitQueued()
             // Phone phase: a phone-registered account (OTP-verified by
             // construction — the Supabase backend bound the number to this
