@@ -159,4 +159,44 @@ object CameraSwitchTarget {
     /** The camera a fresh capturer starts on (initial capture / recovery). */
     fun pickInitialCamera(cameras: List<CameraInfo>, preferFront: Boolean): String? =
         cameras.firstOrNull { it.isFront == preferFront }?.name ?: cameras.firstOrNull()?.name
+
+    /**
+     * Round 21: the two cameras a call is PINNED to, chosen ONCE at
+     * call setup by [pinPair] and never re-chosen for the life of the
+     * call. The flip toggle alternates strictly between these two
+     * names — the owner's demand verbatim: front camera ↔ THE rear
+     * camera, never the other rear lenses («ما يجيبليش كذا كاميرا من
+     * الخلفية»).
+     */
+    data class PinnedPair(val frontName: String, val rearName: String)
+
+    /**
+     * Pins the call's camera pair from ONE enumeration: the front
+     * camera is the first front-facing entry; THE rear camera is the
+     * first back-facing entry — the main/default rear, the same entry
+     * [pickInitialCamera] starts a rear capture on (and the one the
+     * owner's front→rear press always landed on and accepted).
+     * Auxiliary rear lenses (wide / tele / macro) are deliberately NOT
+     * eligible: they can never be pinned, so they can never be toggled
+     * to. Returns null when the device lacks either facing (a
+     * single-facing device has nothing to toggle between).
+     */
+    fun pinPair(cameras: List<CameraInfo>): PinnedPair? {
+        val front = cameras.firstOrNull { it.isFront }?.name ?: return null
+        val rear = cameras.firstOrNull { !it.isFront }?.name ?: return null
+        return PinnedPair(frontName = front, rearName = rear)
+    }
+
+    /**
+     * The ONLY target a flip may go to: the pinned camera of the
+     * opposite facing. Pure alternation — starting from either pinned
+     * camera, repeated flips visit exactly the two pinned names
+     * forever, whatever else the device enumerates.
+     */
+    fun toggleTarget(pair: PinnedPair, currentlyFront: Boolean): String =
+        if (currentlyFront) pair.rearName else pair.frontName
+
+    /** The pinned camera for a facing (recovery rebuilds land here). */
+    fun nameForFacing(pair: PinnedPair, front: Boolean): String =
+        if (front) pair.frontName else pair.rearName
 }

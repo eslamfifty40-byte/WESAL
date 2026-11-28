@@ -2,8 +2,14 @@ package com.wesal.messenger.calls
 
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.util.Log
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.wesal.messenger.core.util.CallRingLogic
 import com.wesal.messenger.core.util.CallTimeoutLogic
 import com.wesal.messenger.data.repository.CallSignalingErrors
 import com.wesal.messenger.domain.model.CallStatus
@@ -138,6 +144,28 @@ class CallSessionController @Inject constructor(
     private val pendingLocalCandidates = mutableListOf<IceCandidate>()
 
     private fun isActive(): Boolean = _session.value != null && !finishing
+
+    init {
+        // Round 21: when the process comes back to the foreground
+        // during a live call, re-assert the call's audio pipeline
+        // (focus / communication mode / route) on the manager. Any
+        // audio damage the background period did — above all an audio
+        // focus loss that nothing recovered, the owner's «الصوت
+        // بيقطع خالص» — heals here at the latest, instead of lasting
+        // the whole call. Registered once: this controller is a
+        // process-scoped singleton, like the observer's owner.
+        scope.launch {
+            ProcessLifecycleOwner.get().lifecycle.addObserver(
+                object : DefaultLifecycleObserver {
+                    override fun onStart(owner: LifecycleOwner) {
+                        if (isActive()) {
+                            webRtcManager.ensureCallAudio()
+                        }
+                    }
+                }
+            )
+        }
+    }
 
     // ------------------------------------------------------------------
     // Session start
@@ -282,13 +310,7 @@ class CallSessionController @Inject constructor(
         synchronized(pendingLocalCandidates) { pendingLocalCandidates.clear() }
         writeMarker(info.callId, info)
 
-        ContextCompat.startForegroundService(
-            context,
-            Intent(context, CallForegroundService::class.java).apply {
-                putExtra("peerName", info.peerName)
-                putExtra("isVideo", info.isVideo)
-            }
-        )
+        startCallForegroundService(info, mediaProjection = false, sharing = false)
 
         // Real ICE-restart signaling (unchanged from the activity
         // era): the caller produces a fresh restart offer into the
@@ -344,7 +366,141 @@ class CallSessionController @Inject constructor(
                 }
             }
         })
+        // Round 21: keep the ongoing-call notification in sync with
+        // the screen-share state, wherever the share is started or
+        // stopped from (the call UI, the notification's own
+        // «إيقاف المشاركة» action, or the system's projection UI —
+        // all of them land on the manager's isScreenSharing flow).
+        // While sharing, the notification is re-posted WITH the
+        // mediaProjection type and the stop-share action; when the
+        // share ends it is re-posted without the action, so the owner
+        // can always see — and stop — a live share. Only CHANGES
+        // re-post; the initial value matches the beginSession post.
+        trackJob(scope.launch {
+            var lastSharing = webRtcManager.isScreenSharing.value
+            webRtcManager.isScreenSharing.collect { sharing ->
+                if (sharing == lastSharing) return@collect
+                lastSharing = sharing
+                val current = _session.value ?: return@collect
+                if (!isActive()) return@collect
+                startCallForegroundService(
+                    current,
+                    mediaProjection = sharing,
+                    sharing = sharing
+                )
+            }
+        })
+        // Round 21: the outgoing RINGBACK is owned HERE, not by the
+        // call UI. In r20 it was a ToneGenerator inside CallActivity's
+        // composition; leaving the screen cancelled it — «صوت الرن حتى
+        // بيقطع خالص» (owner, r20 verdict). Now the session drives
+        // it: it sounds from placement through «جاري الاتصال» and
+        // «يرن» until the answer lands or the media connects, whether
+        // or not any call UI is attached — WhatsApp behaviour. The
+        // play/stop decision is the same pure CallRingLogic the UI
+        // used (media is granted by construction once a session
+        // exists); collectLatest cancels the loop the moment the
+        // decision flips, and terminate() cancels it with the other
+        // session jobs.
+        trackJob(scope.launch {
+            combine(_phase, webRtcManager.connectionState, _session) { phase, conn, session ->
+                session != null &&
+                    phase != CallPhase.ANSWERED &&
+                    CallRingLogic.shouldPlayRingback(
+                        isIncoming = session.isIncoming,
+                        mediaGranted = true,
+                        hasConnected = hasConnected,
+                        peerConnected = conn == PeerConnection.PeerConnectionState.CONNECTED
+                    )
+            }.collectLatest { shouldRing ->
+                if (shouldRing) runRingbackLoop()
+            }
+        })
         startMediaFailureWatchdog()
+    }
+
+    /**
+     * The ringback cadence («تيت … تيت») for one ringing episode.
+     * Suspends until cancelled (answer / connect / terminate — via
+     * the collectLatest above); the finally always silences and
+     * releases the generator. A failed startTone recreates the
+     * generator and retries within the same cycle (round 12 addendum
+     * A, ported from the old UI effect verbatim in behaviour).
+     */
+    private suspend fun runRingbackLoop() {
+        var toneGen = runCatching {
+            ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+        }.getOrNull()
+        try {
+            while (true) {
+                var played = toneGen?.let {
+                    runCatching {
+                        it.startTone(
+                            ToneGenerator.TONE_SUP_RINGTONE,
+                            CallRingLogic.RINGBACK_TONE_DURATION_MS
+                        )
+                    }.getOrDefault(false)
+                } ?: false
+                if (!played) {
+                    runCatching { toneGen?.release() }
+                    toneGen = runCatching {
+                        ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
+                    }.getOrNull()
+                    val fresh = toneGen
+                    if (fresh != null) {
+                        played = runCatching {
+                            fresh.startTone(
+                                ToneGenerator.TONE_SUP_RINGTONE,
+                                CallRingLogic.RINGBACK_TONE_DURATION_MS
+                            )
+                        }.getOrDefault(false)
+                    }
+                    if (!played) {
+                        Log.w(TAG, "Ringback tone could not be started on the current audio route")
+                    }
+                }
+                delay(CallRingLogic.RINGBACK_CYCLE_DELAY_MS)
+            }
+        } finally {
+            runCatching { toneGen?.stopTone() }
+            runCatching { toneGen?.release() }
+        }
+    }
+
+    /** (Re)posts the ongoing-call foreground service / notification. */
+    private fun startCallForegroundService(
+        info: CallSessionInfo,
+        mediaProjection: Boolean,
+        sharing: Boolean
+    ) {
+        ContextCompat.startForegroundService(
+            context,
+            Intent(context, CallForegroundService::class.java).apply {
+                putExtra("peerName", info.peerName)
+                putExtra("isVideo", info.isVideo)
+                putExtra(CallForegroundService.EXTRA_MEDIA_PROJECTION, mediaProjection)
+                putExtra(CallForegroundService.EXTRA_SHARING, sharing)
+            }
+        )
+    }
+
+    /**
+     * Round 21: called by the call UI immediately BEFORE it launches
+     * the system MediaProjection consent prompt. Android 14 requires
+     * a foreground service of the mediaProjection type to be running
+     * before a projection may be created; re-posting the call service
+     * with that type here keeps the whole foreground-service lifecycle
+     * in this controller instead of the (detachable) activity poking
+     * the service itself. No-op when no session is live.
+     */
+    fun prepareScreenShare() {
+        val current = _session.value ?: return
+        if (!isActive()) return
+        startCallForegroundService(
+            current,
+            mediaProjection = true,
+            sharing = webRtcManager.isScreenSharing.value
+        )
     }
 
     // ------------------------------------------------------------------

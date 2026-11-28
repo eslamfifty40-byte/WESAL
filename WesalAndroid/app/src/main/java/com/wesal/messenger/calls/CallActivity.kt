@@ -4,8 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.media.AudioManager
-import android.media.ToneGenerator
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -13,7 +11,6 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -31,14 +28,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalTheme
-import com.wesal.messenger.core.util.CallRingLogic
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.data.local.AppUserSettings
@@ -49,7 +44,6 @@ import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import org.webrtc.PeerConnection
 import org.webrtc.SurfaceViewRenderer
 import javax.inject.Inject
@@ -71,6 +65,49 @@ class CallActivity : AppCompatActivity() {
     @Inject lateinit var webRtcManager: WebRtcCallManager
     @Inject lateinit var callController: CallSessionController
     @Inject lateinit var prefs: UserPreferencesDataStore
+
+    /**
+     * Round 21: the MediaProjection consent result is handled HERE,
+     * at activity level — in r20 it was a
+     * `rememberLauncherForActivityResult` inside the call UI's
+     * composition, so the result lived and died with that composition:
+     * when the owner's device took him OUT of the call screen around
+     * the share attempt (his r20 report: pressing share dumped him to
+     * the home screen), the pending result had no reliable owner, the
+     * share never visibly started, and no state anywhere showed
+     * whether he was sharing or how to stop it. An activity-level
+     * registration is independent of the Compose tree; the share state
+     * itself lives on the manager (isScreenSharing), which the UI,
+     * the session controller and the notification all observe.
+     * Denial is a toast and the call continues on camera untouched —
+     * the manager is never called.
+     */
+    private val screenShareLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            val metrics = resources.displayMetrics
+            val started = webRtcManager.startScreenShare(
+                resultData = data,
+                displayWidth = metrics.widthPixels,
+                displayHeight = metrics.heightPixels
+            )
+            if (!started) {
+                android.widget.Toast.makeText(
+                    this,
+                    "تعذر بدء مشاركة الشاشة",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        } else {
+            android.widget.Toast.makeText(
+                this,
+                "مشاركة الشاشة تحتاج إذنك أولاً",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
 
     /**
      * Round 11 (addendum 1b): proximity wake lock for the in-call UI.
@@ -144,7 +181,6 @@ class CallActivity : AppCompatActivity() {
 
                 val activeSession by callController.session.collectAsStateWithLifecycle()
                 val isVideo = activeSession?.isVideo ?: intentIsVideo
-                val sessionIsIncoming = activeSession?.isIncoming ?: isIncoming
                 // Display identity: the live session wins; before a
                 // session exists (permission gate), the intent extras.
                 val peerName = activeSession?.peerName ?: intentPeerName
@@ -334,78 +370,17 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                // Round 11 (item 3e + addendum 2b): the ringback starts
-                // the moment the outgoing call is placed and keeps
-                // playing through BOTH honest states («جاري الاتصال» and
-                // «يرن») until the call connects or this screen goes
-                // away — WhatsApp-style. (Round 20: the call itself no
-                // longer goes away with the screen; the ringback is a
-                // UI sound and stops with the UI, while the callee's
-                // phone keeps ringing via the listener service.)
-                var hasConnected by remember { mutableStateOf(false) }
-                LaunchedEffect(sessionIsIncoming, mediaReady, hasConnected) {
-                    if (!CallRingLogic.shouldPlayRingback(
-                            isIncoming = sessionIsIncoming,
-                            mediaGranted = mediaReady,
-                            hasConnected = hasConnected,
-                            peerConnected = false
-                        )
-                    ) {
-                        return@LaunchedEffect
-                    }
-                    var toneGen = runCatching {
-                        ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
-                    }.getOrNull()
-                    try {
-                        while (isActive) {
-                            if (!CallRingLogic.shouldPlayRingback(
-                                    isIncoming = sessionIsIncoming,
-                                    mediaGranted = mediaReady,
-                                    hasConnected = hasConnected,
-                                    peerConnected = webRtcManager.connectionState.value ==
-                                        PeerConnection.PeerConnectionState.CONNECTED
-                                )
-                            ) {
-                                break
-                            }
-                            // Round 12 (addendum A): a failed startTone
-                            // recreates the generator and retries within
-                            // the same cycle (a video session start used
-                            // to kill the first generator and ring once).
-                            var played = toneGen?.let {
-                                runCatching {
-                                    it.startTone(ToneGenerator.TONE_SUP_RINGTONE, CallRingLogic.RINGBACK_TONE_DURATION_MS)
-                                }.getOrDefault(false)
-                            } ?: false
-                            if (!played) {
-                                runCatching { toneGen?.release() }
-                                toneGen = runCatching {
-                                    ToneGenerator(AudioManager.STREAM_VOICE_CALL, 80)
-                                }.getOrNull()
-                                val fresh = toneGen
-                                if (fresh != null) {
-                                    played = runCatching {
-                                        fresh.startTone(ToneGenerator.TONE_SUP_RINGTONE, CallRingLogic.RINGBACK_TONE_DURATION_MS)
-                                    }.getOrDefault(false)
-                                }
-                                if (!played) {
-                                    android.util.Log.w("WesalCalls", "Ringback tone could not be started on the current audio route")
-                                }
-                            }
-                            delay(CallRingLogic.RINGBACK_CYCLE_DELAY_MS)
-                        }
-                    } finally {
-                        runCatching {
-                            toneGen?.stopTone()
-                            toneGen?.release()
-                        }
-                    }
-                }
+                // Round 21: the outgoing ringback is NOT a UI sound
+                // any more — CallSessionController owns it (it keeps
+                // sounding with the UI detached, until the answer or
+                // the media connect). The r20 UI-owned ToneGenerator
+                // effect that used to live here was cancelled the
+                // moment this screen went away — «صوت الرن حتى بيقطع
+                // خالص» in the owner's r20 verdict — so it is gone;
+                // only the status-label reactions remain in the UI.
 
                 LaunchedEffect(connState) {
-                    if (connState == PeerConnection.PeerConnectionState.CONNECTED) {
-                        hasConnected = true
-                    } else if (connState == PeerConnection.PeerConnectionState.FAILED) {
+                    if (connState == PeerConnection.PeerConnectionState.FAILED) {
                         callStatusLabel = if (strings.isEnglish) "Connection lost — retrying..." else "انقطع الاتصال — جاري إعادة المحاولة..."
                     }
                 }
@@ -469,37 +444,14 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                // Round 20: screen-share permission prompt. Denial is
-                // a toast and the call simply continues on camera; the
-                // foreground service is (re)started WITH the
-                // mediaProjection type before the prompt, as Android 14
-                // requires it running before a projection is created.
-                val screenShareLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.StartActivityForResult()
-                ) { result ->
-                    val data = result.data
-                    if (result.resultCode == Activity.RESULT_OK && data != null) {
-                        val metrics = resources.displayMetrics
-                        val started = webRtcManager.startScreenShare(
-                            resultData = data,
-                            displayWidth = metrics.widthPixels,
-                            displayHeight = metrics.heightPixels
-                        )
-                        if (started) {
-                            cameraOff = false
-                        } else {
-                            android.widget.Toast.makeText(
-                                this@CallActivity,
-                                if (strings.isEnglish) "Could not start screen sharing" else "تعذر بدء مشاركة الشاشة",
-                                android.widget.Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    } else {
-                        android.widget.Toast.makeText(
-                            this@CallActivity,
-                            if (strings.isEnglish) "Screen sharing needs your permission" else "مشاركة الشاشة تحتاج إذنك أولاً",
-                            android.widget.Toast.LENGTH_SHORT
-                        ).show()
+                // Round 21: the share consent result is handled by
+                // the activity-level launcher (see the field above) —
+                // this effect only mirrors a started share into the
+                // local preview state (the r20 behaviour: the preview
+                // shows the shared screen instead of staying dark).
+                LaunchedEffect(isScreenSharing) {
+                    if (isScreenSharing) {
+                        cameraOff = false
                     }
                 }
 
@@ -684,14 +636,14 @@ class CallActivity : AppCompatActivity() {
                                     if (isScreenSharing) {
                                         webRtcManager.stopScreenShare()
                                     } else {
-                                        ContextCompat.startForegroundService(
-                                            this@CallActivity,
-                                            Intent(this@CallActivity, CallForegroundService::class.java).apply {
-                                                putExtra("peerName", peerName)
-                                                putExtra("isVideo", true)
-                                                putExtra(CallForegroundService.EXTRA_MEDIA_PROJECTION, true)
-                                            }
-                                        )
+                                        // Round 21: the controller
+                                        // (re)posts the call service
+                                        // WITH the mediaProjection type
+                                        // before the prompt, as Android
+                                        // 14 requires — the detachable
+                                        // UI no longer pokes the service
+                                        // itself.
+                                        callController.prepareScreenShare()
                                         val projectionManager =
                                             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                                         screenShareLauncher.launch(projectionManager.createScreenCaptureIntent())
@@ -738,6 +690,24 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Round 21: a rejoin (or any call intent) delivered to the
+     * EXISTING instance (singleTop + CLEAR_TOP) lands here. Adopt the
+     * new intent; if it is a rejoin and the session has already ended,
+     * close instead of sitting on a ghost screen. A live session needs
+     * nothing else — every piece of UI state is driven by the
+     * controller/manager flows, which simply keep collecting.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_REJOIN, false) &&
+            callController.session.value == null
+        ) {
+            finish()
         }
     }
 
@@ -798,11 +768,22 @@ class CallActivity : AppCompatActivity() {
          * Round 20: the ongoing-call notification's tap target. No call
          * data rides along — the activity attaches to whatever session
          * the controller currently owns (and closes itself if none).
+         *
+         * Round 21: CLEAR_TOP + SINGLE_TOP make the tap ALWAYS land
+         * on the call UI — an existing instance is brought to the very
+         * front (anything stacked above it is cleared, the intent
+         * arrives via onNewIntent) and a destroyed instance is created
+         * fresh on top; the r20 REORDER_TO_FRONT-only form could leave
+         * the user on another screen of the task when the call
+         * activity was no longer in front (the owner's r20 report:
+         * «مش قادر اخش على المكالمة» while sharing).
          */
         fun createRejoinIntent(context: Context): Intent =
             Intent(context, CallActivity::class.java).apply {
                 putExtra(EXTRA_REJOIN, true)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
     }
 }

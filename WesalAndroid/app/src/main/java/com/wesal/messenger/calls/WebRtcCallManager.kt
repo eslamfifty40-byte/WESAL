@@ -654,8 +654,32 @@ class WebRtcCallManager @Inject constructor(
      * the shipped capturer's untargeted switch overload merely cycles
      * to the NEXT camera id, which on multi-camera devices lands on
      * auxiliary rear cameras instead of toggling front↔rear.
+     *
+     * Round 21: [currentCameraName] is now only ever one of the two
+     * [pinnedCameras] names (see below) — the switch commands the
+     * capturer to the pinned target explicitly, so the bookkeeping
+     * can no longer diverge from the camera the capturer is really on.
      */
     private var currentCameraName: String? = null
+
+    /**
+     * Round 21: the two cameras this call is PINNED to — the front
+     * camera in use and ONE rear camera (the main/default rear) —
+     * chosen once when the capturer is created
+     * ([com.wesal.messenger.core.util.CameraSwitchTarget.pinPair]).
+     * The flip toggle alternates strictly between these two names for
+     * the whole call; auxiliary rear lenses are never eligible.
+     *
+     * DEVICE-PROVEN defect this serves (owner's r20 verdict): r20
+     * COMPUTED the right target name but then called the capturer's
+     * UNTARGETED `switchCamera(handler)` overload anyway — the
+     * targeted overload was never invoked — so the capturer kept
+     * cycling to the next camera id (main rear → wide → tele → front,
+     * ~4 presses) while `currentCameraName` was stamped with the
+     * INTENDED target the capturer never went to, corrupting every
+     * later selection too.
+     */
+    private var pinnedCameras: com.wesal.messenger.core.util.CameraSwitchTarget.PinnedPair? = null
 
     /** The camera the call is actually on (CallActivity mirrors the preview from it). */
     private val _isFrontCamera = MutableStateFlow(true)
@@ -697,29 +721,38 @@ class WebRtcCallManager @Inject constructor(
             Log.d(TAG, "Camera switch ignored — another switch is already in flight")
             return
         }
-        // Round 20: pick the TARGET camera explicitly — the first
-        // camera of the opposite facing — instead of the capturer's
-        // untargeted overload, which cycles to the next camera id in
-        // enumeration order. On multi-camera devices (front + several
-        // rear ids) that cycle needed ~4 presses to wrap from a rear
-        // camera back to the front one: the owner's exact r19 symptom.
-        val enumerator = Camera2Enumerator(context)
-        val cameras = enumerator.deviceNames.map {
-            com.wesal.messenger.core.util.CameraSwitchTarget.CameraInfo(
-                name = it,
-                isFront = enumerator.isFrontFacing(it)
-            )
+        // Round 21: the switch target is one of the two PINNED
+        // cameras — the pair chosen once at call setup — and the
+        // capturer is commanded to that exact camera via the TARGETED
+        // overload. (Round 20 computed a target name here but then
+        // called the UNTARGETED overload, so the capturer kept cycling
+        // to the next camera id on multi-camera devices while the
+        // bookkeeping claimed the intended target — the owner's r20
+        // report. The untargeted overload is no longer called
+        // anywhere.) If the pins are somehow missing (a capturer that
+        // predates them), they are re-derived from a fresh enumeration
+        // by the same pure rule — deterministic, so the same pair —
+        // and if the device has no pair at all there is nothing to
+        // toggle to and the user is told, exactly like r20's null
+        // target path.
+        val pair = pinnedCameras ?: run {
+            val enumerator = Camera2Enumerator(context)
+            val cameras = enumerator.deviceNames.map {
+                com.wesal.messenger.core.util.CameraSwitchTarget.CameraInfo(
+                    name = it,
+                    isFront = enumerator.isFrontFacing(it)
+                )
+            }
+            com.wesal.messenger.core.util.CameraSwitchTarget.pinPair(cameras)
+                ?.also { pinnedCameras = it }
         }
-        val targetName = com.wesal.messenger.core.util.CameraSwitchTarget.pickSwitchTarget(
-            cameras = cameras,
-            currentCameraName = currentCameraName,
-            currentFront = cameraSwitchMachine.isFrontCamera
-        )
-        if (targetName == null) {
+        if (pair == null) {
             cameraSwitchMachine.onError()
             _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
             return
         }
+        val targetName = com.wesal.messenger.core.util.CameraSwitchTarget
+            .toggleTarget(pair, currentlyFront = cameraSwitchMachine.isFrontCamera)
         _isCameraSwitching.value = true
         scheduleCameraSwitchTimeout()
         runCatching {
@@ -743,7 +776,7 @@ class WebRtcCallManager @Inject constructor(
                         recoverCameraCapturer()
                     }
                 }
-            })
+            }, targetName)
         }.onFailure {
             cancelCameraSwitchTimeout()
             if (cameraSwitchMachine.onError()) {
@@ -1082,8 +1115,48 @@ class WebRtcCallManager @Inject constructor(
         _audioRoute.value = effectiveRoute
     }
 
-    private fun requestCallAudioFocus(audioManager: AudioManager) {
-        if (audioFocusRequest != null) return
+    /**
+     * Round 21: call-audio self-healing. The focus listener is REAL
+     * now — in r20 it was an empty lambda, and [requestCallAudioFocus]
+     * early-returned forever once a request existed, so ANY audio
+     * focus loss during a call (another app grabbing focus, a media
+     * event, the app's own voice-note player — all far more likely
+     * once the owner leaves the call screen and uses his phone, per
+     * his r20 verdict) was never recovered for the remaining life of
+     * the call: the session stayed connected while the voice stream
+     * stayed ducked/muted by the audio policy — «الصوت بيقطع خالص»
+     * with the call itself alive. A loss now re-asserts the whole
+     * pipeline (focus, communication mode, route) via
+     * [ensureCallAudio].
+     */
+    private val callAudioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        if (change == AudioManager.AUDIOFOCUS_LOSS ||
+            change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ||
+            change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK
+        ) {
+            callAudioFocusHeld = false
+            if (peerConnection != null) {
+                Log.i(TAG, "Call audio focus lost (change=$change) — re-asserting the call audio pipeline")
+                mainHandler.post { ensureCallAudio() }
+            }
+        } else if (change == AudioManager.AUDIOFOCUS_GAIN) {
+            callAudioFocusHeld = true
+        }
+    }
+
+    @Volatile
+    private var callAudioFocusHeld = false
+
+    private fun requestCallAudioFocus(audioManager: AudioManager, force: Boolean = false) {
+        if (audioFocusRequest != null && !force) return
+        if (force && audioFocusRequest != null) {
+            // Re-requesting over a held-but-lost request does nothing;
+            // abandon first so the fresh request below really lands.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                runCatching { audioManager.abandonAudioFocusRequest(audioFocusRequest!!) }
+            }
+            audioFocusRequest = null
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val attrs = AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -1091,21 +1164,41 @@ class WebRtcCallManager @Inject constructor(
                 .build()
             val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                 .setAudioAttributes(attrs)
-                .setOnAudioFocusChangeListener { }
+                .setOnAudioFocusChangeListener(callAudioFocusListener, mainHandler)
                 .setAcceptsDelayedFocusGain(false)
                 .build()
             audioFocusRequest = req
-            runCatching { audioManager.requestAudioFocus(req) }
+            val result = runCatching { audioManager.requestAudioFocus(req) }
+                .getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+            callAudioFocusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         } else {
             @Suppress("DEPRECATION")
-            runCatching {
+            val result = runCatching {
                 audioManager.requestAudioFocus(
-                    null,
+                    callAudioFocusListener,
                     AudioManager.STREAM_VOICE_CALL,
                     AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
                 )
-            }
+            }.getOrDefault(AudioManager.AUDIOFOCUS_REQUEST_FAILED)
+            callAudioFocusHeld = result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
+    }
+
+    /**
+     * Round 21: re-asserts the live call's audio pipeline — audio
+     * focus (forced re-request), MODE_IN_COMMUNICATION, and the
+     * current audio route. Called by the focus listener after a loss
+     * and by CallSessionController when the process returns to the
+     * foreground mid-call, so background-period audio damage heals
+     * itself instead of lasting the whole call. No-op without a live
+     * session; never touches the media plane itself.
+     */
+    fun ensureCallAudio() {
+        if (peerConnection == null) return
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        requestCallAudioFocus(audioManager, force = true)
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        setAudioRoute(_audioRoute.value)
     }
 
     fun endSession() {
@@ -1134,6 +1227,7 @@ class WebRtcCallManager @Inject constructor(
         screenCapturer = null
         _isScreenSharing.value = false
         currentCameraName = null
+        pinnedCameras = null
         runCatching { videoCapturer?.stopCapture() }
         videoCapturer?.dispose()
         videoCapturer = null
@@ -1175,8 +1269,9 @@ class WebRtcCallManager @Inject constructor(
             audioFocusRequest = null
         } else {
             @Suppress("DEPRECATION")
-            runCatching { audioManager.abandonAudioFocus(null) }
+            runCatching { audioManager.abandonAudioFocus(callAudioFocusListener) }
         }
+        callAudioFocusHeld = false
         audioManager.mode = AudioManager.MODE_NORMAL
     }
 
@@ -1188,11 +1283,24 @@ class WebRtcCallManager @Inject constructor(
                 isFront = enumerator.isFrontFacing(it)
             )
         }
-        // Round 20: initial/recovery selection goes through the same
-        // pure rule the switch targets use, and the chosen name is
-        // recorded so the next switch knows where it is starting from.
-        val target = com.wesal.messenger.core.util.CameraSwitchTarget
-            .pickInitialCamera(cameras, preferFront) ?: return null
+        // Round 21: (re)pin the call's camera pair from this
+        // enumeration — the pin rule is deterministic, so the initial
+        // creation and every watchdog recovery derive the SAME pair
+        // from the same device. The capturer is then created on the
+        // PINNED camera for the requested facing, so a recovery lands
+        // on exactly the camera the toggle state machine believes the
+        // call is on (never an auxiliary rear lens). Devices without a
+        // pair (single facing) fall back to the r20 initial rule.
+        val pair = com.wesal.messenger.core.util.CameraSwitchTarget.pinPair(cameras)
+        if (pair != null) {
+            pinnedCameras = pair
+        }
+        val target = if (pair != null) {
+            com.wesal.messenger.core.util.CameraSwitchTarget.nameForFacing(pair, preferFront)
+        } else {
+            com.wesal.messenger.core.util.CameraSwitchTarget
+                .pickInitialCamera(cameras, preferFront) ?: return null
+        }
         val created = enumerator.createCapturer(target, null) ?: return null
         currentCameraName = target
         return created
