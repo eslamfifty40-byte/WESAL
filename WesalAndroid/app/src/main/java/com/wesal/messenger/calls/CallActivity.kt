@@ -579,12 +579,13 @@ class CallActivity : AppCompatActivity() {
 
                 // Round 21: the share consent result is handled by
                 // the activity-level launcher (see the field above).
-                // Round 22: while sharing, the preview slot shows the
-                // «أنت تشارك شاشتك» state instead of a self-view of
-                // the capture (the FLAG_SECURE call window would
-                // render black inside its own capture); this effect
-                // only keeps the camera-state bookkeeping aligned so
-                // stopping the share restores the preview cleanly.
+                // Round 22: while sharing, the call UI shows the
+                // sharing banner (with its stop) instead of a
+                // self-view of the capture (the FLAG_SECURE call
+                // window would render black inside its own capture);
+                // this effect only keeps the camera-state bookkeeping
+                // aligned so stopping the share restores the preview
+                // cleanly.
                 LaunchedEffect(isScreenSharing) {
                     if (isScreenSharing) {
                         cameraOff = false
@@ -730,43 +731,17 @@ class CallActivity : AppCompatActivity() {
                         }
                     }
 
-                    if (!inPipState && isVideo && isScreenSharing) {
-                        // Round 22 (owner clarification 19:24): while
-                        // sharing, the local preview does NOT render
-                        // the screen track. The call window itself is
-                        // FLAG_SECURE, so a self-view of the capture
-                        // would show the secure window blacked out —
-                        // a black box in the corner, the exact r21
-                        // symptom on HIS side. The preview slot shows
-                        // the sharing state instead; the peer receives
-                        // the real screen frames on the swapped sender,
-                        // and the remote picture below is untouched.
-                        Surface(
-                            color = Color.Black.copy(alpha = 0.55f),
-                            shape = RoundedCornerShape(14.dp),
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(top = 48.dp, end = 16.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.ScreenShare,
-                                    contentDescription = null,
-                                    tint = palette.turquoise,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Text(
-                                    if (strings.isEnglish) "You are sharing your screen" else "أنت تشارك شاشتك",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                    } else if (!inPipState && isVideo && localVideo != null && !cameraOff) {
+                    // Round 22 (owner clarification 19:24): while
+                    // sharing, the local preview does NOT render the
+                    // screen track. The call window itself is
+                    // FLAG_SECURE, so a self-view of the capture would
+                    // show the secure window blacked out — a black box
+                    // in the corner, the exact r21 symptom on HIS side.
+                    // The sharing state + stop live in the banner below
+                    // instead; the peer receives the real screen frames
+                    // on the swapped sender, and the remote picture is
+                    // untouched.
+                    if (!inPipState && isVideo && !isScreenSharing && localVideo != null && !cameraOff) {
                         val localRenderer = remember(localVideo) {
                             SurfaceViewRenderer(this@CallActivity).apply {
                                 init(webRtcManager.eglBase.eglBaseContext, null)
@@ -798,6 +773,48 @@ class CallActivity : AppCompatActivity() {
                                 .size(width = 110.dp, height = 160.dp)
                                 .clip(RoundedCornerShape(14.dp))
                         )
+                    }
+
+                    // Round 22 (owner's fuller account 19:24): while
+                    // sharing, a prominent banner with a tappable
+                    // «إيقاف المشاركة» — WhatsApp-style, always
+                    // reachable from inside the call, in addition to
+                    // the controls-row toggle, the notification action
+                    // (r21) and the PiP end-call action. His r21 trap
+                    // was having NO visible stop he could reach.
+                    if (!inPipState && isVideo && isScreenSharing) {
+                        Surface(
+                            color = palette.error.copy(alpha = 0.92f),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 108.dp, start = 16.dp, end = 16.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.ScreenShare,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    if (strings.isEnglish) "You are sharing your screen" else "أنت تشارك شاشتك",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = Color.White
+                                )
+                                TextButton(onClick = { webRtcManager.stopScreenShare() }) {
+                                    Text(
+                                        if (strings.isEnglish) "Stop sharing" else "إيقاف المشاركة",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = Color.White
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     // Round 22: no control row in PiP — the floating
