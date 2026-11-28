@@ -396,6 +396,12 @@ class UserRepositoryImpl @Inject constructor(
     // triggered it.
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    // R17 (G-29): the latest profile-visitors listener failure, as
+    // user-readable text. The visitors listener used to swallow its error
+    // into an empty list, so a rules denial (the staged rules arm for
+    // this subcollection is not deployed yet) read as "no visitors".
+    private val _profileVisitorsError = MutableStateFlow<String?>(null)
+
     /**
      * Spec §10.3 (round 4): mirror a ban/unban into the target's Auth custom
      * claims via the setUserBanState callable — on ban the function stamps
@@ -1966,6 +1972,7 @@ class UserRepositoryImpl @Inject constructor(
             flowOf(emptyList())
         } else {
             callbackFlow {
+                _profileVisitorsError.value = null
                 val reg = firestore.collection(Constants.COLLECTION_USERS)
                     .document(uid)
                     .collection(Constants.SUBCOLLECTION_PROFILE_VISITORS)
@@ -1973,9 +1980,14 @@ class UserRepositoryImpl @Inject constructor(
                     .limit(100)
                     .addSnapshotListener { snap, error ->
                         if (error != null) {
-                            trySend(emptyList())
+                            // R17 (G-29): surface the failure instead of
+                            // emitting an empty list — the last good list
+                            // stays on screen and the UI shows the reason
+                            // with a retry. A later good snapshot clears it.
+                            _profileVisitorsError.value = ErrorCopy.friendly(error, "تعذّر تحميل الزائرين")
                             return@addSnapshotListener
                         }
+                        _profileVisitorsError.value = null
                         val list = snap?.documents?.map { doc ->
                             ProfileVisitor(
                                 visitorUid = doc.getString("visitorUid") ?: doc.id,
@@ -1999,6 +2011,8 @@ class UserRepositoryImpl @Inject constructor(
             }
         }
     }
+
+    override fun observeProfileVisitorsError(): Flow<String?> = _profileVisitorsError
 
     override suspend fun clearProfileVisitors(): Result<Unit> = runCatching {
         val uid = auth.currentUser?.uid ?: error("Not authenticated")

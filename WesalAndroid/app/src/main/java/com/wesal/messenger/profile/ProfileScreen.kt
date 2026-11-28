@@ -136,8 +136,23 @@ class ProfileViewModel @Inject constructor(
     val currentUser: StateFlow<WesalUser?> = userRepository.observeCurrentUser()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    val profileVisitors: StateFlow<List<ProfileVisitor>> = userRepository.observeProfileVisitors()
+    // R17 (G-29): the visitors listener used to swallow its error into an
+    // empty list. The retry key re-subscribes the listener after a
+    // failure (Firestore drops it on error); the error flow surfaces
+    // the reason in the visitors sheet instead of "no visits".
+    private val _visitorsRetryKey = MutableStateFlow(0)
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val profileVisitors: StateFlow<List<ProfileVisitor>> = _visitorsRetryKey
+        .flatMapLatest { userRepository.observeProfileVisitors() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val profileVisitorsError: StateFlow<String?> = userRepository.observeProfileVisitorsError()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    fun retryProfileVisitors() {
+        _visitorsRetryKey.value += 1
+    }
 
     private val _uiStatus = MutableStateFlow(ProfileUiStatus())
     val uiStatus: StateFlow<ProfileUiStatus> = _uiStatus.asStateFlow()
@@ -592,6 +607,7 @@ fun ProfileScreen(
     val uiScope = rememberCoroutineScope()
     val user by viewModel.currentUser.collectAsStateWithLifecycle()
     val visitors by viewModel.profileVisitors.collectAsStateWithLifecycle()
+    val visitorsError by viewModel.profileVisitorsError.collectAsStateWithLifecycle()
     val uiStatus by viewModel.uiStatus.collectAsStateWithLifecycle()
     val phoneOtpState by viewModel.phoneOtpState.collectAsStateWithLifecycle()
     var profileOtpInput by remember { mutableStateOf("") }
@@ -1905,7 +1921,22 @@ fun ProfileScreen(
                 }
             },
             text = {
-                if (visitors.isEmpty()) {
+                // R17 (G-29): a listener failure is shown with a retry
+                // instead of the misleading "no visits recorded yet".
+                if (visitorsError != null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(visitorsError!!, color = palette.error, style = MaterialTheme.typography.bodyMedium)
+                        Button(
+                            onClick = { viewModel.retryProfileVisitors() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = palette.turquoise,
+                                contentColor = Color.White
+                            )
+                        ) {
+                            Text(if (strings.isEnglish) "Retry" else "إعادة المحاولة")
+                        }
+                    }
+                } else if (visitors.isEmpty()) {
                     Text(if (strings.isEnglish) "No visits recorded yet." else "لا توجد زيارات مسجلة حتى الآن.", color = palette.textSecondary)
                 } else {
                     LazyColumn(modifier = Modifier.heightIn(max = 360.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

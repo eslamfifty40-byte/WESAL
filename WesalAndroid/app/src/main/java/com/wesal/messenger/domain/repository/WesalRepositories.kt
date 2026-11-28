@@ -198,6 +198,10 @@ interface UserRepository {
     // Profile Visitors (Sec 23)
     suspend fun recordProfileVisit(targetUid: String)
     fun observeProfileVisitors(): Flow<List<ProfileVisitor>>
+    // R17 (G-29): the latest listener failure as user-readable text, or
+    // null while the visitors listener is healthy. The list flow alone
+    // cannot carry a failure — it used to swallow it into an empty list.
+    fun observeProfileVisitorsError(): Flow<String?>
     suspend fun clearProfileVisitors(): Result<Unit>
 
     // Super Admin, Delegated Moderators & Comprehensive 22-Section Management (10001 & 10002)
