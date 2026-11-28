@@ -56,6 +56,19 @@ class MainViewModel @Inject constructor(
     val globalAppearance: StateFlow<GlobalAppearanceConfig> = userRepository.observeGlobalAppearance()
         .stateIn(viewModelScope, SharingStarted.Eagerly, GlobalAppearanceConfig())
 
+    /**
+     * R17 (G-13b): the owner's «حماية المحادثات من تصوير الشاشة» toggle,
+     * read from the current user doc for the MainActivity window flag.
+     * Default ON until the doc loads (ScreenshotProtectionPolicy's
+     * no-unprotected-flash rule) — MainActivity applies FLAG_SECURE
+     * while this is true, so the chats list / Home Recents thumbnail
+     * can no longer leak; the per-chat screens keep managing their
+     * own flag for hidden chats and view-once viewers.
+     */
+    val screenshotProtectionEnabled: StateFlow<Boolean> = userRepository.observeCurrentUser()
+        .map { it?.privacySettings?.screenshotProtectionEnabled ?: true }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     // Forced/soft update policy (system_config/app_update). Fail-open: the default
     // config is disabled, and the repository emits it on any error/missing doc, so
     // MainActivity shows an update dialog only on a positive, loaded policy.

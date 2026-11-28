@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +17,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +59,14 @@ class MainActivity : AppCompatActivity() {
         splashScreen.setKeepOnScreenCondition { false }
         enableEdgeToEdge()
 
+        // R17 (G-13b): FLAG_SECURE on the MainActivity window so the
+        // chats list / Home cannot leak through Recents thumbnails or
+        // screen capture. Fail-secure default until the toggle value
+        // arrives — the setContent effect below then follows the owner's
+        // screenshot-protection toggle (default ON). CallActivity and
+        // IncomingCallActivity set the flag themselves (separate windows).
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -89,6 +99,23 @@ class MainActivity : AppCompatActivity() {
             }
             val startDest by mainViewModel.startDestination.collectAsStateWithLifecycle()
             val authUid by mainViewModel.authUid.collectAsStateWithLifecycle()
+            // R17 (G-13b): the window flag follows the owner's
+            // screenshot-protection toggle. Keyed effect (not a SideEffect
+            // that re-asserts on every recomposition): the per-chat screens
+            // own the flag while a hidden chat / view-once viewer is open,
+            // and a plain SideEffect here would clear it under them on an
+            // unrelated recomposition. The toggle can only flip from
+            // Settings/Profile, never while a chat is on screen, so the
+            // keyed add/clear cannot race a live chat effect.
+            val screenshotProtectionEnabled by mainViewModel.screenshotProtectionEnabled.collectAsStateWithLifecycle()
+            DisposableEffect(screenshotProtectionEnabled) {
+                if (screenshotProtectionEnabled) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                }
+                onDispose { }
+            }
             val incomingCall by mainViewModel.incomingCall.collectAsStateWithLifecycle()
             val isOnline by mainViewModel.isOnline.collectAsStateWithLifecycle()
             val pendingInviteId by mainViewModel.pendingInviteId.collectAsStateWithLifecycle()
