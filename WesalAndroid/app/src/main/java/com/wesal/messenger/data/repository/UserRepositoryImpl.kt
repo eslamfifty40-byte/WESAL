@@ -153,7 +153,16 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
         else -> 0L
     }
     val now = System.currentTimeMillis()
-    val hidePhone = (privacyMap["hidePhoneNumber"] as? Boolean) ?: false
+    // R17 (G-36, owner ruling: his number must never be visible to other
+    // users): the two admin numeric IDs (10001/10002) are ALWAYS
+    // phone-hidden here, regardless of the stored toggle — the toggle
+    // alone was the only protection. The numeric ID is read before the
+    // redaction so the force-hide applies to the phone line below.
+    // Self views (includePrivateUnredacted) are unaffected: the owner
+    // still sees his own number in his own profile/settings.
+    val numericIdRaw = (getString("numericId") ?: (getLong("numericId")?.toString())).orEmpty()
+    val isAdminAccount = numericIdRaw in Constants.ADMIN_NUMERIC_IDS
+    val hidePhone = ((privacyMap["hidePhoneNumber"] as? Boolean) ?: false) || isAdminAccount
     val hideBirth = (privacyMap["hideBirthDate"] as? Boolean) ?: false
     val hideAvatar = (privacyMap["hideAvatarPhoto"] as? Boolean) ?: false
     val hideCover = (privacyMap["hideCoverPhoto"] as? Boolean) ?: false
@@ -212,8 +221,6 @@ internal fun DocumentSnapshot.toWesalUser(includePrivateUnredacted: Boolean = fa
     val frameGiftExpired = GiftGrantLogic.frameGiftExpired(giftFrameActive, frameExpiresAt, now)
     val effRawFrameId = if (frameGiftExpired) preGiftFrameId else rawFrameId
     val effFrameExpiresAt = if (frameGiftExpired) preGiftFrameExpiresAt else frameExpiresAt
-    val numericIdRaw = (getString("numericId") ?: (getLong("numericId")?.toString())).orEmpty()
-    val isAdminAccount = numericIdRaw in Constants.ADMIN_NUMERIC_IDS
     // Round 5 (owner requirement): the OFFICIAL account (10001) is a natural
     // account like any other — a frame granted/set on it is honoured, and the
     // golden ADMIN crest is only its DEFAULT when no live frame is set (or the
