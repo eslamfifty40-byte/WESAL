@@ -1364,6 +1364,9 @@ class ChatRepositoryImpl @Inject constructor(
         publishPlaneMessages(chatId, messages)
         return messages
     }
+
+    /**
+     * Review M-3: the profile shared-media gallery needs the chat's whole
      * history, but [observeMessages] now streams only the newest page. This
      * one-shot walks the full subcollection with DOCUMENT cursors — a snapshot
      * cursor is type-exact, so the Long/Timestamp mix stored in `timestamp`
