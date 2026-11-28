@@ -787,9 +787,9 @@ fun NewChatContactsScreen(
                 }
 
                 else -> {
-                    // Default Contacts Tab (0) — order (round 18): consent card, then the
-                    // unregistered phone contacts (invite-first), then requests, referrals,
-                    // registered-on-WESAL contacts, global search, sent requests, ID/support cards.
+                    // Default Contacts Tab (0) — order (hotfix 2026-11-28 13:20): consent card,
+                    // then registered-on-WESAL contacts, then the unregistered phone contacts,
+                    // then requests, referrals, global search, sent requests, ID/support cards.
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (!contactsPermission.status.isGranted) {
                             item(key = "contacts_consent_card") {
@@ -870,11 +870,37 @@ fun NewChatContactsScreen(
                             }
                         }
 
-                        // Round 18 (Task 5, owner order 2026-11-28): the
-                        // UNREGISTERED phone contacts section sits at the
-                        // TOP of this tab — before the registered-on-WESAL
-                        // names — so inviting is immediate, with no
-                        // scrolling/searching through the whole list first.
+                        if (filteredWesalContacts.isNotEmpty()) {
+                            item(key = "header_verified_contacts") {
+                                Text(
+                                    text = if (strings.isEnglish) "Saved Contacts on WESAL (${filteredWesalContacts.size})" else "جهات اتصالك المسجلة على WESAL (${filteredWesalContacts.size})",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = palette.turquoise,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                )
+                            }
+                            items(filteredWesalContacts, key = { "wesal_${it.user.uid}" }) { matched ->
+                                WesalContactDirectoryRow(
+                                    user = matched.user,
+                                    displayTitle = matched.deviceName,
+                                    request = requestByPeer[matched.user.uid],
+                                    myUid = myUid,
+                                    isSuperAdmin = isSuperAdmin,
+                                    onOpenProfile = { onOpenUserProfile(matched.user.uid) },
+                                    onStartChat = { viewModel.startChatWith(matched.user.uid, onOpenChat) },
+                                    onSendRequest = { viewModel.sendContactRequest(matched.user.uid) },
+                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
+                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, matched.user, isVideo)) }
+                                )
+                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
+                            }
+                        }
+
+                        // Hotfix (owner decision 2026-11-28 13:20): the UNREGISTERED
+                        // phone contacts section sits directly BELOW the
+                        // registered-on-WESAL section — the round-18 invite-first
+                        // order buried the registered names under ~890 rows.
                         // Everything inside the section (multi-select,
                         // select-all, personalized WhatsApp invite,
                         // edit/delete) is unchanged; only the order moved.
@@ -1093,33 +1119,6 @@ fun NewChatContactsScreen(
                                     onSendRequest = { viewModel.sendContactRequest(user.uid) },
                                     onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
                                     onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, user, isVideo)) }
-                                )
-                                HorizontalDivider(color = palette.border, thickness = 0.5.dp)
-                            }
-                        }
-
-                        if (filteredWesalContacts.isNotEmpty()) {
-                            item(key = "header_verified_contacts") {
-                                Text(
-                                    text = if (strings.isEnglish) "Saved Contacts on WESAL (${filteredWesalContacts.size})" else "جهات اتصالك المسجلة على WESAL (${filteredWesalContacts.size})",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = palette.turquoise,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
-                                )
-                            }
-                            items(filteredWesalContacts, key = { "wesal_${it.user.uid}" }) { matched ->
-                                WesalContactDirectoryRow(
-                                    user = matched.user,
-                                    displayTitle = matched.deviceName,
-                                    request = requestByPeer[matched.user.uid],
-                                    myUid = myUid,
-                                    isSuperAdmin = isSuperAdmin,
-                                    onOpenProfile = { onOpenUserProfile(matched.user.uid) },
-                                    onStartChat = { viewModel.startChatWith(matched.user.uid, onOpenChat) },
-                                    onSendRequest = { viewModel.sendContactRequest(matched.user.uid) },
-                                    onAcceptRequest = { reqId -> viewModel.acceptContactRequest(reqId) },
-                                    onCall = { isVideo -> context.startActivity(CallActivity.createOutgoingIntent(context, matched.user, isVideo)) }
                                 )
                                 HorizontalDivider(color = palette.border, thickness = 0.5.dp)
                             }
