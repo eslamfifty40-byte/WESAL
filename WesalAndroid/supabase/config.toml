@@ -12,3 +12,8 @@ verify_jwt = false
 
 [functions.ai-assistant]
 verify_jwt = false
+
+# Failover message-plane probe (FAILOVER_DESIGN.md §4.3): verifies the
+# caller's Firebase ID token itself, exactly like the phone functions.
+[functions.msg-health]
+verify_jwt = false
