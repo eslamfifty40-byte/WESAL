@@ -646,6 +646,17 @@ class WebRtcCallManager @Inject constructor(
     private val cameraSwitchMachine = CameraSwitchStateMachine()
     private var cameraSwitchTimeoutRunnable: Runnable? = null
 
+    /**
+     * Round 20: the name of the camera the live capturer is currently
+     * opened on, as chosen by [createCameraCapturer] or by the last
+     * confirmed switch. The switch target selection
+     * ([com.wesal.messenger.core.util.CameraSwitchTarget]) keys off it:
+     * the shipped capturer's untargeted switch overload merely cycles
+     * to the NEXT camera id, which on multi-camera devices lands on
+     * auxiliary rear cameras instead of toggling front↔rear.
+     */
+    private var currentCameraName: String? = null
+
     /** The camera the call is actually on (CallActivity mirrors the preview from it). */
     private val _isFrontCamera = MutableStateFlow(true)
     val isFrontCamera: StateFlow<Boolean> = _isFrontCamera.asStateFlow()
@@ -679,8 +690,34 @@ class WebRtcCallManager @Inject constructor(
 
     fun switchCamera() {
         val capturer = videoCapturer ?: return
+        // Round 20 (screen share): the camera capturer is stopped while
+        // the screen is on air — there is nothing to switch.
+        if (_isScreenSharing.value) return
         if (!cameraSwitchMachine.tryBegin()) {
             Log.d(TAG, "Camera switch ignored — another switch is already in flight")
+            return
+        }
+        // Round 20: pick the TARGET camera explicitly — the first
+        // camera of the opposite facing — instead of the capturer's
+        // untargeted overload, which cycles to the next camera id in
+        // enumeration order. On multi-camera devices (front + several
+        // rear ids) that cycle needed ~4 presses to wrap from a rear
+        // camera back to the front one: the owner's exact r19 symptom.
+        val enumerator = Camera2Enumerator(context)
+        val cameras = enumerator.deviceNames.map {
+            com.wesal.messenger.core.util.CameraSwitchTarget.CameraInfo(
+                name = it,
+                isFront = enumerator.isFrontFacing(it)
+            )
+        }
+        val targetName = com.wesal.messenger.core.util.CameraSwitchTarget.pickSwitchTarget(
+            cameras = cameras,
+            currentCameraName = currentCameraName,
+            currentFront = cameraSwitchMachine.isFrontCamera
+        )
+        if (targetName == null) {
+            cameraSwitchMachine.onError()
+            _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
             return
         }
         _isCameraSwitching.value = true
@@ -692,6 +729,7 @@ class WebRtcCallManager @Inject constructor(
                     // A false return means this callback is stale (the
                     // watchdog already resolved the flight) — ignore it.
                     if (cameraSwitchMachine.onDone(isFrontCamera)) {
+                        currentCameraName = targetName
                         _isCameraSwitching.value = false
                         _isFrontCamera.value = isFrontCamera
                         _cameraSwitchCount.value += 1
@@ -804,6 +842,105 @@ class WebRtcCallManager @Inject constructor(
             }
             _isCameraSwitching.value = false
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Screen sharing (round 20). The screen capturer feeds the SAME
+    // local video source the camera feeds, so the existing local video
+    // track — and therefore the remote side — simply sees the screen
+    // instead of the camera; no renegotiation is needed. The camera
+    // capturer is stopped (not disposed) while sharing and restarted
+    // when sharing stops. The caller (CallActivity) owns the
+    // MediaProjection permission prompt and must have the
+    // mediaProjection foreground service running before calling
+    // [startScreenShare] (Android 14 requirement); a denial never
+    // reaches this function and never touches the call.
+    // ---------------------------------------------------------------------------------------------
+
+    private var screenCapturer: ScreenCapturerAndroid? = null
+
+    private val _isScreenSharing = MutableStateFlow(false)
+    val isScreenSharing: StateFlow<Boolean> = _isScreenSharing.asStateFlow()
+
+    /**
+     * Starts sharing the screen into the ongoing video call.
+     * [resultData] is the data intent from the MediaProjection
+     * permission prompt. Returns false (call untouched, camera still
+     * live) when there is no video session or the capturer fails to
+     * start.
+     */
+    fun startScreenShare(resultData: Intent, displayWidth: Int, displayHeight: Int): Boolean {
+        val source = localVideoSource ?: return false
+        val helper = surfaceTextureHelper ?: return false
+        if (_isScreenSharing.value) return true
+        val capturer = ScreenCapturerAndroid(
+            resultData,
+            object : android.media.projection.MediaProjection.Callback() {
+                override fun onStop() {
+                    // The user stopped the projection from the system
+                    // UI (or the system revoked it): fall back to the
+                    // camera instead of freezing on the last frame.
+                    Log.i(TAG, "MediaProjection stopped by the system — ending screen share")
+                    stopScreenShare()
+                }
+            }
+        )
+        val (width, height) = com.wesal.messenger.core.util.ScreenShareLogic
+            .targetSize(displayWidth, displayHeight)
+        // Park the camera: capture stops, the capturer object (and its
+        // initialization against this same source) survives for the
+        // return trip.
+        runCatching { videoCapturer?.stopCapture() }
+        val started = runCatching {
+            capturer.initialize(helper, context, source.capturerObserver)
+            capturer.startCapture(
+                width,
+                height,
+                com.wesal.messenger.core.util.ScreenShareLogic.SHARE_FPS
+            )
+            true
+        }.getOrElse { error ->
+            Log.e(TAG, "Screen capturer failed to start: ${error.message}")
+            false
+        }
+        if (!started) {
+            runCatching { capturer.dispose() }
+            // Resume the camera so a failed share attempt never leaves
+            // the call without local video.
+            runCatching { videoCapturer?.startCapture(720, 1280, 30) }
+            return false
+        }
+        screenCapturer = capturer
+        _isScreenSharing.value = true
+        // Screen content is detail, not motion: ask the encoder for
+        // sharpness over smoothness while sharing.
+        runCatching { localVideoTrack?.setContentHint(VideoTrack.ContentHint.DETAILED) }
+        // Re-attach the local preview sink: the frame source changed
+        // under the same track.
+        _cameraSwitchCount.value += 1
+        Log.i(TAG, "Screen share started at ${width}x$height")
+        return true
+    }
+
+    /** Stops sharing and returns the outgoing video to the camera. */
+    fun stopScreenShare() {
+        val capturer = screenCapturer
+        screenCapturer = null
+        val wasSharing = _isScreenSharing.value
+        _isScreenSharing.value = false
+        if (capturer == null) return
+        runCatching { capturer.stopCapture() }
+        runCatching { capturer.dispose() }
+        runCatching { localVideoTrack?.setContentHint(VideoTrack.ContentHint.NONE) }
+        // Return to the camera (the capturer is still initialized
+        // against the same video source — a plain startCapture resumes
+        // it). If the session is already gone this simply no-ops into
+        // the runCatching.
+        if (wasSharing && localVideoSource != null) {
+            runCatching { videoCapturer?.startCapture(720, 1280, 30) }
+            _cameraSwitchCount.value += 1
+        }
+        Log.i(TAG, "Screen share stopped — back to camera")
     }
 
     private fun hasBluetoothConnectPermission(): Boolean {
@@ -992,6 +1129,15 @@ class WebRtcCallManager @Inject constructor(
         onIceRestartNeeded = null
         _iceConnectionState.value = PeerConnection.IceConnectionState.CLOSED
         unregisterAudioMonitoring()
+        // Round 20: tear down any live screen share WITHOUT returning
+        // to the camera (the whole session is going away).
+        screenCapturer?.let { sc ->
+            runCatching { sc.stopCapture() }
+            runCatching { sc.dispose() }
+        }
+        screenCapturer = null
+        _isScreenSharing.value = false
+        currentCameraName = null
         runCatching { videoCapturer?.stopCapture() }
         videoCapturer?.dispose()
         videoCapturer = null
@@ -1040,14 +1186,20 @@ class WebRtcCallManager @Inject constructor(
 
     private fun createCameraCapturer(preferFront: Boolean = true): CameraVideoCapturer? {
         val enumerator = Camera2Enumerator(context)
-        val frontName = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
-        val backName = enumerator.deviceNames.firstOrNull { !enumerator.isFrontFacing(it) }
-        val target = if (preferFront) {
-            frontName ?: backName
-        } else {
-            backName ?: frontName
-        } ?: return null
-        return enumerator.createCapturer(target, null)
+        val cameras = enumerator.deviceNames.map {
+            com.wesal.messenger.core.util.CameraSwitchTarget.CameraInfo(
+                name = it,
+                isFront = enumerator.isFrontFacing(it)
+            )
+        }
+        // Round 20: initial/recovery selection goes through the same
+        // pure rule the switch targets use, and the chosen name is
+        // recorded so the next switch knows where it is starting from.
+        val target = com.wesal.messenger.core.util.CameraSwitchTarget
+            .pickInitialCamera(cameras, preferFront) ?: return null
+        val created = enumerator.createCapturer(target, null) ?: return null
+        currentCameraName = target
+        return created
     }
 
     private open class SimpleSdpObserver : SdpObserver {

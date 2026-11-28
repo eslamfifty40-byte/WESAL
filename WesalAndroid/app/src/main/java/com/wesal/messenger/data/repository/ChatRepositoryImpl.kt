@@ -32,6 +32,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -50,6 +52,7 @@ import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import com.google.android.gms.tasks.Task
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -193,6 +196,16 @@ class ChatRepositoryImpl @Inject constructor(
     private val userCache = ConcurrentHashMap<String, CachedUserEntry>()
     private val userCacheTtlMs = 20_000L
     private val deliveredThrottleMs = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Round 20 (message-delay fix): delivered-ack refs accumulated
+     * inside the 5 s throttle window, plus the trailing flush job per
+     * chat. The old throttle DROPPED refs handed to it inside the
+     * window; see markMessageRefsDeliveredBatched.
+     */
+    private val deliveredPendingRefs =
+        ConcurrentHashMap<String, MutableSet<com.google.firebase.firestore.DocumentReference>>()
+    private val deliveredFlushJobs = ConcurrentHashMap<String, Job>()
 
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
@@ -584,6 +597,29 @@ class ChatRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Round 20 (message-delay fix): cache-first document read for the
+     * SEND paths. A default-source `get()` is server-first: it waits
+     * for a full server round trip (and, on a cold or stalled stream,
+     * far longer) before the send's commit can even be enqueued — and
+     * every send paid that toll TWICE (own user doc for the ban
+     * pre-check + the chat doc), sequentially. The documents the send
+     * paths read are already in the Firestore local cache, kept fresh
+     * by the chat screen's live listeners, so a cache hit is both
+     * correct and instant. A cache miss (or a cached "does not exist")
+     * falls back to the exact server read the code used before, so
+     * existence checks and gates keep their old honesty — only the
+     * common case stops paying for the network twice per message.
+     */
+    private suspend fun getDocCachedFirst(
+        ref: com.google.firebase.firestore.DocumentReference
+    ): DocumentSnapshot {
+        runCatching { ref.get(Source.CACHE).await() }.getOrNull()?.let { cached ->
+            if (cached.exists()) return cached
+        }
+        return ref.get().await()
+    }
+
     private suspend fun fetchUserCached(uid: String, forceServer: Boolean = false): WesalUser? {
         val now = System.currentTimeMillis()
         val existing = if (forceServer) null else userCache[uid]
@@ -671,7 +707,7 @@ class ChatRepositoryImpl @Inject constructor(
      */
     private suspend fun isSelfClearlyBanned(myUid: String): Boolean {
         val snap = runCatching {
-            firestore.collection(Constants.COLLECTION_USERS).document(myUid).get().await()
+            getDocCachedFirst(firestore.collection(Constants.COLLECTION_USERS).document(myUid))
         }.getOrNull() ?: return false
         if (!snap.exists()) return false
         return isBanClearlyActive(snap.get("isBanned"), snap.get("banType"), snap.get("banExpiresAt"))
@@ -749,9 +785,10 @@ class ChatRepositoryImpl @Inject constructor(
                                 ) doc.reference else null
                             }
                             if (pendingDeliveryRefs.isNotEmpty()) {
-                                launch(Dispatchers.IO) {
-                                    markMessageRefsDeliveredBatched(chatId, pendingDeliveryRefs)
-                                }
+                                // Round 20: no longer suspend — refs
+                                // are accumulated and flushed (possibly
+                                // by a trailing run) inside.
+                                markMessageRefsDeliveredBatched(chatId, pendingDeliveryRefs)
                             }
                             val messages = snapshot.documents.mapNotNull { doc ->
                                 mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
@@ -1611,7 +1648,10 @@ class ChatRepositoryImpl @Inject constructor(
         require(!isSelfClearlyBanned(myUid)) { "حسابك محظور ولا يمكنك إرسال رسائل حالياً" }
 
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-        val chatSnap = chatRef.get().await()
+        // Round 20: cache-first (see getDocCachedFirst) — the server
+        // round trip this used to pay before every send is gone in the
+        // common case; the existence guard below is unchanged.
+        val chatSnap = getDocCachedFirst(chatRef)
         // Round 12 (addendum 10d): never write into the void. A chat doc
         // that does not exist (e.g. a legacy locally-cached row whose
         // create the server denied) makes the batch below fail opaquely
@@ -1698,6 +1738,23 @@ class ChatRepositoryImpl @Inject constructor(
         val batch = firestore.batch()
         batch.set(messageRef, sdkMessageData)
         batch.update(chatRef, chatUpdates)
+        // Round 20 (message-delay fix): the commit is INVOKED under
+        // OutboxSendGuard, and only the invocation. The lock's real job
+        // is ordering: the Firestore SDK applies one client's mutation
+        // batches in commit() call order on its single write stream, so
+        // holding the lock across the synchronous build + commit() call
+        // keeps the chat summary / unread increments in send order for
+        // every caller. The ACK await below happens AFTER the lock is
+        // released. Previously the CALLERS held this one global lock
+        // across the entire send — including the 15 s ACK window — so
+        // a single stalled send head-of-line blocked every later send
+        // (any chat, plus the app-start outbox replay) for up to 15 s
+        // apiece, serially: the reported «الرسالة بتتأخر». Now a burst
+        // of sends enqueues back-to-back; each message keeps its own
+        // ACK window and its own queued/failed outcome.
+        val commitTask = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
+            batch.commit()
+        }
         // Round 12 (addendum 12): the timeout is an ACK WINDOW, not a
         // deadline. PROVEN defect: on a very slow connection (~1 KB/s)
         // the batch rarely ACKs within SEND_WRITE_TIMEOUT_MS, the old
@@ -1722,7 +1779,7 @@ class ChatRepositoryImpl @Inject constructor(
         // stalls identically — its failure was the raw-error dialog.
         var sdkError: Throwable? = null
         val sdkCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
-            runCatching { batch.commit().await() }
+            runCatching { commitTask.await() }
                 .onFailure { sdkError = it }
                 .isSuccess
         } ?: false
@@ -1778,7 +1835,9 @@ class ChatRepositoryImpl @Inject constructor(
                 val me = fetchUserCached(myUid)
                 require(!isSelfClearlyBanned(myUid)) { "حسابك محظور ولا يمكنك إرسال الوسائط" }
                 val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-                val chatSnap = chatRef.get().await()
+                // Round 20: cache-first, same as sendTextMessage — the
+                // upload no longer waits on a server round trip first.
+                val chatSnap = getDocCachedFirst(chatRef)
                 val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
                     chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
                 if (isOfficial) {
@@ -2044,7 +2103,8 @@ class ChatRepositoryImpl @Inject constructor(
         val myUid = auth.currentUser?.uid ?: error("Not authenticated")
         val me = fetchUserCached(myUid)
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-        val chatSnap = chatRef.get().await()
+        // Round 20: cache-first, same as sendTextMessage.
+        val chatSnap = getDocCachedFirst(chatRef)
         // Round 12 (addendum 10d): same existence guard as sendTextMessage.
         require(chatSnap.exists()) { "المحادثة غير موجودة — أعد فتحها وحاول تاني" }
         val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
@@ -2110,9 +2170,14 @@ class ChatRepositoryImpl @Inject constructor(
         val locationBatch = firestore.batch()
         locationBatch.set(chatRef.collection(Constants.COLLECTION_MESSAGES).document(messageId), sdkMsg)
         locationBatch.update(chatRef, chatUpdates)
+        // Round 20: commit invoked under the same narrow ordering
+        // lock as text sends; the ACK await stays outside it.
+        val locationCommitTask = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
+            locationBatch.commit()
+        }
         var locationSdkError: Throwable? = null
         val locationCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
-            runCatching { locationBatch.commit().await() }
+            runCatching { locationCommitTask.await() }
                 .onFailure { locationSdkError = it }
                 .isSuccess
         } ?: false
@@ -2222,24 +2287,54 @@ class ChatRepositoryImpl @Inject constructor(
      * and only fires when a real SENT→DELIVERED transition exists in the
      * snapshot, so the r14 semantics (no repeated identical stamps) hold.
      */
-    private suspend fun markMessageRefsDeliveredBatched(
+    /**
+     * Round 20 (message-delay fix): refs are ACCUMULATED and flushed
+     * by a trailing run when the 5 s window has not yet elapsed. The
+     * old body returned early inside the window and DROPPED the refs
+     * it was handed, so the delivered tick for the last message(s) of
+     * a burst waited for some unrelated future snapshot — or a chat
+     * reopen — which reads exactly like "messages arrive late". The
+     * 5 s coalescing itself (a quota measure from the scaling pass)
+     * is unchanged: at most one flush per window still runs; it just
+     * can no longer lose refs.
+     */
+    private fun markMessageRefsDeliveredBatched(
         chatId: String,
         refs: List<com.google.firebase.firestore.DocumentReference>
     ) {
         if (refs.isEmpty()) return
+        val pending = deliveredPendingRefs.computeIfAbsent(chatId) {
+            java.util.Collections.synchronizedSet(mutableSetOf())
+        }
+        pending.addAll(refs)
         val now = System.currentTimeMillis()
-        val lastRun = deliveredThrottleMs[chatId] ?: 0L
-        if (now - lastRun < 5_000L) return
-        deliveredThrottleMs[chatId] = now
-        runCatching {
-            val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-            refs.chunked(400).forEachIndexed { idx, chunk ->
-                val batch = firestore.batch()
-                chunk.forEach { batch.update(it, "status", MessageStatus.DELIVERED.raw) }
-                if (idx == 0) {
-                    batch.update(chatRef, "lastMessageStatus", MessageStatus.DELIVERED.raw)
+        val waitMs = 5_000L - (now - (deliveredThrottleMs[chatId] ?: 0L))
+        if (waitMs <= 0L) {
+            flushPendingDelivered(chatId)
+        } else if (deliveredFlushJobs[chatId]?.isActive != true) {
+            deliveredFlushJobs[chatId] = ioScope.launch {
+                delay(waitMs)
+                flushPendingDelivered(chatId)
+            }
+        }
+    }
+
+    private fun flushPendingDelivered(chatId: String) {
+        val pending = deliveredPendingRefs.remove(chatId) ?: return
+        val refs = synchronized(pending) { pending.toList() }
+        if (refs.isEmpty()) return
+        deliveredThrottleMs[chatId] = System.currentTimeMillis()
+        ioScope.launch {
+            runCatching {
+                val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
+                refs.chunked(400).forEachIndexed { idx, chunk ->
+                    val batch = firestore.batch()
+                    chunk.forEach { batch.update(it, "status", MessageStatus.DELIVERED.raw) }
+                    if (idx == 0) {
+                        batch.update(chatRef, "lastMessageStatus", MessageStatus.DELIVERED.raw)
+                    }
+                    batch.commit().await()
                 }
-                batch.commit().await()
             }
         }
     }

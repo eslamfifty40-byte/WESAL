@@ -11,7 +11,6 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.decode.GifDecoder
@@ -51,6 +50,10 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
     // clear). Provider.get() at first actual use keeps behaviour identical.
     @Inject lateinit var chatRepositoryProvider: Provider<com.wesal.messenger.domain.repository.ChatRepository>
     @Inject lateinit var wesalDaoProvider: Provider<com.wesal.messenger.data.local.dao.WesalDao>
+    // Round 20: lazy for the same cold-start reason — constructing the
+    // call-session controller at process start lets it reconcile a
+    // stale active-call marker left by a process that died mid-call.
+    @Inject lateinit var callSessionControllerProvider: Provider<com.wesal.messenger.calls.CallSessionController>
     private val appScope = kotlinx.coroutines.CoroutineScope(
         kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
     )
@@ -92,6 +95,11 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
             runCatching { BackendHealthStore.hydrate(userPrefs.loadBackendHealthState()) }
         }
         rememberSignedInAccountLocally()
+        // Round 20: if the previous process died mid-call it left an
+        // active-call marker behind; reconcile it (best-effort ENDED
+        // stamp for the other side + marker cleared) so no zombie call
+        // state survives a restart. No-op when no marker exists.
+        runCatching { callSessionControllerProvider.get().reconcileStaleMarker() }
         // Deferred until the main thread first goes idle (i.e. after the first frame):
         // creating 6 channels is a series of binder calls that bought nothing on the
         // cold-start path — channels only need to exist before a notification posts,
@@ -193,15 +201,17 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                             text = entry.replyToPreview.orEmpty()
                         )
                     } else null
-                    val result = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
-                        chatRepositoryProvider.get().sendTextMessage(
-                            chatId = entry.chatId,
-                            text = entry.text,
-                            replyTo = replyStub,
-                            forwardedFromName = entry.forwardedFromName,
-                            clientMessageId = entry.messageId
-                        )
-                    }
+                    // Round 20: no OutboxSendGuard wrapper here — the
+                    // repository holds the lock only around the commit()
+                    // invocation, so one stalled replay entry can no
+                    // longer block the rest of the queue for 15 s each.
+                    val result = chatRepositoryProvider.get().sendTextMessage(
+                        chatId = entry.chatId,
+                        text = entry.text,
+                        replyTo = replyStub,
+                        forwardedFromName = entry.forwardedFromName,
+                        clientMessageId = entry.messageId
+                    )
                     if (result.isSuccess) {
                         userPrefs.removeOutboxMessage(entry.messageId)
                     } else if (SendFailureCopy.isQueued(result.exceptionOrNull())) {

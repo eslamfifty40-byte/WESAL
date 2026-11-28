@@ -109,3 +109,54 @@ class CameraSwitchStateMachine(initialFront: Boolean = true) {
         return true
     }
 }
+
+/**
+ * Round 20: WHICH camera a switch goes to, extracted pure so the rule
+ * is JVM-testable.
+ *
+ * DEVICE-PROVEN defect this serves (owner's r19 verdict: front→rear
+ * works, rear→front needs ~4 presses): the app used to call the
+ * capturer's UNTARGETED `switchCamera(handler)` overload. In the
+ * shipped stream-webrtc-android 1.2.2 build, that overload does NOT
+ * pick the opposite-facing camera — `CameraCapturer.switchCamera`
+ * selects `deviceNames[(indexOf(current) + 1) % size]`, the NEXT
+ * camera id in `CameraManager.getCameraIdList()` order. On
+ * multi-camera devices (the owner's OPPO class exposes front + main
+ * rear + wide rear + macro/tele rear ids) the cycle from the main
+ * rear camera lands on ANOTHER rear camera, then another, and only
+ * wraps to the front after several presses — each intermediate "switch"
+ * faithfully reports `isFrontCamera=false`, so the app stays "on rear"
+ * exactly as he described. Slow auxiliary cameras add the stall.
+ *
+ * The rule here: a switch always targets the FIRST camera of the
+ * OPPOSITE facing (the same selection `createCameraCapturer` uses for
+ * the initial camera), via the targeted
+ * `switchCamera(handler, cameraName)` overload. Two-state toggle,
+ * symmetric in both directions, auxiliary cameras never visited.
+ */
+object CameraSwitchTarget {
+
+    /** One enumerated camera: its capturer name and whether it faces front. */
+    data class CameraInfo(val name: String, val isFront: Boolean)
+
+    /**
+     * The camera to switch TO, or null when no opposite-facing camera
+     * exists. [currentCameraName] is the name the live capturer was
+     * created/switched with (null when unknown — then [currentFront],
+     * the state machine's facing, decides the current facing).
+     */
+    fun pickSwitchTarget(
+        cameras: List<CameraInfo>,
+        currentCameraName: String?,
+        currentFront: Boolean
+    ): String? {
+        if (cameras.size < 2) return null
+        val currentFacing = cameras.firstOrNull { it.name == currentCameraName }?.isFront
+            ?: currentFront
+        return cameras.firstOrNull { it.isFront != currentFacing && it.name != currentCameraName }?.name
+    }
+
+    /** The camera a fresh capturer starts on (initial capture / recovery). */
+    fun pickInitialCamera(cameras: List<CameraInfo>, preferFront: Boolean): String? =
+        cameras.firstOrNull { it.isFront == preferFront }?.name ?: cameras.firstOrNull()?.name
+}

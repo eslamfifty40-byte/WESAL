@@ -1,17 +1,21 @@
 package com.wesal.messenger.calls
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -29,58 +33,49 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.lifecycleScope
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalTheme
 import com.wesal.messenger.core.util.CallRingLogic
-import com.wesal.messenger.core.util.CallTimeoutLogic
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.data.repository.CallSignalingErrors
-import com.wesal.messenger.domain.model.CallStatus
 import com.wesal.messenger.domain.model.WesalUser
-import com.wesal.messenger.domain.repository.CallRepository
 import com.wesal.messenger.presentation.components.WesalAvatar
 import com.wesal.messenger.presentation.components.WesalNameWithBadge
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
-import org.webrtc.IceCandidate
 import org.webrtc.PeerConnection
 import org.webrtc.SurfaceViewRenderer
 import javax.inject.Inject
 
+/**
+ * Round 20: the call UI is now a DETACHABLE VIEW on the session owned
+ * by [CallSessionController]. This activity starts a session when none
+ * is live (fresh outgoing / incoming-answer intents) or attaches to
+ * the live one (notification rejoin, or any call intent opened while a
+ * call is already running). Leaving the screen — Back, or the activity
+ * being destroyed for any reason — detaches the view ONLY: the call
+ * keeps running in the controller + foreground service. The ONLY way
+ * this screen ends a call is the explicit end-call button, which goes
+ * through [CallSessionController.endCall].
+ */
 @AndroidEntryPoint
 class CallActivity : AppCompatActivity() {
 
     @Inject lateinit var webRtcManager: WebRtcCallManager
-    @Inject lateinit var callRepository: CallRepository
+    @Inject lateinit var callController: CallSessionController
     @Inject lateinit var prefs: UserPreferencesDataStore
 
-    private var activeCallId: String = ""
-    private var startedSeconds: Long = 0L
-    private var isFinishingCall: Boolean = false
-    private val pendingLocalCandidates = mutableListOf<IceCandidate>()
-
     /**
-     * Round 11 (addendum 1b): proximity wake lock for the in-call UI. While
-     * held, the system turns the screen OFF when the phone is at the user's
-     * ear/face and back ON when it moves away — and keeps it on while the
-     * sensor reports "far", which is why it replaces FLAG_KEEP_SCREEN_ON
-     * whenever the device supports it. Acquired in onCreate — i.e. once
-     * this call UI is actually up (outgoing dialing screen, or the answered
-     * incoming call) — never while an incoming call is still ringing
-     * visibly in hand (that surface is IncomingCallActivity, which does not
-     * take the lock). Released in onDestroy.
+     * Round 11 (addendum 1b): proximity wake lock for the in-call UI.
+     * Acquired while this UI is attached; released in onDestroy (a UI
+     * concern — releasing it never touches the call itself).
      */
     private var proximityWakeLock: android.os.PowerManager.WakeLock? = null
 
@@ -113,23 +108,29 @@ class CallActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         // Strict screenshot & screen-recording protection during active calls
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        // Proximity governs the screen during the call (see above); only
+        // Proximity governs the screen while the UI is attached; only
         // devices without proximity support keep the old keep-screen-on.
         acquireProximityLock()
         if (proximityWakeLock == null) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
 
+        val isRejoin = intent.getBooleanExtra(EXTRA_REJOIN, false)
         val isIncoming = intent.getBooleanExtra(EXTRA_IS_INCOMING, false)
         val initialCallId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
         val peerUid = intent.getStringExtra(EXTRA_PEER_UID).orEmpty()
-        // Round 9 (item 5): same blank-extra hole as IncomingCallActivity —
-        // a present-but-blank peer name must fall back, not render empty.
-        val peerName = intent.getStringExtra(EXTRA_PEER_NAME)?.takeIf { it.isNotBlank() } ?: "WESAL User"
-        val peerAvatar = intent.getStringExtra(EXTRA_PEER_AVATAR).orEmpty()
-        val peerVerified = intent.getBooleanExtra(EXTRA_PEER_VERIFIED, false)
-        val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
-        activeCallId = initialCallId
+        // Round 9 (item 5): a present-but-blank peer name must fall back.
+        val intentPeerName = intent.getStringExtra(EXTRA_PEER_NAME)?.takeIf { it.isNotBlank() } ?: "WESAL User"
+        val intentPeerAvatar = intent.getStringExtra(EXTRA_PEER_AVATAR).orEmpty()
+        val intentPeerVerified = intent.getBooleanExtra(EXTRA_PEER_VERIFIED, false)
+        val intentIsVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
+
+        // A rejoin tap with no live session behind it (the call ended
+        // while the notification was still up): nothing to attach to.
+        if (isRejoin && callController.session.value == null) {
+            finish()
+            return
+        }
 
         setContent {
             val settings by prefs.settingsFlow.collectAsStateWithLifecycle(initialValue = AppUserSettings())
@@ -140,6 +141,15 @@ class CallActivity : AppCompatActivity() {
             ) {
                 val palette = WesalColors.current
                 val strings = LocalWesalStrings.current
+
+                val activeSession by callController.session.collectAsStateWithLifecycle()
+                val isVideo = activeSession?.isVideo ?: intentIsVideo
+                val sessionIsIncoming = activeSession?.isIncoming ?: isIncoming
+                // Display identity: the live session wins; before a
+                // session exists (permission gate), the intent extras.
+                val peerName = activeSession?.peerName ?: intentPeerName
+                val peerAvatar = activeSession?.peerAvatar ?: intentPeerAvatar
+                val peerVerified = activeSession?.peerVerified ?: intentPeerVerified
 
                 val requestedPermissions = remember(isVideo) {
                     buildList {
@@ -157,25 +167,24 @@ class CallActivity : AppCompatActivity() {
                             (isVideo && it.permission == Manifest.permission.CAMERA)
                     }
                     .all { it.status.isGranted }
+                // A live session was already granted its permissions at
+                // start; the gate below applies only before a start.
+                val sessionLive = activeSession != null
+                val mediaReady = coreMediaGranted || sessionLive
 
                 var micMuted by remember { mutableStateOf(false) }
                 var cameraOff by remember { mutableStateOf(!isVideo) }
                 var durationSeconds by remember { mutableLongStateOf(0L) }
-                // R17 (G-01): true once the other side has ANSWERED
-                // (CallStatus.ACTIVE — callee ack via submitAnswer). The
-                // minutes count starts here, not when the media path
-                // happens to connect.
-                var callAnswered by remember { mutableStateOf(false) }
                 // Start strictly with CONNECTING ("جاري الاتصال...") — switches to RINGING only on real callee ACK
                 var callStatusLabel by remember(strings.isEnglish) {
                     mutableStateOf(strings.connectingCall)
                 }
+                var closingByTermination by remember { mutableStateOf(false) }
 
                 val connState by webRtcManager.connectionState.collectAsStateWithLifecycle()
                 val iceState by webRtcManager.iceConnectionState.collectAsStateWithLifecycle()
                 val turnConfigured by webRtcManager.turnConfigured.collectAsStateWithLifecycle()
                 val signalingError by CallSignalingErrors.error.collectAsStateWithLifecycle()
-                val sessionError by webRtcManager.sessionError.collectAsStateWithLifecycle()
                 val remoteVideo by webRtcManager.remoteVideoTrack.collectAsStateWithLifecycle()
                 val localVideo by webRtcManager.localVideoTrackFlow.collectAsStateWithLifecycle()
                 val audioRoute by webRtcManager.audioRoute.collectAsStateWithLifecycle()
@@ -186,10 +195,16 @@ class CallActivity : AppCompatActivity() {
                 val cameraSwitchCount by webRtcManager.cameraSwitchCount.collectAsStateWithLifecycle()
                 val isFrontCamera by webRtcManager.isFrontCamera.collectAsStateWithLifecycle()
                 // Round 18: while a switch is in flight the flip button
-                // spins and disables itself — the owner previously got
-                // zero feedback and kept pressing into a running switch.
+                // spins and disables itself.
                 val isCameraSwitching by webRtcManager.isCameraSwitching.collectAsStateWithLifecycle()
                 val cameraMessage by webRtcManager.cameraMessage.collectAsStateWithLifecycle()
+                // Round 20: screen-share state (manager-owned).
+                val isScreenSharing by webRtcManager.isScreenSharing.collectAsStateWithLifecycle()
+
+                val phase by callController.phase.collectAsStateWithLifecycle()
+                val answeredAtMs by callController.answeredAtMs.collectAsStateWithLifecycle()
+                val termination by callController.termination.collectAsStateWithLifecycle()
+                val endMessage by callController.endMessage.collectAsStateWithLifecycle()
 
                 LaunchedEffect(cameraMessage) {
                     val msg = cameraMessage
@@ -199,30 +214,139 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                BackHandler { hangupCall() }
+                // Round 20: Back DETACHES the call UI — the call keeps
+                // running (owner's explicit r19 verdict). Only the
+                // end-call button ends a call.
+                BackHandler { finish() }
 
                 LaunchedEffect(Unit) {
-                    if (!permissions.allPermissionsGranted) {
+                    if (!sessionLive && !permissions.allPermissionsGranted) {
                         permissions.launchMultiplePermissionRequest()
                     }
                 }
 
-                // Round 11 (item 3e + addendum 2b): the ringback starts the
-                // moment the outgoing call is placed and keeps playing
-                // through BOTH honest states («جاري الاتصال» and «يرن») until
-                // the call connects or this screen goes away — WhatsApp-style.
-                // Only the state LABEL waits for the callee ack; the sound
-                // does not. The old effect keyed on the ringing LABEL, so a
-                // caller whose callee never acked (the proven stuck-CONNECTING
-                // case) heard complete silence. STREAM_VOICE_CALL routes the
-                // tone to the earpiece/current call route like a real
-                // ringback. Once the call has connected, the ringback never
-                // restarts (a mid-call network blip is not a new ring).
+                // Start a session when this screen was opened for a
+                // fresh call and none is live. If one IS live, this
+                // screen simply attaches to it (no duplicate session).
+                var startRequested by remember { mutableStateOf(false) }
+                LaunchedEffect(coreMediaGranted, sessionLive) {
+                    if (!coreMediaGranted || sessionLive || startRequested) return@LaunchedEffect
+                    startRequested = true
+                    if (isIncoming) {
+                        callController.startIncomingAnswer(
+                            callId = initialCallId,
+                            peerUid = peerUid,
+                            peerName = intentPeerName,
+                            peerAvatar = intentPeerAvatar,
+                            peerVerified = intentPeerVerified,
+                            isVideo = intentIsVideo
+                        )
+                    } else {
+                        callController.startOutgoing(
+                            peer = WesalUser(
+                                uid = peerUid,
+                                displayName = intentPeerName,
+                                photoUrl = intentPeerAvatar,
+                                isVerified = intentPeerVerified
+                            ),
+                            isVideo = intentIsVideo
+                        )
+                    }
+                }
+
+                // The generation of the session this screen is showing,
+                // captured when the session first appears — termination
+                // events of OTHER (older) sessions must never close it.
+                var attachedGeneration by remember { mutableStateOf(-1L) }
+                LaunchedEffect(sessionLive) {
+                    if (sessionLive && attachedGeneration == -1L) {
+                        attachedGeneration = callController.currentGeneration
+                    }
+                }
+
+                // The session ended (by the peer, a deadline, a failure,
+                // or the end button): show the farewell label briefly —
+                // with the same timings the pre-controller UI used —
+                // then close. When no UI is attached this never runs and
+                // the controller has already cleaned everything up.
+                LaunchedEffect(termination, attachedGeneration) {
+                    val t = termination ?: return@LaunchedEffect
+                    if (attachedGeneration == -1L || t.generation != attachedGeneration) return@LaunchedEffect
+                    if (closingByTermination) return@LaunchedEffect
+                    closingByTermination = true
+                    when (t.reason) {
+                        CallEndReason.PEER_ENDED, CallEndReason.LOCAL_HANGUP -> finish()
+                        CallEndReason.REJECTED -> {
+                            callStatusLabel = strings.callRejected
+                            delay(1200L)
+                            finish()
+                        }
+                        CallEndReason.MISSED -> {
+                            callStatusLabel = strings.callMissed
+                            delay(1200L)
+                            finish()
+                        }
+                        CallEndReason.SETUP_FAILED -> {
+                            callStatusLabel = if (strings.isEnglish) "Could not connect — please try again" else "تعذر الاتصال — حاول مرة أخرى"
+                            delay(1500L)
+                            finish()
+                        }
+                        CallEndReason.OFFER_TIMEOUT -> {
+                            callStatusLabel = CallSignalingErrors.SERVER_ERROR_MESSAGE
+                            delay(1800L)
+                            finish()
+                        }
+                        CallEndReason.MEDIA_FAILURE -> {
+                            callStatusLabel = if (strings.isEnglish) {
+                                "Could not complete the call — check your internet connection and try again"
+                            } else {
+                                "تعذر إتمام الاتصال — تحقق من الإنترنت وحاول مرة أخرى"
+                            }
+                            delay(2200L)
+                            finish()
+                        }
+                        CallEndReason.SESSION_ERROR -> {
+                            callStatusLabel = endMessage ?: if (strings.isEnglish) {
+                                "Could not start the call on this device"
+                            } else {
+                                "تعذر بدء المكالمة على هذا الجهاز"
+                            }
+                            delay(1800L)
+                            finish()
+                        }
+                    }
+                }
+
+                // Status line from the session phase (the controller's
+                // listener owns the truth now): CONNECTING until the
+                // callee ack, RINGING on the ack, ANSWERED once the
+                // answer lands — the duration effect below takes over
+                // the label once media is CONNECTED.
+                LaunchedEffect(phase) {
+                    when (phase) {
+                        CallPhase.CONNECTING -> callStatusLabel = strings.connectingCall
+                        CallPhase.RINGING -> callStatusLabel = strings.ringingCall
+                        CallPhase.ANSWERED -> {
+                            if (connState != PeerConnection.PeerConnectionState.CONNECTED) {
+                                callStatusLabel = strings.connectedCall
+                            }
+                        }
+                    }
+                }
+
+                // Round 11 (item 3e + addendum 2b): the ringback starts
+                // the moment the outgoing call is placed and keeps
+                // playing through BOTH honest states («جاري الاتصال» and
+                // «يرن») until the call connects or this screen goes
+                // away — WhatsApp-style. (Round 20: the call itself no
+                // longer goes away with the screen; the ringback is a
+                // UI sound and stops with the UI, while the callee's
+                // phone keeps ringing via the listener service.)
                 var hasConnected by remember { mutableStateOf(false) }
-                LaunchedEffect(isIncoming, coreMediaGranted, hasConnected) {
+                LaunchedEffect(sessionIsIncoming, mediaReady, hasConnected) {
                     if (!CallRingLogic.shouldPlayRingback(
-                            isIncoming = isIncoming,
-                            mediaGranted = coreMediaGranted,
+                            isIncoming = sessionIsIncoming,
+                            mediaGranted = mediaReady,
                             hasConnected = hasConnected,
                             peerConnected = false
                         )
@@ -235,8 +359,8 @@ class CallActivity : AppCompatActivity() {
                     try {
                         while (isActive) {
                             if (!CallRingLogic.shouldPlayRingback(
-                                    isIncoming = isIncoming,
-                                    mediaGranted = coreMediaGranted,
+                                    isIncoming = sessionIsIncoming,
+                                    mediaGranted = mediaReady,
                                     hasConnected = hasConnected,
                                     peerConnected = webRtcManager.connectionState.value ==
                                         PeerConnection.PeerConnectionState.CONNECTED
@@ -244,17 +368,10 @@ class CallActivity : AppCompatActivity() {
                             ) {
                                 break
                             }
-                            // Round 12 (addendum A): startTone RETURNS false
-                            // when the generator died under an audio
-                            // mode/focus change — and the video session start
-                            // (camera capturer + speakerphone route + WebRTC
-                            // audio init) performs exactly those changes
-                            // right after the first beep, which is why a
-                            // video call rang ONCE and then stayed silent
-                            // while voice kept ringing. The old loop ignored
-                            // the result and kept "playing" into a dead
-                            // generator. Now a failed start recreates the
-                            // generator and retries within the same cycle.
+                            // Round 12 (addendum A): a failed startTone
+                            // recreates the generator and retries within
+                            // the same cycle (a video session start used
+                            // to kill the first generator and ring once).
                             var played = toneGen?.let {
                                 runCatching {
                                     it.startTone(ToneGenerator.TONE_SUP_RINGTONE, CallRingLogic.RINGBACK_TONE_DURATION_MS)
@@ -285,150 +402,6 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                LaunchedEffect(coreMediaGranted) {
-                    if (!coreMediaGranted) return@LaunchedEffect
-
-                    ContextCompat.startForegroundService(
-                        this@CallActivity,
-                        Intent(this@CallActivity, CallForegroundService::class.java).apply {
-                            putExtra("peerName", peerName)
-                            putExtra("isVideo", isVideo)
-                        }
-                    )
-
-                    // Real ICE-restart signaling: when the WebRTC layer reports the media path
-                    // died (network switch, ICE FAILED/DISCONNECTED), the caller produces a fresh
-                    // restart offer into the call doc; the callee asks the caller to do so.
-                    webRtcManager.onIceRestartNeeded = {
-                        if (!isFinishingCall) {
-                            if (!isIncoming) {
-                                produceRestartOffer()
-                            } else if (initialCallId.isNotBlank()) {
-                                lifecycleScope.launch {
-                                    callRepository.requestIceRestart(initialCallId)
-                                }
-                            }
-                        }
-                    }
-
-                    CallSignalingErrors.clear()
-
-                    webRtcManager.startSession(isVideo) { candidate ->
-                        val cid = activeCallId
-                        if (cid.isNotBlank()) {
-                            lifecycleScope.launch {
-                                callRepository.addIceCandidate(
-                                    callId = cid,
-                                    sdpMid = candidate.sdpMid,
-                                    sdpMLineIndex = candidate.sdpMLineIndex,
-                                    candidate = candidate.sdp,
-                                    fromCaller = !isIncoming
-                                )
-                            }
-                        } else {
-                            synchronized(pendingLocalCandidates) {
-                                pendingLocalCandidates.add(candidate)
-                            }
-                        }
-                    }
-
-                    if (!isIncoming) {
-                        webRtcManager.createOffer { offerSdp ->
-                            lifecycleScope.launch {
-                                val targetUser = WesalUser(
-                                    uid = peerUid,
-                                    displayName = peerName,
-                                    photoUrl = peerAvatar,
-                                    isVerified = peerVerified
-                                )
-                                // Round 13 (Addendum L6): bounded setup —
-                                // a call-doc write that never ACKs (quota /
-                                // stalled stream) must not hang the dialer.
-                                // Round 18: the bound lives in
-                                // CallTimeoutLogic alongside the deadlines.
-                                val initResult = withTimeoutOrNull(CallTimeoutLogic.SETUP_TIMEOUT_MS) {
-                                    callRepository.initiateCall(targetUser, isVideo, offerSdp)
-                                }
-                                (initResult ?: Result.failure(Exception("call setup timeout")))
-                                    .onSuccess { newCallId ->
-                                        activeCallId = newCallId
-                                        val queued = synchronized(pendingLocalCandidates) {
-                                            pendingLocalCandidates.toList().also { pendingLocalCandidates.clear() }
-                                        }
-                                        queued.forEach { c ->
-                                            lifecycleScope.launch {
-                                                callRepository.addIceCandidate(
-                                                    callId = newCallId,
-                                                    sdpMid = c.sdpMid,
-                                                    sdpMLineIndex = c.sdpMLineIndex,
-                                                    candidate = c.sdp,
-                                                    fromCaller = true
-                                                )
-                                            }
-                                        }
-                                        listenToCallAndCandidates(
-                                            callId = newCallId,
-                                            isCaller = true,
-                                            ringingText = strings.ringingCall,
-                                            connectedText = strings.connectedCall,
-                                            rejectedText = strings.callRejected,
-                                            missedText = strings.callMissed,
-                                            onActive = { callAnswered = true }
-                                        ) { status ->
-                                            callStatusLabel = status
-                                        }
-                                    }
-                                    .onFailure {
-                                        // Round 13 (Addendum L6): honest
-                                        // failure exit — show why and
-                                        // RELEASE the call UI instead of
-                                        // sitting on «جاري الاتصال» forever.
-                                        isFinishingCall = true
-                                        callStatusLabel = if (strings.isEnglish) "Could not connect — please try again" else "تعذر الاتصال — حاول مرة أخرى"
-                                        delay(1500L)
-                                        finishCallLocally()
-                                    }
-                            }
-                        }
-                    } else {
-                        // Bounded wait for the caller's offer: if the call doc / offer never
-                        // becomes readable (rules denial, caller write failed), fail visibly
-                        // and end instead of waiting forever on this screen.
-                        val callDoc = withTimeoutOrNull(OFFER_WAIT_TIMEOUT_MS) {
-                            callRepository.observeCall(initialCallId)
-                                .filter { it != null && it.offerSdp.isNotBlank() }
-                                .firstOrNull()
-                        }
-                        if (callDoc != null) {
-                            webRtcManager.setRemoteOfferAndCreateAnswer(callDoc.offerSdp) { answerSdp ->
-                                lifecycleScope.launch {
-                                    callRepository.submitAnswer(initialCallId, answerSdp)
-                                    listenToCallAndCandidates(
-                                        callId = initialCallId,
-                                        isCaller = false,
-                                        ringingText = strings.ringingCall,
-                                        connectedText = strings.connectedCall,
-                                        rejectedText = strings.callRejected,
-                                        missedText = strings.callMissed,
-                                        onActive = { callAnswered = true }
-                                    ) { status ->
-                                        callStatusLabel = status
-                                    }
-                                }
-                            }
-                        } else {
-                            // Offer never arrived within the timeout: tell the user why and
-                            // end the call (also release the caller from waiting on us).
-                            callStatusLabel = CallSignalingErrors.SERVER_ERROR_MESSAGE
-                            if (initialCallId.isNotBlank()) {
-                                callRepository.updateCallStatus(initialCallId, CallStatus.ENDED, 0L)
-                            }
-                            delay(1800L)
-                            finishCallLocally()
-                        }
-                    }
-                }
-
                 LaunchedEffect(connState) {
                     if (connState == PeerConnection.PeerConnectionState.CONNECTED) {
                         hasConnected = true
@@ -437,32 +410,34 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                // R17 (G-01): the minutes count starts when the other side
-                // ANSWERS (CallStatus.ACTIVE), not when the media path
-                // happens to connect, and the status line keeps the state
-                // word next to the time («متصل • 01:23») instead of being
-                // replaced by a bare timer. The count keeps running through
-                // a mid-call media drop — the ICE effects own the label
-                // then («انقطع الاتصال…») and the timer resumes writing it
-                // on reconnect. Ending the call disposes the screen and
-                // stops the loop.
-                LaunchedEffect(callAnswered, connState) {
-                    if (!callAnswered && connState != PeerConnection.PeerConnectionState.CONNECTED) return@LaunchedEffect
+                // R17 (G-01): the minutes count starts when the other
+                // side ANSWERS, not when the media path happens to
+                // connect, and the status line keeps the state word next
+                // to the time («متصل • 01:23»). Round 20: the answer
+                // timestamp is the controller's, so a re-attached UI
+                // resumes the true elapsed count instead of restarting
+                // at zero.
+                LaunchedEffect(answeredAtMs, connState) {
+                    val answeredAt = answeredAtMs
+                    if (answeredAt == null && connState != PeerConnection.PeerConnectionState.CONNECTED) return@LaunchedEffect
+                    if (answeredAt != null) {
+                        durationSeconds = ((System.currentTimeMillis() - answeredAt) / 1000L).coerceAtLeast(0L)
+                    }
                     if (connState == PeerConnection.PeerConnectionState.CONNECTED) {
                         callStatusLabel = DateTimeUtils.formatCallStatusWithDuration(strings.connectedCall, durationSeconds)
                     }
                     while (true) {
                         delay(1000L)
                         durationSeconds++
-                        startedSeconds = durationSeconds
                         if (webRtcManager.connectionState.value == PeerConnection.PeerConnectionState.CONNECTED) {
                             callStatusLabel = DateTimeUtils.formatCallStatusWithDuration(strings.connectedCall, durationSeconds)
                         }
                     }
                 }
 
-                // ICE-level drops (e.g. Wi-Fi ↔ mobile switch) now trigger a real restart in
-                // WebRtcCallManager; surface that honestly instead of a frozen "connected" timer.
+                // ICE-level drops trigger a real restart in
+                // WebRtcCallManager; surface that honestly instead of a
+                // frozen "connected" timer.
                 LaunchedEffect(iceState, connState, turnConfigured) {
                     if (connState != PeerConnection.PeerConnectionState.CONNECTED &&
                         (iceState == PeerConnection.IceConnectionState.DISCONNECTED ||
@@ -481,134 +456,55 @@ class CallActivity : AppCompatActivity() {
                     }
                 }
 
-                // Round 10 (item 3): terminal media-failure watchdog. ICE
-                // restarts retry per disconnect episode with no overall bound,
-                // so a call whose media can never connect (dead TURN
-                // credentials, blocked UDP, hostile NAT) sat forever behind
-                // "انقطع الاتصال — جاري إعادة المحاولة..." looking alive with
-                // no audio (owner: "الاتصال مش شغال"). If ICE stays FAILED —
-                // or DISCONNECTED without recovering — for a continuous grace
-                // window, end the call with the honest human reason instead.
-                // The effect restarts on every ICE state change, so any
-                // recovery cancels the countdown.
-                // Round 18 (ring-sustain): the watchdog is armed ONLY for
-                // an established call (CallTimeoutLogic.mediaFailureWatchdogArmed).
-                // During setup/ringing, ICE can sit at DISCONNECTED/FAILED
-                // before the answer has even landed; the old ungated
-                // countdown could end a still-ringing call at ~25s.
-                LaunchedEffect(iceState, hasConnected, callAnswered) {
-                    if ((iceState == PeerConnection.IceConnectionState.FAILED ||
-                            iceState == PeerConnection.IceConnectionState.DISCONNECTED) &&
-                        CallTimeoutLogic.mediaFailureWatchdogArmed(
-                            hasConnected = hasConnected,
-                            answered = callAnswered
-                        )
-                    ) {
-                        delay(CallTimeoutLogic.MEDIA_FAILURE_GRACE_MS)
-                        if (!isFinishingCall) {
-                            isFinishingCall = true
-                            android.util.Log.e(
-                                "CallActivity",
-                                "MEDIA FAILURE terminal: ice=$iceState turnConfigured=$turnConfigured — ending call with user-visible reason"
-                            )
-                            callStatusLabel = if (strings.isEnglish) {
-                                "Could not complete the call — check your internet connection and try again"
-                            } else {
-                                "تعذر إتمام الاتصال — تحقق من الإنترنت وحاول مرة أخرى"
-                            }
-                            if (initialCallId.isNotBlank()) {
-                                callRepository.updateCallStatus(initialCallId, CallStatus.ENDED, 0L)
-                            }
-                            delay(2200L)
-                            finishCallLocally()
-                        }
-                    }
-                }
-
-                // Fatal WebRTC session-setup failure (factory/PeerConnection/SDP): show the
-                // error and end the call instead of hanging wordlessly on "connecting…".
-                LaunchedEffect(sessionError) {
-                    val error = sessionError
-                    if (error != null && !isFinishingCall) {
-                        isFinishingCall = true
-                        callStatusLabel = error
-                        delay(1800L)
-                        finishCallLocally()
-                    }
-                }
-
-                // Signaling (Firestore) failure surfaced by CallRepositoryImpl: show it as
-                // the call status while the call is not yet connected, instead of a hang.
+                // Signaling (Firestore) failure surfaced by
+                // CallRepositoryImpl: show it as the call status while
+                // the call is not yet connected, instead of a hang.
                 LaunchedEffect(signalingError) {
                     val error = signalingError
                     if (error != null &&
                         connState != PeerConnection.PeerConnectionState.CONNECTED &&
-                        !isFinishingCall
+                        !closingByTermination
                     ) {
                         callStatusLabel = error
                     }
                 }
 
-                // Round 13 (Addendum L6): the no-answer/setup deadlines
-                // are keyed on the CALL, not on connState. The old effect
-                // was keyed on (isIncoming, connState) — every WebRTC
-                // state flap (NEW → CHECKING → DISCONNECTED…) restarted
-                // the 45s delay, so under signaling failure the exit
-                // never fired and the dialer sat at «جاري الاتصال»
-                // forever (device-proven under the exhausted quota).
-                //
-                // Round 18 (ring-sustain): the decisions now live in
-                // CallTimeoutLogic and are progress-aware. The no-answer
-                // window is a full 60s from placement, and it can NEVER
-                // fire once the callee has answered (doc ACTIVE) or the
-                // media path connected — the previous code keyed only on
-                // connState, so it stamped MISSED over answered calls
-                // whose ICE was still checking, and its 45s budget let
-                // the callee's wake/ack latency eat the ring itself.
-                LaunchedEffect(isIncoming) {
-                    if (isIncoming) return@LaunchedEffect
-                    // Setup deadline: the call doc must exist by now —
-                    // and only a total absence of progress ends the call.
-                    delay(CallTimeoutLogic.SETUP_TIMEOUT_MS)
-                    if (!isFinishingCall &&
-                        CallTimeoutLogic.shouldEndSetup(
-                            callDocCreated = activeCallId.isNotBlank(),
-                            answered = callAnswered,
-                            peerConnected = webRtcManager.connectionState.value ==
-                                PeerConnection.PeerConnectionState.CONNECTED
+                // Round 20: screen-share permission prompt. Denial is
+                // a toast and the call simply continues on camera; the
+                // foreground service is (re)started WITH the
+                // mediaProjection type before the prompt, as Android 14
+                // requires it running before a projection is created.
+                val screenShareLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    val data = result.data
+                    if (result.resultCode == Activity.RESULT_OK && data != null) {
+                        val metrics = resources.displayMetrics
+                        val started = webRtcManager.startScreenShare(
+                            resultData = data,
+                            displayWidth = metrics.widthPixels,
+                            displayHeight = metrics.heightPixels
                         )
-                    ) {
-                        isFinishingCall = true
-                        callStatusLabel = if (strings.isEnglish) "Could not connect — please try again" else "تعذر الاتصال — حاول مرة أخرى"
-                        delay(1500L)
-                        finishCallLocally()
-                        return@LaunchedEffect
-                    }
-                    // No-answer deadline: the full window from placement.
-                    // «لم يتم الرد» is shown only when it truly expires
-                    // unanswered; an answer arriving at any point before
-                    // the deadline cancels the teardown permanently
-                    // (progress is re-checked at fire time).
-                    delay(CallTimeoutLogic.NO_ANSWER_TIMEOUT_MS - CallTimeoutLogic.SETUP_TIMEOUT_MS)
-                    if (!isFinishingCall &&
-                        CallTimeoutLogic.shouldEndForNoAnswer(
-                            answered = callAnswered,
-                            peerConnected = webRtcManager.connectionState.value ==
-                                PeerConnection.PeerConnectionState.CONNECTED
-                        )
-                    ) {
-                        isFinishingCall = true
-                        callStatusLabel = strings.callMissed
-                        if (activeCallId.isNotBlank()) {
-                            callRepository.updateCallStatus(activeCallId, CallStatus.MISSED, 0L)
+                        if (started) {
+                            cameraOff = false
+                        } else {
+                            android.widget.Toast.makeText(
+                                this@CallActivity,
+                                if (strings.isEnglish) "Could not start screen sharing" else "تعذر بدء مشاركة الشاشة",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
                         }
-                        delay(1100L)
-                        finishCallLocally()
+                    } else {
+                        android.widget.Toast.makeText(
+                            this@CallActivity,
+                            if (strings.isEnglish) "Screen sharing needs your permission" else "مشاركة الشاشة تحتاج إذنك أولاً",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
                     }
                 }
 
                 Box(modifier = Modifier.fillMaxSize().background(palette.background)) {
-                    if (!coreMediaGranted) {
+                    if (!mediaReady) {
                         Column(
                             modifier = Modifier
                                 .align(Alignment.Center)
@@ -716,6 +612,8 @@ class CallActivity : AppCompatActivity() {
                         // restarts the capturer's frame flow — re-attach
                         // the sink on every switch so the preview can never
                         // sit frozen on the old camera's last frame.
+                        // Round 20: the same re-attach covers screen-share
+                        // start/stop (the manager bumps the same count).
                         DisposableEffect(localVideo, cameraSwitchCount) {
                             localVideo?.addSink(localRenderer)
                             onDispose {
@@ -724,7 +622,7 @@ class CallActivity : AppCompatActivity() {
                         }
                         AndroidView(
                             factory = { localRenderer },
-                            update = { renderer -> renderer.setMirror(isFrontCamera) },
+                            update = { renderer -> renderer.setMirror(isFrontCamera && !isScreenSharing) },
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(top = 48.dp, end = 16.dp)
@@ -755,6 +653,7 @@ class CallActivity : AppCompatActivity() {
                                 icon = if (cameraOff) Icons.Default.VideocamOff else Icons.Default.Videocam,
                                 active = cameraOff,
                                 label = strings.camera,
+                                enabled = !isScreenSharing,
                                 onClick = {
                                     cameraOff = !cameraOff
                                     webRtcManager.setCameraEnabled(!cameraOff)
@@ -768,9 +667,36 @@ class CallActivity : AppCompatActivity() {
                                 } else {
                                     if (strings.isEnglish) "Flip" else "تبديل"
                                 },
-                                enabled = !isCameraSwitching,
+                                enabled = !isCameraSwitching && !isScreenSharing,
                                 showProgress = isCameraSwitching,
                                 onClick = { webRtcManager.switchCamera() }
+                            )
+                            // Round 20: screen share (1:1 video calls).
+                            CallControlBtn(
+                                icon = if (isScreenSharing) Icons.Default.StopScreenShare else Icons.Default.ScreenShare,
+                                active = isScreenSharing,
+                                label = if (isScreenSharing) {
+                                    if (strings.isEnglish) "Stop share" else "إيقاف المشاركة"
+                                } else {
+                                    if (strings.isEnglish) "Share screen" else "مشاركة الشاشة"
+                                },
+                                onClick = {
+                                    if (isScreenSharing) {
+                                        webRtcManager.stopScreenShare()
+                                    } else {
+                                        ContextCompat.startForegroundService(
+                                            this@CallActivity,
+                                            Intent(this@CallActivity, CallForegroundService::class.java).apply {
+                                                putExtra("peerName", peerName)
+                                                putExtra("isVideo", true)
+                                                putExtra(CallForegroundService.EXTRA_MEDIA_PROJECTION, true)
+                                            }
+                                        )
+                                        val projectionManager =
+                                            getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                                        screenShareLauncher.launch(projectionManager.createScreenCaptureIntent())
+                                    }
+                                }
                             )
                         }
                         val (audioIcon, audioLabel) = when (audioRoute) {
@@ -787,7 +713,15 @@ class CallActivity : AppCompatActivity() {
                         )
                         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             FloatingActionButton(
-                                onClick = { hangupCall() },
+                                onClick = {
+                                    // Round 20: the ONLY end path — the
+                                    // controller stamps ENDED and tears
+                                    // the session down; this screen just
+                                    // closes (the termination event would
+                                    // close it anyway).
+                                    callController.endCall()
+                                    finish()
+                                },
                                 containerColor = palette.error,
                                 contentColor = Color.White,
                                 shape = CircleShape,
@@ -807,137 +741,17 @@ class CallActivity : AppCompatActivity() {
         }
     }
 
-    private fun listenToCallAndCandidates(
-        callId: String,
-        isCaller: Boolean,
-        ringingText: String,
-        connectedText: String,
-        rejectedText: String,
-        missedText: String,
-        // R17 (G-01): fired once when the observed call doc becomes ACTIVE
-        // (callee ack) so the in-call minutes count starts at the answer.
-        onActive: () -> Unit = {},
-        onStatus: (String) -> Unit
-    ) {
-        lifecycleScope.launch {
-            callRepository.observeRemoteIceCandidates(callId, listenForCaller = !isCaller)
-                .collect { (mid, idx, cand) ->
-                    webRtcManager.addRemoteIceCandidate(mid, idx, cand)
-                }
-        }
-        lifecycleScope.launch {
-            var appliedAnswerGeneration = -1L
-            var appliedOfferGeneration = 0L // generation 0 is the initial offer, applied before this listener starts (callee)
-            var handledRestartRequestAt = 0L
-            var activeReported = false
-            callRepository.observeCall(callId).collect { call ->
-                if (call == null || isFinishingCall) return@collect
-                // R17 (G-01): the callee stamps ACTIVE in submitAnswer; the
-                // caller observes the same doc. Either side starts its
-                // minutes count the moment the answer lands.
-                if (call.status == CallStatus.ACTIVE && !activeReported) {
-                    activeReported = true
-                    onActive()
-                }
-                if (isCaller && (call.status == CallStatus.RINGING || call.calleeRingingAck) &&
-                    appliedAnswerGeneration < 0L && webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED
-                ) {
-                    onStatus(ringingText)
-                }
-                // Apply the answer for the CURRENT offer generation only — after an ICE restart
-                // the callee writes a fresh answer for the new generation, and it must be applied
-                // too (the old one-shot flag silently dropped every renegotiated answer).
-                if (isCaller && call.answerSdp.isNotBlank() &&
-                    appliedAnswerGeneration != call.iceRestartGeneration
-                ) {
-                    appliedAnswerGeneration = call.iceRestartGeneration
-                    webRtcManager.setRemoteAnswer(call.answerSdp)
-                    onStatus(connectedText)
-                }
-                // Callee asked (through the doc) for a restart: caller produces the offer.
-                if (isCaller && call.iceRestartRequestedAt > handledRestartRequestAt &&
-                    call.iceRestartRequestedAt > 0L
-                ) {
-                    handledRestartRequestAt = call.iceRestartRequestedAt
-                    produceRestartOffer()
-                }
-                // Caller signalled a restart offer: callee re-answers it.
-                if (!isCaller && call.iceRestartGeneration > appliedOfferGeneration &&
-                    call.offerSdp.isNotBlank()
-                ) {
-                    appliedOfferGeneration = call.iceRestartGeneration
-                    webRtcManager.setRemoteOfferAndCreateAnswer(call.offerSdp) { answerSdp ->
-                        lifecycleScope.launch {
-                            callRepository.submitAnswer(callId, answerSdp)
-                        }
-                    }
-                }
-                when (call.status) {
-                    CallStatus.REJECTED -> {
-                        isFinishingCall = true
-                        onStatus(rejectedText)
-                        delay(1200L)
-                        finishCallLocally()
-                    }
-                    CallStatus.MISSED -> {
-                        isFinishingCall = true
-                        onStatus(missedText)
-                        delay(1200L)
-                        finishCallLocally()
-                    }
-                    CallStatus.ENDED -> {
-                        isFinishingCall = true
-                        finishCallLocally()
-                    }
-                    else -> Unit
-                }
-            }
-        }
-    }
-
-    /** Caller side of an ICE restart: fresh offer (IceRestart=true) written to the call doc. */
-    private fun produceRestartOffer() {
-        val cid = activeCallId
-        if (cid.isBlank() || isFinishingCall) return
-        webRtcManager.createRestartOffer { restartSdp ->
-            lifecycleScope.launch {
-                callRepository.submitRestartOffer(cid, restartSdp)
-            }
-        }
-    }
-
-    private fun hangupCall() {
-        if (isFinishingCall) return
-        isFinishingCall = true
-        lifecycleScope.launch {
-            if (activeCallId.isNotBlank()) {
-                callRepository.updateCallStatus(activeCallId, CallStatus.ENDED, startedSeconds)
-            }
-            finishCallLocally()
-        }
-    }
-
-    private fun finishCallLocally() {
-        webRtcManager.endSession()
-        stopService(Intent(this, CallForegroundService::class.java))
-        finish()
-    }
-
     override fun onDestroy() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         releaseProximityLock()
-        webRtcManager.endSession()
-        stopService(Intent(this, CallForegroundService::class.java))
+        // Round 20: NOTHING here touches the call. The session belongs
+        // to CallSessionController; destroying this UI (Back, system,
+        // re-creation) only detaches it. Teardown happens exclusively
+        // in the controller's terminate().
         super.onDestroy()
     }
 
     companion object {
-        private const val OFFER_WAIT_TIMEOUT_MS = 30_000L
-
-        // Round 18: the setup / no-answer deadlines live in
-        // CallTimeoutLogic (core.util) so they are unit-tested; the
-        // no-answer budget is now a full 60s from placement and can
-        // never fire on an answered call.
         private const val EXTRA_IS_INCOMING = "is_incoming"
         private const val EXTRA_CALL_ID = "call_id"
         private const val EXTRA_PEER_UID = "peer_uid"
@@ -945,6 +759,7 @@ class CallActivity : AppCompatActivity() {
         private const val EXTRA_PEER_AVATAR = "peer_avatar"
         private const val EXTRA_PEER_VERIFIED = "peer_verified"
         private const val EXTRA_IS_VIDEO = "is_video"
+        private const val EXTRA_REJOIN = "rejoin"
 
         fun createOutgoingIntent(context: Context, peer: WesalUser, isVideo: Boolean): Intent =
             Intent(context, CallActivity::class.java).apply {
@@ -978,6 +793,17 @@ class CallActivity : AppCompatActivity() {
             putExtra(EXTRA_PEER_VERIFIED, peerVerified)
             putExtra(EXTRA_IS_VIDEO, isVideo)
         }
+
+        /**
+         * Round 20: the ongoing-call notification's tap target. No call
+         * data rides along — the activity attaches to whatever session
+         * the controller currently owns (and closes itself if none).
+         */
+        fun createRejoinIntent(context: Context): Intent =
+            Intent(context, CallActivity::class.java).apply {
+                putExtra(EXTRA_REJOIN, true)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            }
     }
 }
 

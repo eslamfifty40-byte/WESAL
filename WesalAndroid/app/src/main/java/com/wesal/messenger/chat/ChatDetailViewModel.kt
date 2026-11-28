@@ -41,7 +41,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -580,9 +579,11 @@ class ChatDetailViewModel @Inject constructor(
             if (typingGate.onMessageSent() == TypingSignalGate.Action.SEND_FALSE) {
                 chatRepository.setTyping(chatId, false)
             }
-            val sendResult = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
-                chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply, clientMessageId = messageId)
-            }
+            // Round 20: no OutboxSendGuard wrapper here any more — the
+            // repository holds the lock only around the commit()
+            // invocation (ordering), never across the ACK window, so a
+            // stalled send can no longer head-of-line block this one.
+            val sendResult = chatRepository.sendTextMessage(chatId, trimmed, replyTo = reply, clientMessageId = messageId)
             sendResult
                 .onSuccess {
                     prefs.removeOutboxMessage(messageId)
@@ -697,9 +698,9 @@ class ChatDetailViewModel @Inject constructor(
                     text = failed.replyToPreview.orEmpty()
                 )
             } else null
-            val retryResult = com.wesal.messenger.data.local.OutboxSendGuard.mutex.withLock {
-                chatRepository.sendTextMessage(chatId, failed.text, replyTo = replyStub, clientMessageId = effectiveId)
-            }
+            // Round 20: same lock note as the fresh-send path — the
+            // repository owns the narrow ordering lock now.
+            val retryResult = chatRepository.sendTextMessage(chatId, failed.text, replyTo = replyStub, clientMessageId = effectiveId)
             retryResult
                 .onSuccess {
                     prefs.removeOutboxMessage(effectiveId)

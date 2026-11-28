@@ -35,8 +35,19 @@ import javax.inject.Singleton
 private val Context.wesalDataStore by preferencesDataStore(name = "wesal_settings_prefs")
 
 /**
- * Process-wide lock serializing outbox sends (app-start flush + in-chat retry + fresh sends),
- * so the same pending message can never be in flight twice at once.
+ * Process-wide lock ordering outbox sends.
+ *
+ * Round 20: the lock moved INSIDE the send functions in
+ * ChatRepositoryImpl and now covers ONLY the synchronous batch build +
+ * commit() invocation — the Firestore SDK applies one client's
+ * mutation batches in commit() call order, so this keeps chat-summary
+ * and unread-count updates in send order for every caller. It is never
+ * held across a network await any more: previously callers wrapped the
+ * whole send (including the 15 s commit ACK window), so one stalled
+ * send head-of-line blocked every later send for up to 15 s apiece —
+ * the reported message delay. The same pending message still can never
+ * commit twice concurrently, because its commit() invocation is what
+ * the lock serializes.
  */
 object OutboxSendGuard {
     val mutex = kotlinx.coroutines.sync.Mutex()
