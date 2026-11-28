@@ -2369,6 +2369,29 @@ class UserRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun updateMessagePlaneConfig(plane: String): Result<Unit> = runCatching {
+        val admin = auth.currentUser ?: error("Not authenticated")
+        val perms = getCurrentAdminPermissions()
+        require(perms.isFullSuperAdmin) { "صلاحية إدارة مستوى الرسائل مطلوبة" }
+        val normalized = plane.trim().lowercase()
+        require(normalized == "supabase" || normalized == "firestore") { "قيمة غير صالحة" }
+        val now = System.currentTimeMillis()
+        firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+            .document("message_plane")
+            .set(
+                mapOf(
+                    "plane" to normalized,
+                    "updatedAt" to now,
+                    "updatedByUid" to admin.uid
+                ),
+                SetOptions.merge()
+            ).await()
+        writeAdminActionLog(
+            action = "MESSAGE_PLANE_UPDATED",
+            details = "فرض مستوى الرسائل يدوياً: $normalized"
+        )
+    }
+
     private suspend fun setDocWithRestFallback(
         docRef: com.google.firebase.firestore.DocumentReference,
         data: Map<String, Any?>,

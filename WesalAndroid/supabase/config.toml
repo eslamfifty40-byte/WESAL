@@ -17,3 +17,25 @@ verify_jwt = false
 # caller's Firebase ID token itself, exactly like the phone functions.
 [functions.msg-health]
 verify_jwt = false
+
+# Failover Stage 2 message plane (FAILOVER_DESIGN.md §4.3): all six
+# functions verify the caller's Firebase ID token themselves via
+# _shared/phone.ts and work through the service role, so Supabase's
+# own JWT gate must stay OFF for them as well.
+[functions.msg-register-chat]
+verify_jwt = false
+
+[functions.msg-send]
+verify_jwt = false
+
+[functions.msg-list]
+verify_jwt = false
+
+[functions.msg-ack]
+verify_jwt = false
+
+[functions.msg-inbox]
+verify_jwt = false
+
+[functions.chat-typing]
+verify_jwt = false

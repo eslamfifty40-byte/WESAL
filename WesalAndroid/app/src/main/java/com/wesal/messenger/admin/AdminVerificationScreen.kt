@@ -53,6 +53,7 @@ import com.wesal.messenger.BuildConfig
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.MessagePlaneRouter
 import com.wesal.messenger.core.util.GiftGrantLogic
 import com.wesal.messenger.core.util.FrameAnimationPolicy
 import com.wesal.messenger.core.util.FramePickerItem
@@ -215,6 +216,16 @@ class AdminVerificationViewModel @Inject constructor(
 
     val appUpdateConfig: StateFlow<AppUpdateConfig> = userRepository.observeAppUpdateConfig()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppUpdateConfig())
+
+    // Failover stage 2 (§9.3): the SECONDARY manual message-plane
+    // override, seeded from the router's live config (kept current by
+    // WesalApplication's system_config/message_plane listener). The
+    // automatic health-driven router stays primary — saving here only
+    // rewrites the configured primary it consults.
+    private val _messagePlane = MutableStateFlow(
+        MessagePlaneRouter.currentConfig().configuredPrimary
+    )
+    val messagePlane: StateFlow<MessagePlaneRouter.Store> = _messagePlane.asStateFlow()
 
     private val _refreshedSubscriptionRequests = MutableStateFlow<List<SubscriptionRequest>?>(null)
 
@@ -642,6 +653,24 @@ class AdminVerificationViewModel @Inject constructor(
                     }
                 }
                 .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حفظ إعدادات التحديث")}
+            _busy.value = false
+        }
+    }
+
+    fun saveMessagePlane(store: MessagePlaneRouter.Store) {
+        runOp("message_plane_save") {
+            _busy.value = true
+            userRepository.updateMessagePlaneConfig(MessagePlaneRouter.wireName(store))
+                .onSuccess {
+                    _messagePlane.value = store
+                    _statusMessage.value = when (store) {
+                        MessagePlaneRouter.Store.SUPABASE ->
+                            "تم فرض مستوى الرسائل: Supabase ✓ (التحويل التلقائي يظل هو الأساس عند تعطل أي خادم)"
+                        MessagePlaneRouter.Store.FIRESTORE ->
+                            "تم فرض مستوى الرسائل: Firestore ✓ (التحويل التلقائي يظل هو الأساس عند تعطل أي خادم)"
+                    }
+                }
+                .onFailure { _statusMessage.value = ErrorCopy.friendly(it, "تعذر حفظ مستوى الرسائل") }
             _busy.value = false
         }
     }
@@ -1239,6 +1268,7 @@ fun AdminVerificationScreen(
     val moderators by viewModel.moderators.collectAsStateWithLifecycle()
     val globalAppearance by viewModel.globalAppearance.collectAsStateWithLifecycle()
     val appUpdateConfig by viewModel.appUpdateConfig.collectAsStateWithLifecycle()
+    val messagePlane by viewModel.messagePlane.collectAsStateWithLifecycle()
     val subscriptionRequests by viewModel.subscriptionRequests.collectAsStateWithLifecycle()
     val stats by viewModel.stats.collectAsStateWithLifecycle()
     val users by viewModel.users.collectAsStateWithLifecycle()
@@ -1663,6 +1693,8 @@ fun AdminVerificationScreen(
                     onToggleGlobalFrame = viewModel::toggleGlobalCustomerFrame,
                     appUpdateConfig = appUpdateConfig,
                     onSaveAppUpdateConfig = viewModel::saveAppUpdateConfig,
+                    messagePlane = messagePlane,
+                    onSaveMessagePlane = viewModel::saveMessagePlane,
                     onRefreshAll = viewModel::refreshAll
                 )
 
@@ -3778,6 +3810,8 @@ private fun AdminSettingsSection(
     onToggleGlobalFrame: (Boolean) -> Unit,
     appUpdateConfig: AppUpdateConfig,
     onSaveAppUpdateConfig: (AppUpdateConfig) -> Unit,
+    messagePlane: MessagePlaneRouter.Store,
+    onSaveMessagePlane: (MessagePlaneRouter.Store) -> Unit,
     onRefreshAll: () -> Unit
 ) {
     val palette = WesalColors.current
@@ -3909,6 +3943,46 @@ private fun AdminSettingsSection(
                         color = palette.textSecondary,
                         style = MaterialTheme.typography.labelSmall
                     )
+                }
+            }
+        }
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = palette.surface), shape = RoundedCornerShape(16.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("مستوى الرسائل — التحويل بين الخوادم", color = palette.textPrimary, fontWeight = FontWeight.Bold)
+                    Text(
+                        "التحويل تلقائي بالكامل: عند تعطل أي خادم تنتقل الرسائل إلى الآخر فوراً وتعود عند تعافيه. هذا التحكم اليدوي ثانوي — يفرض الخادم الأساسي فقط، ولا يوقف التحويل التلقائي أبداً.",
+                        color = palette.textSecondary,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    AdminInfoLine(
+                        "الأساسي المفروض حالياً",
+                        when (messagePlane) {
+                            MessagePlaneRouter.Store.SUPABASE -> "Supabase"
+                            MessagePlaneRouter.Store.FIRESTORE -> "Firestore"
+                        }
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { onSaveMessagePlane(MessagePlaneRouter.Store.FIRESTORE) },
+                            enabled = "message_plane_save" !in busyOps &&
+                                messagePlane != MessagePlaneRouter.Store.FIRESTORE,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Firestore")
+                        }
+                        Button(
+                            onClick = { onSaveMessagePlane(MessagePlaneRouter.Store.SUPABASE) },
+                            enabled = "message_plane_save" !in busyOps &&
+                                messagePlane != MessagePlaneRouter.Store.SUPABASE,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Supabase")
+                        }
+                    }
                 }
             }
         }

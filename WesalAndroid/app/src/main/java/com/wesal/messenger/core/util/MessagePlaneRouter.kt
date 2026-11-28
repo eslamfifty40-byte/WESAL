@@ -4,13 +4,14 @@ package com.wesal.messenger.core.util
  * Failover design §5.1/§5.2: pure routing decisions for the dual-backend
  * message plane, over [BackendHealthStore] state + the plane config.
  *
- * Stage 1 posture — the router OBSERVES. The decisions are computed,
- * unit-tested and consulted by outbox replay (§5.2 rule 5), but no send
- * is rerouted yet: Firestore is the only store with a client until
- * stage 2, so consumers act on the FIRESTORE arm and degrade to today's
- * behavior on any other result. The plane config defaults to Firestore
- * primary; stage 2 feeds it from `system_config/message_plane` (the
- * rollout gate / kill switch, design §9.3).
+ * Stage 2 posture — the router is ACTIVE. Send paths, merged reads and
+ * outbox replay all consult these decisions (the config now comes from
+ * `system_config/message_plane`, hydrated into [currentConfig]). The
+ * dark-launch property is preserved by the config, not by observation:
+ * with the doc absent or `plane="firestore"` and Firestore healthy,
+ * every decision resolves to Firestore and behavior is byte-identical
+ * to the pre-plane app; Supabase carries traffic only when the doc
+ * flips the primary or Firestore's health fails.
  */
 object MessagePlaneRouter {
 
@@ -77,5 +78,32 @@ object MessagePlaneRouter {
         "firestore" -> Store.FIRESTORE
         "supabase" -> Store.SUPABASE
         else -> null
+    }
+
+    /**
+     * Parses the `system_config/message_plane` doc's `plane` field
+     * (§9.3). Anything unrecognized — including a missing doc, the
+     * dark-launch state — means Firestore primary: the plane lights
+     * only on the exact "supabase" value.
+     */
+    fun configFromPlaneValue(raw: String?): PlaneConfig =
+        PlaneConfig(storeFromWire(raw) ?: Store.FIRESTORE)
+
+    // ---- process-wide live config (storage only; decisions stay pure) ----
+    //
+    // Stage 2: the config is fed from `system_config/message_plane`
+    // (read at startup, listened to by UserRepositoryImpl, cached in
+    // DataStore for cold starts) and hydrated here so every consumer —
+    // repositories, the outbox replay sites, the listener service —
+    // routes on the same value without re-reading the doc.
+
+    @Volatile
+    private var liveConfig: PlaneConfig = PlaneConfig()
+
+    fun currentConfig(): PlaneConfig = liveConfig
+
+    /** Restores/feeds the live config (startup cache + doc listener). */
+    fun hydrateConfig(config: PlaneConfig) {
+        liveConfig = config
     }
 }

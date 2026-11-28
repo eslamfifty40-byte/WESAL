@@ -15,6 +15,9 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Source
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.core.util.BackendHealthStore
+import com.wesal.messenger.core.util.InboxMergeLogic
+import com.wesal.messenger.core.util.MessageMergeLogic
+import com.wesal.messenger.core.util.MessagePlaneRouter
 import com.wesal.messenger.core.util.ErrorCopy
 import com.wesal.messenger.core.util.DirectChatRequestLogic
 import com.wesal.messenger.core.util.MessageQueuedException
@@ -38,6 +41,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -75,6 +80,17 @@ private const val SEND_WRITE_TIMEOUT_MS = 15_000L
 private const val CHAT_PAGE_SIZE = 100
 private const val MESSAGE_PAGE_SIZE = 60
 
+/**
+ * Failover stage 2 (§5.3): bound on the per-chat in-memory Supabase-plane
+ * message list (poll deltas accumulate across a long open-chat session;
+ * older history stays reachable through fetchOlderMessages + Room).
+ */
+private const val PLANE_IN_MEMORY_CAP = 300
+
+/** Failover stage 2 (§5.3): open-chat delta-poll cadence — active, then idle. */
+private const val PLANE_POLL_ACTIVE_MS = 4_000L
+private const val PLANE_POLL_IDLE_MS = 15_000L
+
 /** Hard ceiling for the paged chats listener (FIXLOG_R4_F's claimed cap, now enforced). */
 private const val CHAT_PAGE_MAX = 1000
 
@@ -93,7 +109,8 @@ class ChatRepositoryImpl @Inject constructor(
     private val firestore: FirebaseFirestore,
     private val wesalDao: WesalDao,
     private val cryptoManager: E2EECryptoManager,
-    private val prefs: UserPreferencesDataStore
+    private val prefs: UserPreferencesDataStore,
+    private val supabaseClient: SupabaseMessageClient
 ) : ChatRepository {
 
     private data class CachedUserEntry(val user: WesalUser, val fetchedAtMs: Long)
@@ -194,6 +211,241 @@ class ChatRepositoryImpl @Inject constructor(
     private val userCacheTtlMs = 20_000L
     private val deliveredThrottleMs = ConcurrentHashMap<String, Long>()
 
+    // -------------------------------------------------------------------
+    // Failover stage 2 (design §5): Supabase message-plane state.
+    //
+    // - attemptedStores: the store each in-flight/recent send actually
+    //   targeted, by message id — the outbox stamps it on queued
+    //   re-enqueue so replay checks the right store (§5.2 rule 5).
+    // - planeMessageFlows: per-chat merged Supabase message lists
+    //   (delta-poll results + own sends), unioned with the Firestore
+    //   listener's list inside observeMessages via MessageMergeLogic.
+    // - planeTypingByChat: live typing sets from msg-list responses,
+    //   unioned into ChatPreview.typingUsers in mapChatPreview (§5.5).
+    // - planeOldestSeq: per-chat lowest seq seen, the fetchOlderMessages
+    //   plane cursor (the high-water cursor persists in DataStore).
+    // - _planeInbox: the latest msg-inbox snapshot, merged into chats
+    //   previews (§5.4) and diffed by the listener service (§6).
+    // -------------------------------------------------------------------
+    private val attemptedStores = ConcurrentHashMap<String, String>()
+    private val planeMessageFlows =
+        ConcurrentHashMap<String, MutableStateFlow<List<WesalMessage>>>()
+    private val planeTypingByChat = ConcurrentHashMap<String, Set<String>>()
+    private val planeOldestSeq = ConcurrentHashMap<String, Long>()
+    private val _planeInbox = MutableStateFlow<List<SupabaseInboxRow>>(emptyList())
+    private var lastInboxRefreshMs = 0L
+
+    private fun planeMessagesFlow(chatId: String): MutableStateFlow<List<WesalMessage>> =
+        planeMessageFlows.getOrPut(chatId) { MutableStateFlow(emptyList()) }
+
+    override fun attemptedStoreFor(messageId: String): String? = attemptedStores[messageId]
+
+    /** Text resolver for plane rows: the ONE decrypt path (1:1 scope — stage 2). */
+    private fun planeTextResolver(
+        chatId: String,
+        myUid: String,
+        peerPubKeyCache: MutableMap<String, String>
+    ): SupabaseMessageMapper.PlaneTextResolver =
+        SupabaseMessageMapper.PlaneTextResolver { senderId, ciphertext, isEncrypted,
+            plainFallback, isDeletedForEveryone, wrappedKeys ->
+            resolveMessageText(
+                senderId = senderId,
+                myUid = myUid,
+                chatId = chatId,
+                isGroup = false,
+                peerPubKeyCache = peerPubKeyCache,
+                ciphertext = ciphertext,
+                isEncrypted = isEncrypted,
+                plainFallback = plainFallback,
+                isDeletedForEveryone = isDeletedForEveryone,
+                wrappedKeys = wrappedKeys
+            )
+        }
+
+    /**
+     * Whether the Supabase plane carries (or is about to carry) traffic
+     * for this chat — the engagement gate for polls/merges (§4.4): a
+     * persisted cursor, messages already flowing, the plane being the
+     * routed primary, or Firestore being unroutable. A dark deployment
+     * (Firestore primary + healthy, no plane traffic yet) never engages,
+     * so it spends zero function invocations.
+     */
+    private suspend fun isPlaneEngagedFor(chatId: String): Boolean {
+        if (planeMessagesFlow(chatId).value.isNotEmpty()) return true
+        if (runCatching { prefs.planeChatCursor(chatId) }.getOrNull() != null) return true
+        return planeEngagedGlobally()
+    }
+
+    /** Account-wide engagement: routed primary is Supabase, or Firestore is unroutable. */
+    private fun planeEngagedGlobally(): Boolean {
+        val health = BackendHealthStore.currentState()
+        if (!BackendHealthStore.isRoutable(health, BackendHealthStore.Backend.FIRESTORE)) {
+            return true
+        }
+        return MessagePlaneRouter.effectivePrimary(
+            MessagePlaneRouter.currentConfig(), health
+        ) == MessagePlaneRouter.Store.SUPABASE
+    }
+
+    /**
+     * Failover §5.4: merge the latest Supabase inbox snapshot into
+     * Firestore-built previews. A chat's summary comes from whichever
+     * store saw the newer last message ((clientTs, id) order); unread
+     * counts SUM (the two stores' increments are disjoint by
+     * construction); typing sets union. Chats with no inbox row pass
+     * through untouched. The Firestore side carries no lastMessageId
+     * today, so its tiebreak id is null (the repair pass starts
+     * stamping it into the doc for future compares).
+     */
+    private fun mergePlaneInboxIntoPreviews(
+        previews: List<ChatPreview>
+    ): List<ChatPreview> {
+        val inbox = _planeInbox.value
+        if (inbox.isEmpty()) return previews
+        val byChat = inbox.associateBy { it.chatId }
+        var anyRow = false
+        val merged = previews.map { preview ->
+            val row = byChat[preview.chatId] ?: return@map preview
+            anyRow = true
+            var out = preview
+            if (InboxMergeLogic.isInboxNewer(preview.lastMessageTime, null, row)) {
+                out = out.copy(
+                    lastMessagePreview = row.lastMessagePreview
+                        .ifBlank { out.lastMessagePreview },
+                    lastMessageTime = maxOf(
+                        preview.lastMessageTime,
+                        row.lastMessageServerTsMs.takeIf { it > 0L }
+                            ?: row.lastMessageClientTs
+                    ),
+                    lastMessageSenderId = row.lastMessageSenderId
+                        ?: out.lastMessageSenderId,
+                    lastMessageStatus = row.lastMessageStatus
+                        ?.let { MessageStatus.fromRaw(it) } ?: out.lastMessageStatus
+                )
+            }
+            val summed = InboxMergeLogic.mergedUnreadCount(
+                preview.unreadCount, row.unreadCount
+            )
+            if (summed != out.unreadCount) out = out.copy(unreadCount = summed)
+            val planeTyping = planeTypingByChat[preview.chatId].orEmpty()
+            if (planeTyping.isNotEmpty()) {
+                out = out.copy(
+                    typingUsers = (out.typingUsers + planeTyping).distinct()
+                )
+            }
+            out
+        }
+        if (!anyRow) return previews
+        return merged.sortedWith(
+            compareByDescending<ChatPreview> { it.isOfficialWesalChat }
+                .thenByDescending { it.isPinned }
+                .thenByDescending { it.lastMessageTime }
+        )
+    }
+
+    override suspend fun refreshPlaneInbox(): List<SupabaseInboxRow> {
+        // Engagement gate (§4.4): a dark deployment never calls
+        // msg-inbox — zero function invocations until the plane
+        // carries traffic or Firestore fails.
+        val engaged = runCatching { prefs.planeEngaged() }.getOrDefault(false) ||
+            planeEngagedGlobally()
+        if (!engaged) return _planeInbox.value
+        // Throttle: the chats flow, the listener service and chat
+        // opens all ask; the inbox changes at message cadence.
+        val now = System.currentTimeMillis()
+        if (now - lastInboxRefreshMs < 15_000L && _planeInbox.value.isNotEmpty()) {
+            return _planeInbox.value
+        }
+        lastInboxRefreshMs = now
+        val rows = runCatching { supabaseClient.inbox() }.getOrDefault(emptyList())
+        if (rows.isNotEmpty()) {
+            _planeInbox.value = rows
+            runCatching { prefs.setPlaneEngaged() }
+            repairFirestoreSummaries(rows)
+        }
+        return rows
+    }
+
+    /**
+     * §5.4 summary repair: while Firestore is healthy, any chat whose
+     * plane inbox summary is newer than its Firestore doc gets the
+     * doc's lastMessage* fields rewritten from the inbox row (guarded
+     * compare against a fresh read; one update per stale chat; NO
+     * unread increment — the preview merge already sums, and the
+     * inbox counter is the plane's authority). This is what heals
+     * summaries for Firestore-only peers after an outage.
+     */
+    private suspend fun repairFirestoreSummaries(rows: List<SupabaseInboxRow>) {
+        val health = BackendHealthStore.currentState()
+        if (!BackendHealthStore.isRoutable(health, BackendHealthStore.Backend.FIRESTORE)) {
+            return
+        }
+        rows.forEach { row ->
+            runCatching {
+                val ref = firestore.collection(Constants.COLLECTION_CHATS)
+                    .document(row.chatId)
+                val snap = ref.get().await()
+                if (!snap.exists()) return@runCatching
+                val fsTime = snap.getLong("lastMessageTime") ?: 0L
+                val fsId = snap.getString("lastMessageId")
+                if (!InboxMergeLogic.isInboxNewer(fsTime, fsId, row)) {
+                    return@runCatching
+                }
+                ref.update(
+                    hashMapOf<String, Any?>(
+                        "lastMessagePreview" to row.lastMessagePreview,
+                        "lastMessageTime" to row.lastMessageClientTs,
+                        "lastMessageSenderId" to row.lastMessageSenderId,
+                        "lastMessageStatus" to row.lastMessageStatus,
+                        "lastMessageId" to row.lastMessageId
+                    )
+                ).await()
+            }.onFailure { BackendHealthStore.reportFirestoreError(it) }
+        }
+    }
+
+    /** Merges [rows] into the chat's plane list (bounded) and returns the new list. */
+    private fun publishPlaneMessages(
+        chatId: String,
+        rows: List<WesalMessage>
+    ): List<WesalMessage> {
+        if (rows.isEmpty()) return planeMessagesFlow(chatId).value
+        val flow = planeMessagesFlow(chatId)
+        val merged = MessageMergeLogic.merge(flow.value, rows)
+        flow.value = if (merged.size > PLANE_IN_MEMORY_CAP) {
+            merged.takeLast(PLANE_IN_MEMORY_CAP)
+        } else {
+            merged
+        }
+        return flow.value
+    }
+
+    /** Room upsert for plane-homed rows (store-stamped; hidden chats excluded, §8.3). */
+    private suspend fun upsertPlaneRowsToRoom(chatId: String, myUid: String, rows: List<WesalMessage>) {
+        if (rows.isEmpty()) return
+        if (chatId in hiddenChatIdsForActiveAccount()) return
+        wesalDao.upsertMessages(rows.map {
+            CachedMessageEntity(
+                messageId = it.messageId,
+                chatId = it.chatId,
+                senderId = it.senderId,
+                senderName = it.senderName,
+                type = it.type.raw,
+                text = it.text,
+                mediaUrl = it.mediaUrl,
+                mediaLocalPath = it.mediaLocalPath,
+                mediaMimeType = it.mediaMimeType,
+                mediaFileName = it.mediaFileName,
+                mediaSizeBytes = it.mediaSizeBytes,
+                mediaDurationMs = it.mediaDurationMs,
+                status = it.status.raw,
+                timestamp = it.timestamp,
+                ownerUid = myUid,
+                store = MessagePlaneRouter.wireName(MessagePlaneRouter.Store.SUPABASE)
+            )
+        })
+    }
+
     private fun observeAuthUid(): Flow<String?> = callbackFlow {
         val listener = FirebaseAuth.AuthStateListener { fa -> trySend(fa.currentUser?.uid) }
         auth.addAuthStateListener(listener)
@@ -247,6 +499,13 @@ class ChatRepositoryImpl @Inject constructor(
         return callbackFlow {
             if (paged) _chatListState.value = ChatListSyncState(ChatListSyncStatus.LOADING)
                 val hasRemoteEmission = AtomicBoolean(false)
+                // Failover stage 2 (§5.4): the latest Firestore-built
+                // previews BEFORE the plane merge — the base the inbox
+                // merge re-applies over when the inbox snapshot changes
+                // (merging an already-merged list would double-count
+                // unread, since the merge sums).
+                var latestFirestorePreviews: List<ChatPreview> = emptyList()
+                val previewLock = Any()
                 launch(Dispatchers.IO) {
                     val cached = runCatching { wesalDao.observeChats(uid).firstOrNull() }.getOrNull()
                     if (!hasRemoteEmission.get() && !cached.isNullOrEmpty()) {
@@ -321,6 +580,12 @@ class ChatRepositoryImpl @Inject constructor(
                             return@addSnapshotListener
                         }
                         hasRemoteEmission.set(true)
+                        // Failover stage 2: a live chats snapshot is a
+                        // successful Firestore probe (heals quota-death;
+                        // no-op while healthy — see BackendHealthStore).
+                        BackendHealthStore.recordProbeResult(
+                            BackendHealthStore.Backend.FIRESTORE, true
+                        )
                         if (paged) {
                             _chatListState.value = ChatListSyncState(
                                 status = ChatListSyncStatus.READY,
@@ -357,13 +622,19 @@ class ChatRepositoryImpl @Inject constructor(
                                 }
                             }
 
-                            val previews = snapshot.documents.mapNotNull { doc ->
+                            val sortedFirestorePreviews = snapshot.documents.mapNotNull { doc ->
                                 mapChatPreview(doc, uid)
                             }.sortedWith(
                                 compareByDescending<ChatPreview> { it.isOfficialWesalChat }
                                     .thenByDescending { it.isPinned }
                                     .thenByDescending { it.lastMessageTime }
                             )
+                            synchronized(previewLock) {
+                                latestFirestorePreviews = sortedFirestorePreviews
+                            }
+                            // Failover stage 2 (§5.4): union the plane
+                            // inbox snapshot into the previews.
+                            val previews = mergePlaneInboxIntoPreviews(sortedFirestorePreviews)
                             // Spec §8.3: hidden chats are never written to the Room
                             // cache and any earlier rows of theirs are purged — the
                             // previews still emit (the UI filters hidden chats itself).
@@ -396,6 +667,20 @@ class ChatRepositoryImpl @Inject constructor(
                     }
                 }
                 subscribeChats(ordered = true)
+
+                // Failover stage 2 (§5.4): re-merge + re-emit whenever
+                // the plane inbox snapshot changes. During a Firestore
+                // outage the snapshot listener goes silent — this is
+                // what keeps the list's summaries/unread counts moving.
+                launch(Dispatchers.IO) {
+                    refreshPlaneInbox()
+                    _planeInbox.collect {
+                        val base = synchronized(previewLock) { latestFirestorePreviews }
+                        if (base.isNotEmpty()) {
+                            trySend(mergePlaneInboxIntoPreviews(base))
+                        }
+                    }
+                }
 
                 awaitClose { registration?.remove() }
         }
@@ -554,7 +839,12 @@ class ChatRepositoryImpl @Inject constructor(
             requestStatus = reqStatus,
             disappearingDurationSec = doc.getLong("disappearingDurationSec") ?: 0L,
             deletedForUsers = deletedBy,
-            typingUsers = typingMap.filter { it.key != myUid && it.value }.keys.toList()
+            // Failover stage 2 (§5.5): plane typing rows (from msg-list
+            // polls) union with the Firestore typingUsers map.
+            typingUsers = (
+                typingMap.filter { it.key != myUid && it.value }.keys +
+                    (planeTypingByChat[doc.id] ?: emptySet())
+                ).distinct()
         )
     }
 
@@ -684,11 +974,31 @@ class ChatRepositoryImpl @Inject constructor(
         } else {
             callbackFlow {
                 val hasRemoteMessages = AtomicBoolean(false)
+                // Failover stage 2 (§5.3): merged reads. latestFirestore
+                // is the newest Firestore-listener list; latestCached is
+                // the Room placeholder; the chat's Supabase-plane list
+                // lives in planeMessagesFlow (poll deltas + own sends).
+                // Every emission is the MessageMergeLogic union of the
+                // two stores — a message appears exactly once, ordered
+                // by (server timestamp, id), whichever store homes it.
+                var latestCached: List<WesalMessage> = emptyList()
+                var latestFirestore: List<WesalMessage> = emptyList()
+                var firestoreReady = false
+                val mergeLock = Any()
+                fun emitMerged() {
+                    val merged = synchronized(mergeLock) {
+                        MessageMergeLogic.merge(
+                            if (firestoreReady) latestFirestore else latestCached,
+                            planeMessagesFlow(chatId).value
+                        )
+                    }
+                    trySend(merged)
+                }
                 launch(Dispatchers.IO) {
                     val cachedMsgs = runCatching { wesalDao.observeMessages(chatId, myUid).firstOrNull() }.getOrNull()
                     if (!hasRemoteMessages.get() && !cachedMsgs.isNullOrEmpty()) {
-                        trySend(
-                            cachedMsgs.map {
+                        synchronized(mergeLock) {
+                            latestCached = cachedMsgs.map {
                                 WesalMessage(
                                     messageId = it.messageId,
                                     chatId = it.chatId,
@@ -706,7 +1016,8 @@ class ChatRepositoryImpl @Inject constructor(
                                     timestamp = it.timestamp
                                 )
                             }
-                        )
+                        }
+                        emitMerged()
                     }
                 }
 
@@ -735,6 +1046,13 @@ class ChatRepositoryImpl @Inject constructor(
                             return@addSnapshotListener
                         }
                         hasRemoteMessages.set(true)
+                        // Failover stage 2 (wiring the stage-1 state
+                        // machine): a live snapshot IS a successful
+                        // Firestore probe — it heals a quota-dead state
+                        // and is a no-op while Firestore is healthy.
+                        BackendHealthStore.recordProbeResult(
+                            BackendHealthStore.Backend.FIRESTORE, true
+                        )
                         _messageSyncState.value = ChatListSyncState(
                             status = ChatListSyncStatus.READY,
                             fromCache = snapshot.metadata.isFromCache,
@@ -784,13 +1102,134 @@ class ChatRepositoryImpl @Inject constructor(
                                     })
                                 }
                             }
-                            trySend(messages)
+                            synchronized(mergeLock) {
+                                latestFirestore = messages
+                                firestoreReady = true
+                            }
+                            emitMerged()
                         }
                     }
+
+                // Stage 2 (§5.3): plane list changes (delta polls, own
+                // sends) re-emit the merged list.
+                launch(Dispatchers.Default) {
+                    planeMessagesFlow(chatId).collect { emitMerged() }
+                }
+                // Stage 2 (§5.3): the open chat's delta poll — engaged
+                // chats only (the §4.4 gate keeps a dark deployment at
+                // zero function invocations). Cadence: 4 s while the
+                // chat is active, backing off to 15 s after ~60 s
+                // without changes.
+                launch(Dispatchers.IO) {
+                    var idleMs = 0L
+                    while (isActive) {
+                        val engaged = runCatching { isPlaneEngagedFor(chatId) }
+                            .getOrDefault(false)
+                        if (!engaged) {
+                            delay(5_000L)
+                            continue
+                        }
+                        val changed = runCatching {
+                            pollPlaneChatOnce(chatId, myUid, peerPubKeyCache)
+                        }.getOrDefault(false)
+                        idleMs = if (changed) 0L else idleMs + PLANE_POLL_ACTIVE_MS
+                        delay(
+                            if (idleMs < 60_000L) PLANE_POLL_ACTIVE_MS
+                            else PLANE_POLL_IDLE_MS
+                        )
+                    }
+                }
 
                 awaitClose { registration.remove() }
             }
         }
+    }
+
+    /**
+     * Failover §5.3: one delta-poll round for an open chat. First
+     * contact fetches the newest page and establishes the persisted
+     * (seq, updated_at watermark) cursor; later rounds fetch seq
+     * deltas OR watermark updates (status edits to already-seen rows).
+     * Rows are mapped through the shared plane mapper, cached in Room
+     * (store-stamped), published into the chat's plane list, and
+     * incoming SENT rows are acked DELIVERED under the same 5 s/chat
+     * throttle as the Firestore path. Live typing rows ride along into
+     * [planeTypingByChat] (§5.5). A chat with no mirror yet
+     * (chat_not_registered) simply reports "no change" — the mirror is
+     * created by whichever side sends on the plane first.
+     * Returns true when anything changed (drives the poll cadence).
+     */
+    private suspend fun pollPlaneChatOnce(
+        chatId: String,
+        myUid: String,
+        peerPubKeyCache: MutableMap<String, String>
+    ): Boolean {
+        val cursor = runCatching { prefs.planeChatCursor(chatId) }.getOrNull()
+        val page = try {
+            if (cursor == null) {
+                supabaseClient.listMessages(chatId, limit = MESSAGE_PAGE_SIZE)
+            } else {
+                supabaseClient.listMessages(
+                    chatId,
+                    afterSeq = cursor.first,
+                    watermarkMs = cursor.second,
+                    limit = 100
+                )
+            }
+        } catch (e: SupabaseMessageException) {
+            if (e.errorCode == "chat_not_registered" ||
+                e.errorCode == "not_a_participant"
+            ) {
+                return false
+            }
+            throw e
+        }
+        val typingBefore = planeTypingByChat[chatId]
+        val typingNow = page.typingUserIds.filter { it != myUid }.toSet()
+        if (typingNow != typingBefore) planeTypingByChat[chatId] = typingNow
+        val typingChanged = typingNow != typingBefore
+
+        if (page.rows.isEmpty()) return typingChanged
+
+        val resolver = planeTextResolver(chatId, myUid, peerPubKeyCache)
+        val mapped = page.rows.mapNotNull { row ->
+            SupabaseMessageMapper.rowToMessage(row, chatId, myUid, resolver)
+        }
+        if (mapped.isEmpty()) return typingChanged
+
+        val messages = mapped.map { it.message }
+        runCatching {
+            prefs.setPlaneChatCursor(
+                chatId,
+                maxOf(cursor?.first ?: 0L, mapped.maxOf { it.seq }),
+                maxOf(cursor?.second ?: 0L, mapped.maxOf { it.updatedAtMs })
+            )
+        }
+        runCatching { prefs.setPlaneEngaged() }
+        val oldest = mapped.minOf { it.seq }
+        val prevOldest = planeOldestSeq[chatId]
+        if (prevOldest == null || oldest < prevOldest) planeOldestSeq[chatId] = oldest
+
+        publishPlaneMessages(chatId, messages)
+        upsertPlaneRowsToRoom(chatId, myUid, messages)
+
+        // Delivery acks for incoming SENT rows — the Firestore path's
+        // 5 s/chat throttle map is shared across stores (§5.3 cadence).
+        val sentIds = messages.filter {
+            it.senderId != myUid && it.senderId != "wesal_system" &&
+                it.status == MessageStatus.SENT
+        }.map { it.messageId }
+        if (sentIds.isNotEmpty()) {
+            val now = System.currentTimeMillis()
+            val lastRun = deliveredThrottleMs[chatId] ?: 0L
+            if (now - lastRun >= 5_000L) {
+                deliveredThrottleMs[chatId] = now
+                runCatching {
+                    supabaseClient.ackMessages(chatId, sentIds, MessageStatus.DELIVERED.raw)
+                }
+            }
+        }
+        return true
     }
 
     /**
@@ -854,8 +1293,10 @@ class ChatRepositoryImpl @Inject constructor(
                 .limit(pageSize.toLong())
                 .get()
                 .await()
-        }.getOrNull() ?: return emptyList()
-        val messages = snap.documents.mapNotNull { doc ->
+        }.getOrNull()
+        // Failover stage 2: a dead Firestore no longer zeroes the page —
+        // the plane page below still answers (§5.3 two-cursor merge).
+        val messages = snap?.documents.orEmpty().mapNotNull { doc ->
             mapAndDecryptMessage(doc, chatId, myUid, isGroup, peerPubKeyCache)
         }.reversed()
         if (messages.isNotEmpty() && chatId !in hiddenChatIdsForActiveAccount()) {
@@ -881,11 +1322,48 @@ class ChatRepositoryImpl @Inject constructor(
                 })
             }
         }
-        return messages
+        // Failover stage 2 (§5.3): the plane page of the same history,
+        // paged by seq below the lowest seq seen for this chat. The
+        // merged page is short only when BOTH stores answer short, so
+        // the caller's beginning-of-history signal stays honest.
+        val planeMessages = fetchOlderPlanePage(chatId, myUid, peerPubKeyCache, pageSize)
+        if (planeMessages.isEmpty()) return messages
+        if (messages.isEmpty()) return planeMessages
+        return MessageMergeLogic.merge(messages, planeMessages)
     }
 
     /**
-     * Review M-3: the profile shared-media gallery needs the chat's whole
+     * Failover §5.3: one older page from the Supabase plane
+     * (msg-list beforeSeq), mapped + Room-cached + published like a
+     * poll page. Empty when the chat has no plane traffic or its
+     * beginning was already reached (lowest seq == 1).
+     */
+    private suspend fun fetchOlderPlanePage(
+        chatId: String,
+        myUid: String,
+        peerPubKeyCache: MutableMap<String, String>,
+        pageSize: Int
+    ): List<WesalMessage> {
+        val oldestSeq = planeOldestSeq[chatId]
+            ?: runCatching { prefs.planeChatCursor(chatId) }.getOrNull()?.first
+            ?: return emptyList()
+        if (oldestSeq <= 1L) return emptyList()
+        val page = runCatching {
+            supabaseClient.listMessages(chatId, beforeSeq = oldestSeq, limit = pageSize)
+        }.getOrNull() ?: return emptyList()
+        if (page.rows.isEmpty()) return emptyList()
+        val resolver = planeTextResolver(chatId, myUid, peerPubKeyCache)
+        val mapped = page.rows.mapNotNull { row ->
+            SupabaseMessageMapper.rowToMessage(row, chatId, myUid, resolver)
+        }
+        if (mapped.isEmpty()) return emptyList()
+        val newOldest = mapped.minOf { it.seq }
+        if (newOldest < oldestSeq) planeOldestSeq[chatId] = newOldest
+        val messages = mapped.map { it.message }
+        upsertPlaneRowsToRoom(chatId, myUid, messages)
+        publishPlaneMessages(chatId, messages)
+        return messages
+    }
      * history, but [observeMessages] now streams only the newest page. This
      * one-shot walks the full subcollection with DOCUMENT cursors — a snapshot
      * cursor is type-exact, so the Long/Timestamp mix stored in `timestamp`
@@ -928,6 +1406,76 @@ class ChatRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * The ONE message-text resolution path (decrypt-or-fallback), shared
+     * by the Firestore mapper ([mapAndDecryptMessage]) and the Supabase
+     * plane mapper (via [planeTextResolver]) — failover design §5.3:
+     * both stores' rows resolve text identically. Extracted verbatim
+     * from mapAndDecryptMessage in stage 2; behavior is unchanged.
+     */
+    private suspend fun resolveMessageText(
+        senderId: String,
+        myUid: String,
+        chatId: String,
+        isGroup: Boolean,
+        peerPubKeyCache: MutableMap<String, String>,
+        ciphertext: String,
+        isEncrypted: Boolean,
+        plainFallback: String,
+        isDeletedForEveryone: Boolean,
+        wrappedKeys: Map<String, String>
+    ): String = when {
+        isDeletedForEveryone -> "تم حذف هذه الرسالة"
+        plainFallback.isNotBlank() -> plainFallback
+        isEncrypted && ciphertext.isNotBlank() -> {
+            val keyOwnerUid = if (senderId == myUid) {
+                peerPubKeyCache.keys.firstOrNull()
+            } else {
+                senderId
+            }
+            val attemptDecrypt: (String) -> String = { peerPub ->
+                if (!isGroup) {
+                    cryptoManager.decryptDirectMessage(
+                        E2EECryptoManager.EncryptedPayload.fromWireString(ciphertext),
+                        peerPub,
+                        chatId
+                    )
+                } else if (wrappedKeys.containsKey(myUid)) {
+                    val symKey = cryptoManager.unwrapKeyFromPeer(wrappedKeys[myUid]!!, peerPub, chatId)
+                    val bytes = cryptoManager.decryptBytesWithKey(
+                        E2EECryptoManager.EncryptedPayload.fromWireString(ciphertext),
+                        symKey,
+                        chatId.toByteArray()
+                    )
+                    String(bytes, Charsets.UTF_8)
+                } else {
+                    "رسالة سابقة غير متاحة"
+                }
+            }
+            val firstPub = keyOwnerUid?.let {
+                peerPubKeyCache[it] ?: fetchUserCached(it)?.publicKey?.also { pk ->
+                    if (pk.isNotBlank()) peerPubKeyCache[it] = pk
+                }
+            }
+            val firstTry = if (!firstPub.isNullOrBlank()) runCatching { attemptDecrypt(firstPub) } else Result.failure(IllegalStateException("Missing key"))
+            firstTry.getOrElse {
+                val freshPub = keyOwnerUid?.let { uid ->
+                    userCache.remove(uid)
+                    peerPubKeyCache.remove(uid)
+                    fetchUserCached(uid, forceServer = true)?.publicKey?.also { pk ->
+                        if (pk.isNotBlank()) peerPubKeyCache[uid] = pk
+                    }
+                }
+                if (!freshPub.isNullOrBlank() && freshPub != firstPub) {
+                    runCatching { attemptDecrypt(freshPub) }.getOrElse { "رسالة سابقة غير متاحة" }
+                } else {
+                    "رسالة سابقة غير متاحة"
+                }
+            }
+        }
+        else -> plainFallback
+    }
+
     @Suppress("UNCHECKED_CAST")
     private suspend fun mapAndDecryptMessage(
         doc: DocumentSnapshot,
@@ -952,57 +1500,18 @@ class ChatRepositoryImpl @Inject constructor(
         val wrappedKeys = (doc.get("wrappedKeys") as? Map<String, String>) ?: emptyMap()
         val plainFallback = doc.getString("text").orEmpty()
 
-        val resolvedText = when {
-            isDeletedForEveryone -> "تم حذف هذه الرسالة"
-            plainFallback.isNotBlank() -> plainFallback
-            isEncrypted && ciphertext.isNotBlank() -> {
-                val keyOwnerUid = if (senderId == myUid) {
-                    peerPubKeyCache.keys.firstOrNull()
-                } else {
-                    senderId
-                }
-                val attemptDecrypt: (String) -> String = { peerPub ->
-                    if (!isGroup) {
-                        cryptoManager.decryptDirectMessage(
-                            E2EECryptoManager.EncryptedPayload.fromWireString(ciphertext),
-                            peerPub,
-                            chatId
-                        )
-                    } else if (wrappedKeys.containsKey(myUid)) {
-                        val symKey = cryptoManager.unwrapKeyFromPeer(wrappedKeys[myUid]!!, peerPub, chatId)
-                        val bytes = cryptoManager.decryptBytesWithKey(
-                            E2EECryptoManager.EncryptedPayload.fromWireString(ciphertext),
-                            symKey,
-                            chatId.toByteArray()
-                        )
-                        String(bytes, Charsets.UTF_8)
-                    } else {
-                        "رسالة سابقة غير متاحة"
-                    }
-                }
-                val firstPub = keyOwnerUid?.let {
-                    peerPubKeyCache[it] ?: fetchUserCached(it)?.publicKey?.also { pk ->
-                        if (pk.isNotBlank()) peerPubKeyCache[it] = pk
-                    }
-                }
-                val firstTry = if (!firstPub.isNullOrBlank()) runCatching { attemptDecrypt(firstPub) } else Result.failure(IllegalStateException("Missing key"))
-                firstTry.getOrElse {
-                    val freshPub = keyOwnerUid?.let { uid ->
-                        userCache.remove(uid)
-                        peerPubKeyCache.remove(uid)
-                        fetchUserCached(uid, forceServer = true)?.publicKey?.also { pk ->
-                            if (pk.isNotBlank()) peerPubKeyCache[uid] = pk
-                        }
-                    }
-                    if (!freshPub.isNullOrBlank() && freshPub != firstPub) {
-                        runCatching { attemptDecrypt(freshPub) }.getOrElse { "رسالة سابقة غير متاحة" }
-                    } else {
-                        "رسالة سابقة غير متاحة"
-                    }
-                }
-            }
-            else -> plainFallback
-        }
+        val resolvedText = resolveMessageText(
+            senderId = senderId,
+            myUid = myUid,
+            chatId = chatId,
+            isGroup = isGroup,
+            peerPubKeyCache = peerPubKeyCache,
+            ciphertext = ciphertext,
+            isEncrypted = isEncrypted,
+            plainFallback = plainFallback,
+            isDeletedForEveryone = isDeletedForEveryone,
+            wrappedKeys = wrappedKeys
+        )
 
         val rawStatus = MessageStatus.fromRaw(doc.getString("status"))
         // Batched delivery acks run once per snapshot in observeMessages()
@@ -1611,14 +2120,23 @@ class ChatRepositoryImpl @Inject constructor(
         require(!isSelfClearlyBanned(myUid)) { "حسابك محظور ولا يمكنك إرسال رسائل حالياً" }
 
         val chatRef = firestore.collection(Constants.COLLECTION_CHATS).document(chatId)
-        val chatSnap = chatRef.get().await()
-        // Round 12 (addendum 10d): never write into the void. A chat doc
-        // that does not exist (e.g. a legacy locally-cached row whose
-        // create the server denied) makes the batch below fail opaquely
-        // and the message hang at SENDING, visible to nobody else — fail
-        // honestly instead so the echo flips to FAILED with a real reason.
-        require(chatSnap.exists()) { "المحادثة غير موجودة — أعد فتحها وحاول تاني" }
-        val isOfficial = (chatSnap.getBoolean("isOfficialWesalChat") ?: false) ||
+        // Failover stage 2: the chat-doc read itself can die with the
+        // Firestore quota. A THROWN read is not "chat does not exist" —
+        // when the plane carries the send, metadata falls back to
+        // locally-derived values below; a snapshot that arrives and
+        // says the doc is missing keeps the honest addendum-10d failure.
+        val chatSnap = runCatching { chatRef.get().await() }
+            .onFailure { BackendHealthStore.reportFirestoreError(it) }
+            .getOrNull()
+        if (chatSnap != null) {
+            // Round 12 (addendum 10d): never write into the void. A chat doc
+            // that does not exist (e.g. a legacy locally-cached row whose
+            // create the server denied) makes the batch below fail opaquely
+            // and the message hang at SENDING, visible to nobody else — fail
+            // honestly instead so the echo flips to FAILED with a real reason.
+            require(chatSnap.exists()) { "المحادثة غير موجودة — أعد فتحها وحاول تاني" }
+        }
+        val isOfficial = (chatSnap?.getBoolean("isOfficialWesalChat") ?: false) ||
             chatId.startsWith(Constants.OFFICIAL_CHAT_PREFIX)
         if (isOfficial) {
             require(verifyIsOwnerSuperAdmin(myUid)) {
@@ -1627,8 +2145,20 @@ class ChatRepositoryImpl @Inject constructor(
         }
 
         @Suppress("UNCHECKED_CAST")
-        val participants = (chatSnap.get("participantIds") as? List<String>).orEmpty()
-        val disappearingSec = chatSnap.getLong("disappearingDurationSec") ?: 0L
+        val participants = if (chatSnap != null) {
+            (chatSnap.get("participantIds") as? List<String>).orEmpty()
+        } else {
+            // Firestore unreachable: derive the 1:1 participants from the
+            // locally cached messages (their senders + me). Used only to
+            // register the chat mirror on the plane; when even that is
+            // unknown (no cached history), the send queues below instead
+            // of guessing a participant list.
+            val cachedSenders = runCatching {
+                wesalDao.observeMessages(chatId, myUid).firstOrNull().orEmpty()
+            }.getOrDefault(emptyList()).map { it.senderId }
+            (cachedSenders + myUid).distinct()
+        }
+        val disappearingSec = chatSnap?.getLong("disappearingDurationSec") ?: 0L
         val now = System.currentTimeMillis()
         val disappearingExpiresAt = if (disappearingSec > 0L) now + disappearingSec * 1000L else 0L
         // A caller-supplied id (outbox) makes retries idempotent: the same message document is
@@ -1682,6 +2212,31 @@ class ChatRepositoryImpl @Inject constructor(
             chatUpdates["unreadCounts.$otherUid"] = FieldValue.increment(1)
         }
 
+        // ------------------------------------------------------------------
+        // Failover stage 2 (§5.2): plane routing. Eligibility is 1:1
+        // chats only (groups stay on Firestore until stage 3) and never
+        // the official chat (rule 1 — its guard above already ran).
+        // Dark-launch property: with the config on Firestore and
+        // Firestore healthy, effectivePrimary is FIRESTORE and this
+        // block is skipped entirely — the send below is then
+        // byte-identical to the pre-plane app.
+        // ------------------------------------------------------------------
+        val planeEligible = !isOfficial && participants.size == 2 && myUid in participants
+        val routedTarget = MessagePlaneRouter.effectivePrimary(
+            MessagePlaneRouter.currentConfig(),
+            BackendHealthStore.currentState()
+        )
+        if (planeEligible && routedTarget == MessagePlaneRouter.Store.SUPABASE) {
+            val landed = sendTextViaPlane(chatId, messageData, participants)
+            if (landed != null) {
+                publishOwnPlaneMessage(chatId, myUid, messageData, landed)
+                coWriteChatSummaryOnFirestore(chatRef, chatUpdates)
+                return@runCatching
+            }
+            // Plane store unreachable → discover-and-retry ONCE against
+            // Firestore below (rule 3), same message id + payload.
+        }
+
         // Atomic write: message + chat summary commit together (previously two separate
         // awaits — if the second failed, the peer's chat list never bumped, and a retry created
         // a duplicate message with a fresh id). The commit is awaited only for the ACK
@@ -1720,6 +2275,8 @@ class ChatRepositoryImpl @Inject constructor(
         // never needed it (the message doc id IS the client id on the
         // SDK path), and on the links where the SDK stalls, HTTP
         // stalls identically — its failure was the raw-error dialog.
+        attemptedStores[messageId] =
+            MessagePlaneRouter.wireName(MessagePlaneRouter.Store.FIRESTORE)
         var sdkError: Throwable? = null
         val sdkCommitted = withTimeoutOrNull(SEND_WRITE_TIMEOUT_MS) {
             runCatching { batch.commit().await() }
@@ -1729,14 +2286,144 @@ class ChatRepositoryImpl @Inject constructor(
         when {
             sdkCommitted -> Unit
             sdkError != null -> {
-                // Failover design §5.1 (stage 1, observing): a quota
-                // rejection flips the health store; the send itself is
-                // NOT rerouted in this stage.
+                // Failover design §5.1: a quota rejection flips the
+                // health store (stage 1 wiring).
                 BackendHealthStore.reportFirestoreError(sdkError)
+                // Stage 2, §5.2 rule 3: an INFRASTRUCTURE failure
+                // (quota death, unavailable) discovers the other store
+                // ONCE with the same message id + payload. Definitive
+                // rejections (rules, validation) keep the honest
+                // failure they have today.
+                val infra = BackendHealthStore.isFirestoreInfraCode(
+                    (sdkError as? FirebaseFirestoreException)?.code?.name
+                )
+                if (infra && planeEligible) {
+                    val landed = runCatching {
+                        sendTextViaPlane(chatId, messageData, participants)
+                    }.getOrNull()
+                    if (landed != null) {
+                        publishOwnPlaneMessage(chatId, myUid, messageData, landed)
+                        return@runCatching
+                    }
+                    // Both stores unreachable → QUEUED, never "failed"
+                    // (rule 6): the outbox replays when either recovers.
+                    throw MessageQueuedException()
+                }
+                if (infra && chatSnap == null) {
+                    // The metadata read died with the same outage and
+                    // no store can be targeted safely — queue rather
+                    // than fail; replay re-reads when Firestore recovers.
+                    throw MessageQueuedException()
+                }
                 throw sdkError!!
             }
             else -> throw MessageQueuedException()
         }
+    }
+
+    /**
+     * Failover §5.2: one send attempt against the Supabase plane.
+     * Returns the landed result, or null when the plane store is
+     * unreachable (the caller then discovers the other store once).
+     * A missing chat mirror is registered and the send retried ONCE
+     * (§4.4). Definitive rejections (invalid message, not a
+     * participant, unauthenticated) propagate — they are honest
+     * failures, not routing signals.
+     */
+    private suspend fun sendTextViaPlane(
+        chatId: String,
+        messageData: Map<String, Any?>,
+        participants: List<String>
+    ): SupabaseMessageClient.PlaneSendResult? {
+        val messageId = messageData["messageId"] as? String ?: return null
+        attemptedStores[messageId] =
+            MessagePlaneRouter.wireName(MessagePlaneRouter.Store.SUPABASE)
+        try {
+            return supabaseClient.sendMessage(messageData)
+        } catch (e: SupabaseMessageException) {
+            when (e.errorCode) {
+                "store_unavailable" -> return null
+                "chat_not_registered" -> Unit // register + retry below
+                else -> throw e
+            }
+        }
+        supabaseClient.registerChat(chatId, "direct", participants)
+        return try {
+            supabaseClient.sendMessage(messageData)
+        } catch (e: SupabaseMessageException) {
+            if (e.errorCode == "store_unavailable") null else throw e
+        }
+    }
+
+    /**
+     * §5.2: after a plane landing, the sender publishes the message
+     * locally at once (merged list + Room) and advances the chat's
+     * delta cursor past it — the message is visible in the open chat
+     * immediately, not one poll later. Advancing the seq cursor cannot
+     * strand a peer message: the poll's watermark arm (§5.3) still
+     * returns any row whose updated_at is newer than the watermark.
+     */
+    private suspend fun publishOwnPlaneMessage(
+        chatId: String,
+        myUid: String,
+        messageData: Map<String, Any?>,
+        landed: SupabaseMessageClient.PlaneSendResult
+    ) {
+        runCatching { prefs.setPlaneEngaged() }
+        val message = WesalMessage(
+            messageId = messageData["messageId"] as String,
+            chatId = chatId,
+            senderId = myUid,
+            senderName = messageData["senderName"] as? String ?: "",
+            senderIconId = messageData["senderIconId"] as? String ?: "",
+            senderIconUrl = messageData["senderIconUrl"] as? String ?: "",
+            senderVerified = messageData["senderVerified"] as? Boolean ?: false,
+            senderVerificationType = messageData["senderVerificationType"] as? String ?: "BLUE",
+            senderNeonColor = messageData["senderNeonColor"] as? String ?: "",
+            senderNeonEnabled = messageData["senderNeonEnabled"] as? Boolean ?: false,
+            senderNeonGlowIntensity =
+                (messageData["senderNeonGlowIntensity"] as? Number)?.toFloat() ?: 0.7f,
+            type = MessageType.TEXT,
+            text = messageData["text"] as? String ?: "",
+            status = MessageStatus.SENT,
+            timestamp = landed.serverTsMs.takeIf { it > 0L }
+                ?: (messageData["timestamp"] as? Long ?: System.currentTimeMillis()),
+            replyToMessageId = messageData["replyToMessageId"] as? String,
+            replyToPreview = messageData["replyToPreview"] as? String,
+            forwardedFromName = messageData["forwardedFromName"] as? String,
+            disappearingExpiresAt =
+                (messageData["disappearingExpiresAt"] as? Number)?.toLong() ?: 0L
+        )
+        publishPlaneMessages(chatId, listOf(message))
+        upsertPlaneRowsToRoom(chatId, myUid, listOf(message))
+        if (landed.seq > 0L) {
+            val existing = runCatching { prefs.planeChatCursor(chatId) }.getOrNull()
+            runCatching {
+                prefs.setPlaneChatCursor(
+                    chatId,
+                    maxOf(existing?.first ?: 0L, landed.seq),
+                    maxOf(existing?.second ?: 0L, landed.serverTsMs)
+                )
+            }
+            val oldest = planeOldestSeq[chatId]
+            if (oldest == null || landed.seq < oldest) planeOldestSeq[chatId] = landed.seq
+        }
+    }
+
+    /**
+     * §5.2 rule 4: best-effort Firestore summary co-write after a plane
+     * landing, so peers on Firestore-only builds still see the chat
+     * bump. Failure is expected during an outage (and feeds the health
+     * store); the §5.4 repair pass in [refreshPlaneInbox] heals the
+     * summary later.
+     */
+    private suspend fun coWriteChatSummaryOnFirestore(
+        chatRef: com.google.firebase.firestore.DocumentReference,
+        chatUpdates: Map<String, Any>
+    ) {
+        runCatching {
+            withTimeoutOrNull(6_000L) { chatRef.update(chatUpdates).await() }
+        }.onFailure { BackendHealthStore.reportFirestoreError(it) }
     }
 
     override suspend fun isOutboxMessageLanded(chatId: String, messageId: String): Boolean {
@@ -1751,6 +2438,16 @@ class ChatRepositoryImpl @Inject constructor(
                 .exists()
         }.onFailure { BackendHealthStore.reportFirestoreError(it) }
             .getOrDefault(false)
+    }
+
+    override suspend fun isOutboxMessageLandedOnPlane(
+        chatId: String,
+        messageId: String
+    ): Boolean {
+        if (chatId.isBlank() || messageId.isBlank()) return false
+        return runCatching {
+            supabaseClient.listMessagesByIds(chatId, listOf(messageId)).rows.isNotEmpty()
+        }.getOrDefault(false)
     }
 
     override fun sendMediaMessage(
@@ -2246,6 +2943,14 @@ class ChatRepositoryImpl @Inject constructor(
 
     override suspend fun setTyping(chatId: String, isTyping: Boolean) {
         val myUid = auth.currentUser?.uid ?: return
+        // Failover stage 2 (§5.5): typing follows the chat's home
+        // store — plane chats signal through chat-typing (6 s
+        // server-side expiry, matching the TypingSignalGate cadence);
+        // everything else keeps the Firestore field update.
+        if (runCatching { isPlaneEngagedFor(chatId) }.getOrDefault(false)) {
+            runCatching { supabaseClient.setTyping(chatId, isTyping) }
+            return
+        }
         runCatching {
             firestore.collection(Constants.COLLECTION_CHATS)
                 .document(chatId)
@@ -2310,6 +3015,22 @@ class ChatRepositoryImpl @Inject constructor(
             ) {
                 chatRef.update("lastMessageStatus", MessageStatus.READ.raw)
                 anyUpdated = true
+            }
+        }
+        // Failover stage 2 (§5.3): the plane arm of read receipts —
+        // ack every locally-known unacked incoming plane message READ
+        // (rpc_ack_messages also zeroes this chat's inbox unread
+        // counter). Mirrors the Firestore arm's privacy gate: no READ
+        // acks at all when the user disabled read receipts. Kept
+        // independent of the Firestore block above so a Firestore
+        // outage cannot skip it.
+        runCatching {
+            val me = fetchUserCached(myUid)
+            if (me?.privacySettings?.readReceiptsEnabled != false) {
+                val ids = wesalDao.supabaseIncomingUnackedIds(chatId, myUid, myUid)
+                ids.chunked(200).forEach { chunk ->
+                    supabaseClient.ackMessages(chatId, chunk, MessageStatus.READ.raw)
+                }
             }
         }
     }

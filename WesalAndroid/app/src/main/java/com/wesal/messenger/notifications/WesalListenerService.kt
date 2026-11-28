@@ -22,15 +22,21 @@ import com.wesal.messenger.R
 import com.wesal.messenger.calls.CallActionReceiver
 import com.wesal.messenger.calls.CallActivity
 import com.wesal.messenger.calls.IncomingCallActivity
+import com.wesal.messenger.core.util.BackendHealthStore
 import com.wesal.messenger.core.util.Constants
+import com.wesal.messenger.core.util.MessagePlaneRouter
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
 import com.wesal.messenger.domain.model.CallStatus
+import com.wesal.messenger.domain.repository.ChatRepository
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.concurrent.ConcurrentHashMap
@@ -70,6 +76,11 @@ class WesalListenerService : Service() {
     @Inject lateinit var firestore: FirebaseFirestore
     @Inject lateinit var prefs: UserPreferencesDataStore
     @Inject lateinit var callRepository: com.wesal.messenger.domain.repository.CallRepository
+    @Inject lateinit var chatRepository: ChatRepository
+
+    /** Failover stage 2 (§6): the Supabase-plane inbox poller job + its connectivity trigger. */
+    private var planePollerJob: Job? = null
+    private var planeConnectivityCallback: android.net.ConnectivityManager.NetworkCallback? = null
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -183,6 +194,11 @@ class WesalListenerService : Service() {
                 if (err != null || snap == null) return@addSnapshotListener
                 handleChatsSnapshot(uid, snap.documents)
             }
+
+        // Failover stage 2 (§6): background notifications for messages
+        // homed on the Supabase plane — the Firestore chats listener
+        // above never sees them.
+        startPlaneInboxPoller(uid)
     }
 
     private fun removeListeners() {
@@ -190,6 +206,15 @@ class WesalListenerService : Service() {
         runCatching { chatsRegistration?.remove() }
         callsRegistration = null
         chatsRegistration = null
+        planePollerJob?.cancel()
+        planePollerJob = null
+        planeConnectivityCallback?.let { callback ->
+            runCatching {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)
+                    ?.unregisterNetworkCallback(callback)
+            }
+        }
+        planeConnectivityCallback = null
     }
 
     // ------------------------------------------------------------------ incoming calls
@@ -454,6 +479,145 @@ class WesalListenerService : Service() {
         chatsBaselineReady = true
     }
 
+    // ------------------------------------------------------------------
+    // Failover stage 2 (§6): Supabase-plane inbox poller.
+    //
+    // Messages homed on the Supabase plane never touch a Firestore chat
+    // doc, so the chats listener above cannot see them. While the
+    // plane is ENGAGED for this account this loop polls msg-inbox
+    // (90 s → 5 min backoff), diffs rows against the persisted
+    // baseline, and notifies through the very same
+    // showMessageNotification path + suppression gates as the
+    // Firestore listener. While the plane is dark (not engaged) the
+    // loop only re-checks the gate once a minute — zero function
+    // invocations, per the §4.4 budget rule.
+    // ------------------------------------------------------------------
+
+    private fun startPlaneInboxPoller(uid: String) {
+        planePollerJob?.cancel()
+        if (planeConnectivityCallback == null) {
+            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    // Connectivity regain → immediate poll: restarting
+                    // the loop runs its first iteration at once.
+                    boundUid?.let { startPlaneInboxPoller(it) }
+                }
+            }
+            planeConnectivityCallback = callback
+            runCatching {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager)
+                    ?.registerDefaultNetworkCallback(callback)
+            }
+        }
+        planePollerJob = serviceScope.launch {
+            var unchangedMs = 0L
+            var firstPoll = true
+            while (isActive) {
+                if (!planePollerEngaged()) {
+                    delay(PLANE_POLLER_DISENGAGED_MS)
+                    continue
+                }
+                val changed = runCatching { pollPlaneInboxOnce(uid, firstPoll) }
+                    .getOrDefault(false)
+                firstPoll = false
+                val interval = if (unchangedMs < PLANE_POLLER_BACKOFF_AFTER_MS) {
+                    PLANE_POLLER_ACTIVE_MS
+                } else {
+                    PLANE_POLLER_IDLE_MS
+                }
+                unchangedMs = if (changed) 0L else unchangedMs + interval
+                delay(interval)
+            }
+        }
+    }
+
+    private suspend fun planePollerEngaged(): Boolean {
+        if (runCatching { prefs.planeEngaged() }.getOrDefault(false)) return true
+        val health = BackendHealthStore.currentState()
+        if (!BackendHealthStore.isRoutable(health, BackendHealthStore.Backend.FIRESTORE)) {
+            return true
+        }
+        return MessagePlaneRouter.effectivePrimary(
+            MessagePlaneRouter.currentConfig(), health
+        ) == MessagePlaneRouter.Store.SUPABASE
+    }
+
+    /**
+     * One poll round: fetch the inbox (via the repository, which also
+     * publishes it for the chats-list merge + summary repair), diff
+     * against the persisted baseline, notify for genuinely new last
+     * messages. Returns true when any row changed.
+     */
+    private suspend fun pollPlaneInboxOnce(uid: String, isFirst: Boolean): Boolean {
+        val rows = runCatching { chatRepository.refreshPlaneInbox() }
+            .getOrDefault(emptyList())
+        if (rows.isEmpty()) return false
+        val baseline = runCatching { prefs.inboxBaseline() }.getOrDefault(emptyMap())
+        val notified = runCatching { prefs.notifiedMessageIds() }.getOrDefault(emptySet())
+        val newBaseline = HashMap<String, String>(rows.size)
+        var changed = false
+        val now = System.currentTimeMillis()
+        val settings = latestSettings
+        for (row in rows) {
+            val lastId = row.lastMessageId.orEmpty()
+            newBaseline[row.chatId] = "$lastId|${row.unreadCount}"
+            val previousId = baseline[row.chatId]?.substringBefore('|')
+            if (previousId == lastId) continue
+            changed = true
+            // Notify only for a genuinely new last message: never on
+            // the first poll after (re)bind (baseline only — the same
+            // rule as the Firestore listener's first snapshot), never
+            // for my own sends, never twice for the same message.
+            if (isFirst) continue
+            if (lastId.isBlank() || lastId in notified) continue
+            val senderId = row.lastMessageSenderId.orEmpty()
+            if (senderId.isBlank() || senderId == uid) continue
+            if (row.unreadCount <= 0) continue
+            val stampMs = row.lastMessageServerTsMs.takeIf { it > 0L }
+                ?: row.lastMessageClientTs
+            if (stampMs > 0L && now - stampMs > PLANE_FRESH_WINDOW_MS) continue
+            // The §5.2 rule-4 summary co-write can ALSO surface this
+            // message through the Firestore chats listener. If that
+            // listener's baseline already advanced to this message,
+            // it owns the notification — skip here.
+            val fsBaseline = chatBaseline[row.chatId]
+            if (fsBaseline != null && fsBaseline.first >= stampMs &&
+                fsBaseline.second == senderId
+            ) {
+                continue
+            }
+            if (settings.hiddenChatIds.contains(row.chatId)) continue
+            if (!settings.notificationsMessages) continue
+            if (isAppInForeground()) continue
+            // Muted chats stay silent (best-effort doc read — during
+            // the outage this poller exists for, the read fails and
+            // the notification proceeds rather than being swallowed).
+            val muted = runCatching {
+                @Suppress("UNCHECKED_CAST")
+                val mutedBy = firestore.collection(Constants.COLLECTION_CHATS)
+                    .document(row.chatId).get().await()
+                    .get("mutedBy") as? Map<String, Boolean>
+                mutedBy?.get(uid) == true
+            }.getOrDefault(false)
+            if (muted) continue
+            val preview = if (row.lastMessagePreview == "رسالة مشفرة") {
+                "رسالة سابقة"
+            } else {
+                row.lastMessagePreview
+            }
+            val title = resolveUserName(senderId).ifBlank { "وصال" }
+            showMessageNotification(
+                row.chatId,
+                title,
+                preview.ifBlank { "رسالة جديدة" },
+                settings.notificationToneUri.trim()
+            )
+            runCatching { prefs.addNotifiedMessageIds(listOf(lastId)) }
+        }
+        runCatching { prefs.setInboxBaseline(newBaseline) }
+        return changed
+    }
+
     private fun showMessageNotification(chatId: String, title: String, body: String, customToneUri: String) {
         val channelId = ToneChannels.ensureMessageChannel(this, customToneUri)
         val intent = Intent(this, MainActivity::class.java).apply {
@@ -614,6 +778,16 @@ class WesalListenerService : Service() {
 
         /** Messages older than this when first observed are treated as history, not news. */
         private const val MESSAGE_FRESH_WINDOW_MS = 120_000L
+
+        // Failover stage 2 (§6): plane inbox poller — 90 s cadence,
+        // backing off to 5 min after 1 h without change; the freshness
+        // window is calibrated for a poller (the baseline diff already
+        // prevents stale replays; this only guards ancient backlogs).
+        private const val PLANE_POLLER_ACTIVE_MS = 90_000L
+        private const val PLANE_POLLER_IDLE_MS = 300_000L
+        private const val PLANE_POLLER_BACKOFF_AFTER_MS = 3_600_000L
+        private const val PLANE_POLLER_DISENGAGED_MS = 60_000L
+        private const val PLANE_FRESH_WINDOW_MS = 600_000L
 
         fun start(context: Context) {
             runCatching {

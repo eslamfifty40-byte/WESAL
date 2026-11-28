@@ -42,5 +42,11 @@ data class CachedMessageEntity(
     val mediaDurationMs: Long,
     val status: String,
     val timestamp: Long,
-    val ownerUid: String = ""
+    val ownerUid: String = "",
+    // Failover design §5.3 (stage 2): which store this row is homed on —
+    // "firestore" (default, everything before the plane) or "supabase".
+    // Receipts are written only to a message's home store (§5.4), and
+    // the read sweep needs to find a chat's Supabase-homed rows without
+    // a network call.
+    val store: String = "firestore"
 )

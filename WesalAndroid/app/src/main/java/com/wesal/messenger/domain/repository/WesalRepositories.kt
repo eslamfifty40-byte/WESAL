@@ -214,6 +214,15 @@ interface UserRepository {
     suspend fun updateGlobalAppearance(config: GlobalAppearanceConfig): Result<Unit>
     fun observeAppUpdateConfig(): Flow<AppUpdateConfig>
     suspend fun updateAppUpdateConfig(config: AppUpdateConfig): Result<Unit>
+
+    /**
+     * Failover design §9.3 (stage 2): the admin plane override — the
+     * SECONDARY manual control that writes
+     * `system_config/message_plane` {plane: "supabase"|"firestore"}.
+     * The automatic health-driven router stays primary; this only
+     * changes the configured primary it consults.
+     */
+    suspend fun updateMessagePlaneConfig(plane: String): Result<Unit>
     fun observeSubscriptionRequests(): Flow<List<SubscriptionRequest>>
     suspend fun refreshSubscriptionRequests(): List<SubscriptionRequest>
     fun observeMySubscriptionRequests(): Flow<List<SubscriptionRequest>>
@@ -449,6 +458,35 @@ interface ChatRepository {
      * re-send) and is reported to the backend health store.
      */
     suspend fun isOutboxMessageLanded(chatId: String, messageId: String): Boolean
+
+    /**
+     * Failover design §5.2 rule 5 (stage 2): the Supabase-plane arm of
+     * the outbox-replay existence check — true when a row with
+     * [messageId] already exists in the chat's plane store (via
+     * msg-list's id mode), in which case replay must NOT re-send.
+     * Any failure answers false (replay falls back to a re-send, which
+     * the plane deduplicates by message id server-side).
+     */
+    suspend fun isOutboxMessageLandedOnPlane(chatId: String, messageId: String): Boolean
+
+    /**
+     * Failover stage 2: the store the most recent send attempt for
+     * [messageId] actually targeted ("firestore"/"supabase" wire
+     * names), recorded by the send path itself — the outbox's queued
+     * re-enqueue stamps THIS instead of assuming Firestore, so replay
+     * runs its existence check against the store that was attempted.
+     * Null when no attempt was recorded in this process.
+     */
+    fun attemptedStoreFor(messageId: String): String?
+
+    /**
+     * Failover design §5.4/§6 (stage 2): fetch the caller's Supabase
+     * inbox (per-chat last-message summaries + unread counters),
+     * publish it for the chats-list merge, and run the bounded
+     * Firestore summary-repair pass. Returns the fresh rows; empty on
+     * any failure (the plane client reports health itself).
+     */
+    suspend fun refreshPlaneInbox(): List<com.wesal.messenger.domain.model.SupabaseInboxRow>
     fun sendMediaMessage(
         chatId: String,
         uri: Uri,

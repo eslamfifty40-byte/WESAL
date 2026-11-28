@@ -26,6 +26,28 @@ data class PendingOutboxMessage(
     val attemptedStore: String? = null
 )
 
+/**
+ * One row of the Supabase message plane's `chat_inbox` table, as returned
+ * by the `msg-inbox` function (FAILOVER_DESIGN.md §4.3): the per-user
+ * summary of a chat's newest Supabase-homed message. Merged into the
+ * chats list by InboxMergeLogic (§5.4) and diffed by the listener
+ * service for notifications (§6). Serializable because the notification
+ * baseline is persisted in DataStore.
+ */
+@Serializable
+data class SupabaseInboxRow(
+    val chatId: String = "",
+    val lastMessageId: String? = null,
+    val lastMessagePreview: String = "",
+    val lastMessageSenderId: String = "",
+    val lastMessageSenderName: String = "",
+    val lastMessageStatus: String = "SENT",
+    val lastMessageServerTsMs: Long = 0L,
+    val lastMessageClientTs: Long = 0L,
+    val unreadCount: Int = 0,
+    val updatedAtMs: Long = 0L
+)
+
 @Serializable
 data class SavedWesalAccount(
     val uid: String = "",

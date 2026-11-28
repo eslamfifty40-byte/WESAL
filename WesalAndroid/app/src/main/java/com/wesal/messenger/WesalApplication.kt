@@ -91,6 +91,41 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
         appScope.launch {
             runCatching { BackendHealthStore.hydrate(userPrefs.loadBackendHealthState()) }
         }
+        // Failover design §9.3 (stage 2): the message-plane config.
+        // Hydrate the router from the DataStore cache immediately, then
+        // follow system_config/message_plane live for the process
+        // lifetime. Fail-open in the SAFE direction: a missing doc or a
+        // listener error keeps the current config — the dark default
+        // is Firestore primary, and the plane lights only on the
+        // doc's explicit "supabase" value.
+        appScope.launch {
+            runCatching {
+                userPrefs.cachedMessagePlaneValue()?.let { cached ->
+                    MessagePlaneRouter.hydrateConfig(
+                        MessagePlaneRouter.configFromPlaneValue(cached)
+                    )
+                }
+            }
+        }
+        runCatching {
+            firestore.collection(Constants.COLLECTION_SYSTEM_CONFIG)
+                .document("message_plane")
+                .addSnapshotListener { snap, err ->
+                    if (err != null || snap == null || !snap.exists()) {
+                        return@addSnapshotListener
+                    }
+                    val value = snap.getString("plane")
+                        ?.trim()?.lowercase()
+                        ?.takeIf { it == "supabase" || it == "firestore" }
+                        ?: return@addSnapshotListener
+                    MessagePlaneRouter.hydrateConfig(
+                        MessagePlaneRouter.configFromPlaneValue(value)
+                    )
+                    appScope.launch {
+                        runCatching { userPrefs.setCachedMessagePlaneValue(value) }
+                    }
+                }
+        }
         rememberSignedInAccountLocally()
         // Deferred until the main thread first goes idle (i.e. after the first frame):
         // creating 6 channels is a series of binder calls that bought nothing on the
@@ -169,23 +204,27 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                     // mutation queue) is never re-sent — its original
                     // atomic batch already carried the chat summary, so
                     // a blind re-send would double-increment the peer's
-                    // unread count for a single message. Stage 1 acts on
-                    // the FIRESTORE arm only; any other router result
-                    // degrades to the plain re-send below.
+                    // unread count for a single message. Stage 2 acts
+                    // on BOTH arms: Firestore existence via the message
+                    // doc, Supabase existence via msg-list's id mode.
                     val target = MessagePlaneRouter.replayTarget(
                         MessagePlaneRouter.storeFromWire(entry.attemptedStore),
-                        MessagePlaneRouter.PlaneConfig(),
+                        MessagePlaneRouter.currentConfig(),
                         BackendHealthStore.currentState()
                     )
-                    if (target == MessagePlaneRouter.Store.FIRESTORE) {
-                        val landed = runCatching {
+                    val landed = when (target) {
+                        MessagePlaneRouter.Store.FIRESTORE -> runCatching {
                             chatRepositoryProvider.get()
                                 .isOutboxMessageLanded(entry.chatId, entry.messageId)
                         }.getOrDefault(false)
-                        if (landed) {
-                            userPrefs.removeOutboxMessage(entry.messageId)
-                            continue
-                        }
+                        MessagePlaneRouter.Store.SUPABASE -> runCatching {
+                            chatRepositoryProvider.get()
+                                .isOutboxMessageLandedOnPlane(entry.chatId, entry.messageId)
+                        }.getOrDefault(false)
+                    }
+                    if (landed) {
+                        userPrefs.removeOutboxMessage(entry.messageId)
+                        continue
                     }
                     val replyStub = if (!entry.replyToMessageId.isNullOrBlank()) {
                         com.wesal.messenger.domain.model.WesalMessage(
@@ -205,17 +244,18 @@ class WesalApplication : Application(), DefaultLifecycleObserver, ImageLoaderFac
                     if (result.isSuccess) {
                         userPrefs.removeOutboxMessage(entry.messageId)
                     } else if (SendFailureCopy.isQueued(result.exceptionOrNull())) {
-                        // The attempt's outcome is now unknown (the write
-                        // sits in the SDK queue): stamp the store it
-                        // targeted so the next replay checks existence
-                        // there first. Stage 1 sends target Firestore —
-                        // the only store with a client until stage 2.
+                        // The attempt's outcome is now unknown: stamp
+                        // the store the SEND PATH actually targeted
+                        // (recorded per message id in stage 2) so the
+                        // next replay checks existence there first.
                         runCatching {
                             userPrefs.enqueueOutboxMessage(
                                 entry.copy(
-                                    attemptedStore = MessagePlaneRouter.wireName(
-                                        MessagePlaneRouter.Store.FIRESTORE
-                                    )
+                                    attemptedStore = chatRepositoryProvider.get()
+                                        .attemptedStoreFor(entry.messageId)
+                                        ?: MessagePlaneRouter.wireName(
+                                            MessagePlaneRouter.Store.FIRESTORE
+                                        )
                                 )
                             )
                         }

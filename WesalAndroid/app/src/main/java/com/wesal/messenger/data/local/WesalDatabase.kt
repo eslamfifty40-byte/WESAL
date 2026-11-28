@@ -10,7 +10,7 @@ import com.wesal.messenger.data.local.entity.CachedMessageEntity
 
 @Database(
     entities = [CachedChatEntity::class, CachedMessageEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = true
 )
 abstract class WesalDatabase : RoomDatabase() {
@@ -26,6 +26,16 @@ abstract class WesalDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE cached_chats ADD COLUMN ownerUid TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE cached_messages ADD COLUMN ownerUid TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
+         * v2 → v3 (failover stage 2, design §5.3): cached messages learn
+         * their home store ("firestore" for every pre-plane row).
+         */
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cached_messages ADD COLUMN store TEXT NOT NULL DEFAULT 'firestore'")
             }
         }
     }

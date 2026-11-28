@@ -169,6 +169,10 @@ class UserPreferencesDataStore @Inject constructor(
         val OWN_PROFILE_SNAPSHOTS_JSON = stringPreferencesKey("own_profile_snapshots_json")
         // Failover design §5.1: persisted BackendHealthStore state (survives process death).
         val BACKEND_HEALTH_JSON = stringPreferencesKey("backend_health_json")
+        // Failover design §9.3 (stage 2): the last-seen system_config/message_plane
+        // value, cached so a cold start routes on the same config before the
+        // doc listener lands.
+        val MESSAGE_PLANE_VALUE = stringPreferencesKey("message_plane_value")
         val PENDING_INVITE_ID = stringPreferencesKey("pending_invite_id")
         val PENDING_PROFILE_JSON = stringPreferencesKey("pending_profile_json")
         val MANUAL_INVITE_ID = stringPreferencesKey("manual_invite_id")
@@ -514,6 +518,101 @@ class UserPreferencesDataStore @Inject constructor(
     suspend fun persistBackendHealthState(state: BackendHealthStore.State) {
         context.wesalDataStore.edit { prefs ->
             prefs[GlobalKeys.BACKEND_HEALTH_JSON] = json.encodeToString(state)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Failover stage 2 (design §5.1/§5.3/§6/§9.3):
+    // - the message_plane config value, cached globally for cold starts;
+    // - per-chat Supabase delta cursors (seq high-water + updated_at
+    //   watermark), per account;
+    // - the plane-engaged flag: set the first time this account sees
+    //   plane traffic (a routed send, a cursor, an inbox row) — it
+    //   gates the listener service's inbox poller so a fully dark
+    //   deployment spends zero function invocations (§4.4);
+    // - the notification baseline + notified-id suppression set the
+    //   listener service diffs inbox polls against (§6).
+    // -----------------------------------------------------------------------
+
+    suspend fun cachedMessagePlaneValue(): String? {
+        val prefs = context.wesalDataStore.data.first()
+        return prefs[GlobalKeys.MESSAGE_PLANE_VALUE]?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun setCachedMessagePlaneValue(value: String) {
+        context.wesalDataStore.edit { prefs ->
+            prefs[GlobalKeys.MESSAGE_PLANE_VALUE] = value
+        }
+    }
+
+    private fun decodePlaneCursors(raw: String?): Map<String, List<Long>> {
+        if (raw.isNullOrBlank()) return emptyMap()
+        return runCatching {
+            json.decodeFromString<Map<String, List<Long>>>(raw)
+        }.getOrDefault(emptyMap())
+    }
+
+    /** (seq high-water, updated_at watermark ms) for a chat, or null when the chat has no plane traffic yet. */
+    suspend fun planeChatCursor(chatId: String): Pair<Long, Long>? {
+        val prefs = context.wesalDataStore.data.first()
+        val uid = resolveActiveUid(prefs)
+        val entry = decodePlaneCursors(prefs[strKey(uid, "plane_chat_cursors_json")])[chatId]
+            ?: return null
+        return (entry.getOrNull(0) ?: 0L) to (entry.getOrNull(1) ?: 0L)
+    }
+
+    suspend fun setPlaneChatCursor(chatId: String, seq: Long, watermarkMs: Long) {
+        if (chatId.isBlank()) return
+        context.wesalDataStore.edit { prefs ->
+            val uid = resolveActiveUid(prefs)
+            val key = strKey(uid, "plane_chat_cursors_json")
+            val current = decodePlaneCursors(prefs[key])
+            prefs[key] = json.encodeToString(current + (chatId to listOf(seq, watermarkMs)))
+        }
+    }
+
+    suspend fun planeEngaged(): Boolean {
+        val prefs = context.wesalDataStore.data.first()
+        val uid = resolveActiveUid(prefs)
+        return prefs[boolKey(uid, "plane_engaged")] ?: false
+    }
+
+    suspend fun setPlaneEngaged() {
+        context.wesalDataStore.edit { prefs ->
+            val uid = resolveActiveUid(prefs)
+            prefs[boolKey(uid, "plane_engaged")] = true
+        }
+    }
+
+    /** Notification baseline (§6): chatId → "lastMessageId|unreadCount" as last notified. */
+    suspend fun inboxBaseline(): Map<String, String> {
+        val prefs = context.wesalDataStore.data.first()
+        val uid = resolveActiveUid(prefs)
+        return decodeStringMap(prefs[strKey(uid, "plane_inbox_baseline_json")])
+    }
+
+    suspend fun setInboxBaseline(baseline: Map<String, String>) {
+        context.wesalDataStore.edit { prefs ->
+            val uid = resolveActiveUid(prefs)
+            prefs[strKey(uid, "plane_inbox_baseline_json")] = json.encodeToString(baseline)
+        }
+    }
+
+    /** Shared notified-id suppression set (§6 point 3), size-bounded. */
+    suspend fun notifiedMessageIds(): Set<String> {
+        val prefs = context.wesalDataStore.data.first()
+        val uid = resolveActiveUid(prefs)
+        return decodeStringList(prefs[strKey(uid, "plane_notified_ids_json")]).toSet()
+    }
+
+    suspend fun addNotifiedMessageIds(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        context.wesalDataStore.edit { prefs ->
+            val uid = resolveActiveUid(prefs)
+            val key = strKey(uid, "plane_notified_ids_json")
+            val current = decodeStringList(prefs[key])
+            val updated = (current + ids).distinct().takeLast(300)
+            prefs[key] = json.encodeToString(updated)
         }
     }
 

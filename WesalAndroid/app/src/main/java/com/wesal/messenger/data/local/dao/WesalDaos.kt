@@ -24,8 +24,21 @@ interface WesalDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMessages(messages: List<CachedMessageEntity>)
 
-    @Query("DELETE FROM cached_chats WHERE chatId = :chatId")
-    suspend fun deleteChat(chatId: String)
+    /**
+     * Failover §5.4: ids of a chat's Supabase-homed incoming messages
+     * still awaiting a READ ack — the markChatAsRead sweep flushes
+     * these through msg-ack so receipts land on the home store only.
+     */
+    @Query(
+        "SELECT messageId FROM cached_messages WHERE chatId = :chatId " +
+            "AND ownerUid = :ownerUid AND store = 'supabase' AND senderId != :myUid " +
+            "AND status IN ('SENT', 'DELIVERED')"
+    )
+    suspend fun supabaseIncomingUnackedIds(
+        chatId: String,
+        ownerUid: String,
+        myUid: String
+    ): List<String>
 
     /** Spec §8.3: hidden chats keep no cached message rows on disk. */
     @Query("DELETE FROM cached_messages WHERE chatId = :chatId")

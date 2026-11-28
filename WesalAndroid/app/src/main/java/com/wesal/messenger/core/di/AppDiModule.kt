@@ -47,7 +47,7 @@ object AppDiModule {
             context,
             WesalDatabase::class.java,
             "wesal_local_cache.db"
-        ).addMigrations(WesalDatabase.MIGRATION_1_2)
+        ).addMigrations(WesalDatabase.MIGRATION_1_2, WesalDatabase.MIGRATION_2_3)
             .fallbackToDestructiveMigration().build()
     }
 
