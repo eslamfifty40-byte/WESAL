@@ -654,6 +654,21 @@ class WebRtcCallManager @Inject constructor(
     private val _cameraSwitchCount = MutableStateFlow(0)
     val cameraSwitchCount: StateFlow<Int> = _cameraSwitchCount.asStateFlow()
 
+    /**
+     * Round 18: true while a switch is in flight. The flip button shows
+     * a spinner and disables itself from this — before, it looked (and
+     * felt) identical while switching, and the in-flight guard's refused
+     * taps were silent (a Log.d only), so the owner kept pressing with
+     * no idea a switch was already running.
+     */
+    private val _isCameraSwitching = MutableStateFlow(false)
+    val isCameraSwitching: StateFlow<Boolean> = _isCameraSwitching.asStateFlow()
+
+    /** Round 18: capturer recovery runs here, never on the main thread. */
+    private val cameraRecoveryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "wesal-camera-recovery").apply { isDaemon = true }
+    }
+
     /** One-shot human message for the call screen (e.g. a failed camera switch). */
     private val _cameraMessage = MutableStateFlow<String?>(null)
     val cameraMessage: StateFlow<String?> = _cameraMessage.asStateFlow()
@@ -668,6 +683,7 @@ class WebRtcCallManager @Inject constructor(
             Log.d(TAG, "Camera switch ignored — another switch is already in flight")
             return
         }
+        _isCameraSwitching.value = true
         scheduleCameraSwitchTimeout()
         runCatching {
             capturer.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
@@ -676,6 +692,7 @@ class WebRtcCallManager @Inject constructor(
                     // A false return means this callback is stale (the
                     // watchdog already resolved the flight) — ignore it.
                     if (cameraSwitchMachine.onDone(isFrontCamera)) {
+                        _isCameraSwitching.value = false
                         _isFrontCamera.value = isFrontCamera
                         _cameraSwitchCount.value += 1
                     }
@@ -701,9 +718,25 @@ class WebRtcCallManager @Inject constructor(
     private fun scheduleCameraSwitchTimeout() {
         cancelCameraSwitchTimeout()
         val runnable = Runnable {
-            if (cameraSwitchMachine.onTimeout()) {
-                Log.e(TAG, "Camera switch produced no callback within ${CAMERA_SWITCH_TIMEOUT_MS}ms — recovering the capturer")
-                recoverCameraCapturer()
+            // Round 18: two-stage watchdog. The first expiry only EXTENDS
+            // the flight once (a slow-but-healthy camera2 reconfiguration
+            // on the owner's device class can outlast a single window —
+            // killing it there destroyed the mid-switch capturer and the
+            // completed switch was discarded as stale). Only the second
+            // expiry treats the capturer as wedged and recovers it.
+            when (cameraSwitchMachine.onWatchdogTick()) {
+                CameraSwitchStateMachine.WatchdogVerdict.EXTEND_ONCE -> {
+                    Log.d(TAG, "Camera switch still in flight after ${CAMERA_SWITCH_TIMEOUT_MS}ms — extending the watchdog once")
+                    scheduleCameraSwitchTimeout()
+                }
+                CameraSwitchStateMachine.WatchdogVerdict.EXPIRED -> {
+                    if (cameraSwitchMachine.onTimeout()) {
+                        Log.e(TAG, "Camera switch produced no callback within ${2 * CAMERA_SWITCH_TIMEOUT_MS}ms — recovering the capturer")
+                        // recoverCameraCapturer() clears _isCameraSwitching
+                        // when the rebuild resolves, on every path.
+                        recoverCameraCapturer()
+                    }
+                }
             }
         }
         cameraSwitchTimeoutRunnable = runnable
@@ -720,31 +753,56 @@ class WebRtcCallManager @Inject constructor(
      * failed/timed-out switch never changed it) and restarts capture into
      * the same video source, so the existing local video track — and the
      * call — carry on. Only when even that fails is the user told.
+     *
+     * Round 18: the rebuild itself runs on [cameraRecoveryExecutor],
+     * never on the calling thread. The watchdog fires on the main
+     * thread, and the old body did its enumerator queries, capturer
+     * construction and stop/dispose synchronously there — a visible UI
+     * freeze on every recovery, on top of the frozen preview. A
+     * session-generation guard (the source/helper captured at entry
+     * must still be the live ones) stops a queued recovery from
+     * resurrecting a capturer after the call has ended.
      */
     private fun recoverCameraCapturer() {
-        val oldCapturer = videoCapturer
         val source = localVideoSource
         val helper = surfaceTextureHelper
-        runCatching { oldCapturer?.stopCapture() }
-        runCatching { oldCapturer?.dispose() }
-        videoCapturer = null
         if (source == null || helper == null) {
             _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
+            _isCameraSwitching.value = false
             return
         }
-        val fresh = createCameraCapturer(preferFront = cameraSwitchMachine.isFrontCamera)
-        if (fresh == null) {
-            _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
-            return
-        }
-        videoCapturer = fresh
-        runCatching {
-            fresh.initialize(helper, context, source.capturerObserver)
-            fresh.startCapture(720, 1280, 30)
-            _cameraSwitchCount.value += 1
-        }.onFailure {
-            Log.e(TAG, "Camera capturer recovery failed: ${it.message}")
-            _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
+        val staleCapturer = videoCapturer
+        // Detach synchronously so nothing keeps driving the old capturer
+        // while the rebuild runs in the background.
+        if (videoCapturer === staleCapturer) videoCapturer = null
+        cameraRecoveryExecutor.execute {
+            runCatching { staleCapturer?.stopCapture() }
+            runCatching { staleCapturer?.dispose() }
+            // The call ended (or a new session started) while this
+            // recovery was queued: abandon it silently — there is no
+            // live call to repair and no failure to report.
+            if (localVideoSource !== source || surfaceTextureHelper !== helper) {
+                _isCameraSwitching.value = false
+                return@execute
+            }
+            val fresh = createCameraCapturer(preferFront = cameraSwitchMachine.isFrontCamera)
+            if (fresh == null) {
+                _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
+                _isCameraSwitching.value = false
+                return@execute
+            }
+            if (videoCapturer == null) videoCapturer = fresh
+            runCatching {
+                fresh.initialize(helper, context, source.capturerObserver)
+                fresh.startCapture(720, 1280, 30)
+                _cameraSwitchCount.value += 1
+            }.onFailure {
+                Log.e(TAG, "Camera capturer recovery failed: ${it.message}")
+                if (videoCapturer === fresh) videoCapturer = null
+                runCatching { fresh.dispose() }
+                _cameraMessage.value = CAMERA_SWITCH_FAILED_MESSAGE
+            }
+            _isCameraSwitching.value = false
         }
     }
 
@@ -921,6 +979,13 @@ class WebRtcCallManager @Inject constructor(
         stopNetworkMonitoring()
         _sessionError.value = null
         cancelCameraSwitchTimeout()
+        // Round 18: force-close any switch flight still open. The
+        // machine lives on this singleton across calls; a flight left
+        // open here (call ended mid-switch, watchdog cancelled above)
+        // would make tryBegin() refuse the FIRST switch of every later
+        // call — silently, forever, until an app restart.
+        cameraSwitchMachine.onTimeout()
+        _isCameraSwitching.value = false
         cancelPendingIceRestart()
         iceRestartSignalledForEpisode = false
         iceRestartAwaitingRenegotiation = false
@@ -1002,8 +1067,14 @@ class WebRtcCallManager @Inject constructor(
         private const val SESSION_ERROR_SDP = "حدثت مشكلة أثناء إعداد المكالمة"
         private const val ICE_DISCONNECT_GRACE_MS = 3_000L
         private const val ICE_RENEGOTIATION_FALLBACK_MS = 1_200L
-        /** Round 12 (addendum B): a camera switch that produces neither callback within this window is treated as wedged and recovered. */
-        private const val CAMERA_SWITCH_TIMEOUT_MS = 5_000L
+        /**
+         * Round 12 (addendum B): a camera switch that produces neither callback within this window is treated as wedged and recovered.
+         * Round 18: the watchdog is two-stage — the first expiry extends
+         * the flight once (see CameraSwitchStateMachine.onWatchdogTick),
+         * so recovery only runs after ~2 windows (~12 s) without a
+         * callback; a healthy-but-slow switch is no longer aborted at 5 s.
+         */
+        private const val CAMERA_SWITCH_TIMEOUT_MS = 6_000L
         private const val CAMERA_SWITCH_FAILED_MESSAGE = "تعذر تبديل الكاميرا"
 
         fun parseTurnUrls(raw: String): List<String> = TurnUrlParser.parse(raw)

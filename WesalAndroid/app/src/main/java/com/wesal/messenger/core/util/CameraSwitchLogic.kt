@@ -31,11 +31,50 @@ class CameraSwitchStateMachine(initialFront: Boolean = true) {
     var switchInFlight: Boolean = false
         private set
 
+    /** Round 18: what one watchdog tick decides about the open flight. */
+    enum class WatchdogVerdict {
+        /** Keep waiting — the flight stays open for one more window. */
+        EXTEND_ONCE,
+
+        /** The flight is wedged — close it (onTimeout) and recover. */
+        EXPIRED
+    }
+
+    private var watchdogExtensionsUsed = 0
+
     /** Begin a switch if none is running. Returns false when refused. */
     fun tryBegin(): Boolean {
         if (switchInFlight) return false
         switchInFlight = true
+        watchdogExtensionsUsed = 0
         return true
+    }
+
+    /**
+     * Round 18: the watchdog consults the machine before killing a
+     * flight. The FIRST tick of a flight returns
+     * [WatchdogVerdict.EXTEND_ONCE] — the flight stays open and the
+     * caller re-arms the watchdog once. Root cause this serves
+     * (device-reported on r17, OPPO/ColorOS): a slow-but-healthy
+     * camera2 session reconfiguration can outlast the old single 5 s
+     * window; when the watchdog fired mid-switch it closed the flight
+     * and the recovery DESTROYED the capturer that was mid-switch and
+     * rebuilt it on the old camera — the real switch's done callback
+     * then arrived and was discarded as stale, so the user saw a
+     * freeze, stayed on the same camera, pressed again, and could hit
+     * the same abort repeatedly. With one extension, a healthy switch
+     * completes inside the doubled window and its callback is accepted
+     * normally. The SECOND tick returns [WatchdogVerdict.EXPIRED]:
+     * the capturer is treated as genuinely wedged and the caller
+     * closes the flight via [onTimeout] and recovers. The allowance
+     * resets on every begin/resolution. A tick with no flight open is
+     * EXPIRED (nothing to extend).
+     */
+    fun onWatchdogTick(): WatchdogVerdict {
+        if (!switchInFlight) return WatchdogVerdict.EXPIRED
+        if (watchdogExtensionsUsed >= 1) return WatchdogVerdict.EXPIRED
+        watchdogExtensionsUsed += 1
+        return WatchdogVerdict.EXTEND_ONCE
     }
 
     /**
@@ -45,6 +84,7 @@ class CameraSwitchStateMachine(initialFront: Boolean = true) {
     fun onDone(nowFront: Boolean): Boolean {
         if (!switchInFlight) return false
         switchInFlight = false
+        watchdogExtensionsUsed = 0
         isFrontCamera = nowFront
         return true
     }
@@ -53,6 +93,7 @@ class CameraSwitchStateMachine(initialFront: Boolean = true) {
     fun onError(): Boolean {
         if (!switchInFlight) return false
         switchInFlight = false
+        watchdogExtensionsUsed = 0
         return true
     }
 
@@ -64,6 +105,7 @@ class CameraSwitchStateMachine(initialFront: Boolean = true) {
     fun onTimeout(): Boolean {
         if (!switchInFlight) return false
         switchInFlight = false
+        watchdogExtensionsUsed = 0
         return true
     }
 }

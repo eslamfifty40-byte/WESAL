@@ -184,6 +184,10 @@ class CallActivity : AppCompatActivity() {
                 // surfaces one short human message.
                 val cameraSwitchCount by webRtcManager.cameraSwitchCount.collectAsStateWithLifecycle()
                 val isFrontCamera by webRtcManager.isFrontCamera.collectAsStateWithLifecycle()
+                // Round 18: while a switch is in flight the flip button
+                // spins and disables itself — the owner previously got
+                // zero feedback and kept pressing into a running switch.
+                val isCameraSwitching by webRtcManager.isCameraSwitching.collectAsStateWithLifecycle()
                 val cameraMessage by webRtcManager.cameraMessage.collectAsStateWithLifecycle()
 
                 LaunchedEffect(cameraMessage) {
@@ -725,7 +729,13 @@ class CallActivity : AppCompatActivity() {
                             CallControlBtn(
                                 icon = Icons.Default.Cameraswitch,
                                 active = false,
-                                label = if (strings.isEnglish) "Flip" else "تبديل",
+                                label = if (isCameraSwitching) {
+                                    if (strings.isEnglish) "Switching" else "جاري التبديل"
+                                } else {
+                                    if (strings.isEnglish) "Flip" else "تبديل"
+                                },
+                                enabled = !isCameraSwitching,
+                                showProgress = isCameraSwitching,
                                 onClick = { webRtcManager.switchCamera() }
                             )
                         }
@@ -969,19 +979,33 @@ private fun CallControlBtn(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     active: Boolean,
     label: String,
+    // Round 18: optional affordances (only the camera-flip button uses
+    // them): disable the button and show a spinner while its action is
+    // in flight. Defaults keep every other call site unchanged.
+    enabled: Boolean = true,
+    showProgress: Boolean = false,
     onClick: () -> Unit
 ) {
     val palette = WesalColors.current
     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         FilledIconButton(
             onClick = onClick,
+            enabled = enabled,
             colors = IconButtonDefaults.filledIconButtonColors(
                 containerColor = if (active) palette.turquoise else palette.surfaceElevated,
                 contentColor = if (active) palette.onPrimary else palette.textPrimary
             ),
             modifier = Modifier.size(52.dp)
         ) {
-            Icon(icon, contentDescription = label)
+            if (showProgress) {
+                CircularProgressIndicator(
+                    color = palette.textPrimary,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(22.dp)
+                )
+            } else {
+                Icon(icon, contentDescription = label)
+            }
         }
         Text(
             text = label,

@@ -1,5 +1,6 @@
 package com.wesal.messenger
 
+import com.wesal.messenger.core.util.CameraSwitchStateMachine
 import com.wesal.messenger.core.util.OfficialChatLockLogic
 import com.wesal.messenger.core.util.OfficialStoryRequestBus
 import org.junit.Assert.assertEquals
@@ -114,5 +115,72 @@ class R18LogicTest {
 
         OfficialStoryRequestBus.consume(pending)
         assertEquals(0, OfficialStoryRequestBus.pendingRequest.value)
+    }
+
+    // ---- Task 3: two-stage camera-switch watchdog ----
+
+    @Test
+    fun watchdog_firstTickExtends_secondTickExpires() {
+        val machine = CameraSwitchStateMachine(initialFront = true)
+        assertTrue(machine.tryBegin())
+        assertEquals(
+            CameraSwitchStateMachine.WatchdogVerdict.EXTEND_ONCE,
+            machine.onWatchdogTick()
+        )
+        // The extension must NOT close the flight.
+        assertTrue(machine.switchInFlight)
+        assertEquals(
+            CameraSwitchStateMachine.WatchdogVerdict.EXPIRED,
+            machine.onWatchdogTick()
+        )
+        // Expiry itself doesn't close it either — the caller closes via
+        // onTimeout (the round-12 contract is unchanged).
+        assertTrue(machine.switchInFlight)
+        assertTrue(machine.onTimeout())
+        assertFalse(machine.switchInFlight)
+    }
+
+    @Test
+    fun watchdog_slowHealthySwitchCompletesDuringExtension() {
+        // The r17 device scenario: the switch outlasts the first window
+        // but completes during the extension — its done callback must be
+        // ACCEPTED (previously it was discarded as stale after the
+        // watchdog destroyed the mid-switch capturer).
+        val machine = CameraSwitchStateMachine(initialFront = true)
+        assertTrue(machine.tryBegin())
+        assertEquals(
+            CameraSwitchStateMachine.WatchdogVerdict.EXTEND_ONCE,
+            machine.onWatchdogTick()
+        )
+        assertTrue(machine.onDone(nowFront = false))
+        assertFalse(machine.isFrontCamera)
+        assertFalse(machine.switchInFlight)
+    }
+
+    @Test
+    fun watchdog_extensionAllowanceResetsPerFlight() {
+        val machine = CameraSwitchStateMachine(initialFront = true)
+        assertTrue(machine.tryBegin())
+        assertEquals(
+            CameraSwitchStateMachine.WatchdogVerdict.EXTEND_ONCE,
+            machine.onWatchdogTick()
+        )
+        assertTrue(machine.onDone(nowFront = false))
+        // A fresh flight gets a fresh extension.
+        assertTrue(machine.tryBegin())
+        assertEquals(
+            CameraSwitchStateMachine.WatchdogVerdict.EXTEND_ONCE,
+            machine.onWatchdogTick()
+        )
+        assertTrue(machine.onError())
+    }
+
+    @Test
+    fun watchdog_tickWithNoFlightIsExpired() {
+        val machine = CameraSwitchStateMachine(initialFront = true)
+        assertEquals(
+            CameraSwitchStateMachine.WatchdogVerdict.EXPIRED,
+            machine.onWatchdogTick()
+        )
     }
 }
