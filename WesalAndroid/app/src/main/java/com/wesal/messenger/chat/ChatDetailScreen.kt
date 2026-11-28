@@ -713,13 +713,331 @@ fun ChatDetailScreen(
                     }
                 }
             )
-        }
+        },
+        bottomBar = {
+            // Keyboard fix (owner-confirmed 2026-11-28): the composer cluster
+            // lives in the Scaffold's bottomBar slot — the pattern that fixed
+            // the assistant's input bar in round 10. The app is edge-to-edge
+            // (MainActivity enableEdgeToEdge, targetSdk 35), so the manifest's
+            // adjustResize never moves Compose content; a bottom-pinned
+            // composer is lifted ONLY by the IME inset applied at its own
+            // slot, where Scaffold re-measures the bar and shrinks the content
+            // above it. As plain Scaffold content (the old layout) the
+            // composer stayed pinned behind the keyboard on the owner's
+            // device. The union pads by max(navigationBars, ime) per side:
+            // keyboard closed → the bar rests exactly where the composer
+            // rested before (above the navigation inset); keyboard open →
+            // it rides directly on top of the keyboard.
+            Column(
+                modifier = Modifier
+                    .background(palette.background)
+                    .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+            ) {
+                if (isOfficialReadOnly && !isSuperAdmin) {
+                    Surface(
+                        color = palette.surface,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Verified, contentDescription = null, tint = palette.verifiedBlue, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = if (strings.isEnglish) {
+                                    "Official announcements from WESAL Messenger — Read only"
+                                } else {
+                                    "قناة الإشعارات الرسمية من WESAL Messenger — للقراءة فقط"
+                                },
+                                color = palette.textSecondary,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                    }
+                } else {
+                    val bannerTitle = when {
+                        editingMessage != null -> if (strings.isEnglish) "Editing message" else "تعديل الرسالة"
+                        replyingTo != null -> if (strings.isEnglish) "Reply to ${replyingTo!!.senderName}" else "رد على ${replyingTo!!.senderName}"
+                        else -> null
+                    }
+                    if (bannerTitle != null) {
+                        Surface(color = palette.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(bannerTitle, color = palette.turquoise, style = MaterialTheme.typography.labelMedium)
+                                    Text(
+                                        text = (editingMessage?.text ?: replyingTo?.text).orEmpty(),
+                                        color = palette.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                }
+                                IconButton(onClick = {
+                                    viewModel.setReplyingTo(null)
+                                    viewModel.setEditingMessage(null)
+                                }) {
+                                    Icon(Icons.Default.Close, contentDescription = strings.cancel, tint = palette.textSecondary)
+                                }
+                            }
+                        }
+                    }
+
+                    if (showQuickRepliesBar && quickReplies.isNotEmpty() && !recordingState.isRecording) {
+                        Surface(color = palette.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                quickReplies.forEach { preset ->
+                                    Surface(
+                                        color = palette.surface,
+                                        shape = RoundedCornerShape(12.dp),
+                                        border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.45f)),
+                                        modifier = Modifier.clickable {
+                                            viewModel.sendOrEditText(preset)
+                                            showQuickRepliesBar = false
+                                        }
+                                    ) {
+                                        Text(
+                                            text = preset,
+                                            color = palette.textPrimary,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (recordingState.isRecording) {
+                        Surface(color = palette.surface, modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Mic, contentDescription = null, tint = palette.error)
+                                Text(
+                                    text = DateTimeUtils.formatDurationMillis(recordingState.elapsedMs),
+                                    color = palette.textPrimary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                val liveBars = if (recordingState.amplitudes.isEmpty()) {
+                                    List(14) { 20 }
+                                } else {
+                                    recordingState.amplitudes.takeLast(14)
+                                }
+                                Row(
+                                    modifier = Modifier.weight(1f).height(26.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    liveBars.forEach { amp ->
+                                        val barHeight = (6 + (amp / 100f) * 20f).dp
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(barHeight)
+                                                .clip(RoundedCornerShape(2.dp))
+                                                .background(palette.turquoise)
+                                        )
+                                    }
+                                }
+                                IconButton(onClick = viewModel::cancelVoiceRecording) {
+                                    Icon(Icons.Default.Delete, contentDescription = strings.cancel, tint = palette.error)
+                                }
+                                OutlinedButton(
+                                    onClick = { pendingDraft = viewModel.stopVoiceForPreview() },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(if (strings.isEnglish) "Preview" else "معاينة", maxLines = 1, softWrap = false)
+                                }
+                                Button(
+                                    onClick = viewModel::stopAndSendVoiceRecording,
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text(strings.send, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                                }
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(palette.surface)
+                                .padding(horizontal = 6.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.Bottom,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    if (showEmojiKeyboard) {
+                                        showEmojiKeyboard = false
+                                        composerFocusRequester.requestFocus()
+                                        keyboardController?.show()
+                                    } else {
+                                        keyboardController?.hide()
+                                        showEmojiKeyboard = true
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = if (showEmojiKeyboard) Icons.Default.Keyboard else Icons.Default.EmojiEmotions,
+                                    contentDescription = strings.switchToTextKeyboard,
+                                    tint = if (showEmojiKeyboard) palette.emerald else palette.textSecondary
+                                )
+                            }
+
+                            IconButton(onClick = { showAttachSheet = true }) {
+                                Icon(
+                                    imageVector = Icons.Default.AddCircleOutline,
+                                    contentDescription = if (strings.isEnglish) "Attachments" else "المرفقات والموسيقى",
+                                    tint = palette.turquoise
+                                )
+                            }
+
+                            OutlinedTextField(
+                                value = inputValue,
+                                onValueChange = {
+                                    inputValue = it
+                                    viewModel.onInputTextChanged(it.text)
+                                },
+                                placeholder = {
+                                    Text(if (strings.isEnglish) "Type a message..." else "اكتب رسالة...")
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .focusRequester(composerFocusRequester)
+                                    .onFocusChanged { focusState ->
+                                        if (focusState.isFocused && showEmojiKeyboard) {
+                                            showEmojiKeyboard = false
+                                        }
+                                    },
+                                minLines = 1,
+                                maxLines = 6,
+                                shape = RoundedCornerShape(24.dp),
+                                trailingIcon = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (quickReplies.isNotEmpty()) {
+                                            IconButton(
+                                                onClick = { showQuickRepliesBar = !showQuickRepliesBar },
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.Bolt,
+                                                    contentDescription = null,
+                                                    tint = if (showQuickRepliesBar) palette.emerald else palette.textSecondary,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+                                        IconButton(
+                                            onClick = { showCamera = true },
+                                            modifier = Modifier.size(36.dp)
+                                        ) {
+                                            Icon(Icons.Default.CameraAlt, contentDescription = strings.camera, tint = palette.textSecondary, modifier = Modifier.size(20.dp))
+                                        }
+                                    }
+                                },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedTextColor = palette.textPrimary,
+                                    unfocusedTextColor = palette.textPrimary,
+                                    cursorColor = palette.turquoise,
+                                    focusedBorderColor = palette.turquoise,
+                                    unfocusedBorderColor = palette.border,
+                                    focusedPlaceholderColor = palette.textMuted,
+                                    unfocusedPlaceholderColor = palette.textMuted,
+                                    focusedContainerColor = palette.surfaceElevated,
+                                    unfocusedContainerColor = palette.surfaceElevated
+                                )
+                            )
+
+                            if (inputValue.text.isNotBlank()) {
+                                FloatingActionButton(
+                                    onClick = {
+                                        viewModel.sendOrEditText(inputValue.text)
+                                        inputValue = TextFieldValue("")
+                                    },
+                                    modifier = Modifier.size(48.dp),
+                                    containerColor = palette.emerald,
+                                    contentColor = palette.onPrimary
+                                ) {
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = strings.send)
+                                }
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(CircleShape)
+                                        .background(palette.emerald)
+                                        .pointerInput(micPermission.status.isGranted) {
+                                            detectTapGestures(
+                                                onPress = {
+                                                    if (!micPermission.status.isGranted) {
+                                                        micPermission.launchPermissionRequest()
+                                                        return@detectTapGestures
+                                                    }
+                                                    val pressedAt = System.currentTimeMillis()
+                                                    viewModel.startVoiceRecording()
+                                                    val released = tryAwaitRelease()
+                                                    val heldMs = System.currentTimeMillis() - pressedAt
+                                                    if (released && heldMs >= 700L) {
+                                                        viewModel.stopAndSendVoiceRecording()
+                                                    }
+                                                }
+                                            )
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Mic, contentDescription = null, tint = palette.onPrimary)
+                                }
+                            }
+                        }
+                    }
+
+                    if (showEmojiKeyboard) {
+                        WesalEmojiKeyboard(
+                            recentEmojis = recentEmojis,
+                            onEmojiSelected = { emoji ->
+                                inputValue = WesalEmojiUtils.insertAtSelection(inputValue, emoji)
+                                viewModel.recordRecentEmoji(emoji)
+                                viewModel.onInputTextChanged(inputValue.text)
+                            },
+                            onBackspace = {
+                                inputValue = WesalEmojiUtils.backspaceAtSelection(inputValue)
+                                viewModel.onInputTextChanged(inputValue.text)
+                            },
+                            onSwitchToSystemKeyboard = {
+                                showEmojiKeyboard = false
+                                composerFocusRequester.requestFocus()
+                                keyboardController?.show()
+                            }
+                        )
+                    }
+                }
+            }
+        },
     ) { padding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .imePadding()
         ) {
             if (effectiveWallpaper.isNotBlank()) {
                 val model = remember(effectiveWallpaper) {
@@ -1033,304 +1351,6 @@ fun ChatDetailScreen(
                     }
                 }
 
-                if (isOfficialReadOnly && !isSuperAdmin) {
-                    Surface(
-                        color = palette.surface,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Verified, contentDescription = null, tint = palette.verifiedBlue, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = if (strings.isEnglish) {
-                                    "Official announcements from WESAL Messenger — Read only"
-                                } else {
-                                    "قناة الإشعارات الرسمية من WESAL Messenger — للقراءة فقط"
-                                },
-                                color = palette.textSecondary,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                    }
-                } else {
-                    val bannerTitle = when {
-                        editingMessage != null -> if (strings.isEnglish) "Editing message" else "تعديل الرسالة"
-                        replyingTo != null -> if (strings.isEnglish) "Reply to ${replyingTo!!.senderName}" else "رد على ${replyingTo!!.senderName}"
-                        else -> null
-                    }
-                    if (bannerTitle != null) {
-                        Surface(color = palette.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(bannerTitle, color = palette.turquoise, style = MaterialTheme.typography.labelMedium)
-                                    Text(
-                                        text = (editingMessage?.text ?: replyingTo?.text).orEmpty(),
-                                        color = palette.textSecondary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                }
-                                IconButton(onClick = {
-                                    viewModel.setReplyingTo(null)
-                                    viewModel.setEditingMessage(null)
-                                }) {
-                                    Icon(Icons.Default.Close, contentDescription = strings.cancel, tint = palette.textSecondary)
-                                }
-                            }
-                        }
-                    }
-
-                    if (showQuickRepliesBar && quickReplies.isNotEmpty() && !recordingState.isRecording) {
-                        Surface(color = palette.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState())
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                quickReplies.forEach { preset ->
-                                    Surface(
-                                        color = palette.surface,
-                                        shape = RoundedCornerShape(12.dp),
-                                        border = BorderStroke(1.dp, palette.turquoise.copy(alpha = 0.45f)),
-                                        modifier = Modifier.clickable {
-                                            viewModel.sendOrEditText(preset)
-                                            showQuickRepliesBar = false
-                                        }
-                                    ) {
-                                        Text(
-                                            text = preset,
-                                            color = palette.textPrimary,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (recordingState.isRecording) {
-                        Surface(color = palette.surface, modifier = Modifier.fillMaxWidth()) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(Icons.Default.Mic, contentDescription = null, tint = palette.error)
-                                Text(
-                                    text = DateTimeUtils.formatDurationMillis(recordingState.elapsedMs),
-                                    color = palette.textPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                val liveBars = if (recordingState.amplitudes.isEmpty()) {
-                                    List(14) { 20 }
-                                } else {
-                                    recordingState.amplitudes.takeLast(14)
-                                }
-                                Row(
-                                    modifier = Modifier.weight(1f).height(26.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                                ) {
-                                    liveBars.forEach { amp ->
-                                        val barHeight = (6 + (amp / 100f) * 20f).dp
-                                        Box(
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .height(barHeight)
-                                                .clip(RoundedCornerShape(2.dp))
-                                                .background(palette.turquoise)
-                                        )
-                                    }
-                                }
-                                IconButton(onClick = viewModel::cancelVoiceRecording) {
-                                    Icon(Icons.Default.Delete, contentDescription = strings.cancel, tint = palette.error)
-                                }
-                                OutlinedButton(
-                                    onClick = { pendingDraft = viewModel.stopVoiceForPreview() },
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                                ) {
-                                    Text(if (strings.isEnglish) "Preview" else "معاينة", maxLines = 1, softWrap = false)
-                                }
-                                Button(
-                                    onClick = viewModel::stopAndSendVoiceRecording,
-                                    colors = ButtonDefaults.buttonColors(containerColor = palette.emerald, contentColor = palette.onPrimary),
-                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                                ) {
-                                    Text(strings.send, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                                }
-                            }
-                        }
-                    } else {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(palette.surface)
-                                .padding(horizontal = 6.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.Bottom,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            IconButton(
-                                onClick = {
-                                    if (showEmojiKeyboard) {
-                                        showEmojiKeyboard = false
-                                        composerFocusRequester.requestFocus()
-                                        keyboardController?.show()
-                                    } else {
-                                        keyboardController?.hide()
-                                        showEmojiKeyboard = true
-                                    }
-                                }
-                            ) {
-                                Icon(
-                                    imageVector = if (showEmojiKeyboard) Icons.Default.Keyboard else Icons.Default.EmojiEmotions,
-                                    contentDescription = strings.switchToTextKeyboard,
-                                    tint = if (showEmojiKeyboard) palette.emerald else palette.textSecondary
-                                )
-                            }
-
-                            IconButton(onClick = { showAttachSheet = true }) {
-                                Icon(
-                                    imageVector = Icons.Default.AddCircleOutline,
-                                    contentDescription = if (strings.isEnglish) "Attachments" else "المرفقات والموسيقى",
-                                    tint = palette.turquoise
-                                )
-                            }
-
-                            OutlinedTextField(
-                                value = inputValue,
-                                onValueChange = {
-                                    inputValue = it
-                                    viewModel.onInputTextChanged(it.text)
-                                },
-                                placeholder = {
-                                    Text(if (strings.isEnglish) "Type a message..." else "اكتب رسالة...")
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .focusRequester(composerFocusRequester)
-                                    .onFocusChanged { focusState ->
-                                        if (focusState.isFocused && showEmojiKeyboard) {
-                                            showEmojiKeyboard = false
-                                        }
-                                    },
-                                minLines = 1,
-                                maxLines = 6,
-                                shape = RoundedCornerShape(24.dp),
-                                trailingIcon = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (quickReplies.isNotEmpty()) {
-                                            IconButton(
-                                                onClick = { showQuickRepliesBar = !showQuickRepliesBar },
-                                                modifier = Modifier.size(34.dp)
-                                            ) {
-                                                Icon(
-                                                    Icons.Default.Bolt,
-                                                    contentDescription = null,
-                                                    tint = if (showQuickRepliesBar) palette.emerald else palette.textSecondary,
-                                                    modifier = Modifier.size(20.dp)
-                                                )
-                                            }
-                                        }
-                                        IconButton(
-                                            onClick = { showCamera = true },
-                                            modifier = Modifier.size(36.dp)
-                                        ) {
-                                            Icon(Icons.Default.CameraAlt, contentDescription = strings.camera, tint = palette.textSecondary, modifier = Modifier.size(20.dp))
-                                        }
-                                    }
-                                },
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedTextColor = palette.textPrimary,
-                                    unfocusedTextColor = palette.textPrimary,
-                                    cursorColor = palette.turquoise,
-                                    focusedBorderColor = palette.turquoise,
-                                    unfocusedBorderColor = palette.border,
-                                    focusedPlaceholderColor = palette.textMuted,
-                                    unfocusedPlaceholderColor = palette.textMuted,
-                                    focusedContainerColor = palette.surfaceElevated,
-                                    unfocusedContainerColor = palette.surfaceElevated
-                                )
-                            )
-
-                            if (inputValue.text.isNotBlank()) {
-                                FloatingActionButton(
-                                    onClick = {
-                                        viewModel.sendOrEditText(inputValue.text)
-                                        inputValue = TextFieldValue("")
-                                    },
-                                    modifier = Modifier.size(48.dp),
-                                    containerColor = palette.emerald,
-                                    contentColor = palette.onPrimary
-                                ) {
-                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = strings.send)
-                                }
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .clip(CircleShape)
-                                        .background(palette.emerald)
-                                        .pointerInput(micPermission.status.isGranted) {
-                                            detectTapGestures(
-                                                onPress = {
-                                                    if (!micPermission.status.isGranted) {
-                                                        micPermission.launchPermissionRequest()
-                                                        return@detectTapGestures
-                                                    }
-                                                    val pressedAt = System.currentTimeMillis()
-                                                    viewModel.startVoiceRecording()
-                                                    val released = tryAwaitRelease()
-                                                    val heldMs = System.currentTimeMillis() - pressedAt
-                                                    if (released && heldMs >= 700L) {
-                                                        viewModel.stopAndSendVoiceRecording()
-                                                    }
-                                                }
-                                            )
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Mic, contentDescription = null, tint = palette.onPrimary)
-                                }
-                            }
-                        }
-                    }
-
-                    if (showEmojiKeyboard) {
-                        WesalEmojiKeyboard(
-                            recentEmojis = recentEmojis,
-                            onEmojiSelected = { emoji ->
-                                inputValue = WesalEmojiUtils.insertAtSelection(inputValue, emoji)
-                                viewModel.recordRecentEmoji(emoji)
-                                viewModel.onInputTextChanged(inputValue.text)
-                            },
-                            onBackspace = {
-                                inputValue = WesalEmojiUtils.backspaceAtSelection(inputValue)
-                                viewModel.onInputTextChanged(inputValue.text)
-                            },
-                            onSwitchToSystemKeyboard = {
-                                showEmojiKeyboard = false
-                                composerFocusRequester.requestFocus()
-                                keyboardController?.show()
-                            }
-                        )
-                    }
-                }
             }
         }
     }
@@ -2044,6 +2064,11 @@ private fun MediaDraftPreviewScreen(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                // Keyboard fix (2026-11-28): the caption bar is bottom-anchored
+                // in a systemBarsPadding-only root, so the keyboard covered the
+                // caption field. imePadding lifts the bar's content above the
+                // keyboard (0 when closed → layout unchanged).
+                .imePadding()
         ) {
             Row(
                 modifier = Modifier.padding(12.dp),

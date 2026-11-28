@@ -265,7 +265,16 @@ fun ChannelDetailScreen(
         bottomBar = {
             if (canManage) {
                 Surface(color = palette.surface, tonalElevation = 4.dp) {
-                    Column(modifier = Modifier.navigationBarsPadding()) {
+                    // Keyboard fix (owner-confirmed 2026-11-28): the bar previously
+                    // applied ONLY navigationBarsPadding, so the IME inset was never
+                    // applied and the keyboard covered this composer. The union pads
+                    // by max(navigationBars, ime) per side: keyboard closed → layout
+                    // identical to before; keyboard open → the bar rides above it.
+                    Column(
+                        modifier = Modifier.windowInsetsPadding(
+                            WindowInsets.navigationBars.union(WindowInsets.ime)
+                        )
+                    ) {
                         uploadProgress?.let { progress ->
                             LinearProgressIndicator(
                                 progress = { progress },

@@ -748,6 +748,11 @@ fun StoriesScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
+                    // Keyboard fix (2026-11-28): this bottom-anchored bar holds the
+                    // story caption field; with no IME inset applied, the keyboard
+                    // covered it. imePadding lifts the bar's content above the
+                    // keyboard (0 when closed → layout unchanged).
+                    .imePadding()
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp),
@@ -1120,6 +1125,11 @@ fun StoriesScreen(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    // Keyboard fix (2026-11-28): the story-reply field lives in
+                    // this bottom-anchored column; with no IME inset applied, the
+                    // keyboard covered it. imePadding lifts the column above the
+                    // keyboard (0 when closed → layout unchanged).
+                    .imePadding()
                     .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(8.dp)
