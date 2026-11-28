@@ -36,6 +36,7 @@ import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalTheme
 import com.wesal.messenger.core.util.CallRingLogic
+import com.wesal.messenger.core.util.CallTimeoutLogic
 import com.wesal.messenger.core.util.DateTimeUtils
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.data.local.AppUserSettings
@@ -343,7 +344,9 @@ class CallActivity : AppCompatActivity() {
                                 // Round 13 (Addendum L6): bounded setup —
                                 // a call-doc write that never ACKs (quota /
                                 // stalled stream) must not hang the dialer.
-                                val initResult = withTimeoutOrNull(CALL_SETUP_TIMEOUT_MS) {
+                                // Round 18: the bound lives in
+                                // CallTimeoutLogic alongside the deadlines.
+                                val initResult = withTimeoutOrNull(CallTimeoutLogic.SETUP_TIMEOUT_MS) {
                                     callRepository.initiateCall(targetUser, isVideo, offerSdp)
                                 }
                                 (initResult ?: Result.failure(Exception("call setup timeout")))
@@ -488,11 +491,20 @@ class CallActivity : AppCompatActivity() {
                 // window, end the call with the honest human reason instead.
                 // The effect restarts on every ICE state change, so any
                 // recovery cancels the countdown.
-                LaunchedEffect(iceState) {
-                    if (iceState == PeerConnection.IceConnectionState.FAILED ||
-                        iceState == PeerConnection.IceConnectionState.DISCONNECTED
+                // Round 18 (ring-sustain): the watchdog is armed ONLY for
+                // an established call (CallTimeoutLogic.mediaFailureWatchdogArmed).
+                // During setup/ringing, ICE can sit at DISCONNECTED/FAILED
+                // before the answer has even landed; the old ungated
+                // countdown could end a still-ringing call at ~25s.
+                LaunchedEffect(iceState, hasConnected, callAnswered) {
+                    if ((iceState == PeerConnection.IceConnectionState.FAILED ||
+                            iceState == PeerConnection.IceConnectionState.DISCONNECTED) &&
+                        CallTimeoutLogic.mediaFailureWatchdogArmed(
+                            hasConnected = hasConnected,
+                            answered = callAnswered
+                        )
                     ) {
-                        delay(25_000L)
+                        delay(CallTimeoutLogic.MEDIA_FAILURE_GRACE_MS)
                         if (!isFinishingCall) {
                             isFinishingCall = true
                             android.util.Log.e(
@@ -544,13 +556,27 @@ class CallActivity : AppCompatActivity() {
                 // the 45s delay, so under signaling failure the exit
                 // never fired and the dialer sat at «جاري الاتصال»
                 // forever (device-proven under the exhausted quota).
+                //
+                // Round 18 (ring-sustain): the decisions now live in
+                // CallTimeoutLogic and are progress-aware. The no-answer
+                // window is a full 60s from placement, and it can NEVER
+                // fire once the callee has answered (doc ACTIVE) or the
+                // media path connected — the previous code keyed only on
+                // connState, so it stamped MISSED over answered calls
+                // whose ICE was still checking, and its 45s budget let
+                // the callee's wake/ack latency eat the ring itself.
                 LaunchedEffect(isIncoming) {
                     if (isIncoming) return@LaunchedEffect
-                    // Setup deadline: the call doc must exist by now.
-                    delay(CALL_SETUP_TIMEOUT_MS)
+                    // Setup deadline: the call doc must exist by now —
+                    // and only a total absence of progress ends the call.
+                    delay(CallTimeoutLogic.SETUP_TIMEOUT_MS)
                     if (!isFinishingCall &&
-                        webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED &&
-                        activeCallId.isBlank()
+                        CallTimeoutLogic.shouldEndSetup(
+                            callDocCreated = activeCallId.isNotBlank(),
+                            answered = callAnswered,
+                            peerConnected = webRtcManager.connectionState.value ==
+                                PeerConnection.PeerConnectionState.CONNECTED
+                        )
                     ) {
                         isFinishingCall = true
                         callStatusLabel = if (strings.isEnglish) "Could not connect — please try again" else "تعذر الاتصال — حاول مرة أخرى"
@@ -558,10 +584,18 @@ class CallActivity : AppCompatActivity() {
                         finishCallLocally()
                         return@LaunchedEffect
                     }
-                    // No-answer deadline: 45s total from placement.
-                    delay(NO_ANSWER_TIMEOUT_MS - CALL_SETUP_TIMEOUT_MS)
+                    // No-answer deadline: the full window from placement.
+                    // «لم يتم الرد» is shown only when it truly expires
+                    // unanswered; an answer arriving at any point before
+                    // the deadline cancels the teardown permanently
+                    // (progress is re-checked at fire time).
+                    delay(CallTimeoutLogic.NO_ANSWER_TIMEOUT_MS - CallTimeoutLogic.SETUP_TIMEOUT_MS)
                     if (!isFinishingCall &&
-                        webRtcManager.connectionState.value != PeerConnection.PeerConnectionState.CONNECTED
+                        CallTimeoutLogic.shouldEndForNoAnswer(
+                            answered = callAnswered,
+                            peerConnected = webRtcManager.connectionState.value ==
+                                PeerConnection.PeerConnectionState.CONNECTED
+                        )
                     ) {
                         isFinishingCall = true
                         callStatusLabel = strings.callMissed
@@ -900,18 +934,10 @@ class CallActivity : AppCompatActivity() {
     companion object {
         private const val OFFER_WAIT_TIMEOUT_MS = 30_000L
 
-        /**
-         * Round 13 (Addendum L6): the outgoing setup phase is BOUNDED.
-         * If the call document cannot be created/acknowledged inside
-         * this window (device-proven: the write quota was exhausted and
-         * the call sat at «جاري الاتصال» forever), the attempt ends
-         * with the honest failure state instead of an eternal
-         * connecting screen.
-         */
-        private const val CALL_SETUP_TIMEOUT_MS = 20_000L
-
-        /** Total no-answer budget from call placement (WhatsApp-style). */
-        private const val NO_ANSWER_TIMEOUT_MS = 45_000L
+        // Round 18: the setup / no-answer deadlines live in
+        // CallTimeoutLogic (core.util) so they are unit-tested; the
+        // no-answer budget is now a full 60s from placement and can
+        // never fire on an answered call.
         private const val EXTRA_IS_INCOMING = "is_incoming"
         private const val EXTRA_CALL_ID = "call_id"
         private const val EXTRA_PEER_UID = "peer_uid"

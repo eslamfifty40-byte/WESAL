@@ -22,6 +22,7 @@ import com.wesal.messenger.R
 import com.wesal.messenger.calls.CallActionReceiver
 import com.wesal.messenger.calls.CallActivity
 import com.wesal.messenger.calls.IncomingCallActivity
+import com.wesal.messenger.core.util.CallTimeoutLogic
 import com.wesal.messenger.core.util.Constants
 import com.wesal.messenger.data.local.AppUserSettings
 import com.wesal.messenger.data.local.UserPreferencesDataStore
@@ -609,8 +610,8 @@ class WesalListenerService : Service() {
         /** Matches observeIncomingCalls' freshness window. */
         private const val CALL_RING_WINDOW_MS = 90_000L
 
-        /** Matches the app's 45s no-answer window, plus a small grace period. */
-        private const val INCOMING_CALL_RING_TIMEOUT_MS = 50_000L
+        /** Matches the app's no-answer window (CallTimeoutLogic), plus a small grace period. */
+        private const val INCOMING_CALL_RING_TIMEOUT_MS = CallTimeoutLogic.NO_ANSWER_TIMEOUT_MS + 5_000L
 
         /** Messages older than this when first observed are treated as history, not news. */
         private const val MESSAGE_FRESH_WINDOW_MS = 120_000L
