@@ -65,6 +65,7 @@ import com.wesal.messenger.calls.CallActivity
 import com.wesal.messenger.core.theme.WesalColors
 import com.wesal.messenger.core.theme.WesalNameplateColorPreset
 import com.wesal.messenger.core.util.DateTimeUtils
+import com.wesal.messenger.core.util.DictationLogic
 import com.wesal.messenger.core.util.LocalWesalStrings
 import com.wesal.messenger.core.util.NeonColorPreset
 import com.wesal.messenger.core.util.ScreenshotProtectionPolicy
@@ -211,6 +212,182 @@ fun ChatDetailScreen(
 
     val listState = rememberLazyListState()
     val micPermission = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
+
+    // R17 (G-02, owner: «عايز تسجيل الصوت اقدر الصوت ده يتحول كلام»):
+    // voice DICTATION in the normal chat composer — speech-to-text into
+    // the message field. Reuses core/util/DictationLogic.kt exactly as
+    // aiassistant/AssistantChatScreen.kt does (continuous listening,
+    // auto-restart on pause/transient errors, honest Arabic notice on
+    // hard failure). Distinct from the hold-to-record voice-NOTE button
+    // below, which records an audio message and is untouched.
+    var isDictating by remember { mutableStateOf(false) }
+    var dictationFastFailures by remember { mutableStateOf(0) }
+    var dictationSessionStartedAt by remember { mutableStateOf(0L) }
+    val dictationHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    val dictationActiveState = rememberUpdatedState(isDictating)
+    var dictationPermissionPending by remember { mutableStateOf(false) }
+    var dictationRequestedOnce by remember { mutableStateOf(false) }
+    var dictationBase by remember { mutableStateOf("") }
+    val inputTextState = rememberUpdatedState(inputValue.text)
+    val speechRecognizer = remember(context) {
+        if (android.speech.SpeechRecognizer.isRecognitionAvailable(context)) {
+            android.speech.SpeechRecognizer.createSpeechRecognizer(context)
+        } else {
+            null
+        }
+    }
+    DisposableEffect(speechRecognizer) {
+        onDispose {
+            dictationHandler.removeCallbacksAndMessages(null)
+            runCatching { speechRecognizer?.destroy() }
+        }
+    }
+    fun showDictationToast(ar: String, en: String) {
+        Toast.makeText(context, if (strings.isEnglish) en else ar, Toast.LENGTH_LONG).show()
+    }
+    fun buildDictationIntent(): android.content.Intent =
+        android.content.Intent(android.speech.RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                android.speech.RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(android.speech.RecognizerIntent.EXTRA_LANGUAGE, "ar-EG")
+            putExtra(android.speech.RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                3000L
+            )
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                5000L
+            )
+            putExtra(
+                android.speech.RecognizerIntent.EXTRA_PROMPT,
+                if (strings.isEnglish) "Speak now…" else "اتكلم دلوقتي…"
+            )
+        }
+    /** User-initiated (or final) stop: the ONLY normal end of a dictation session. */
+    fun stopDictation() {
+        isDictating = false
+        dictationHandler.removeCallbacksAndMessages(null)
+        runCatching { speechRecognizer?.stopListening() }
+    }
+    fun beginDictationSession() {
+        val recognizer = speechRecognizer ?: return
+        dictationSessionStartedAt = System.currentTimeMillis()
+        runCatching { recognizer.startListening(buildDictationIntent()) }
+            .onFailure {
+                if (dictationActiveState.value) {
+                    isDictating = false
+                    showDictationToast("تعذر بدء الإملاء الصوتي", "Could not start voice dictation")
+                }
+            }
+    }
+    fun scheduleDictationRestart() {
+        dictationHandler.removeCallbacksAndMessages(null)
+        dictationHandler.postDelayed({
+            if (dictationActiveState.value) {
+                beginDictationSession()
+            }
+        }, DictationLogic.RESTART_DELAY_MS)
+    }
+    fun startDictation() {
+        val recognizer = speechRecognizer
+        if (recognizer == null) {
+            showDictationToast(
+                "الإملاء الصوتي غير متاح على هذا الجهاز",
+                "Voice dictation is not available on this device"
+            )
+            return
+        }
+        dictationBase = inputTextState.value.trim()
+        dictationFastFailures = 0
+        recognizer.setRecognitionListener(object : android.speech.RecognitionListener {
+            private fun spokenText(bundle: android.os.Bundle?): String =
+                bundle
+                    ?.getStringArrayList(android.speech.SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    .orEmpty()
+
+            private fun applySpoken(spoken: String, commit: Boolean) {
+                if (spoken.isBlank()) return
+                val committed = DictationLogic.appendSegment(dictationBase, spoken)
+                inputValue = TextFieldValue(committed, selection = TextRange(committed.length))
+                viewModel.onInputTextChanged(committed)
+                if (commit) dictationBase = committed.trim()
+            }
+
+            override fun onResults(results: android.os.Bundle?) {
+                applySpoken(spokenText(results), commit = true)
+                dictationFastFailures = 0
+                // Continuous: keep listening through the pause that ended
+                // this segment — only the user's tap stops us.
+                if (dictationActiveState.value) scheduleDictationRestart()
+            }
+
+            override fun onPartialResults(partialResults: android.os.Bundle?) {
+                applySpoken(spokenText(partialResults), commit = false)
+            }
+
+            override fun onError(error: Int) {
+                if (!dictationActiveState.value) return
+                if (DictationLogic.isHardError(error)) {
+                    stopDictation()
+                    if (error == DictationLogic.ERROR_INSUFFICIENT_PERMISSIONS) {
+                        showDictationToast(
+                            "لازم تسمح بصلاحية الميكروفون عشان الإملاء الصوتي يشتغل",
+                            "Microphone permission is required for voice dictation"
+                        )
+                    } else {
+                        showDictationToast(
+                            "الإملاء الصوتي بالعربي غير متاح على هذا الجهاز",
+                            "Arabic voice dictation is not available on this device"
+                        )
+                    }
+                    return
+                }
+                val sessionMs = System.currentTimeMillis() - dictationSessionStartedAt
+                dictationFastFailures = DictationLogic.nextFastFailureStreak(
+                    dictationFastFailures, sessionMs
+                )
+                if (error == DictationLogic.ERROR_RECOGNIZER_BUSY) {
+                    runCatching { speechRecognizer?.cancel() }
+                }
+                if (DictationLogic.shouldRestart(true, error, dictationFastFailures)) {
+                    // Pause/transient end — restart QUIETLY (no toast:
+                    // a thinking pause is not an error).
+                    scheduleDictationRestart()
+                } else {
+                    // The service keeps dying instantly — it is
+                    // unavailable on this device; say so honestly
+                    // instead of looping or failing silently.
+                    stopDictation()
+                    showDictationToast(
+                        "الإملاء الصوتي غير متاح على هذا الجهاز حالياً",
+                        "Voice dictation is not available on this device right now"
+                    )
+                }
+            }
+
+            override fun onReadyForSpeech(params: android.os.Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+            override fun onEvent(eventType: Int, params: android.os.Bundle?) {}
+        })
+        isDictating = true
+        beginDictationSession()
+    }
+    // Permission hand-off: when the system permission request returns
+    // granted, start listening at once.
+    LaunchedEffect(micPermission.status.isGranted) {
+        if (dictationPermissionPending && micPermission.status.isGranted) {
+            dictationPermissionPending = false
+            startDictation()
+        }
+    }
+
     // API ≤ 28 gate for the media savers (no-op on API 29+ scoped storage).
     val savePermissionGate = rememberSavePermissionGate()
     val locationPermissions = rememberMultiplePermissionsState(
@@ -919,7 +1096,11 @@ fun ChatDetailScreen(
                                     viewModel.onInputTextChanged(it.text)
                                 },
                                 placeholder = {
-                                    Text(if (strings.isEnglish) "Type a message..." else "اكتب رسالة...")
+                                    Text(
+                                        if (isDictating) {
+                                            if (strings.isEnglish) "Listening… speak now" else "بيسمعك… اتكلم دلوقتي"
+                                        } else if (strings.isEnglish) "Type a message..." else "اكتب رسالة..."
+                                    )
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -934,6 +1115,46 @@ fun ChatDetailScreen(
                                 shape = RoundedCornerShape(24.dp),
                                 trailingIcon = {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
+                                        // R17 (G-02): dictation mic INSIDE the
+                                        // field — speech becomes text for
+                                        // review before sending. The round
+                                        // green button outside the field stays
+                                        // the hold-to-record voice NOTE.
+                                        IconButton(
+                                            onClick = {
+                                                if (isDictating) {
+                                                    // The user's tap is the ONLY
+                                                    // normal end of dictation.
+                                                    stopDictation()
+                                                } else if (!micPermission.status.isGranted) {
+                                                    if (dictationRequestedOnce &&
+                                                        !micPermission.status.shouldShowRationale
+                                                    ) {
+                                                        // Permanently denied: say
+                                                        // so plainly instead of a
+                                                        // dead tap.
+                                                        showDictationToast(
+                                                            "صلاحية الميكروفون مرفوضة — فعّلها من إعدادات التطبيق عشان الإملاء الصوتي يشتغل",
+                                                            "Microphone permission is denied — enable it in app settings to use voice dictation"
+                                                        )
+                                                    } else {
+                                                        dictationRequestedOnce = true
+                                                        dictationPermissionPending = true
+                                                        micPermission.launchPermissionRequest()
+                                                    }
+                                                } else {
+                                                    startDictation()
+                                                }
+                                            },
+                                            modifier = Modifier.size(34.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.KeyboardVoice,
+                                                contentDescription = if (strings.isEnglish) "Voice dictation" else "إملاء صوتي",
+                                                tint = if (isDictating) palette.error else palette.turquoise,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
                                         if (quickReplies.isNotEmpty()) {
                                             IconButton(
                                                 onClick = { showQuickRepliesBar = !showQuickRepliesBar },
@@ -971,6 +1192,7 @@ fun ChatDetailScreen(
                             if (inputValue.text.isNotBlank()) {
                                 FloatingActionButton(
                                     onClick = {
+                                        stopDictation()
                                         viewModel.sendOrEditText(inputValue.text)
                                         inputValue = TextFieldValue("")
                                     },
